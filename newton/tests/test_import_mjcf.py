@@ -397,6 +397,68 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(joint_pos, body_pos, atol=1e-6)
         np.testing.assert_allclose(joint_quat, body_quat, atol=1e-6)
 
+    def test_floating_base_with_import_xform_is_relative(self):
+        """Test that xform composes with (does not overwrite) a floating root body's local transform."""
+        local_pos = wp.vec3(1.0, 2.0, 3.0)
+        local_quat = wp.quat_rpy(0.3, -0.4, 0.2)
+        # MJCF expects quaternions as [w, x, y, z].
+        local_quat_mjcf = f"{local_quat[3]} {local_quat[0]} {local_quat[1]} {local_quat[2]}"
+
+        mjcf_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="floating_with_xform">
+    <worldbody>
+        <body name="floating_body" pos="{local_pos[0]} {local_pos[1]} {local_pos[2]}" quat="{local_quat_mjcf}">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        import_pos = wp.vec3(4.0, -5.0, 6.0)
+        import_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 3.0)
+        import_xform = wp.transform(import_pos, import_quat)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, xform=import_xform)
+        model = builder.finalize()
+
+        local_xform = wp.transform(local_pos, local_quat)
+        expected_xform = import_xform * local_xform
+        expected_pos = np.array([expected_xform.p[0], expected_xform.p[1], expected_xform.p[2]])
+        expected_quat = np.array([expected_xform.q[0], expected_xform.q[1], expected_xform.q[2], expected_xform.q[3]])
+
+        body_idx = model.body_label.index("floating_with_xform/worldbody/floating_body")
+        body_q = model.body_q.numpy()[body_idx]
+        body_pos = body_q[:3]
+        body_quat = body_q[3:7]
+
+        np.testing.assert_allclose(body_pos, expected_pos, atol=1e-6)
+        body_quat_match = np.allclose(body_quat, expected_quat, atol=1e-6) or np.allclose(
+            body_quat, -expected_quat, atol=1e-6
+        )
+        self.assertTrue(body_quat_match, f"Body quaternion does not match composed transform. Got {body_quat}")
+
+        # Guard against overwrite behavior: final pose should not equal raw import xform pose.
+        self.assertFalse(
+            np.allclose(body_pos, [import_pos[0], import_pos[1], import_pos[2]], atol=1e-6),
+            "Body position unexpectedly equals raw import xform position (overwrite behavior).",
+        )
+
+        joint_idx = model.joint_label.index("floating_with_xform/worldbody/floating_body/floating_body_freejoint")
+        joint_q_start = model.joint_q_start.numpy()
+        joint_q = model.joint_q.numpy()
+        joint_start = joint_q_start[joint_idx]
+        joint_pos = np.array([joint_q[joint_start + 0], joint_q[joint_start + 1], joint_q[joint_start + 2]])
+        joint_quat = np.array(
+            [joint_q[joint_start + 3], joint_q[joint_start + 4], joint_q[joint_start + 5], joint_q[joint_start + 6]]
+        )
+
+        np.testing.assert_allclose(joint_pos, expected_pos, atol=1e-6)
+        joint_quat_match = np.allclose(joint_quat, expected_quat, atol=1e-6) or np.allclose(
+            joint_quat, -expected_quat, atol=1e-6
+        )
+        self.assertTrue(joint_quat_match, f"Joint quaternion does not match composed transform. Got {joint_quat}")
+
     def test_chain_with_rotations(self):
         """Test 3: Chain of bodies with different pos/quat → verify each body's world transform."""
         # Test chain with cumulative rotations
