@@ -2319,6 +2319,10 @@ def parse_usd(
         if not joint_prim or not joint_prim.IsValid():
             continue
 
+        # Skip if NewtonMimicAPI is present — it takes precedence over PhysxMimicJointAPI.
+        if joint_prim.HasAPI("NewtonMimicAPI") or usd.has_applied_api_schema(joint_prim, "NewtonMimicAPI"):
+            continue
+
         schemas_listop = joint_prim.GetMetadata("apiSchemas")
         if not schemas_listop:
             continue
