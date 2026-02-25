@@ -675,6 +675,30 @@ class TestImportMjcfGeometry(unittest.TestCase):
         self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
         self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
 
+    def test_ellipsoid_shape_gets_mass(self):
+        """Regression: ellipsoid geoms are imported as shapes so the body gets density-based mass.
+
+        Previously ellipsoid was unsupported and no shape was added, so the body had zero mass
+        and finalize could raise or produce invalid dynamics.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="ellipsoid_test">
+    <worldbody>
+        <body name="object">
+            <freejoint/>
+            <geom type="ellipsoid" size="0.03 0.04 0.02"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.shape_type[0], GeoType.ELLIPSOID)
+        model = builder.finalize()
+        body_mass = model.body_mass.numpy()
+        self.assertGreater(body_mass[0], 0.0, msg="Ellipsoid body must have positive mass")
+
     def test_explicit_geom_mass(self):
         """Regression test: explicit geom mass attributes are correctly handled.
 

@@ -850,6 +850,17 @@ def parse_mjcf(
                 )
                 shapes.append(s)
 
+            elif geom_type == "ellipsoid":
+                # MuJoCo ellipsoid size is (rx, ry, rz) semi-axes, same as Newton a, b, c
+                s = builder.add_shape_ellipsoid(
+                    xform=tf,
+                    a=geom_size[0],
+                    b=geom_size[1],
+                    c=geom_size[2],
+                    **shape_kwargs,
+                )
+                shapes.append(s)
+
             else:
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
