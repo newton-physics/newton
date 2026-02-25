@@ -48,13 +48,33 @@ from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton
 # plus visualization parameters. Assets are downloaded via download_asset().
 
 MENAGERIE_USD_ROBOTS = {
-    "apptronik_apollo": {"asset_folder": "apptronik_apollo", "scene_file": "usd_structured/apptronik_apollo.usda", "initial_height": 1.0},
+    "apptronik_apollo": {
+        "asset_folder": "apptronik_apollo",
+        "scene_file": "usd_structured/apptronik_apollo.usda",
+        "initial_height": 1.0,
+    },
     "booster_t1": {"asset_folder": "booster_t1", "scene_file": "usd_structured/T1.usda", "initial_height": 1.0},
-    "g1_with_hands": {"asset_folder": "unitree_g1", "scene_file": "usd_structured/g1_29dof_with_hand_rev_1_0.usda", "initial_height": 0.8},
+    "g1_with_hands": {
+        "asset_folder": "unitree_g1",
+        "scene_file": "usd_structured/g1_29dof_with_hand_rev_1_0.usda",
+        "initial_height": 0.8,
+    },
     "h1": {"asset_folder": "unitree_h1", "scene_file": "usd_structured/h1.usda", "initial_height": 1.0},
-    "robotiq_2f85_v4": {"asset_folder": "robotiq_2f85", "scene_file": "usd_structured/robotiq_2f85.usda", "initial_height": 0.3},
-    "shadow_hand": {"asset_folder": "shadow_hand", "scene_file": "usd_structured/left_shadow_hand.usda", "initial_height": 0.5},
-    "wonik_allegro": {"asset_folder": "wonik_allegro", "scene_file": "usd_structured/allegro_left.usda", "initial_height": 0.5},
+    "robotiq_2f85_v4": {
+        "asset_folder": "robotiq_2f85",
+        "scene_file": "usd_structured/robotiq_2f85.usda",
+        "initial_height": 0.3,
+    },
+    "shadow_hand": {
+        "asset_folder": "shadow_hand",
+        "scene_file": "usd_structured/left_shadow_hand.usda",
+        "initial_height": 0.5,
+    },
+    "wonik_allegro": {
+        "asset_folder": "wonik_allegro",
+        "scene_file": "usd_structured/allegro_left.usda",
+        "initial_height": 0.5,
+    },
 }
 
 

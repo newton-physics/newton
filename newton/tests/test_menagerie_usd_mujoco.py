@@ -123,6 +123,7 @@ MENAGERIE_USD_ASSETS = {
     "wonik_allegro": {"asset_folder": "wonik_allegro", "scene_file": "usd_structured/allegro_left.usda"},
 }
 
+
 def download_usd_asset(robot_name: str) -> Path:
     """Download a menagerie USD asset from newton-assets and return the scene file path.
 
