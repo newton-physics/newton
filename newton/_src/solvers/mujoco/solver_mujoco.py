@@ -2465,7 +2465,7 @@ class SolverMuJoCo(SolverBase):
             mjc_joint_names: List of MuJoCo joint names indexed by MuJoCo joint index.
                 Used together with dof_to_mjc_joint to get the correct joint name.
             body_name_mapping: Mapping from Newton body index to de-duplicated MuJoCo body name
-            Returns:
+        Returns:
             int: Number of actuators added.
         """
         import mujoco
@@ -3888,7 +3888,7 @@ class SolverMuJoCo(SolverBase):
         site_mapping = {}
         # Store mapping from Newton joint index to MuJoCo joint name
         joint_mapping = {}
-        # Store mapping from Newton body index to Mujoco body name
+        # Store mapping from Newton body index to MuJoco body name
         body_name_mapping = {}
         # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
         newton_body_to_mocap_index = {}
@@ -4561,7 +4561,14 @@ class SolverMuJoCo(SolverBase):
             """Get body name, handling world body (-1) correctly."""
             if body_idx == -1:
                 return "world"
-            return body_name_mapping.get(body_idx, model.body_label[body_idx].replace("/", "_"))
+            target_name = body_name_mapping.get(body_idx, model.body_label[body_idx].replace("/", "_"))
+            if target_name is None:
+                if wp.config.verbose:
+                    print(
+                        f"Warning: MuJoCo equality constraint references body {body_idx} "
+                        "not present in the MuJoCo export."
+                    )
+            return target_name
 
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
