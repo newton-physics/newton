@@ -1070,6 +1070,71 @@ class SolverMuJoCo(SolverBase):
 
             return transform
 
+        def _resolve_inheritrange_as_ctrlrange(prim, context: dict[str, Any]) -> tuple[float, float] | None:
+            """Resolve mjc:inheritRange to a concrete (lower, upper) control range.
+
+            Reads the target joint's limits from the builder and computes the
+            control range Returns None if inheritRange is not authored, zero, or the target joint cannot be found.
+            """
+            inherit_attr = prim.GetAttribute("mjc:inheritRange")
+            if not inherit_attr or not inherit_attr.HasAuthoredValue():
+                return None
+            inheritrange = float(inherit_attr.Get())
+            if inheritrange <= 0:
+                return None
+            result = context.get("result")
+            b = context.get("builder")
+            if not result or not b:
+                return None
+            try:
+                target_path = resolve_actuator_target_path(prim)
+            except ValueError:
+                return None
+            path_joint_map = result.get("path_joint_map", {})
+            joint_idx = path_joint_map.get(target_path, -1)
+            if joint_idx < 0 or joint_idx >= len(b.joint_qd_start):
+                return None
+            dof_idx = b.joint_qd_start[joint_idx]
+            if dof_idx < 0 or dof_idx >= len(b.joint_limit_lower):
+                return None
+            lower = b.joint_limit_lower[dof_idx]
+            upper = b.joint_limit_upper[dof_idx]
+            if lower >= upper:
+                return None
+            mean = (upper + lower) / 2.0
+            radius = (upper - lower) / 2.0 * inheritrange
+            return (mean - radius, mean + radius)
+
+        def transform_ctrlrange(_: Any, context: dict[str, Any]) -> wp.vec2 | None:
+            """Parse mjc:ctrlRange, falling back to inheritrange-derived range."""
+            prim = context["prim"]
+            range_vals = get_usd_range_if_authored(prim, "mjc:ctrlRange")
+            if range_vals is not None:
+                return wp.vec2(range_vals[0], range_vals[1])
+            resolved = _resolve_inheritrange_as_ctrlrange(prim, context)
+            if resolved is not None:
+                return wp.vec2(float(resolved[0]), float(resolved[1]))
+            return None
+
+        def transform_has_ctrlrange(_: Any, context: dict[str, Any]) -> int:
+            """Return 1 when ctrlRange is authored or inheritrange resolves a range."""
+            prim = context["prim"]
+            if get_usd_range_if_authored(prim, "mjc:ctrlRange") is not None:
+                return 1
+            if _resolve_inheritrange_as_ctrlrange(prim, context) is not None:
+                return 1
+            return 0
+
+        def transform_ctrllimited(_: Any, context: dict[str, Any]) -> int:
+            """Parse mjc:ctrlLimited, defaulting to true when inheritrange resolves."""
+            prim = context["prim"]
+            limited_attr = prim.GetAttribute("mjc:ctrlLimited")
+            if limited_attr and limited_attr.HasAuthoredValue():
+                return parse_tristate(limited_attr.Get())
+            if _resolve_inheritrange_as_ctrlrange(prim, context) is not None:
+                return 1
+            return 2
+
         def resolve_prim_name(_: str, context: dict[str, Any]) -> str:
             """Return the USD prim path as the attribute value.
 
@@ -1201,17 +1266,6 @@ class SolverMuJoCo(SolverBase):
         # If target resolution is not possible yet (for example tendon target parsed later),
         # we preserve sentinel values and resolve deterministically in _init_actuators
         # using actuator_target_label.
-        def resolve_actuator_transmission_index(_: str, context: dict[str, Any]) -> wp.vec2i:
-            """Return sentinel to defer actuator target resolution to _init_actuators.
-
-            DOF indices from ``joint_dof_label`` during USD import may not include
-            internally-created joints (free joints for floating bases), causing an
-            offset between import-time and finalized DOF indices. Deferring
-            resolution to ``_init_actuators`` (via ``actuator_target_label``) uses
-            the finalized model where all DOFs are present.
-            """
-            return wp.vec2i(wp.int32(-1), wp.int32(-1))
-
         def resolve_actuator_transmission_type(_: str, context: dict[str, Any]) -> int:
             """Resolve transmission type for a USD actuator prim from its target path."""
             prim = context["prim"]
@@ -1232,8 +1286,6 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.vec2i,
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
-                usd_attribute_name="*",
-                usd_value_transformer=resolve_actuator_transmission_index,
             )
         )
 
@@ -1368,7 +1420,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="ctrllimited",
                 mjcf_value_transformer=parse_tristate,
                 usd_attribute_name="*",
-                usd_value_transformer=make_usd_limited_transformer("mjc:ctrlLimited", "mjc:ctrlRange"),
+                usd_value_transformer=transform_ctrllimited,
             )
         )
         builder.add_custom_attribute(
@@ -1395,7 +1447,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="ctrlrange",
                 usd_attribute_name="*",
-                usd_value_transformer=make_usd_range_transformer("mjc:ctrlRange"),
+                usd_value_transformer=transform_ctrlrange,
             )
         )
         builder.add_custom_attribute(
@@ -1409,7 +1461,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="ctrlrange",
                 mjcf_value_transformer=parse_presence,
                 usd_attribute_name="*",
-                usd_value_transformer=make_usd_has_range_transformer("mjc:ctrlRange"),
+                usd_value_transformer=transform_has_ctrlrange,
             )
         )
         builder.add_custom_attribute(
@@ -1437,18 +1489,6 @@ class SolverMuJoCo(SolverBase):
                 mjcf_value_transformer=parse_presence,
                 usd_attribute_name="*",
                 usd_value_transformer=make_usd_has_range_transformer("mjc:forceRange"),
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_inheritrange",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.float32,
-                default=0.0,
-                namespace="mujoco",
-                mjcf_attribute_name="inheritrange",
-                usd_attribute_name="mjc:inheritRange",
             )
         )
         builder.add_custom_attribute(
@@ -2657,10 +2697,6 @@ class SolverMuJoCo(SolverBase):
             if hasattr(mujoco_attrs, "actuator_biastype"):
                 biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
                 general_args["biastype"] = biastype
-            if hasattr(mujoco_attrs, "actuator_inheritrange"):
-                inheritrange = float(mujoco_attrs.actuator_inheritrange.numpy()[mujoco_act_idx])
-                general_args["inheritrange"] = inheritrange
-
             # Detect position/velocity actuator shortcuts. Use set_to_position/
             # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
             # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
@@ -2672,7 +2708,6 @@ class SolverMuJoCo(SolverBase):
                 bp = general_args.get("biasprm", [0, 0, 0])
                 # Position shortcut: biasprm = [0, -kp, -kv]
                 # A positive biasprm[2] indicates a dampratio placeholder
-                # (USD converter convention) rather than a resolved -kv.
                 if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
                     shortcut = "position"
                     shortcut_args["kp"] = kp
@@ -2707,12 +2742,8 @@ class SolverMuJoCo(SolverBase):
             act = spec.add_actuator(target=target_name, **general_args)
             if shortcut == "position":
                 act.set_to_position(**shortcut_args)
-                if "inheritrange" in general_args:
-                    act.inheritrange = general_args["inheritrange"]
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
-                if "inheritrange" in general_args:
-                    act.inheritrange = general_args["inheritrange"]
             elif dampratio > 0:
                 if wp.config.verbose:
                     print(
@@ -4004,6 +4035,7 @@ class SolverMuJoCo(SolverBase):
                     }
 
                     size = shape_size[shape]
+                    # Ensure size is valid for the site type
                     if np.any(size > 0.0):
                         nonzero = size[size > 0.0][0]
                         size[size == 0.0] = nonzero
