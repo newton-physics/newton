@@ -240,6 +240,22 @@ class ViewerRerun(ViewerBase):
             backface_culling (bool): Whether to enable backface culling (unused).
         """
         if hidden:
+            # Cache minimal mesh data so log_instances can reference template geometry
+            # created by _populate_geometry (which uses hidden=True for instance templates).
+            points_np = self._to_numpy(points).astype(np.float32)
+            indices_np = self._to_numpy(indices).astype(np.uint32)
+            if indices_np.ndim == 1:
+                indices_np = indices_np.reshape(-1, 3)
+            normals_np = self._to_numpy(normals) if normals is not None else None
+            self._meshes[name] = {
+                "points": points_np,
+                "indices": indices_np,
+                "normals": normals_np,
+                "uvs": None,
+                "texture_image": None,
+                "texture_buffer": None,
+                "texture_format": None,
+            }
             return
 
         assert isinstance(points, wp.array)
