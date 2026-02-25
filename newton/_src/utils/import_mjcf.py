@@ -1640,6 +1640,10 @@ def parse_mjcf(
                 builder.body_inv_inertia[link] = wp.inverse(I_m)
             else:
                 builder.body_inv_inertia[link] = I_m
+            # Lock inertia so subsequent shapes (e.g. from child <frame> elements)
+            # don't modify the explicitly specified mass/com/inertia.  This matches
+            # MuJoCo's behavior where <inertial> completely overrides geom contributions.
+            builder.body_lock_inertia[link] = True
 
         # -----------------
         # recurse

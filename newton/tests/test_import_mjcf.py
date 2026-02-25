@@ -2061,6 +2061,41 @@ class TestImportMjcfGeometry(unittest.TestCase):
             msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
         )
 
+    def test_inertial_locks_body_against_frame_geom_mass(self):
+        """Regression: explicit <inertial> must lock body mass/COM against later frame geoms.
+
+        When a body has an explicit <inertial> element, MuJoCo ignores all
+        geom-based mass contributions.  In Newton's MJCF importer, child
+        <frame> elements with geoms are processed *after* <inertial>, so
+        without locking body_lock_inertia, those frame geoms shift body_com
+        away from the correct value.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="inertial_lock_test">
+    <worldbody>
+        <body name="test_body" pos="0 0 1">
+            <freejoint/>
+            <inertial pos="0.1 0.2 0.3" mass="5.0" diaginertia="0.01 0.02 0.03"/>
+            <geom type="sphere" size="0.05" pos="0 0 0"/>
+            <frame pos="0.5 0.5 0.5">
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </frame>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_visuals=True)
+        body_idx = next(i for i, label in enumerate(builder.body_label) if label.endswith("test_body"))
+        com = builder.body_com[body_idx]
+        np.testing.assert_allclose(
+            [float(com[0]), float(com[1]), float(com[2])],
+            [0.1, 0.2, 0.3],
+            atol=1e-6,
+            err_msg="body_com must match <inertial> pos, not be shifted by frame geoms",
+        )
+        self.assertAlmostEqual(builder.body_mass[body_idx], 5.0, places=5)
+
 
 class TestImportMjcfSolverParams(unittest.TestCase):
     def test_solimplimit_parsing(self):
