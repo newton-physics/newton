@@ -167,11 +167,10 @@ def ray_intersect_ellipsoid_with_normal(
     if geom_hit.hit:
         ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction)
 
+        hit_local = ray_origin_local + geom_hit.distance * ray_direction_local
         inv_size = safe_div_vec3(wp.vec3f(1.0), size)
-        ray_origin_local = wp.cw_mul(ray_origin_local, inv_size)
-        ray_direction_local = wp.cw_mul(ray_direction_local, inv_size)
-
-        geom_hit.normal = ray_origin_local + geom_hit.distance * ray_direction_local
+        inv_size_sq = wp.cw_mul(inv_size, inv_size)
+        geom_hit.normal = wp.cw_mul(hit_local, inv_size_sq)
         geom_hit.normal = wp.transform_vector(transform, geom_hit.normal)
         geom_hit.normal = wp.normalize(geom_hit.normal)
     return geom_hit
@@ -286,6 +285,7 @@ def ray_intersect_mesh_no_transform(
     query = wp.mesh_query_ray(mesh_id, ray_origin, ray_direction, max_t)
     if query.result:
         if not enable_backface_culling or wp.dot(ray_direction, query.normal) < 0.0:
+            geom_hit.hit = True
             geom_hit.distance = query.t
             geom_hit.normal = wp.normalize(query.normal)
             return geom_hit, query.u, query.v, query.face
