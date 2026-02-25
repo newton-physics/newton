@@ -4179,14 +4179,22 @@ class SolverMuJoCo(SolverBase):
             if mass > 0.0:
                 body_kwargs["mass"] = mass
                 body_kwargs["ipos"] = body_com[child, :]
-                body_kwargs["fullinertia"] = [
-                    inertia[0, 0],
-                    inertia[1, 1],
-                    inertia[2, 2],
-                    inertia[0, 1],
-                    inertia[0, 2],
-                    inertia[1, 2],
-                ]
+                # Use diaginertia when off-diagonals are exactly zero to preserve
+                # MuJoCo's sameframe optimization (body_simple=1).  fullinertia
+                # triggers eigendecomposition that reorders eigenvalues and applies
+                # a permutation rotation, setting body_simple=0 even for diagonal
+                # matrices whose entries are not in descending order.
+                if inertia[0, 1] == 0.0 and inertia[0, 2] == 0.0 and inertia[1, 2] == 0.0:
+                    body_kwargs["inertia"] = [inertia[0, 0], inertia[1, 1], inertia[2, 2]]
+                else:
+                    body_kwargs["fullinertia"] = [
+                        inertia[0, 0],
+                        inertia[1, 1],
+                        inertia[2, 2],
+                        inertia[0, 1],
+                        inertia[0, 2],
+                        inertia[1, 2],
+                    ]
                 body_kwargs["explicitinertial"] = True
             body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
