@@ -71,6 +71,10 @@ def ray_intersect_plane(
     # map to local frame
     ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction)
 
+    # ray parallel to plane: no intersection
+    if wp.abs(ray_direction_local[2]) < EPSILON:
+        return -1.0
+
     # z-vec not pointing towards front face: reject
     if enable_backface_culling and ray_direction_local[2] > -EPSILON:
         return -1.0
@@ -322,7 +326,7 @@ def ray_intersect_mesh(
         if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
             geom_hit.hit = True
             geom_hit.distance = query.t
-            geom_hit.normal = wp.transform_vector(transform, wp.cw_mul(size, query.normal))
+            geom_hit.normal = wp.transform_vector(transform, wp.cw_mul(inv_size, query.normal))
             geom_hit.normal = wp.normalize(geom_hit.normal)
             return geom_hit, query.u, query.v, query.face
 
