@@ -143,7 +143,7 @@ class SensorContact:
     the sensing object and the counterpart. If no counterparts are specified, the sensor will read the net contact
     force for each sensing object.
 
-    If ``include_total`` is True, inserts a wildcard before all other counterparts, such that the first column of
+    If ``include_total`` is True, inserts a total before all other counterparts, such that the first column of
     the force matrix will read the total contact force for each sensing object.
 
     If ``prune_noncolliding`` is True, the force matrix will be sparse, containing only readings for shape pairs that
@@ -378,8 +378,8 @@ class SensorContact:
         # the mapping is ordered lexicographically by sorted shape pair
         for sensing_obj_idx, sensing_obj in enumerate(sensing_objs):
             if sensing_obj is TOTAL:
-                raise ValueError("Sensing object cannot be a wildcard")
-            sens_counterparts: list[tuple[int, cls.ObjectType]] = []
+                raise ValueError("Sensing object cannot be a total")
+            sens_counterparts: list[int] = []
             reading_idx = 0
             for counterpart_idx, counterpart in enumerate(counterparts):
                 if counterpart is TOTAL:
