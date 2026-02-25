@@ -1318,5 +1318,66 @@ class TestSelectionFixedTendons(unittest.TestCase):
         assert_np_equal(stiffness.numpy(), expected)
 
 
+class TestArticulationViewRequiresGrad(unittest.TestCase):
+    """Regression test: ArticulationView getters must preserve requires_grad from the source State."""
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+
+        b0 = builder.add_body(xform=wp.transform_identity())
+        builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+        b1 = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+        j0 = builder.add_joint_free(b0)
+        j1 = builder.add_joint_revolute(
+            parent=b0,
+            child=b1,
+            axis=newton.Axis.X,
+            parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
+            child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
+        )
+        builder.add_articulation([j0, j1])
+
+        cls.model = builder.finalize(requires_grad=False)
+        cls.view = ArticulationView(cls.model, "*", exclude_joint_types=[newton.JointType.FREE])
+
+    def test_get_link_velocities_preserves_grad(self):
+        state = self.model.state(requires_grad=True)
+        self.assertTrue(state.body_qd.requires_grad)
+        result = self.view.get_link_velocities(state)
+        self.assertTrue(result.requires_grad, "get_link_velocities lost requires_grad")
+
+    def test_get_link_transforms_preserves_grad(self):
+        state = self.model.state(requires_grad=True)
+        self.assertTrue(state.body_q.requires_grad)
+        result = self.view.get_link_transforms(state)
+        self.assertTrue(result.requires_grad, "get_link_transforms lost requires_grad")
+
+    def test_get_dof_positions_preserves_grad(self):
+        state = self.model.state(requires_grad=True)
+        self.assertTrue(state.joint_q.requires_grad)
+        result = self.view.get_dof_positions(state)
+        self.assertTrue(result.requires_grad, "get_dof_positions lost requires_grad")
+
+    def test_get_dof_velocities_preserves_grad(self):
+        state = self.model.state(requires_grad=True)
+        self.assertTrue(state.joint_qd.requires_grad)
+        result = self.view.get_dof_velocities(state)
+        self.assertTrue(result.requires_grad, "get_dof_velocities lost requires_grad")
+
+    def test_get_attribute_body_qd_preserves_grad(self):
+        state = self.model.state(requires_grad=True)
+        result = self.view.get_attribute("body_qd", state)
+        self.assertTrue(result.requires_grad, "get_attribute('body_qd') lost requires_grad")
+
+    def test_no_grad_state_returns_no_grad(self):
+        state = self.model.state(requires_grad=False)
+        self.assertFalse(state.body_qd.requires_grad)
+        result = self.view.get_link_velocities(state)
+        self.assertFalse(result.requires_grad)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

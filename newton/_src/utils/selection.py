@@ -1163,7 +1163,25 @@ class ArticulationView:
             result.ptr = None
             return result
 
-        # construct reshaped attribute array
+        # construct reshaped attribute array, preserving grad connectivity
+        source_grad = attrib.grad if attrib.requires_grad else None
+        grad_view = None
+        if source_grad is not None:
+            grad_stride = source_grad.strides[0]
+            grad_view = wp.array(
+                ptr=int(source_grad.ptr) + layout.offset * grad_stride,
+                dtype=source_grad.dtype,
+                shape=shape,
+                strides=(
+                    layout.stride_between_worlds * grad_stride,
+                    layout.stride_within_worlds * grad_stride,
+                    grad_stride,
+                    *source_grad.strides[1:],
+                ),
+                device=source_grad.device,
+                copy=False,
+            )
+
         attrib = wp.array(
             ptr=int(attrib.ptr) + layout.offset * value_stride,
             dtype=attrib.dtype,
@@ -1171,13 +1189,14 @@ class ArticulationView:
             strides=strides,
             device=attrib.device,
             copy=False,
+            grad=grad_view,
         )
 
         # apply selection (slices or indices)
         attrib = attrib[slices]
 
         if is_indexed:
-            # create a contiguous staging array
+            # create a contiguous staging array for non-grad reads
             attrib._staging_array = wp.empty_like(attrib)
         else:
             # fixup for empty slices - FIXME: this should be handled by Warp, above
@@ -1188,7 +1207,7 @@ class ArticulationView:
 
     def _get_attribute_values(self, name: str, source: Model | State | Control, _slice: slice | None = None):
         attrib = self._get_attribute_array(name, source, _slice=_slice)
-        if hasattr(attrib, "_staging_array"):
+        if hasattr(attrib, "_staging_array") and not attrib.requires_grad:
             wp.copy(attrib._staging_array, attrib)
             return attrib._staging_array
         else:
