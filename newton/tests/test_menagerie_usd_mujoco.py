@@ -386,6 +386,8 @@ def compare_geoms_subset(
 
     GEOM_PLANE = 0
     GEOM_SPHERE = 2
+    GEOM_CAPSULE = 3
+    GEOM_CYLINDER = 5
     GEOM_MESH = 7
 
     def _geom_sig(gtype, gsize):
@@ -393,6 +395,8 @@ def compare_geoms_subset(
             return (int(gtype), 0.0, 0.0, 0.0)
         elif gtype == GEOM_SPHERE:
             return (int(gtype), round(float(gsize[0]), 6), 0.0, 0.0)
+        elif gtype in (GEOM_CAPSULE, GEOM_CYLINDER):
+            return (int(gtype), round(float(gsize[0]), 6), round(float(gsize[1]), 6), 0.0)
         elif gtype == GEOM_MESH:
             return (int(gtype), 0.0, 0.0, 0.0)
         else:
