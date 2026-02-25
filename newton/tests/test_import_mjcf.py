@@ -273,15 +273,19 @@ class TestImportMjcfBasic(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content)
+        builder.add_mjcf(mjcf_content, parse_sites=True)
 
-        site_idx = next(i for i, flags in enumerate(builder.shape_flags) if flags & ShapeFlags.SITE)
+        site_indices = [i for i, flags in enumerate(builder.shape_flags) if flags & ShapeFlags.SITE]
+        self.assertEqual(len(site_indices), 1, "Expected exactly one parsed site shape")
+        site_idx = site_indices[0]
         newton_xyzw = np.array(builder.shape_transform[site_idx][3:7], dtype=np.float64)
 
         native_wxyz = np.array(mujoco.MjModel.from_xml_string(mjcf_content).site_quat[0], dtype=np.float64)
         native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
 
-        np.testing.assert_allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+        same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+        negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+        self.assertTrue(same or negated, "Site quaternion mismatch (accounting for q/-q equivalence)")
 
     def test_root_body_with_custom_xform(self):
         """Test 1: Root body with custom xform parameter (with rotation) → verify transform is properly applied."""
