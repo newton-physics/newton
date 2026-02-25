@@ -516,6 +516,24 @@ def parse_mjcf(
 
         return wp.types.vector(length, wp.float32)(out)
 
+    def quat_from_euler_mjcf(e: wp.vec3, i: int, j: int, k: int) -> wp.quat:
+        """Convert Euler angles using MuJoCo's axis-sequence convention."""
+        half_e = e * 0.5
+
+        cr = wp.cos(half_e[i])
+        sr = wp.sin(half_e[i])
+        cp = wp.cos(half_e[j])
+        sp = wp.sin(half_e[j])
+        cy = wp.cos(half_e[k])
+        sy = wp.sin(half_e[k])
+
+        return wp.quat(
+            (cy * sr * cp - sy * cr * sp),
+            (cy * cr * sp + sy * sr * cp),
+            (sy * cr * cp - cy * sr * sp),
+            (cy * cr * cp + sy * sr * sp),
+        )
+
     def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:
             wxyz = np.fromstring(attrib["quat"], sep=" ")
@@ -524,7 +542,8 @@ def parse_mjcf(
             euler = np.fromstring(attrib["euler"], sep=" ")
             if use_degrees:
                 euler *= np.pi / 180
-            return wp.quat_from_euler(wp.vec3(euler), *euler_seq)
+            # Keep MuJoCo-compatible semantics for non-XYZ sequences.
+            return quat_from_euler_mjcf(wp.vec3(euler), *euler_seq)
         if "axisangle" in attrib:
             axisangle = np.fromstring(attrib["axisangle"], sep=" ")
             angle = axisangle[3]
