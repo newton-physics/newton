@@ -1319,7 +1319,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
 
 class TestArticulationViewRequiresGrad(unittest.TestCase):
-    """Regression test: ArticulationView getters must preserve requires_grad from the source State."""
+    """ArticulationView getters must preserve requires_grad from the source State."""
 
     @classmethod
     def setUpClass(cls):
