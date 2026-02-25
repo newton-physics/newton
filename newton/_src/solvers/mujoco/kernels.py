@@ -1335,12 +1335,24 @@ def update_ctrl_direct_actuator_properties_kernel(
     mjc_actuator_to_newton_idx: wp.array(dtype=wp.int32),
     newton_actuator_gainprm: wp.array(dtype=vec10),
     newton_actuator_biasprm: wp.array(dtype=vec10),
+    newton_actuator_dynprm: wp.array(dtype=vec10),
+    newton_actuator_ctrlrange: wp.array(dtype=wp.vec2),
+    newton_actuator_forcerange: wp.array(dtype=wp.vec2),
+    newton_actuator_actrange: wp.array(dtype=wp.vec2),
+    newton_actuator_gear: wp.array(dtype=wp.spatial_vector),
+    newton_actuator_cranklength: wp.array(dtype=float),
     actuators_per_world: wp.int32,
     # outputs
     actuator_gain: wp.array2d(dtype=vec10),
     actuator_bias: wp.array2d(dtype=vec10),
+    actuator_dynprm: wp.array2d(dtype=vec10),
+    actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
+    actuator_forcerange: wp.array2d(dtype=wp.vec2),
+    actuator_actrange: wp.array2d(dtype=wp.vec2),
+    actuator_gear: wp.array2d(dtype=wp.spatial_vector),
+    actuator_cranklength: wp.array2d(dtype=float),
 ):
-    """Update MuJoCo actuator gains/biases for CTRL_DIRECT actuators from Newton custom attributes.
+    """Update MuJoCo actuator properties for CTRL_DIRECT actuators from Newton custom attributes.
 
     Only updates actuators where mjc_actuator_ctrl_source == CTRL_DIRECT.
     Uses mjc_actuator_to_newton_idx to map from MuJoCo actuator index to Newton's
@@ -1351,6 +1363,12 @@ def update_ctrl_direct_actuator_properties_kernel(
         mjc_actuator_to_newton_idx: Index into Newton's mujoco:actuator arrays
         newton_actuator_gainprm: Newton's model.mujoco.actuator_gainprm
         newton_actuator_biasprm: Newton's model.mujoco.actuator_biasprm
+        newton_actuator_dynprm: Newton's model.mujoco.actuator_dynprm
+        newton_actuator_ctrlrange: Newton's model.mujoco.actuator_ctrlrange
+        newton_actuator_forcerange: Newton's model.mujoco.actuator_forcerange
+        newton_actuator_actrange: Newton's model.mujoco.actuator_actrange
+        newton_actuator_gear: Newton's model.mujoco.actuator_gear
+        newton_actuator_cranklength: Newton's model.mujoco.actuator_cranklength
         actuators_per_world: Number of actuators per world in Newton model
     """
     world, actuator = wp.tid()
@@ -1365,14 +1383,13 @@ def update_ctrl_direct_actuator_properties_kernel(
 
     world_newton_idx = world * actuators_per_world + newton_idx
     actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
-
-    bias = newton_actuator_biasprm[world_newton_idx]
-    # biasprm[2] is resolved by the MuJoCo compiler from dampratio via mj_setConst.
-    # _sync_compiled_actuator_params writes the resolved value to world 0's Newton
-    # custom attrs, but not to other worlds. Always read [2] from world 0 so all
-    # worlds get the compiler-resolved damping value.
-    bias[2] = newton_actuator_biasprm[newton_idx][2]
-    actuator_bias[world, actuator] = bias
+    actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
+    actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
+    actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
+    actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
+    actuator_actrange[world, actuator] = newton_actuator_actrange[world_newton_idx]
+    actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
+    actuator_cranklength[world, actuator] = newton_actuator_cranklength[world_newton_idx]
 
 
 @wp.kernel
