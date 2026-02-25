@@ -1753,7 +1753,7 @@ def parse_mjcf(
             body2_name = sanitize_name(weld.attrib.get("body2", "worldbody")) if weld.attrib.get("body2") else None
             anchor = weld.attrib.get("anchor", "0 0 0")
             relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
-            torquescale = weld.attrib.get("torquescale")
+            torquescale = parse_float(weld.attrib, "torquescale", 1.0)
             site1 = weld.attrib.get("site1")
             site2 = weld.attrib.get("site2")
 
