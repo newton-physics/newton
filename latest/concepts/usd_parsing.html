@@ -1358,6 +1358,57 @@ Besides the programmatic way of defining custom attributes through the <a class=
 <p><strong>Namespace Isolation:</strong></p>
 <p>Attributes with the same name in different namespaces are completely independent and stored separately. This allows the same attribute name to be used for different purposes across namespaces. In the example above, <code class="docutils literal notranslate"><span class="pre">mass_scale</span></code> appears in both the default namespace (as a model attribute) and in <code class="docutils literal notranslate"><span class="pre">namespace_a</span></code> (as a state attribute). These are treated as completely separate attributes with independent values, assignments, and storage locations.</p>
 </section>
+<section id="limitations">
+<h2>5. Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
+<p>Importing USD files where many (&gt; 30) mesh colliders are under the same rigid body
+can result in a crash in <code class="docutils literal notranslate"><span class="pre">UsdPhysics.LoadUsdPhysicsFromRange</span></code>.  This is a known
+thread-safety issue in OpenUSD and will be fixed in a future release of
+<code class="docutils literal notranslate"><span class="pre">usd-core</span></code>.  It can be worked around by setting the work concurrency limit to 1
+before <code class="docutils literal notranslate"><span class="pre">pxr</span></code> initializes its thread pool.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Setting the concurrency limit to 1 disables multi-threaded USD processing
+globally and may degrade performance of other OpenUSD workloads in the same
+process.</p>
+</div>
+<p>Choose <strong>one</strong> of the two approaches below — do not combine them.
+<code class="docutils literal notranslate"><span class="pre">PXR_WORK_THREAD_LIMIT</span></code> is evaluated once when <code class="docutils literal notranslate"><span class="pre">pxr</span></code> is first imported and
+cached for the lifetime of the process; after that point,
+<code class="docutils literal notranslate"><span class="pre">Work.SetConcurrencyLimit()</span></code> cannot override it.  Conversely, if the env var
+<em>is</em> set, calling <code class="docutils literal notranslate"><span class="pre">Work.SetConcurrencyLimit()</span></code> has no effect.</p>
+<p><strong>Option A — environment variable (before any USD import):</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;PXR_WORK_THREAD_LIMIT&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;1&quot;</span>  <span class="c1"># must precede any pxr import</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">ModelBuilder</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">&quot;rigid_body_with_many_mesh_colliders.usda&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Option B —</strong> <code class="docutils literal notranslate"><span class="pre">Work.SetConcurrencyLimit</span></code> <strong>(only when the env var is not set):</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">pxr</span><span class="w"> </span><span class="kn">import</span> <span class="n">Work</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+
+<span class="k">if</span> <span class="s2">&quot;PXR_WORK_THREAD_LIMIT&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">:</span>
+    <span class="n">Work</span><span class="o">.</span><span class="n">SetConcurrencyLimit</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">ModelBuilder</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">&quot;rigid_body_with_many_mesh_colliders.usda&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<div class="admonition seealso">
+<p class="admonition-title">See also</p>
+<p><a class="reference external" href="https://openusd.org/dev/api/thread_limits_8h.html">threadLimits.h</a> (API reference) and <a class="reference external" href="https://github.com/PixarAnimationStudios/OpenUSD/blob/release/pxr/base/work/threadLimits.cpp">threadLimits.cpp</a> (implementation)
+document the precedence rules between the environment variable and the API.</p>
+</div>
+</section>
 </section>
 
 
@@ -1390,6 +1441,7 @@ Besides the programmatic way of defining custom attributes through the <a class=
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#priority-based-resolution">2. Priority-Based Resolution</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-specific-attribute-collection">3. Solver-Specific Attribute Collection</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-attribute-framework">4. Custom Attribute Framework</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">5. Limitations</a></li>
 </ul>
   </nav></div>
 
