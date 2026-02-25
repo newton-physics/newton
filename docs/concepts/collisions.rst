@@ -83,7 +83,7 @@ Collision shapes are attached to rigid bodies. Each shape has:
 - **Body index** (``shape_body``): The rigid body this shape is attached to. Use ``body=-1`` for static/world-fixed shapes.
 - **Local transform** (``shape_transform``): Position and orientation relative to the body frame.
 - **Scale** (``shape_scale``): 3D scale factors applied to the shape geometry.
-- **Thickness** (``shape_thickness``): Surface thickness used in contact generation (see :ref:`Shape Configuration`).
+- **Margin** (``shape_margin``): Surface margin used in contact generation (see :ref:`Shape Configuration`).
 - **Source geometry** (``shape_source``): Reference to the underlying geometry object (e.g., :class:`~newton.Mesh`).
 
 During collision detection, shapes are transformed to world space using their parent body's pose:
@@ -615,10 +615,10 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
 
    * - Parameter
      - Description
-   * - ``thickness``
-     - Surface thickness. Pairwise: summed (``t_a + t_b``). Creates visible gap at rest. Essential for thin shells and cloth to improve simulation stability and reduce self-intersections. Default: 1e-5.
-   * - ``contact_margin``
-     - AABB expansion for early contact detection. Pairwise: max. The margin only affects contact generation; effective rest distance is not affected and is only governed by ``thickness``. Increasing the margin can help avoid tunneling of fast-moving objects because contacts are detected at a greater distance between objects. Must be >= ``thickness``. Default: None (uses ``builder.rigid_contact_margin``, which defaults to 0.1).
+   * - ``margin``
+     - Surface offset used by narrow phase. Pairwise effect is additive (``m_a + m_b``): contacts are evaluated against the signed distance to the margin-shifted surfaces, so resting separation is ``m_a + m_b``. Helps thin shells/cloth stability and reduces self-intersections. Default: 1e-5.
+   * - ``gap``
+     - Additional detection threshold. Pairwise effect is additive (``g_a + g_b``). Broad phase expands each shape AABB by ``(margin + gap)`` per shape; narrow phase then keeps a candidate contact when ``d <= g_a + g_b`` (with ``d`` measured relative to margin-shifted surfaces). Increasing gap detects contacts earlier and helps reduce tunneling. Default: None (uses ``builder.rigid_gap``, which defaults to 0.1).
    * - ``is_solid``
      - Whether shape is solid or hollow. Affects inertia and SDF sign. Default: True.
    * - ``is_hydroelastic``
@@ -627,9 +627,9 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
      - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
 
 .. note::
-   **Contact generation**: A contact is created when ``d < max(margin_a, margin_b)``, where 
-   ``d = surface_distance - (thickness_a + thickness_b)``. The solver enforces ``d >= 0``, 
-   so objects at rest settle with surfaces separated by ``thickness_a + thickness_b``.
+   **Contact generation**: A contact is created when ``d <= (gap_a + gap_b)``, where
+   ``d = surface_distance - (margin_a + margin_b)``. The solver enforces ``d >= 0``, 
+   so objects at rest settle with surfaces separated by ``margin_a + margin_b``.
 
 **SDF configuration (primitive generation defaults):**
 
@@ -652,15 +652,15 @@ Example (mesh SDF workflow):
 
     cfg = builder.ShapeConfig(
         collision_group=-1,           # Collide with everything
-        thickness=0.001,              # 1mm thickness
-        contact_margin=0.01,          # 1cm margin
+        margin=0.001,                 # 1mm margin
+        gap=0.01,                     # 1cm detection gap
     )
     my_mesh.build_sdf(max_resolution=64)
     builder.add_shape_mesh(body, mesh=my_mesh, cfg=cfg)
 
 **Builder default margin:**
 
-The builder's ``rigid_contact_margin`` (default 0.1) applies to shapes without explicit ``contact_margin``. Alternatively, use ``builder.default_shape_cfg.contact_margin``.
+The builder's ``rigid_gap`` (default 0.1) applies to shapes without explicit ``gap``. Alternatively, use ``builder.default_shape_cfg.gap``.
 
 .. _Common Patterns:
 
@@ -758,8 +758,8 @@ and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for
      - Contact point offsets in body-local space.
    * - ``rigid_contact_normal``
      - Contact normal direction (from shape0 to shape1).
-   * - ``rigid_contact_thickness0``, ``rigid_contact_thickness1``
-     - Shape thickness at each contact point.
+   * - ``rigid_contact_margin0``, ``rigid_contact_margin1``
+     - Shape margin offsets at each contact point.
 
 **Soft contacts (particle-shape):**
 
@@ -996,7 +996,7 @@ Custom collision properties can be authored in USD:
         custom float newton:contact_kd = 1000.0
         custom float newton:contact_kf = 1000.0
         custom float newton:contact_ka = 0.0
-        custom float newton:contact_thickness = 0.00001
+        custom float newton:margin = 0.00001
     }
 
 See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
@@ -1046,8 +1046,8 @@ See Also
 
 - :attr:`~newton.Model.shape_collision_group` - Per-shape collision groups
 - :attr:`~newton.Model.shape_world` - Per-shape world indices
-- :attr:`~newton.Model.shape_contact_margin` - Per-shape contact margins
-- :attr:`~newton.Model.shape_thickness` - Per-shape thickness values
+- :attr:`~newton.Model.shape_gap` - Per-shape contact gaps (detection threshold)
+- :attr:`~newton.Model.shape_margin` - Per-shape margin values (signed distance padding)
 
 **Related documentation:**
 

@@ -2632,24 +2632,24 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated geom_gap mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
-    def test_geom_margin_from_thickness(self):
-        """Test shape_thickness to geom_margin conversion and runtime updates.
+    def test_geom_margin_from_shape_margin(self):
+        """Verify shape_margin to geom_margin conversion and runtime updates.
 
-        Verifies that shape_thickness [m] values are correctly propagated to
-        geom_margin [m] during solver initialization and after runtime updates
-        via notify_model_changed across multiple worlds.
+        Confirms that shape_margin [m] values are propagated to geom_margin [m]
+        during solver initialization and after runtime updates via
+        notify_model_changed across multiple worlds.
         """
         num_worlds = 2
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
-        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, thickness=0.005)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, margin=0.005)
 
         body1 = template_builder.add_link(mass=0.1)
         template_builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
         joint1 = template_builder.add_joint_free(child=body1)
 
         body2 = template_builder.add_link(mass=0.1)
-        shape_cfg2 = newton.ModelBuilder.ShapeConfig(density=1000.0, thickness=0.01)
+        shape_cfg2 = newton.ModelBuilder.ShapeConfig(density=1000.0, margin=0.01)
         template_builder.add_shape_sphere(body=body2, radius=0.1, cfg=shape_cfg2)
         joint2 = template_builder.add_joint_revolute(parent=body1, child=body2, axis=(0.0, 0.0, 1.0))
         template_builder.add_articulation([joint1, joint2])
@@ -2663,8 +2663,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         to_newton = solver.mjc_geom_to_newton_shape.numpy()
         num_geoms = solver.mj_model.ngeom
 
-        # Verify initial conversion: geom_margin should match shape_thickness
-        shape_thickness = model.shape_thickness.numpy()
+        # Verify initial conversion: geom_margin should match shape_margin
+        shape_margin = model.shape_margin.numpy()
         geom_margin = solver.mjw_model.geom_margin.numpy()
         tested_count = 0
         for world_idx in range(model.world_count):
@@ -2675,15 +2675,15 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 tested_count += 1
                 self.assertAlmostEqual(
                     float(geom_margin[world_idx, geom_idx]),
-                    float(shape_thickness[shape_idx]),
+                    float(shape_margin[shape_idx]),
                     places=5,
                     msg=f"Initial geom_margin mismatch for shape {shape_idx} in world {world_idx}",
                 )
         self.assertGreater(tested_count, 0)
 
-        # Update thickness values at runtime
-        new_thickness = np.array([0.02 + i * 0.005 for i in range(model.shape_count)], dtype=np.float32)
-        model.shape_thickness.assign(wp.array(new_thickness, dtype=wp.float32, device=model.device))
+        # Update margin values at runtime
+        new_margin = np.array([0.02 + i * 0.005 for i in range(model.shape_count)], dtype=np.float32)
+        model.shape_margin.assign(wp.array(new_margin, dtype=wp.float32, device=model.device))
         solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
 
         # Verify runtime update
@@ -2695,7 +2695,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     continue
                 self.assertAlmostEqual(
                     float(updated_margin[world_idx, geom_idx]),
-                    float(new_thickness[shape_idx]),
+                    float(new_margin[shape_idx]),
                     places=5,
                     msg=f"Updated geom_margin mismatch for shape {shape_idx} in world {world_idx}",
                 )

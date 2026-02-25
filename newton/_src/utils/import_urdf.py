@@ -29,7 +29,7 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import Mesh
 from ..sim import ModelBuilder
-from ..sim.joints import ActuatorMode
+from ..sim.joints import JointTargetMode
 from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
 from .mesh import load_meshes_from_file
@@ -170,11 +170,11 @@ def parse_urdf(
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
-            (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-            If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
-            :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
-            damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
-            (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
+            (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
+            If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
+            :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
+            damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
+            (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -750,7 +750,9 @@ def parse_urdf(
 
         # URDF doesn't contain gain information (only damping, no stiffness), so we can't infer
         # actuator mode. Default to POSITION.
-        actuator_mode = ActuatorMode.POSITION_VELOCITY if force_position_velocity_actuation else ActuatorMode.POSITION
+        actuator_mode = (
+            JointTargetMode.POSITION_VELOCITY if force_position_velocity_actuation else JointTargetMode.POSITION
+        )
 
         created_joint_idx: int
         if joint["type"] == "revolute" or joint["type"] == "continuous":
