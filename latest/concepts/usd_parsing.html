@@ -903,13 +903,41 @@ can be skipped entirely.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">time_step</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1.0</span> <span class="pre">/</span> <span class="pre">timeStepsPerSecond</span></code></p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">physxArticulation:enabledSelfCollisions</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">self_collision_enabled</span></code> (per articulation)</p></td>
+<td><p>Direct mapping</p></td>
+</tr>
 </tbody>
 </table>
 </div>
+<p><strong>Newton articulation remapping:</strong></p>
+<p>On articulation root prims (with <code class="docutils literal notranslate"><span class="pre">PhysicsArticulationRootAPI</span></code> or <code class="docutils literal notranslate"><span class="pre">NewtonArticulationRootAPI</span></code>), the following is resolved:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id2">
+<caption><span class="caption-text">Newton Articulation Remapping</span><a class="headerlink" href="#id2" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 30.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>Newton Attribute</strong></p></th>
+<th class="head"><p><strong>Resolved key</strong></p></th>
+<th class="head"><p><strong>Transformation</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">newton:selfCollisionEnabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">self_collision_enabled</span></code></p></td>
+<td><p>Direct mapping</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The parser resolves <code class="docutils literal notranslate"><span class="pre">self_collision_enabled</span></code> from either <code class="docutils literal notranslate"><span class="pre">newton:selfCollisionEnabled</span></code> or <code class="docutils literal notranslate"><span class="pre">physxArticulation:enabledSelfCollisions</span></code> (in resolver priority order). The <code class="docutils literal notranslate"><span class="pre">enable_self_collisions</span></code> argument to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a> is used as the default when neither attribute is authored.</p>
 <p><strong>MuJoCo Attribute Remapping Examples:</strong></p>
 <p>Similarly, MuJoCo attributes can be remapped to Newton. Note that <code class="docutils literal notranslate"><span class="pre">mjc:solref</span></code> requires a more complex transformation to convert MuJoCo’s solver reference parameters into stiffness and damping coefficients:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id2">
-<caption><span class="caption-text">MuJoCo Attribute Remapping</span><a class="headerlink" href="#id2" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id3">
+<caption><span class="caption-text">MuJoCo Attribute Remapping</span><a class="headerlink" href="#id3" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 30.0%" />
 <col style="width: 30.0%" />
@@ -1028,8 +1056,8 @@ can be skipped entirely.</p>
 </ul>
 <p><strong>Solver-Specific Attribute Namespaces:</strong></p>
 <p>Each solver has its own namespace prefixes for solver-specific attributes. The table below shows the namespace conventions and provides examples of attributes that would be collected from each solver:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id3">
-<caption><span class="caption-text">Solver-Specific Namespaces</span><a class="headerlink" href="#id3" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id4">
+<caption><span class="caption-text">Solver-Specific Namespaces</span><a class="headerlink" href="#id4" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 20.0%" />
 <col style="width: 40.0%" />
@@ -1116,8 +1144,8 @@ Besides the programmatic way of defining custom attributes through the <a class=
 </ul>
 <p><strong>Supported Data Types:</strong></p>
 <p>The system automatically infers data types from authored USD values. The following table shows the mapping between USD types and Warp types used internally by Newton:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id4">
-<caption><span class="caption-text">Custom Attribute Data Types</span><a class="headerlink" href="#id4" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id5">
+<caption><span class="caption-text">Custom Attribute Data Types</span><a class="headerlink" href="#id5" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 25.0%" />
 <col style="width: 25.0%" />
@@ -1163,8 +1191,8 @@ Besides the programmatic way of defining custom attributes through the <a class=
 </div>
 <p><strong>Assignment Types:</strong></p>
 <p>The <code class="docutils literal notranslate"><span class="pre">assignment</span></code> field in the declaration determines where the custom attribute data will be stored. The following table describes each assignment type and its typical use cases:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id5">
-<caption><span class="caption-text">Custom Attribute Assignments</span><a class="headerlink" href="#id5" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id6">
+<caption><span class="caption-text">Custom Attribute Assignments</span><a class="headerlink" href="#id6" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 15.0%" />
 <col style="width: 25.0%" />
