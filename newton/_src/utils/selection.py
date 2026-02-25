@@ -1207,7 +1207,7 @@ class ArticulationView:
 
     def _get_attribute_values(self, name: str, source: Model | State | Control, _slice: slice | None = None):
         attrib = self._get_attribute_array(name, source, _slice=_slice)
-        if hasattr(attrib, "_staging_array") and not attrib.requires_grad:
+        if hasattr(attrib, "_staging_array") and not getattr(attrib, "requires_grad", False):
             wp.copy(attrib._staging_array, attrib)
             return attrib._staging_array
         else:
