@@ -820,6 +820,18 @@
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.orthonormal_basis.html#newton.math.orthonormal_basis" title="newton.math.orthonormal_basis"><code class="xref py py-obj docutils literal notranslate"><span class="pre">orthonormal_basis</span></code></a>(n)</p></td>
 <td><p>Build an orthonormal basis from a normal vector.</p></td>
 </tr>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.quat_between_axes.html#newton.math.quat_between_axes" title="newton.math.quat_between_axes"><code class="xref py py-obj docutils literal notranslate"><span class="pre">quat_between_axes</span></code></a>(*axes)</p></td>
+<td><p>Compute the rotation between a sequence of axes.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.quat_between_vectors_robust.html#newton.math.quat_between_vectors_robust" title="newton.math.quat_between_vectors_robust"><code class="xref py py-obj docutils literal notranslate"><span class="pre">quat_between_vectors_robust</span></code></a>(from_vec, to_vec)</p></td>
+<td><p>Robustly compute the quaternion that rotates <code class="docutils literal notranslate"><span class="pre">from_vec</span></code> to <code class="docutils literal notranslate"><span class="pre">to_vec</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.quat_decompose.html#newton.math.quat_decompose" title="newton.math.quat_decompose"><code class="xref py py-obj docutils literal notranslate"><span class="pre">quat_decompose</span></code></a>(q)</p></td>
+<td><p>Decompose a quaternion into wrapped XYZ Euler coordinates.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.quat_velocity.html#newton.math.quat_velocity" title="newton.math.quat_velocity"><code class="xref py py-obj docutils literal notranslate"><span class="pre">quat_velocity</span></code></a>(q_now, q_prev, dt)</p></td>
+<td><p>Approximate angular velocity from successive world quaternions (world frame).</p></td>
+</tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.safe_div.html#newton.math.safe_div" title="newton.math.safe_div"><code class="xref py py-obj docutils literal notranslate"><span class="pre">safe_div</span></code></a>(x, y[, eps])</p></td>
 <td><p>Safe division that avoids division-by-zero.</p></td>
 </tr>
@@ -828,6 +840,12 @@
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.smooth_min.html#newton.math.smooth_min" title="newton.math.smooth_min"><code class="xref py py-obj docutils literal notranslate"><span class="pre">smooth_min</span></code></a>(a, b, eps)</p></td>
 <td><p>Compute a smooth approximation of the minimum of two values.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.transform_twist.html#newton.math.transform_twist" title="newton.math.transform_twist"><code class="xref py py-obj docutils literal notranslate"><span class="pre">transform_twist</span></code></a>(t, x)</p></td>
+<td><p>Transform a spatial twist between coordinate frames.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.transform_wrench.html#newton.math.transform_wrench" title="newton.math.transform_wrench"><code class="xref py py-obj docutils literal notranslate"><span class="pre">transform_wrench</span></code></a>(t, x)</p></td>
+<td><p>Transform a spatial wrench between coordinate frames.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.vec_abs.html#newton.math.vec_abs" title="newton.math.vec_abs"><code class="xref py py-obj docutils literal notranslate"><span class="pre">vec_abs</span></code></a>(a)</p></td>
 <td><p>Compute the elementwise absolute value of a 3D vector.</p></td>
@@ -849,6 +867,9 @@
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.vec_min.html#newton.math.vec_min" title="newton.math.vec_min"><code class="xref py py-obj docutils literal notranslate"><span class="pre">vec_min</span></code></a>(a, b)</p></td>
 <td><p>Compute the elementwise minimum of two 3D vectors.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.velocity_at_point.html#newton.math.velocity_at_point" title="newton.math.velocity_at_point"><code class="xref py py-obj docutils literal notranslate"><span class="pre">velocity_at_point</span></code></a>(qd, r)</p></td>
+<td><p>Evaluate the linear velocity of an offset point on a rigid body.</p></td>
 </tr>
 </tbody>
 </table>
