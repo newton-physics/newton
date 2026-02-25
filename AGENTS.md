@@ -20,8 +20,18 @@
 - **Prefer nested classes when self-contained.**
   - If a helper type or an enum is only meaningful inside one parent class and doesn't need a public identity, define it as a nested class instead of creating a new top-level class/module.
 - **Follow PEP 8 for Python code.**
+- **Use modern Python type-hint syntax.**
+  - Prefer PEP 604 unions: `x | y`, `x | None`. Do not use `typing.Union` or `typing.Optional`.
+- **Use specific type hints for public interfaces.**
+  - For Warp arrays, annotate concrete dtypes (e.g., `wp.array(dtype=wp.vec3)`) rather than generic `object`.
+  - Prefer consistent parameter names across base/override APIs (e.g., `xforms`, `scales`, `colors`, `materials`).
 - **Use Google-style docstrings.**
   - Write clear, concise docstrings that explain what the function does, its parameters, and its return value.
+  - Keep argument/return types in function annotations, not inline in docstrings.
+  - In `Args:` entries, use `name: description` (not `name (Type): description`).
+  - Use Sphinx cross-reference roles for symbol references (e.g. `:class:`, `:meth:`, `:attr:`, `:paramref:`), but keep targets as short as possible.
+  - Within the same class/module, prefer short local references (e.g. `:meth:\`log_mesh\``, `:attr:\`model\``) over fully qualified paths.
+  - If qualification is needed, prefer public API paths (e.g. `newton.Mesh`) and do not use `newton._src` in Sphinx role targets.
 - **State SI units for all physical quantities in docstrings.**
   - Use inline `[unit]` notation, e.g. `"""Particle positions [m], shape [particle_count, 3], float."""`.
   - For joint-type-dependent quantities use `[m or rad, depending on joint type]`.
@@ -29,6 +39,7 @@
   - For compound arrays list per-component units, e.g. `[0] k_mu [Pa], [1] k_lambda [Pa], ...`.
   - When a parameter's interpretation varies across solvers, document each solver's convention instead of a single unit.
   - Skip non-physical fields (indices, keys, counts, flags).
+  - This rule applies to **public API docstrings only**, not test docstrings.
 - **Keep the documentation up-to-date.**
   - When adding new files or symbols that are part of the public-facing API, make sure to keep the auto-generated documentation updated by running `docs/generate_api.py`.
 - **Add examples to README.md**
@@ -129,14 +140,6 @@ uvx --with virtualenv asv run --launch-method spawn main^^!
 Follow conventional commit message practices.
 
 - **Use feature branches**: All development work should be on branches named `<username>/feature-desc` (e.g., `jdoe/docs-versioning`). Do not commit directly to `main`.
-- **CRITICAL: Run pre-commit hooks BEFORE committing**:
-  1. Make your changes
-  2. Run `uvx pre-commit run -a`
-  3. If files are modified by pre-commit (formatting, etc.), stage them with `git add`
-  4. Run `uvx pre-commit run -a` again to verify all checks pass
-  5. Then commit with `git commit`
-  - Consider installing hooks with `uvx pre-commit install` to automate this
-  - **Never commit first and run pre-commit after** - this requires amending commits and creates messy history
 - Keep commits focused and atomic—one logical change per commit.
 - Reference related issues in commit messages when applicable.
 - **When iterating on PR feedback**, prefer adding new commits over amending existing ones. This avoids force-pushing and lets the reviewer easily verify each change request was addressed.

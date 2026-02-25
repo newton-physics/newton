@@ -21,7 +21,6 @@ Utilities for working with the Universal Scene Description (USD) format.
 # USD utility functions
 # ==================================================================================
 from ._src.usd.utils import (
-    from_gfquat,
     get_attribute,
     get_attributes_in_namespace,
     get_custom_attribute_declarations,
@@ -32,13 +31,13 @@ from ._src.usd.utils import (
     get_quat,
     get_scale,
     get_transform,
+    has_applied_api_schema,
     has_attribute,
     type_to_warp,
     value_to_warp,
 )
 
 __all__ = [
-    "from_gfquat",
     "get_attribute",
     "get_attributes_in_namespace",
     "get_custom_attribute_declarations",
@@ -49,6 +48,7 @@ __all__ = [
     "get_quat",
     "get_scale",
     "get_transform",
+    "has_applied_api_schema",
     "has_attribute",
     "type_to_warp",
     "value_to_warp",

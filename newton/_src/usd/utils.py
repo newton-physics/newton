@@ -81,9 +81,13 @@ def get_attributes_in_namespace(prim: Usd.Prim, namespace: str) -> dict[str, Any
         A dictionary of attributes in the namespace mapping from attribute name to value.
     """
     out: dict[str, Any] = {}
-    for attr in prim.GetAuthoredPropertiesInNamespace(namespace):
-        if attr.IsValid() and attr.HasAuthoredValue():
-            out[attr.GetName()] = attr.Get()
+    for prop in prim.GetAuthoredPropertiesInNamespace(namespace):
+        if not prop.IsValid():
+            continue
+        if hasattr(prop, "GetTargets"):
+            continue
+        if hasattr(prop, "HasAuthoredValue") and prop.HasAuthoredValue():
+            out[prop.GetName()] = prop.Get()
     return out
 
 
@@ -100,6 +104,39 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
     """
     attr = prim.GetAttribute(name)
     return attr and attr.HasAuthoredValue()
+
+
+def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
+    """
+    Check if a USD prim has an applied API schema, even if the schema is not
+    registered with USD's schema registry.
+
+    For registered schemas (e.g. ``UsdPhysics.RigidBodyAPI``), ``prim.HasAPI()``
+    is sufficient. However, non-core schemas that may be in draft state or not
+    yet registered (e.g. MuJoCo-specific schemas like ``MjcSiteAPI``) will not
+    be found by ``HasAPI()``. This helper falls back to inspecting the raw
+    ``apiSchemas`` metadata on the prim.
+
+    Args:
+        prim: The USD prim to query.
+        schema_name: The API schema name to check for (e.g. ``"MjcSiteAPI"``).
+
+    Returns:
+        True if the schema is applied to the prim, False otherwise.
+    """
+    if prim.HasAPI(schema_name):
+        return True
+
+    schemas_listop = prim.GetMetadata("apiSchemas")
+    if schemas_listop:
+        all_schemas = (
+            list(schemas_listop.prependedItems)
+            + list(schemas_listop.appendedItems)
+            + list(schemas_listop.explicitItems)
+        )
+        return schema_name in all_schemas
+
+    return False
 
 
 @overload
@@ -158,19 +195,6 @@ def get_float_with_fallback(prims: Iterable[Usd.Prim], name: str, default: float
     return ret
 
 
-def from_gfquat(gfquat: Gf.Quat) -> wp.quat:
-    """
-    Convert a USD Gf.Quat to a normalized Warp quaternion.
-
-    Args:
-        gfquat: A USD Gf.Quat quaternion.
-
-    Returns:
-        A normalized Warp quaternion.
-    """
-    return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
-
-
 @overload
 def get_quat(prim: Usd.Prim, name: str, default: wp.quat) -> wp.quat: ...
 
@@ -196,7 +220,7 @@ def get_quat(prim: Usd.Prim, name: str, default: wp.quat | None = None) -> wp.qu
     if not attr or not attr.HasAuthoredValue():
         return default
     val = attr.Get()
-    quat = from_gfquat(val)
+    quat = value_to_warp(val)
     l = wp.length(quat)
     if np.isfinite(l) and l > 0.0:
         return quat
@@ -345,7 +369,7 @@ def value_to_warp(v: Any, warp_dtype: Any | None = None) -> Any:
         The converted value.
     """
     if warp_dtype is wp.quat or (hasattr(v, "real") and hasattr(v, "imaginary")):
-        return from_gfquat(v)
+        return wp.normalize(wp.quat(*v.imaginary, v.real))
     if warp_dtype is not None:
         # assume the type is a vector, matrix, or scalar
         if hasattr(v, "__len__"):

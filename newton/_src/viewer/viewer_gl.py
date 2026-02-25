@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import ctypes
 import time
+from collections.abc import Callable
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -24,7 +26,7 @@ import warp as wp
 import newton as nt
 from newton.selection import ArticulationView
 
-from ..core.types import override
+from ..core.types import nparray, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
@@ -177,15 +179,21 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
-    def __init__(self, width=1920, height=1080, vsync=False, headless=False):
+    def __init__(
+        self,
+        width: int = 1920,
+        height: int = 1080,
+        vsync: bool = False,
+        headless: bool = False,
+    ):
         """
         Initialize the OpenGL viewer and UI.
 
         Args:
-            width (int): Window width in pixels.
-            height (int): Window height in pixels.
-            vsync (bool): Enable vertical sync.
-            headless (bool): Run in headless mode (no window).
+            width: Window width in pixels.
+            height: Window height in pixels.
+            vsync: Enable vertical sync.
+            headless: Run in headless mode (no window).
         """
         super().__init__()
 
@@ -281,7 +289,11 @@ class ViewerGL(ViewerBase):
             gl.glDeleteBuffers(1, pbo_id)
             self._pbo = None
 
-    def register_ui_callback(self, callback, position="side"):
+    def register_ui_callback(
+        self,
+        callback: Callable[[Any], None],
+        position: Literal["side", "stats", "free"] = "side",
+    ):
         """
         Register a UI callback to be rendered during the UI phase.
 
@@ -319,14 +331,20 @@ class ViewerGL(ViewerBase):
     @override
     def log_gizmo(
         self,
-        name,
-        transform,
+        name: str,
+        transform: wp.transform,
     ):
+        """Log or update a transform gizmo for the current frame.
+
+        Args:
+            name: Unique gizmo path/name.
+            transform: Gizmo world transform.
+        """
         # Store for this frame; call this every frame you want it drawn/active
         self._gizmo_log[name] = transform
 
     @override
-    def set_model(self, model, max_worlds: int | None = None):
+    def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
         """
         Set the Newton model to visualize.
 
@@ -466,27 +484,27 @@ class ViewerGL(ViewerBase):
     @override
     def log_mesh(
         self,
-        name,
-        points: wp.array,
-        indices: wp.array,
-        normals: wp.array | None = None,
-        uvs: wp.array | None = None,
+        name: str,
+        points: wp.array(dtype=wp.vec3),
+        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
+        normals: wp.array(dtype=wp.vec3) | None = None,
+        uvs: wp.array(dtype=wp.vec2) | None = None,
         texture: np.ndarray | str | None = None,
-        hidden=False,
-        backface_culling=True,
+        hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """
         Log a mesh for rendering.
 
         Args:
-            name (str): Unique name for the mesh.
-            points (wp.array): Vertex positions.
-            indices (wp.array): Triangle indices.
-            normals (wp.array, optional): Vertex normals.
-            uvs (wp.array, optional): Vertex UVs.
-            texture (np.ndarray | str, optional): Texture path/URL or image array (H, W, C).
-            hidden (bool): Whether the mesh is hidden.
-            backface_culling (bool): Enable backface culling.
+            name: Unique name for the mesh.
+            points: Vertex positions.
+            indices: Triangle indices.
+            normals: Vertex normals.
+            uvs: Vertex UVs.
+            texture: Texture path/URL or image array (H, W, C).
+            hidden: Whether the mesh is hidden.
+            backface_culling: Enable backface culling.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -503,13 +521,22 @@ class ViewerGL(ViewerBase):
         self.objects[name].backface_culling = backface_culling
 
     @override
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
         """
         Log a batch of mesh instances for rendering.
 
         Args:
-            name (str): Unique name for the instancer.
-            mesh (str): Name of the base mesh.
+            name: Unique name for the instancer.
+            mesh: Name of the base mesh.
             xforms: Array of transforms.
             scales: Array of scales.
             colors: Array of colors.
@@ -545,7 +572,16 @@ class ViewerGL(ViewerBase):
         self.objects[name].hidden = hidden
 
     @override
-    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_capsules(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
         """
         Render capsules using instanced cylinder bodies + instanced sphere end caps.
 
@@ -553,13 +589,13 @@ class ViewerGL(ViewerBase):
         prototype meshes (unit cylinder + unit sphere) and applying per-instance transforms/scales.
 
         Args:
-            name (str): Unique name for the capsule instancer group.
+            name: Unique name for the capsule instancer group.
             mesh: Capsule prototype mesh path from ViewerBase (unused in this backend).
             xforms: Capsule instance transforms (wp.transform), length N.
             scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
             colors: Capsule instance colors (wp.vec3), length N or None (no update).
             materials: Capsule instance materials (wp.vec4), length N or None (no update).
-            hidden (bool): Whether the instances are hidden.
+            hidden: Whether the instances are hidden.
         """
         # Render capsules via instanced cylinder body + instanced sphere caps.
         sphere_mesh = "/geometry/_capsule_instancer/sphere"
@@ -630,23 +666,25 @@ class ViewerGL(ViewerBase):
     @override
     def log_lines(
         self,
-        name,
-        starts: wp.array,
-        ends: wp.array,
-        colors,
+        name: str,
+        starts: wp.array(dtype=wp.vec3) | None,
+        ends: wp.array(dtype=wp.vec3) | None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ),
         width: float = 0.01,
-        hidden=False,
+        hidden: bool = False,
     ):
         """
         Log line data for rendering.
 
         Args:
-            name (str): Unique identifier for the line batch.
-            starts (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
-            ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
+            name: Unique identifier for the line batch.
+            starts: Array of line start positions (shape: [N, 3]) or None for empty.
+            ends: Array of line end positions (shape: [N, 3]) or None for empty.
             colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
-            width: The width of the lines (float)
-            hidden (bool): Whether the lines are initially hidden.
+            width: The width of the lines.
+            hidden: Whether the lines are initially hidden.
         """
         # Handle empty logs by resetting the LinesGL object
         if starts is None or ends is None or colors is None:
@@ -686,55 +724,91 @@ class ViewerGL(ViewerBase):
         self.lines[name].update(starts, ends, colors)
 
     @override
-    def log_points(self, name, points, radii, colors, hidden=False):
+    def log_points(
+        self,
+        name: str,
+        points: wp.array(dtype=wp.vec3) | None,
+        radii: wp.array(dtype=wp.float32) | float | None = None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ) = None,
+        hidden: bool = False,
+    ):
         """
         Log a batch of points for rendering as spheres.
 
         Args:
-            name (str): Unique name for the point batch.
+            name: Unique name for the point batch.
             points: Array of point positions.
             radii: Array of point radius values.
             colors: Array of point colors.
-            hidden (bool): Whether the points are hidden.
+            hidden: Whether the points are hidden.
         """
+        if points is None:
+            if name in self.objects:
+                self.objects[name].hidden = True
+            return
+
         if self._point_mesh is None:
             self._create_point_mesh()
 
         num_points = len(points)
+        object_recreated = False
         if name not in self.objects:
             # Start with a reasonable default.
             initial_capacity = max(num_points, 256)
             self.objects[name] = MeshInstancerGL(initial_capacity, self._point_mesh)
+            object_recreated = True
         elif num_points > self.objects[name].num_instances:
             old = self.objects[name]
             new_capacity = max(num_points, old.num_instances * 2)
             self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
+            object_recreated = True
+
+        if radii is None:
+            radii = wp.full(num_points, 0.1, dtype=wp.float32, device=self.device)
+
+        # If a point object is first created/recreated and no colors are provided,
+        # initialize to white to avoid uninitialized instance color buffers.
+        if colors is None and object_recreated:
+            colors = wp.full(num_points, wp.vec3(1.0, 1.0, 1.0), dtype=wp.vec3, device=self.device)
 
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
     @override
-    def log_array(self, name, array):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
         """
         Log a generic array for visualization (not implemented).
+
+        Args:
+            name: Unique path/name for the array signal.
+            array: Array data to visualize.
         """
         pass
 
     @override
-    def log_scalar(self, name, value):
+    def log_scalar(self, name: str, value: int | float | bool | np.number):
         """
         Log a scalar value for visualization (not implemented).
+
+        Args:
+            name: Unique path/name for the scalar signal.
+            value: Scalar value to visualize.
         """
         pass
 
     @override
-    def log_state(self, state):
+    def log_state(self, state: nt.State):
         """
         Log the current simulation state for rendering.
 
         For shape instances on CUDA, uses a batched path: 2 kernel launches +
         1 D2H copy to a shared pinned buffer, then uploads slices per instancer.
         Everything else (capsules, SDF, particles, joints, …) uses the standard path.
+
+        Args:
+            state: Current simulation state for all rendered bodies/shapes.
         """
         self._last_state = state
 
@@ -846,7 +920,7 @@ class ViewerGL(ViewerBase):
         self.log_lines("picking_line", starts, ends, colors, hidden=False)
 
     @override
-    def begin_frame(self, time):
+    def begin_frame(self, time: float):
         """
         Begin a new frame (calls parent implementation).
 
@@ -871,7 +945,7 @@ class ViewerGL(ViewerBase):
         self._update()
 
     @override
-    def apply_forces(self, state):
+    def apply_forces(self, state: nt.State):
         """
         Apply viewer-driven forces (picking, wind) to the model.
 
@@ -927,10 +1001,10 @@ class ViewerGL(ViewerBase):
         to transfer pixel data entirely on the GPU, avoiding expensive CPU-GPU transfers.
 
         Args:
-            target_image (wp.array, optional):
+            target_image:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
-            render_ui (bool): Whether to render the UI.
+            render_ui: Whether to render the UI.
 
         Returns:
             wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
@@ -1047,12 +1121,12 @@ class ViewerGL(ViewerBase):
         Set the vsync state.
 
         Args:
-            enabled (bool): Enable or disable vsync.
+            enabled: Enable or disable vsync.
         """
         self.renderer.set_vsync(enabled)
 
     @override
-    def is_key_down(self, key):
+    def is_key_down(self, key: str | int) -> bool:
         """
         Check if a key is currently pressed.
 
@@ -1111,13 +1185,15 @@ class ViewerGL(ViewerBase):
 
     # events
 
-    def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
+    def on_mouse_scroll(self, x: float, y: float, scroll_x: float, scroll_y: float):
         """
         Handle mouse scroll for zooming (FOV adjustment).
 
         Args:
-            x, y: Mouse position.
-            scroll_x, scroll_y: Scroll deltas.
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
+            scroll_x: Horizontal scroll delta.
+            scroll_y: Vertical scroll delta.
         """
         if self.ui and self.ui.is_capturing():
             return
@@ -1136,12 +1212,13 @@ class ViewerGL(ViewerBase):
         scale_y = fb_h / win_h
         return float(x) * scale_x, float(y) * scale_y
 
-    def on_mouse_press(self, x, y, button, modifiers):
+    def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
         """
         Handle mouse press events (object picking).
 
         Args:
-            x, y: Mouse position.
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
@@ -1157,24 +1234,35 @@ class ViewerGL(ViewerBase):
             if self._last_state is not None:
                 self.picking.pick(self._last_state, ray_start, ray_dir)
 
-    def on_mouse_release(self, x, y, button, modifiers):
+    def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
         """
         Handle mouse release events to stop dragging.
 
         Args:
-            x, y: Mouse position.
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
             button: Mouse button released.
             modifiers: Modifier keys.
         """
         self.picking.release()
 
-    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+    def on_mouse_drag(
+        self,
+        x: float,
+        y: float,
+        dx: float,
+        dy: float,
+        buttons: int,
+        modifiers: int,
+    ):
         """
         Handle mouse drag events for camera and picking.
 
         Args:
-            x, y: Mouse position.
-            dx, dy: Mouse movement deltas.
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
+            dx: Mouse delta along X since previous event.
+            dy: Mouse delta along Y since previous event.
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
@@ -1200,13 +1288,19 @@ class ViewerGL(ViewerBase):
             if self.picking.is_picking():
                 self.picking.update(ray_start, ray_dir)
 
-    def on_mouse_motion(self, x, y, dx, dy):
+    def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
         """
         Handle mouse motion events (not used).
+
+        Args:
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
+            dx: Mouse delta along X since previous event.
+            dy: Mouse delta along Y since previous event.
         """
         pass
 
-    def on_key_press(self, symbol, modifiers):
+    def on_key_press(self, symbol: int, modifiers: int):
         """
         Handle key press events for UI and simulation control.
 
@@ -1234,9 +1328,13 @@ class ViewerGL(ViewerBase):
             # Exit with Escape key
             self.renderer.close()
 
-    def on_key_release(self, symbol, modifiers):
+    def on_key_release(self, symbol: int, modifiers: int):
         """
         Handle key release events (not used).
+
+        Args:
+            symbol: Released key code.
+            modifiers: Active modifier bitmask for this event.
         """
         pass
 
@@ -1300,7 +1398,7 @@ class ViewerGL(ViewerBase):
         Update the camera position and orientation based on user input.
 
         Args:
-            dt (float): Time delta since last update.
+            dt: Time delta since last update.
         """
         if self.ui and self.ui.is_capturing():
             return
@@ -1350,13 +1448,13 @@ class ViewerGL(ViewerBase):
         dv = type(self.camera.pos)(*self._cam_vel)
         self.camera.pos += dv * dt
 
-    def on_resize(self, width, height):
+    def on_resize(self, width: int, height: int):
         """
         Handle window resize events.
 
         Args:
-            width (int): New window width.
-            height (int): New window height.
+            width: New window width.
+            height: New window height.
         """
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
@@ -1848,8 +1946,8 @@ class ViewerGL(ViewerBase):
         Render the values of the selected attribute in the selection panel.
 
         Args:
-            view (ArticulationView): The current articulation view.
-            attribute_name (str): The attribute to display.
+            view: The current articulation view.
+            attribute_name: The attribute to display.
         """
         imgui = self.ui.imgui
         state = self._selection_ui_state
@@ -1945,8 +2043,8 @@ class ViewerGL(ViewerBase):
         Get the names associated with an attribute (joint names, link names, etc.).
 
         Args:
-            view (ArticulationView): The current articulation view.
-            attribute_name (str): The attribute to get names for.
+            view: The current articulation view.
+            attribute_name: The attribute to get names for.
 
         Returns:
             list or None: List of names or None if not available.
@@ -1966,15 +2064,15 @@ class ViewerGL(ViewerBase):
         except Exception:
             return None
 
-    def _render_value_sliders(self, values, names, attribute_name: str, state):
+    def _render_value_sliders(self, values: np.ndarray, names: list[str], attribute_name: str, state: dict):
         """
         Render values as individual sliders for each DOF.
 
         Args:
             values: Array of values to display.
             names: List of names for each value.
-            attribute_name (str): The attribute being displayed.
-            state (dict): UI state dictionary.
+            attribute_name: The attribute being displayed.
+            state: UI state dictionary.
         """
         imgui = self.ui.imgui
 

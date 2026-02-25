@@ -24,7 +24,7 @@ class Contacts:
     """
     Stores contact information for rigid and soft body collisions, to be consumed by a solver.
 
-    This class manages buffers for contact data such as positions, normals, thicknesses, and shape indices
+    This class manages buffers for contact data such as positions, normals, margins, and shape indices
     for both rigid-rigid and soft-rigid contacts. The buffers are allocated on the specified device and can
     optionally require gradients for differentiable simulation.
 
@@ -117,10 +117,10 @@ class Contacts:
             """Contact offset on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Contact normal direction [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
-            self.rigid_contact_thickness0 = wp.zeros(rigid_contact_max, dtype=wp.float32)
-            """Contact thickness for shape 0 [m], shape (rigid_contact_max,), dtype float."""
-            self.rigid_contact_thickness1 = wp.zeros(rigid_contact_max, dtype=wp.float32)
-            """Contact thickness for shape 1 [m], shape (rigid_contact_max,), dtype float."""
+            self.rigid_contact_margin0 = wp.zeros(rigid_contact_max, dtype=wp.float32)
+            """Contact margin for shape 0 [m], shape (rigid_contact_max,), dtype float."""
+            self.rigid_contact_margin1 = wp.zeros(rigid_contact_max, dtype=wp.float32)
+            """Contact margin for shape 1 [m], shape (rigid_contact_max,), dtype float."""
             self.rigid_contact_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
             # to be filled by the solver (currently unused)
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3)

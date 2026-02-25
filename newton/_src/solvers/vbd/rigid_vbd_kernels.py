@@ -1115,7 +1115,6 @@ def forward_step_rigid_bodies(
     body_inv_inertia: wp.array(dtype=wp.mat33),
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
-    body_q_prev: wp.array(dtype=wp.transform),
     body_inertia_q: wp.array(dtype=wp.transform),
 ):
     """
@@ -1132,8 +1131,6 @@ def forward_step_rigid_bodies(
         body_inv_inertia: Inverse inertia tensors (local body frame).
         body_q: Body transforms (input: start-of-step pose, output: integrated pose).
         body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
-        body_q_prev: Previous body transforms (output, world frame, snapshot of ``body_q``
-            before integration for velocity update, damping, and friction).
         body_inertia_q: Inertial target body transforms for the AVBD solve (output).
     """
     tid = wp.tid()
@@ -1519,8 +1516,8 @@ def accumulate_body_body_contacts_per_body(
     rigid_contact_point0: wp.array(dtype=wp.vec3),
     rigid_contact_point1: wp.array(dtype=wp.vec3),
     rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_thickness0: wp.array(dtype=float),
-    rigid_contact_thickness1: wp.array(dtype=float),
+    rigid_contact_margin0: wp.array(dtype=float),
+    rigid_contact_margin1: wp.array(dtype=float),
     shape_body: wp.array(dtype=wp.int32),
     body_contact_buffer_pre_alloc: int,
     body_contact_counts: wp.array(dtype=wp.int32),
@@ -1576,7 +1573,7 @@ def accumulate_body_body_contacts_per_body(
         contact_normal = -rigid_contact_normal[contact_idx]
         cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
         cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
-        thickness = rigid_contact_thickness0[contact_idx] + rigid_contact_thickness1[contact_idx]
+        thickness = rigid_contact_margin0[contact_idx] + rigid_contact_margin1[contact_idx]
         dist = wp.dot(contact_normal, cp1_world - cp0_world)
         penetration = thickness - dist
 
@@ -1635,6 +1632,128 @@ def accumulate_body_body_contacts_per_body(
     wp.atomic_add(body_hessian_ll, body_id, h_ll_acc)
     wp.atomic_add(body_hessian_al, body_id, h_al_acc)
     wp.atomic_add(body_hessian_aa, body_id, h_aa_acc)
+
+
+@wp.kernel
+def compute_rigid_contact_forces(
+    dt: float,
+    # Contact data
+    rigid_contact_count: wp.array(dtype=int),
+    rigid_contact_shape0: wp.array(dtype=int),
+    rigid_contact_shape1: wp.array(dtype=int),
+    rigid_contact_point0: wp.array(dtype=wp.vec3),
+    rigid_contact_point1: wp.array(dtype=wp.vec3),
+    rigid_contact_normal: wp.array(dtype=wp.vec3),
+    rigid_contact_thickness0: wp.array(dtype=float),
+    rigid_contact_thickness1: wp.array(dtype=float),
+    # Model/state
+    shape_body: wp.array(dtype=wp.int32),
+    body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
+    body_com: wp.array(dtype=wp.vec3),
+    # Contact material properties (per-contact)
+    contact_penalty_k: wp.array(dtype=float),
+    contact_material_kd: wp.array(dtype=float),
+    contact_material_mu: wp.array(dtype=float),
+    friction_epsilon: float,
+    # Outputs (length = rigid_contact_max)
+    out_body0: wp.array(dtype=wp.int32),
+    out_body1: wp.array(dtype=wp.int32),
+    out_point0_world: wp.array(dtype=wp.vec3),
+    out_point1_world: wp.array(dtype=wp.vec3),
+    out_force_on_body1: wp.array(dtype=wp.vec3),
+):
+    """Compute per-contact forces in world space, matching the AVBD rigid contact model.
+
+    Produces a **contact-specific** force vector (world frame) for each rigid contact.
+
+    Conventions:
+      - The computed force is the force **on body1** (shape1/body1) in world frame.
+      - The force on body0 is `-out_force_on_body1`.
+      - World-space contact points for both shapes are provided for wrench construction.
+    """
+    contact_idx = wp.tid()
+
+    rc = rigid_contact_count[0]
+    if contact_idx >= rc:
+        # Fill sentinel values for inactive entries (useful when launching with rigid_contact_max)
+        out_body0[contact_idx] = wp.int32(-1)
+        out_body1[contact_idx] = wp.int32(-1)
+        out_point0_world[contact_idx] = wp.vec3(0.0)
+        out_point1_world[contact_idx] = wp.vec3(0.0)
+        out_force_on_body1[contact_idx] = wp.vec3(0.0)
+        return
+
+    s0 = rigid_contact_shape0[contact_idx]
+    s1 = rigid_contact_shape1[contact_idx]
+    if s0 < 0 or s1 < 0:
+        out_body0[contact_idx] = wp.int32(-1)
+        out_body1[contact_idx] = wp.int32(-1)
+        out_point0_world[contact_idx] = wp.vec3(0.0)
+        out_point1_world[contact_idx] = wp.vec3(0.0)
+        out_force_on_body1[contact_idx] = wp.vec3(0.0)
+        return
+
+    b0 = shape_body[s0]
+    b1 = shape_body[s1]
+    out_body0[contact_idx] = b0
+    out_body1[contact_idx] = b1
+
+    cp0_local = rigid_contact_point0[contact_idx]
+    cp1_local = rigid_contact_point1[contact_idx]
+
+    # Solver convention: contact_normal = -rigid_contact_normal
+    contact_normal = -rigid_contact_normal[contact_idx]
+
+    # Static/kinematic shapes use shape_body == -1. In that case, contact points are already in world
+    # frame for that side and must not index into body_q[-1].
+    cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
+    cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
+    out_point0_world[contact_idx] = cp0_world
+    out_point1_world[contact_idx] = cp1_world
+
+    thickness = rigid_contact_thickness0[contact_idx] + rigid_contact_thickness1[contact_idx]
+    dist = wp.dot(contact_normal, cp1_world - cp0_world)
+    penetration = thickness - dist
+
+    if penetration <= _SMALL_LENGTH_EPS:
+        out_force_on_body1[contact_idx] = wp.vec3(0.0)
+        return
+
+    contact_ke = contact_penalty_k[contact_idx]
+    contact_kd = contact_material_kd[contact_idx]
+    contact_mu = contact_material_mu[contact_idx]
+
+    # Reuse the exact same contact model used by AVBD accumulation
+    (
+        _force_0,
+        _torque_0,
+        _h_ll_0,
+        _h_al_0,
+        _h_aa_0,
+        force_1,
+        _torque_1,
+        _h_ll_1,
+        _h_al_1,
+        _h_aa_1,
+    ) = evaluate_rigid_contact_from_collision(
+        int(b0),
+        int(b1),
+        body_q,
+        body_q_prev,
+        body_com,
+        cp0_local,
+        cp1_local,
+        contact_normal,
+        penetration,
+        contact_ke,
+        contact_kd,
+        contact_mu,
+        friction_epsilon,
+        dt,
+    )
+
+    out_force_on_body1[contact_idx] = force_1
 
 
 @wp.kernel
@@ -2212,8 +2331,8 @@ def update_duals_body_body_contacts(
     rigid_contact_point0: wp.array(dtype=wp.vec3),
     rigid_contact_point1: wp.array(dtype=wp.vec3),
     rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_thickness0: wp.array(dtype=float),
-    rigid_contact_thickness1: wp.array(dtype=float),
+    rigid_contact_margin0: wp.array(dtype=float),
+    rigid_contact_margin1: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     contact_material_ke: wp.array(dtype=float),
@@ -2231,7 +2350,7 @@ def update_duals_body_body_contacts(
         rigid_contact_shape0/1: Shape ids for each contact pair
         rigid_contact_point0/1: Contact points in local shape frames
         rigid_contact_normal: Contact normals (pointing from shape0 to shape1)
-        rigid_contact_thickness0/1: Per-shape thickness (for SDF/capsule padding)
+        rigid_contact_margin0/1: Per-shape margin (for SDF/capsule padding)
         shape_body: Map from shape id to body id (-1 if kinematic/ground)
         body_q: Current body transforms
         contact_material_ke: Per-contact target stiffness
@@ -2271,7 +2390,7 @@ def update_duals_body_body_contacts(
     # dist = dot(n, p0 - p1); positive implies separation along normal
     d = p0_world - p1_world
     dist = wp.dot(rigid_contact_normal[idx], d)
-    thickness_total = rigid_contact_thickness0[idx] + rigid_contact_thickness1[idx]
+    thickness_total = rigid_contact_margin0[idx] + rigid_contact_margin1[idx]
     penetration = wp.max(0.0, thickness_total - dist)
 
     # Update penalty: k_new = min(k + beta * |C|, stiffness)
