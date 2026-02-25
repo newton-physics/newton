@@ -531,3 +531,38 @@ After importing the USD file with the custom attributes shown above, they become
 **Namespace Isolation:**
 
 Attributes with the same name in different namespaces are completely independent and stored separately. This allows the same attribute name to be used for different purposes across namespaces. In the example above, ``mass_scale`` appears in both the default namespace (as a model attribute) and in ``namespace_a`` (as a state attribute). These are treated as completely separate attributes with independent values, assignments, and storage locations.
+
+5. Limitations
+----------------------------------------
+
+Importing USD files where many (> 30) mesh colliders are under the same rigid body
+can result in a crash in ``UsdPhysics.LoadUsdPhysicsFromRange``.  This is a known
+thread-safety issue in OpenUSD and will be fixed in a future release of
+``usd-core``.  It can be worked around by setting the work concurrency limit to 1
+before ``pxr`` initializes its thread pool.
+
+.. note::
+
+   Setting the concurrency limit to 1 disables multi-threaded USD processing
+   globally and may degrade performance of other OpenUSD workloads in the same
+   process.
+
+.. code-block:: python
+
+   # Limit USD worker threads to 1 to avoid a thread-safety crash in
+   # UsdPhysics.LoadUsdPhysicsFromRange. Must run before any other USD code.
+   try:
+       from pxr import Work
+       Work.SetConcurrencyLimit(1)
+   except Exception:
+       import os
+       os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
+
+   from newton import ModelBuilder
+
+   builder = ModelBuilder()
+
+   # Import the USD file with many mesh colliders under the same rigid body
+   result = builder.add_usd(
+       source="rigid_body_with_many_mesh_colliders.usda",
+   )
