@@ -675,6 +675,110 @@ class TestImportMjcfGeometry(unittest.TestCase):
         self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
         self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
 
+    def test_explicit_geom_mass(self):
+        """Regression test: explicit geom mass attributes are correctly handled.
+
+        When a geom has an explicit 'mass' attribute in MJCF, it should:
+        1. Contribute that exact mass to the body (not density-based)
+        2. Compute correct inertia tensor for the explicit mass
+        3. Not use density-based mass calculation for that geom
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="explicit_mass_test">
+    <worldbody>
+        <!-- Body with explicit mass on sphere geom -->
+        <body name="body1" pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="2.5"/>
+        </body>
+
+        <!-- Body with explicit mass on box geom -->
+        <body name="body2" pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+
+        <!-- Body with explicit mass on cylinder geom -->
+        <body name="body3" pos="2 0 1">
+            <freejoint/>
+            <geom type="cylinder" size="0.05 0.1" mass="0.5"/>
+        </body>
+
+        <!-- Body with explicit mass on capsule geom -->
+        <body name="body4" pos="3 0 1">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" mass="0.75"/>
+        </body>
+
+        <!-- Body with multiple geoms, some with explicit mass -->
+        <body name="body5" pos="4 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.05" mass="0.3"/>
+            <geom type="box" size="0.05 0.05 0.05" mass="0.2"/>
+        </body>
+
+        <!-- Body with mixed explicit mass and density-based mass -->
+        <!-- Explicit mass should win even when a conflicting density is specified -->
+        <body name="body6" pos="5 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.5" density="5000"/>
+            <geom type="box" size="0.1 0.1 0.1" density="1000"/>
+        </body>
+
+        <!-- Body with mass="0" — should contribute zero mass and zero inertia -->
+        <body name="body7" pos="6 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Get body masses
+        body_mass = model.body_mass.numpy()
+
+        # Bodies with freejoint start at index 0 (no separate world body)
+        # Body 0: single sphere with mass=2.5
+        self.assertAlmostEqual(body_mass[0], 2.5, places=6, msg="Body 0 mass should be 2.5")
+
+        # Body 1: single box with mass=1.0
+        self.assertAlmostEqual(body_mass[1], 1.0, places=6, msg="Body 1 mass should be 1.0")
+
+        # Body 2: single cylinder with mass=0.5
+        self.assertAlmostEqual(body_mass[2], 0.5, places=6, msg="Body 2 mass should be 0.5")
+
+        # Body 3: single capsule with mass=0.75
+        self.assertAlmostEqual(body_mass[3], 0.75, places=6, msg="Body 3 mass should be 0.75")
+
+        # Body 4: two geoms with explicit masses (0.3 + 0.2 = 0.5)
+        self.assertAlmostEqual(body_mass[4], 0.5, places=6, msg="Body 4 mass should be 0.5 (sum of explicit masses)")
+
+        # Body 5: one explicit mass (1.5) + one density-based mass
+        # Box volume = 8 * 0.1 * 0.1 * 0.1 = 0.008 m³
+        # Density-based mass = 1000 * 0.008 = 8.0 kg
+        # Total = 1.5 + 8.0 = 9.5 kg
+        expected_body5_mass = 1.5 + (1000.0 * 8.0 * 0.1 * 0.1 * 0.1)
+        self.assertAlmostEqual(
+            body_mass[5], expected_body5_mass, places=4, msg="Body 5 mass should combine explicit and density-based"
+        )
+
+        # Body 6: mass="0" — zero mass zeroes density, m_computed guard skips inertia → no contribution
+        self.assertAlmostEqual(body_mass[6], 0.0, places=6, msg="Body 6 (mass=0) should have zero mass")
+
+        # Verify that bodies with explicit mass have non-zero inertia
+        # (inertia should be computed from the explicit mass, not zero)
+        body_inertia = model.body_inertia.numpy()
+        for i in range(5):  # Bodies 0-4 have only explicit mass
+            inertia_trace = np.trace(body_inertia[i])
+            self.assertGreater(inertia_trace, 0.0, msg=f"Body {i} should have non-zero inertia from explicit mass")
+
+        # Body 6: mass="0" should also have zero inertia
+        self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
+
     def test_solreflimit_parsing(self):
         """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
