@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import os
 import sys
-from abc import abstractmethod
+from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -29,8 +30,9 @@ from ..core.types import MAXVAL, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
-class ViewerBase:
+class ViewerBase(ABC):
     def __init__(self):
+        """Initialize shared viewer state and rendering caches."""
         self.time = 0.0
 
         self.device = wp.get_device()
@@ -45,7 +47,7 @@ class ViewerBase:
 
         # cache for geometry created via log_shapes()
         # maps from geometry hash -> mesh path
-        self._geometry_cache: dict[str, str] = {}
+        self._geometry_cache: dict[int, str] = {}
 
         # line vertices for contact visualization
         self._contact_points0 = None
@@ -76,6 +78,7 @@ class ViewerBase:
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
         self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
+        """Whether to show the hydroelastic contact surface wireframe."""
         self.picking_enabled = True  # enable interactive picking via mouse
 
         # cache for hydroelastic contact surface line rendering (lazily allocated)
@@ -84,7 +87,7 @@ class ViewerBase:
         self._hydro_surface_line_colors: wp.array | None = None
 
         self.model_shape_color: wp.array(dtype=wp.vec3) = None
-        """Color of shapes created from ``self.model``, shape (model.shape_count,)"""
+        """Color of shapes created from :attr:`model`, shape ``(model.shape_count,)``."""
         # map from shape index to the slot in the contiguous shape color array ``self.model_shape_color``
         self._shape_to_slot: nparray | None = None
         # map from shape index -> Instances
@@ -92,7 +95,7 @@ class ViewerBase:
 
         # cache for isomeshes (computed on demand for collision shapes with SDF volumes)
         # keyed by volume.id (uint64) to deduplicate when multiple shapes share the same SDF volume
-        self._isomesh_cache: dict[int, object] = {}
+        self._isomesh_cache: dict[int, newton.Mesh | None] = {}
 
         # SDF isomesh instances -- created on-demand for collision visualization
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
@@ -102,12 +105,22 @@ class ViewerBase:
         self._shape_sdf_index_host: nparray | None = None
 
     def is_running(self) -> bool:
+        """Report whether the viewer backend should keep running.
+
+        Returns:
+            bool: True while the viewer should continue rendering.
+        """
         return True
 
     def is_paused(self) -> bool:
+        """Report whether the viewer is currently paused.
+
+        Returns:
+            bool: True when simulation stepping is paused.
+        """
         return False
 
-    def is_key_down(self, key) -> bool:
+    def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 
         Args:
@@ -118,7 +131,7 @@ class ViewerBase:
         """
         return False
 
-    def set_model(self, model: newton.Model, max_worlds: int | None = None):
+    def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
         """
         Set the model to be visualized.
 
@@ -158,7 +171,7 @@ class ViewerBase:
             return self.model.world_count
         return min(self.max_worlds, self.model.world_count)
 
-    def _get_shape_isomesh(self, shape_idx: int):
+    def _get_shape_isomesh(self, shape_idx: int) -> newton.Mesh | None:
         """Get the isomesh for a collision shape with an SDF volume.
 
         Computes the marching-cubes isosurface from the SDF volume and caches it.
@@ -181,22 +194,28 @@ class ViewerBase:
             return None
 
         # Use volume.id as cache key - this is a unique uint64 pointer
-        volume_id = sdf_volume.id
+        volume_id = int(sdf_volume.id)
 
-        # Check if already computed (use False as sentinel for "computed but no mesh")
+        # Check if already computed. Cached None means "computed but no mesh".
         if volume_id in self._isomesh_cache:
-            cached = self._isomesh_cache[volume_id]
-            return cached if cached is not False else None
+            return self._isomesh_cache[volume_id]
 
         # Compute isomesh from SDF volume
         from ..geometry.sdf_utils import compute_isomesh  # noqa: PLC0415
 
         isomesh = compute_isomesh(sdf_volume)
-        self._isomesh_cache[volume_id] = isomesh if isomesh is not None else False
+        self._isomesh_cache[volume_id] = isomesh
         return isomesh
 
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
-        pass
+        """Set the camera position and orientation.
+
+        Args:
+            pos: The position of the camera.
+            pitch: The pitch of the camera.
+            yaw: The yaw of the camera.
+        """
+        return
 
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets for visual separation of multiple worlds.
@@ -296,11 +315,27 @@ class ViewerBase:
         # Set world offsets with computed spacing
         self.set_world_offsets(tuple(spacing))
 
-    def begin_frame(self, time):
+    def begin_frame(self, time: float):
+        """Begin a new frame.
+
+        Args:
+            time: The current frame time.
+        """
         self.time = time
 
-    def log_state(self, state):
-        """Render the Newton model."""
+    @abstractmethod
+    def end_frame(self):
+        """
+        End the current frame.
+        """
+        pass
+
+    def log_state(self, state: newton.State):
+        """Update the viewer with the given state of the simulation.
+
+        Args:
+            state: The current state of the simulation.
+        """
 
         if self.model is None:
             return
@@ -344,7 +379,7 @@ class ViewerBase:
         self._log_non_shape_state(state)
         self.model_changed = False
 
-    def _log_non_shape_state(self, state):
+    def _log_non_shape_state(self, state: newton.State):
         """Log SDF isomeshes, inertia boxes, triangles, particles, joints, COM."""
 
         sdf_isomesh_just_populated = False
@@ -388,13 +423,13 @@ class ViewerBase:
         self._log_joints(state)
         self._log_com(state)
 
-    def log_contacts(self, contacts, state):
+    def log_contacts(self, contacts: newton.Contacts, state: newton.State):
         """
         Creates line segments along contact normals for rendering.
+
         Args:
-            name: Identifier for the contact lines
-            contacts (newton.Contacts): The contacts to render.
-            state: Current simulation state
+            contacts: The contacts to render.
+            state: The current state of the simulation.
         """
 
         if not self.show_contacts:
@@ -448,21 +483,30 @@ class ViewerBase:
             starts = wp.array([], dtype=wp.vec3, device=self.device)
             ends = wp.array([], dtype=wp.vec3, device=self.device)
 
-        # Use orange-red color for contact normals
+        # Use green color for contact normals
         colors = (0.0, 1.0, 0.0)
 
         self.log_lines("/contacts", starts, ends, colors)
 
-    def log_hydro_contact_surface(self, contact_surface_data, penetrating_only: bool = True):
+    def log_hydro_contact_surface(
+        self,
+        contact_surface_data: newton.geometry.HydroelasticSDF.ContactSurfaceData | None,
+        penetrating_only: bool = True,
+    ):
         """
         Render the hydroelastic contact surface triangles as wireframe lines.
 
         Args:
-            contact_surface_data: A HydroelasticContactSurfaceData instance containing vertex arrays
-                for visualization, or None if hydroelastic collision is not enabled.
+            contact_surface_data: A :class:`newton.geometry.HydroelasticSDF.ContactSurfaceData`
+                instance containing vertex arrays for visualization, or None if hydroelastic
+                collision is not enabled.
             penetrating_only: If True, only render penetrating contacts (depth < 0).
         """
-        if contact_surface_data is None or not self.show_hydro_contact_surface:
+        if not self.show_hydro_contact_surface:
+            self.log_lines("/hydro_contact_surface", None, None, None)
+            return
+
+        if contact_surface_data is None:
             self.log_lines("/hydro_contact_surface", None, None, None)
             return
 
@@ -519,14 +563,14 @@ class ViewerBase:
         self,
         name: str,
         geo_type: int,
-        geo_scale,
-        xforms,
-        colors=None,
-        materials=None,
+        geo_scale: float | tuple[float, ...] | list[float] | nparray,
+        xforms: wp.array(dtype=wp.transform),
+        colors: wp.array(dtype=wp.vec3) | None = None,
+        materials: wp.array(dtype=wp.vec4) | None = None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
-        geo_src=None,
-        hidden=False,
+        geo_src: newton.Mesh | newton.Heightfield | None = None,
+        hidden: bool = False,
     ):
         """
         Convenience helper to create/cache a mesh of a given geometry and
@@ -534,7 +578,7 @@ class ViewerBase:
 
         Args:
             name: Instance path/name (e.g., "/world/spheres").
-            geo_type: newton.GEO_* constant.
+            geo_type: Geometry type value from :class:`newton.GeoType`.
             geo_scale: Geometry scale parameters:
                 - Sphere: float radius
                 - Capsule/Cylinder/Cone: (radius, height)
@@ -543,9 +587,10 @@ class ViewerBase:
             xforms: wp.array(dtype=wp.transform) of instance transforms
             colors: wp.array(dtype=wp.vec3) or None (broadcasted if length 1)
             materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
-            thickness: Optional thickness (used for hashing consistency)
-            is_solid: If False, can be used for wire/solid hashing parity
-            geo_src: Source geometry to use only when `geo_type` is `newton.GeoType.MESH`
+            geo_thickness: Optional thickness used for hashing and solidification.
+            geo_is_solid: If False, use shell-thickening for mesh-based geometry.
+            geo_src: Source geometry to use only when :paramref:`geo_type` is
+                :attr:`newton.GeoType.MESH`.
             hidden: If True, the shape will not be rendered
         """
 
@@ -607,25 +652,37 @@ class ViewerBase:
 
     def log_geo(
         self,
-        name,
+        name: str,
         geo_type: int,
         geo_scale: tuple[float, ...],
         geo_thickness: float,
         geo_is_solid: bool,
-        geo_src=None,
-        hidden=False,
+        geo_src: newton.Mesh | newton.Heightfield | None = None,
+        hidden: bool = False,
     ):
         """
-        Create a primitive mesh and upload it via log_mesh.
+        Create a primitive mesh and upload it via :meth:`log_mesh`.
 
         Expects mesh generators to return interleaved vertices [x, y, z, nx, ny, nz, u, v]
         and an index buffer. Slices them into separate arrays and forwards to log_mesh.
+
+        Args:
+            name: Unique path/name used to register the mesh.
+            geo_type: Geometry type value from :class:`newton.GeoType`.
+            geo_scale: Geometry scale tuple, interpreted per geometry type.
+            geo_thickness: Shell thickness for non-solid mesh generation.
+            geo_is_solid: Whether to render mesh geometry as a solid.
+            geo_src: Source :class:`newton.Mesh` or
+                :class:`newton.Heightfield` data when required
+                by :paramref:`geo_type`.
+            hidden: Whether the created mesh should be hidden.
         """
 
         # Heightfield: convert to mesh for rendering
         if geo_type == newton.GeoType.HFIELD:
             if geo_src is None:
                 raise ValueError(f"log_geo requires geo_src for HFIELD (name={name})")
+            assert isinstance(geo_src, newton.Heightfield)
 
             # Denormalize elevation data to actual Z heights.
             # Transpose because create_mesh_heightfield uses ij indexing (i=X, j=Y)
@@ -647,6 +704,7 @@ class ViewerBase:
         if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
             if geo_src is None:
                 raise ValueError(f"log_geo requires geo_src for MESH or CONVEX_MESH (name={name})")
+            assert isinstance(geo_src, newton.Mesh)
 
             # resolve points/indices from source, solidify if requested
             if not geo_is_solid:
@@ -730,64 +788,194 @@ class ViewerBase:
 
     def log_gizmo(
         self,
-        name,
-        transform,
+        name: str,
+        transform: wp.transform,
     ):
-        # Optional: for interactive viewers
-        pass
+        """
+        Log a gizmo GUI element for the given name and transform.
+
+        Args:
+            name: The name of the gizmo.
+            transform: The transform of the gizmo.
+        """
+        return
 
     @abstractmethod
     def log_mesh(
         self,
-        name,
-        points: wp.array,
-        indices: wp.array,
-        normals: wp.array | None = None,
-        uvs: wp.array | None = None,
+        name: str,
+        points: wp.array(dtype=wp.vec3),
+        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
+        normals: wp.array(dtype=wp.vec3) | None = None,
+        uvs: wp.array(dtype=wp.vec2) | None = None,
         texture: np.ndarray | str | None = None,
-        hidden=False,
-        backface_culling=True,
+        hidden: bool = False,
+        backface_culling: bool = True,
     ):
+        """
+        Register or update a mesh prototype in the viewer backend.
+
+        Args:
+            name: Unique path/name for the mesh asset.
+            points: Vertex positions as a Warp vec3 array.
+            indices: Triangle index buffer as a Warp integer array.
+            normals: Optional vertex normals as a Warp vec3 array.
+            uvs: Optional texture coordinates as a Warp vec2 array.
+            texture: Optional texture image array or path.
+            hidden: Whether the mesh should be hidden.
+            backface_culling: Whether back-face culling should be enabled.
+        """
         pass
 
     @abstractmethod
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
+        """
+        Log a batch of mesh instances.
+
+        Args:
+            name: Unique path/name for the instance batch.
+            mesh: Path/name of a mesh previously registered via :meth:`log_mesh`.
+            xforms: Optional per-instance transforms as a Warp transform array.
+            scales: Optional per-instance scales as a Warp vec3 array.
+            colors: Optional per-instance colors as a Warp vec3 array.
+            materials: Optional per-instance material parameters as a Warp vec4 array.
+            hidden: Whether the instance batch should be hidden.
+        """
         pass
 
-    # Optional specialized capsule path. Backends can override.
-    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_capsules(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
+        """
+        Log capsules as instances. This is a specialized path for rendering capsules.
+        If the viewer backend does not specialize this path, it will fall back to
+        :meth:`log_instances`.
+
+        Args:
+            name: Unique path/name for the capsule batch.
+            mesh: Path/name of a mesh previously registered via
+                :meth:`log_mesh`.
+            xforms: Optional per-capsule transforms as a Warp transform array.
+            scales: Optional per-capsule scales as a Warp vec3 array.
+            colors: Optional per-capsule colors as a Warp vec3 array.
+            materials: Optional per-capsule material parameters as a Warp vec4 array.
+            hidden: Whether the capsule batch should be hidden.
+        """
         self.log_instances(name, mesh, xforms, scales, colors, materials, hidden=hidden)
 
     @abstractmethod
-    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
+    def log_lines(
+        self,
+        name: str,
+        starts: wp.array(dtype=wp.vec3) | None,
+        ends: wp.array(dtype=wp.vec3) | None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ),
+        width: float = 0.01,
+        hidden: bool = False,
+    ):
+        """
+        Log line segments for rendering.
+
+        Args:
+            name: Unique path/name for the line batch.
+            starts: Optional line start points as a Warp vec3 array.
+            ends: Optional line end points as a Warp vec3 array.
+            colors: Per-line colors as a Warp array, or a single RGB triplet.
+            width: Line width in rendered scene units.
+            hidden: Whether the line batch should be hidden.
+        """
         pass
 
     @abstractmethod
-    def log_points(self, name, points, radii, colors, hidden=False):
+    def log_points(
+        self,
+        name: str,
+        points: wp.array(dtype=wp.vec3) | None,
+        radii: wp.array(dtype=wp.float32) | float | None = None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ) = None,
+        hidden: bool = False,
+    ):
+        """
+        Log a point cloud for rendering.
+
+        Args:
+            name: Unique path/name for the point batch.
+            points: Optional point positions as a Warp vec3 array.
+            radii: Optional per-point radii array or a single radius value.
+            colors: Optional per-point colors or a single RGB triplet.
+            hidden: Whether the points should be hidden.
+        """
         pass
 
     @abstractmethod
-    def log_array(self, name, array):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+        """
+        Log a numeric array for backend-specific visualization utilities.
+
+        Args:
+            name: Unique path/name for the array signal.
+            array: Array data as a Warp array or NumPy array.
+        """
         pass
 
     @abstractmethod
-    def log_scalar(self, name, value):
-        pass
+    def log_scalar(self, name: str, value: int | float | bool | np.number):
+        """
+        Log a scalar signal for backend-specific visualization utilities.
 
-    def apply_forces(self, state):
+        Args:
+            name: Unique path/name for the scalar signal.
+            value: Scalar value to record.
+        """
         pass
 
     @abstractmethod
-    def end_frame(self):
+    def apply_forces(self, state: newton.State):
+        """
+        Apply forces to the state from picking and wind (if available).
+
+        Args:
+            state: The current state of the simulation.
+        """
         pass
 
     @abstractmethod
     def close(self):
+        """
+        Close the viewer.
+        """
         pass
 
     # handles a batch of mesh instances attached to bodies in the Newton Model
     class ShapeInstances:
-        def __init__(self, name, static, flags, mesh, device):
+        """
+        A batch of shape instances.
+        """
+
+        def __init__(self, name: str, static: bool, flags: int, mesh: str, device: wp.Device):
+            """
+            Initialize the ShapeInstances.
+            """
             self.name = name
             self.static = static
             self.flags = flags
@@ -809,11 +997,34 @@ class ViewerBase:
 
             self.world_xforms = None
             self.colors_changed: bool = False
-            """Indicates that the (finalized) ``self.colors`` has changed and it should be included
-            in ``Viewer.log_instances()``."""
+            """Indicates that finalized
+            :attr:`ShapeInstances.colors` changed and
+            should be included in
+            :meth:`log_instances`.
+            """
 
-        def add(self, parent, xform, scale, color, material, shape_index, world=-1):
-            # add an instance of the geometry to the batch
+        def add(
+            self,
+            parent: int,
+            xform: wp.transform,
+            scale: wp.vec3,
+            color: wp.vec3,
+            material: wp.vec4,
+            shape_index: int,
+            world: int = -1,
+        ):
+            """
+            Add an instance of the geometry to the batch.
+
+            Args:
+                parent: The parent body index.
+                xform: The transform of the instance.
+                scale: The scale of the instance.
+                color: The color of the instance.
+                material: The material of the instance.
+                shape_index: The shape index.
+                world: The world index.
+            """
             self.parents.append(parent)
             self.xforms.append(xform)
             self.scales.append(scale)
@@ -823,7 +1034,12 @@ class ViewerBase:
             self.model_shapes.append(shape_index)
 
         def finalize(self, shape_colors: wp.array(dtype=wp.vec3) | None = None):
-            # convert to warp arrays
+            """
+            Allocates the batch of shape instances as Warp arrays.
+
+            Args:
+                shape_colors: The colors of the shapes.
+            """
             self.parents = wp.array(self.parents, dtype=int, device=self.device)
             self.xforms = wp.array(self.xforms, dtype=wp.transform, device=self.device)
             self.scales = wp.array(self.scales, dtype=wp.vec3, device=self.device)
@@ -837,7 +1053,14 @@ class ViewerBase:
 
             self.world_xforms = wp.zeros_like(self.xforms)
 
-        def update(self, state, world_offsets=None):
+        def update(self, state: newton.State, world_offsets: wp.array(dtype=wp.vec3)):
+            """
+            Update the world transforms of the shape instances.
+
+            Args:
+                state: The current state of the simulation.
+                world_offsets: The world offsets.
+            """
             from .kernels import update_shape_xforms  # noqa: PLC0415
 
             wp.launch(
@@ -951,7 +1174,7 @@ class ViewerBase:
         shape_geo_src = self.model.shape_source
         shape_geo_type = self.model.shape_type.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        shape_geo_thickness = self.model.shape_thickness.numpy()
+        shape_geo_thickness = self.model.shape_margin.numpy()
         shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
@@ -1292,7 +1515,7 @@ class ViewerBase:
         batch.finalize()
         self._inertia_box_instances = batch
 
-    def _log_joints(self, state):
+    def _log_joints(self, state: newton.State):
         """
         Creates line segments for joint basis vectors for rendering.
         Args:
@@ -1347,7 +1570,7 @@ class ViewerBase:
         # Log all joint lines in a single call
         self.log_lines("/model/joints", self._joint_points0, self._joint_points1, self._joint_colors)
 
-    def _log_com(self, state):
+    def _log_com(self, state: newton.State):
         num_bodies = self.model.body_count
         if num_bodies == 0:
             return
@@ -1374,7 +1597,7 @@ class ViewerBase:
 
         self.log_points("/model/com", self._com_positions, self._com_radii, self._com_colors, hidden=not self.show_com)
 
-    def _log_triangles(self, state):
+    def _log_triangles(self, state: newton.State):
         if self.model.tri_count:
             self.log_mesh(
                 "/model/triangles",
@@ -1384,7 +1607,7 @@ class ViewerBase:
                 backface_culling=False,
             )
 
-    def _log_particles(self, state):
+    def _log_particles(self, state: newton.State):
         if self.model.particle_count:
             # just set colors on first frame
             if self.model_changed:
@@ -1439,6 +1662,12 @@ class ViewerBase:
 
 
 def is_jupyter_notebook():
+    """
+    Detect if we're running inside a Jupyter Notebook.
+
+    Returns:
+        True if running in a Jupyter Notebook, False otherwise.
+    """
     try:
         # Check if get_ipython is defined (available in IPython environments)
         shell = get_ipython().__class__.__name__
