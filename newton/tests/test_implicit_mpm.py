@@ -59,7 +59,7 @@ def test_sand_cube_on_plane(test, device):
     state_0: newton.State = model.state()
     state_1: newton.State = model.state()
 
-    options = SolverImplicitMPM.Options()
+    options = SolverImplicitMPM.Config()
     options.grid_type = "dense"  # use dense grid as sparse grid is GPU-only
     options.voxel_size = voxel_size
 
@@ -150,7 +150,7 @@ def test_finite_difference_collider_velocity(test, device):
             compute_inertia=False,
         )
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)  # kinematic
-        shape_cfg.thickness = 0.02
+        shape_cfg.margin = 0.02
         builder.add_shape_mesh(
             body=platform_body,
             mesh=platform_mesh,
@@ -162,7 +162,7 @@ def test_finite_difference_collider_velocity(test, device):
         state_0 = model.state()
         state_1 = model.state()
 
-        options = SolverImplicitMPM.Options()
+        options = SolverImplicitMPM.Config()
         options.voxel_size = voxel_size
         options.grid_type = "dense"
         options.collider_velocity_mode = velocity_mode

@@ -19,13 +19,13 @@ import json
 import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 import numpy as np
 import warp as wp
 from warp._src import types as warp_types
 
-from ..core.types import override
+from ..core.types import nparray, override
 from ..geometry import Mesh
 from ..sim import Model, State
 from .viewer import ViewerBase
@@ -55,7 +55,7 @@ class RingBuffer(Generic[T]):
         Initialize the ring buffer.
 
         Args:
-            capacity (int): Maximum number of items to store. Default is 100.
+            capacity: Maximum number of items to store. Default is 100.
         """
         self.capacity = capacity
         self._buffer: list[T] = []
@@ -590,7 +590,7 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "maxhullvert": x.maxhullvert,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
-                "I": serialize_ndarray(np.array(x.I), format_type, cache),
+                "inertia": serialize_ndarray(np.array(x.inertia), format_type, cache),
             }
             if cache is not None:
                 mesh_key = _mesh_key_from_vertices(x.vertices, fallback_obj=x)
@@ -985,7 +985,11 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
                 mesh.has_inertia = mesh_data["has_inertia"]
                 mesh.mass = mesh_data["mass"]
                 mesh.com = wp.vec3(*mesh_data["com"])
-                mesh.I = wp.mat33(deserialize_ndarray(mesh_data["I"], format_type, cache))
+                # Accept legacy recordings that stored mesh inertia as "I".
+                inertia_data = mesh_data.get("inertia")
+                if inertia_data is None:
+                    inertia_data = mesh_data["I"]
+                mesh.inertia = wp.mat33(deserialize_ndarray(inertia_data, format_type, cache))
                 # Optimization: single dict lookup
                 cache_index = x.get("cache_index")
                 if cache is not None and cache_index is not None:
@@ -1050,10 +1054,10 @@ class ViewerFile(ViewerBase):
         Initialize the File viewer backend for Newton physics simulations.
 
         Args:
-            output_path (str): Path to the output file (.json or .bin)
-            auto_save (bool): If True, automatically save periodically during recording
-            save_interval (int): Number of frames between auto-saves (when auto_save=True)
-            max_history_size (int | None): Maximum number of states to keep in memory.
+            output_path: Path to the output file (.json or .bin)
+            auto_save: If True, automatically save periodically during recording
+            save_interval: Number of frames between auto-saves (when auto_save=True)
+            max_history_size: Maximum number of states to keep in memory.
                 If None, uses unlimited history. If set, keeps only the last N states.
         """
         super().__init__()
@@ -1076,8 +1080,13 @@ class ViewerFile(ViewerBase):
         self._model_recorded = False
 
     @override
-    def set_model(self, model, max_worlds: int | None = None):
-        """Override set_model to record the model when it's set."""
+    def set_model(self, model: Model | None, max_worlds: int | None = None):
+        """Override set_model to record the model when it is set.
+
+        Args:
+            model: Model to bind to this viewer.
+            max_worlds: Optional cap on rendered worlds.
+        """
         super().set_model(model, max_worlds=max_worlds)
 
         if model is not None and not self._model_recorded:
@@ -1085,8 +1094,12 @@ class ViewerFile(ViewerBase):
             self._model_recorded = True
 
     @override
-    def log_state(self, state):
-        """Override log_state to record the state in addition to standard processing."""
+    def log_state(self, state: State):
+        """Record a state snapshot in addition to the base viewer processing.
+
+        Args:
+            state: Current simulation state to record.
+        """
         super().log_state(state)
 
         # Record the state
@@ -1120,7 +1133,11 @@ class ViewerFile(ViewerBase):
                 print(f"Error saving recording: {e}")
 
     def record(self, state: State):
-        """Record a snapshot of the provided simulation state."""
+        """Record a snapshot of the provided simulation state.
+
+        Args:
+            state: State to snapshot into the recording history.
+        """
         state_data = {}
         for name, value in state.__dict__.items():
             if isinstance(value, wp.array):
@@ -1128,7 +1145,12 @@ class ViewerFile(ViewerBase):
         self.history.append(state_data)
 
     def playback(self, state: State, frame_id: int):
-        """Restore a state snapshot from history into a State object."""
+        """Restore a state snapshot from history into a State object.
+
+        Args:
+            state: Destination state object to populate.
+            frame_id: Frame index to load from history.
+        """
         if not (0 <= frame_id < len(self.history)):
             print(f"Warning: frame_id {frame_id} is out of bounds. Playback skipped.")
             return
@@ -1139,11 +1161,19 @@ class ViewerFile(ViewerBase):
                 setattr(state, name, value_wp)
 
     def record_model(self, model: Model):
-        """Record a reference to the simulation model for later serialization."""
+        """Record a reference to the simulation model for later serialization.
+
+        Args:
+            model: Model to keep for serialization.
+        """
         self.raw_model = model
 
     def playback_model(self, model: Model):
-        """Populate a Model instance from loaded recording data."""
+        """Populate a Model instance from loaded recording data.
+
+        Args:
+            model: Destination model object to populate.
+        """
         if not self.deserialized_model:
             print("Warning: No model data to playback.")
             return
@@ -1216,46 +1246,131 @@ class ViewerFile(ViewerBase):
     @override
     def log_mesh(
         self,
-        name,
-        points: wp.array,
-        indices: wp.array,
-        normals: wp.array | None = None,
-        uvs: wp.array | None = None,
-        texture=None,
-        hidden=False,
-        backface_culling=True,
+        name: str,
+        points: wp.array(dtype=wp.vec3),
+        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
+        normals: wp.array(dtype=wp.vec3) | None = None,
+        uvs: wp.array(dtype=wp.vec2) | None = None,
+        texture: np.ndarray | str | None = None,
+        hidden: bool = False,
+        backface_culling: bool = True,
     ):
-        """File viewer doesn't render meshes, so this is a no-op."""
+        """File viewer does not render meshes.
+
+        Args:
+            name: Unique path/name for the mesh.
+            points: Mesh vertex positions.
+            indices: Mesh triangle indices.
+            normals: Optional vertex normals.
+            uvs: Optional UV coordinates.
+            texture: Optional texture path/URL or image array.
+            hidden: Whether the mesh is hidden.
+            backface_culling: Whether back-face culling is enabled.
+        """
         pass
 
     @override
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
-        """File viewer doesn't render instances, so this is a no-op."""
+    def log_instances(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
+        """File viewer does not render instances.
+
+        Args:
+            name: Unique path/name for the instance batch.
+            mesh: Name of the base mesh.
+            xforms: Optional per-instance transforms.
+            scales: Optional per-instance scales.
+            colors: Optional per-instance colors.
+            materials: Optional per-instance material parameters.
+            hidden: Whether the instance batch is hidden.
+        """
         pass
 
     @override
-    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
-        """File viewer doesn't render lines, so this is a no-op."""
+    def log_lines(
+        self,
+        name: str,
+        starts: wp.array(dtype=wp.vec3) | None,
+        ends: wp.array(dtype=wp.vec3) | None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ),
+        width: float = 0.01,
+        hidden: bool = False,
+    ):
+        """File viewer does not render line primitives.
+
+        Args:
+            name: Unique path/name for the line batch.
+            starts: Optional line start points.
+            ends: Optional line end points.
+            colors: Optional per-line colors or a shared RGB triplet.
+            width: Line width hint.
+            hidden: Whether the line batch is hidden.
+        """
         pass
 
     @override
-    def log_points(self, name, points, radii, colors, hidden=False):
-        """File viewer doesn't render points, so this is a no-op."""
+    def log_points(
+        self,
+        name: str,
+        points: wp.array(dtype=wp.vec3) | None,
+        radii: wp.array(dtype=wp.float32) | float | None = None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ) = None,
+        hidden: bool = False,
+    ):
+        """File viewer does not render point primitives.
+
+        Args:
+            name: Unique path/name for the point batch.
+            points: Optional point positions.
+            radii: Optional per-point radii or a shared radius.
+            colors: Optional per-point colors or a shared RGB triplet.
+            hidden: Whether the point batch is hidden.
+        """
         pass
 
     @override
-    def log_array(self, name, array):
-        """File viewer doesn't log arrays visually, so this is a no-op."""
+    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+        """File viewer does not visualize generic arrays.
+
+        Args:
+            name: Unique path/name for the array signal.
+            array: Array data to visualize.
+        """
         pass
 
     @override
-    def log_scalar(self, name, value):
-        """File viewer doesn't log scalars visually, so this is a no-op."""
+    def log_scalar(self, name: str, value: int | float | bool | np.number):
+        """File viewer does not visualize scalar signals.
+
+        Args:
+            name: Unique path/name for the scalar signal.
+            value: Scalar value to visualize.
+        """
         pass
 
     @override
     def end_frame(self):
         """No frame rendering needed for file viewer."""
+        pass
+
+    @override
+    def apply_forces(self, state: State):
+        """File viewer does not apply interactive forces.
+
+        Args:
+            state: Current simulation state.
+        """
         pass
 
     @override
@@ -1283,14 +1398,22 @@ class ViewerFile(ViewerBase):
             print(f"Loaded recording with {self._frame_count} frames from {effective_path}")
 
     def get_frame_count(self) -> int:
-        """Return the number of frames in the loaded or recorded session."""
+        """Return the number of frames in the loaded or recorded session.
+
+        Returns:
+            int: Number of frames available for playback.
+        """
         return self._frame_count
 
     def has_model(self) -> bool:
-        """Return True if the loaded recording contains model data (for playback)."""
+        """Return whether the loaded recording contains model data.
+
+        Returns:
+            bool: True when model data is available for playback.
+        """
         return self.deserialized_model is not None
 
-    def load_model(self, model):
+    def load_model(self, model: Model):
         """Restore a Model from the loaded recording.
 
         Must be called after load_recording(). The given model is populated
@@ -1301,7 +1424,7 @@ class ViewerFile(ViewerBase):
         """
         self.playback_model(model)
 
-    def load_state(self, state, frame_id: int):
+    def load_state(self, state: State, frame_id: int):
         """Restore State to a specific frame from the loaded recording.
 
         Must be called after load_recording(). The given state is updated

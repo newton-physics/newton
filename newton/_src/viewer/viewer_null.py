@@ -13,10 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
+from typing import Any
+
+import numpy as np
 import warp as wp
 
-from ..core.types import override
+import newton
+
+from ..core.types import nparray, override
 from .viewer import ViewerBase
 
 
@@ -30,12 +36,12 @@ class ViewerNull(ViewerBase):
     stub implementations for all logging and frame management methods.
     """
 
-    def __init__(self, num_frames=1000):
+    def __init__(self, num_frames: int = 1000):
         """
         Initialize a no-op Viewer that runs for a fixed number of frames.
 
         Args:
-            num_frames (int): The number of frames to run before stopping.
+            num_frames: The number of frames to run before stopping.
         """
         super().__init__()
 
@@ -45,14 +51,14 @@ class ViewerNull(ViewerBase):
     @override
     def log_mesh(
         self,
-        name,
-        points: wp.array,
-        indices: wp.array,
-        normals: wp.array | None = None,
-        uvs: wp.array | None = None,
-        texture=None,
-        hidden=False,
-        backface_culling=True,
+        name: str,
+        points: wp.array(dtype=wp.vec3),
+        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
+        normals: wp.array(dtype=wp.vec3) | None = None,
+        uvs: wp.array(dtype=wp.vec2) | None = None,
+        texture: np.ndarray | str | None = None,
+        hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """
         No-op implementation for logging a mesh.
@@ -63,13 +69,23 @@ class ViewerNull(ViewerBase):
             indices: Mesh indices.
             normals: Vertex normals (optional).
             uvs: Texture coordinates (optional).
+            texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
         """
         pass
 
     @override
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
         """
         No-op implementation for logging mesh instances.
 
@@ -85,7 +101,7 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def begin_frame(self, time):
+    def begin_frame(self, time: float):
         """
         No-op implementation for beginning a frame.
 
@@ -118,9 +134,18 @@ class ViewerNull(ViewerBase):
         """
         pass
 
-    # Not implemented yet - placeholder methods from ViewerBase
     @override
-    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
+    def log_lines(
+        self,
+        name: str,
+        starts: wp.array(dtype=wp.vec3) | None,
+        ends: wp.array(dtype=wp.vec3) | None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ),
+        width: float = 0.01,
+        hidden: bool = False,
+    ):
         """
         No-op implementation for logging lines.
 
@@ -129,12 +154,22 @@ class ViewerNull(ViewerBase):
             starts: Line start points.
             ends: Line end points.
             colors: Line colors.
+            width: Line width hint.
             hidden: Whether the lines are hidden.
         """
         pass
 
     @override
-    def log_points(self, name, points, radii, colors, hidden=False):
+    def log_points(
+        self,
+        name: str,
+        points: wp.array(dtype=wp.vec3) | None,
+        radii: wp.array(dtype=wp.float32) | float | None = None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ) = None,
+        hidden: bool = False,
+    ):
         """
         No-op implementation for logging points.
 
@@ -148,7 +183,7 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_array(self, name, array):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
         """
         No-op implementation for logging a generic array.
 
@@ -159,12 +194,21 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name, value):
+    def log_scalar(self, name: str, value: int | float | bool | np.number):
         """
         No-op implementation for logging a scalar value.
 
         Args:
             name: Name of the scalar.
             value: The scalar value.
+        """
+        pass
+
+    @override
+    def apply_forces(self, state: newton.State):
+        """Null backend does not apply interactive forces.
+
+        Args:
+            state: Current simulation state.
         """
         pass

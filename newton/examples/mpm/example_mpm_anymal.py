@@ -135,7 +135,7 @@ class Example:
         self.model = builder.finalize()
 
         # setup mpm solver
-        mpm_options = SolverImplicitMPM.Options()
+        mpm_options = SolverImplicitMPM.Config()
         mpm_options.voxel_size = voxel_size
         mpm_options.tolerance = tolerance
         mpm_options.transfer_scheme = "pic"
