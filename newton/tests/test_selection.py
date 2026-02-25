@@ -1325,9 +1325,9 @@ class TestArticulationViewRequiresGrad(unittest.TestCase):
     def setUpClass(cls):
         builder = newton.ModelBuilder()
 
-        b0 = builder.add_body(xform=wp.transform_identity())
+        b0 = builder.add_link(xform=wp.transform_identity())
         builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
-        b1 = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+        b1 = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
         builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
 
         j0 = builder.add_joint_free(b0)
