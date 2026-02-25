@@ -695,9 +695,11 @@ class TestImportMjcfGeometry(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         self.assertEqual(builder.shape_count, 1)
         self.assertEqual(builder.shape_type[0], GeoType.ELLIPSOID)
+        np.testing.assert_allclose(builder.shape_scale[0], [0.03, 0.04, 0.02], atol=1e-12)
         model = builder.finalize()
+        body_idx = model.body_label.index("ellipsoid_test/worldbody/object")
         body_mass = model.body_mass.numpy()
-        self.assertGreater(body_mass[0], 0.0, msg="Ellipsoid body must have positive mass")
+        self.assertGreater(body_mass[body_idx], 0.0, msg="Ellipsoid body must have positive mass")
 
     def test_explicit_geom_mass(self):
         """Regression test: explicit geom mass attributes are correctly handled.
