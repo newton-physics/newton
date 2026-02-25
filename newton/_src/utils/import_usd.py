@@ -2346,7 +2346,10 @@ def parse_usd(
             targets = ref_joint_rel.GetTargets()
             if not targets:
                 continue
-            leader_path = str(targets[0])
+            leader_path = targets[0]
+            if not leader_path.IsAbsolutePath():
+                leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
+            leader_path = str(leader_path)
 
             leader_idx = path_joint_map.get(leader_path)
             if leader_idx is None:
