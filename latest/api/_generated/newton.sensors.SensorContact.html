@@ -811,7 +811,7 @@
 <h1>newton.sensors.SensorContact<a class="headerlink" href="#newton-sensors-sensorcontact" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.sensors.SensorContact">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorContact</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">sensing_obj_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sensing_obj_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">counterpart_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">counterpart_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_total</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prune_noncolliding</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">request_contact_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_contact.py#L111"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorContact" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorContact</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">sensing_obj_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sensing_obj_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">counterpart_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">counterpart_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_total</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prune_noncolliding</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">request_contact_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_contact.py#L134"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorContact" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Sensor that measures contact forces between bodies or shapes.</p>
 <p>This sensor allows you to define a set of “sensing objects” (bodies or shapes) and optionally a set of
@@ -821,7 +821,7 @@ report the total contact force or per-counterpart readings.</p>
 each column corresponds to one counterpart. Each entry of this matrix is the net contact force vector between
 the sensing object and the counterpart. If no counterparts are specified, the sensor will read the net contact
 force for each sensing object.</p>
-<p>If <code class="docutils literal notranslate"><span class="pre">include_total</span></code> is True, inserts a wildcard before all other counterparts, such that the first column of
+<p>If <code class="docutils literal notranslate"><span class="pre">include_total</span></code> is True, inserts a total before all other counterparts, such that the first column of
 the force matrix will read the total contact force for each sensing object.</p>
 <p>If <code class="docutils literal notranslate"><span class="pre">prune_noncolliding</span></code> is True, the force matrix will be sparse, containing only readings for shape pairs that
 can collide. In this case, force matrix will have as many columns as the maximum number of active counterparts
@@ -841,29 +841,27 @@ for each sensing object.</p>
 </dd>
 </dl>
 <dl class="py class">
-<dt class="sig sig-object py" id="newton.sensors.SensorContact.MatchKind">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">MatchKind</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorContact.MatchKind" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py" id="newton.sensors.SensorContact.ObjectType">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ObjectType</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorContact.ObjectType" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.Enum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Enum</span></code></a></p>
-<p>Indicates the object type for a sensing object or a counterpart.</p>
-<ul class="simple">
-<li><p>MATCH_ANY indicates a wildcard counterpart</p></li>
-<li><p>SHAPE indicates a shape sensing object or counterpart</p></li>
-<li><p>BODY indicates a body sensing object or counterpart</p></li>
-</ul>
+<p>Type tag for entries in <code class="xref py py-attr docutils literal notranslate"><span class="pre">sensing_objs</span></code> and <code class="xref py py-attr docutils literal notranslate"><span class="pre">counterparts</span></code>.</p>
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorContact.MatchKind.BODY">
-<span class="sig-name descname"><span class="pre">BODY</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">2</span></em><a class="headerlink" href="#newton.sensors.SensorContact.MatchKind.BODY" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dt class="sig sig-object py" id="newton.sensors.SensorContact.ObjectType.BODY">
+<span class="sig-name descname"><span class="pre">BODY</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">2</span></em><a class="headerlink" href="#newton.sensors.SensorContact.ObjectType.BODY" title="Link to this definition">#</a></dt>
+<dd><p>Individual body.</p>
+</dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorContact.MatchKind.MATCH_ANY">
-<span class="sig-name descname"><span class="pre">MATCH_ANY</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.sensors.SensorContact.MatchKind.MATCH_ANY" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dt class="sig sig-object py" id="newton.sensors.SensorContact.ObjectType.SHAPE">
+<span class="sig-name descname"><span class="pre">SHAPE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.sensors.SensorContact.ObjectType.SHAPE" title="Link to this definition">#</a></dt>
+<dd><p>Individual shape.</p>
+</dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorContact.MatchKind.SHAPE">
-<span class="sig-name descname"><span class="pre">SHAPE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.sensors.SensorContact.MatchKind.SHAPE" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dt class="sig sig-object py" id="newton.sensors.SensorContact.ObjectType.TOTAL">
+<span class="sig-name descname"><span class="pre">TOTAL</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.sensors.SensorContact.ObjectType.TOTAL" title="Link to this definition">#</a></dt>
+<dd><p>Total force entry. Only applies to counterparts.</p>
+</dd></dl>
 
 </dd></dl>
 
@@ -897,62 +895,58 @@ matrix. Does nothing when no counterparts are specified.</p></li>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.sensors.SensorContact.get_total_force">
-<span class="sig-name descname"><span class="pre">get_total_force</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorContact.get_total_force" title="Link to this definition">#</a></dt>
-<dd><p>Get the total net force measured by the contact sensor.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p>The net force array, shaped according to the sensor configuration.</p>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>array(ndim=2, dtype=vec3f)</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorContact.update">
-<span class="sig-name descname"><span class="pre">update</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorContact.update" title="Link to this definition">#</a></dt>
-<dd><p>Update the contact sensor readings based on the provided contacts.</p>
-<p>Process the given Contacts object and updates the internal net force readings for each sensing_obj-counterpart
-pair.</p>
+<span class="sig-name descname"><span class="pre">update</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorContact.update" title="Link to this definition">#</a></dt>
+<dd><p>Update the contact sensor readings based on the provided state and contacts.</p>
+<p>Computes world-frame transforms for all sensing objects and evaluates net contact forces
+for each sensing-object/counterpart pair.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><em>Contacts</em></a>) – The contact data to evaluate.</p>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a><em> | </em><em>None</em>) – The simulation state providing body transforms, or None to skip
+the transform update.</p></li>
+<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a>) – The contact data to evaluate.</p></li>
+</ul>
 </dd>
 </dl>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorContact.counterparts">
-<span class="sig-name descname"><span class="pre">counterparts</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#newton.sensors.SensorContact.MatchKind" title="newton._src.sensors.sensor_contact.SensorContact.MatchKind"><span class="pre">MatchKind</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.sensors.SensorContact.counterparts" title="Link to this definition">#</a></dt>
-<dd><p>Index and kind of each counterpart, length n_counterparts. Corresponds to the columns of the force matrix,
-unless <code class="docutils literal notranslate"><span class="pre">prune_noncolliding</span></code> is True.</p>
+<span class="sig-name descname"><span class="pre">counterparts</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#newton.sensors.SensorContact.ObjectType" title="newton._src.sensors.sensor_contact.SensorContact.ObjectType"><span class="pre">ObjectType</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.sensors.SensorContact.counterparts" title="Link to this definition">#</a></dt>
+<dd><p>Index and type of each counterpart. Columns of the force matrix.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorContact.net_force">
 <span class="sig-name descname"><span class="pre">net_force</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">vec3f</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.sensors.SensorContact.net_force" title="Link to this definition">#</a></dt>
-<dd><p>Net force matrix.</p>
+<dd><p>Net contact forces [N], shape <code class="docutils literal notranslate"><span class="pre">(n_sensing_objs,</span> <span class="pre">n_counterparts)</span></code>, dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.
+Entry <code class="docutils literal notranslate"><span class="pre">[i,</span> <span class="pre">j]</span></code> is the force on sensing object <code class="docutils literal notranslate"><span class="pre">i</span></code> from counterpart <code class="docutils literal notranslate"><span class="pre">j</span></code>, in world frame.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorContact.reading_indices">
 <span class="sig-name descname"><span class="pre">reading_indices</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.sensors.SensorContact.reading_indices" title="Link to this definition">#</a></dt>
-<dd><p>List of active counterpart indices per sensing object.</p>
+<dd><p>Active counterpart indices per sensing object (when <code class="docutils literal notranslate"><span class="pre">prune_noncolliding</span></code> is True).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorContact.sensing_obj_transforms">
+<span class="sig-name descname"><span class="pre">sensing_obj_transforms</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">transformf</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.sensors.SensorContact.sensing_obj_transforms" title="Link to this definition">#</a></dt>
+<dd><p>World-frame transforms of sensing objects [m, unitless quaternion],
+shape <code class="docutils literal notranslate"><span class="pre">(n_sensing_objs,)</span></code>, dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">transform</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorContact.sensing_objs">
-<span class="sig-name descname"><span class="pre">sensing_objs</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#newton.sensors.SensorContact.MatchKind" title="newton._src.sensors.sensor_contact.SensorContact.MatchKind"><span class="pre">MatchKind</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.sensors.SensorContact.sensing_objs" title="Link to this definition">#</a></dt>
-<dd><p>Index and kind of each sensing object, length n_sensing_objs. Corresponds to the rows of the force matrix.</p>
+<span class="sig-name descname"><span class="pre">sensing_objs</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#newton.sensors.SensorContact.ObjectType" title="newton._src.sensors.sensor_contact.SensorContact.ObjectType"><span class="pre">ObjectType</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.sensors.SensorContact.sensing_objs" title="Link to this definition">#</a></dt>
+<dd><p>Index and type of each sensing object. Rows of the force matrix.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorContact.shape">
 <span class="sig-name descname"><span class="pre">shape</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.sensors.SensorContact.shape" title="Link to this definition">#</a></dt>
-<dd><p>Shape of the force matrix (n_sensing_objs, n_counterparts) if <code class="docutils literal notranslate"><span class="pre">prune_noncolliding</span></code> is False, and
-(n_sensing_objs, max_active_counterparts) if it is True.</p>
+<dd><p>Dimensions of the force matrix <code class="docutils literal notranslate"><span class="pre">(n_sensing_objs,</span> <span class="pre">n_counterparts)</span></code>.</p>
 </dd></dl>
 
 </dd></dl>
@@ -983,18 +977,18 @@ unless <code class="docutils literal notranslate"><span class="pre">prune_noncol
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact"><code class="docutils literal notranslate"><span class="pre">SensorContact</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.MatchKind"><code class="docutils literal notranslate"><span class="pre">SensorContact.MatchKind</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.MatchKind.BODY"><code class="docutils literal notranslate"><span class="pre">SensorContact.MatchKind.BODY</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.MatchKind.MATCH_ANY"><code class="docutils literal notranslate"><span class="pre">SensorContact.MatchKind.MATCH_ANY</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.MatchKind.SHAPE"><code class="docutils literal notranslate"><span class="pre">SensorContact.MatchKind.SHAPE</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType"><code class="docutils literal notranslate"><span class="pre">SensorContact.ObjectType</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.BODY"><code class="docutils literal notranslate"><span class="pre">SensorContact.ObjectType.BODY</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.SHAPE"><code class="docutils literal notranslate"><span class="pre">SensorContact.ObjectType.SHAPE</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.TOTAL"><code class="docutils literal notranslate"><span class="pre">SensorContact.ObjectType.TOTAL</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.__init__"><code class="docutils literal notranslate"><span class="pre">SensorContact.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.get_total_force"><code class="docutils literal notranslate"><span class="pre">SensorContact.get_total_force()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.update"><code class="docutils literal notranslate"><span class="pre">SensorContact.update()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.counterparts"><code class="docutils literal notranslate"><span class="pre">SensorContact.counterparts</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.net_force"><code class="docutils literal notranslate"><span class="pre">SensorContact.net_force</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.reading_indices"><code class="docutils literal notranslate"><span class="pre">SensorContact.reading_indices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.sensing_obj_transforms"><code class="docutils literal notranslate"><span class="pre">SensorContact.sensing_obj_transforms</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.sensing_objs"><code class="docutils literal notranslate"><span class="pre">SensorContact.sensing_objs</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.shape"><code class="docutils literal notranslate"><span class="pre">SensorContact.shape</span></code></a></li>
 </ul>
