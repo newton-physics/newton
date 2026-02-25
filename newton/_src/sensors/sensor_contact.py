@@ -168,7 +168,7 @@ class SensorContact:
         """Type tag for entries in :attr:`sensing_objs` and :attr:`counterparts`."""
 
         TOTAL = _OBJ_TYPE_TOTAL
-        """Aggregate over all counterparts (counterparts only)."""
+        """Total force entry. Only applies to counterparts."""
 
         SHAPE = _OBJ_TYPE_SHAPE
         """Individual shape."""
