@@ -1573,8 +1573,8 @@ def parse_usd(
                         joint_descriptions[joint_path],
                         incoming_xform=root_joint_xform,
                     )
-                if joint is not None:
-                    processed_joints.add(joint_path)
+                    if joint is not None:
+                        processed_joints.add(joint_path)
 
             # Create the articulation from all collected joints
             if articulation_joint_indices:
