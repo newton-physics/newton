@@ -29,55 +29,32 @@
 #   robotiq_2f85_v4, shadow_hand, wonik_allegro
 #
 # Asset resolution:
-#   Set NEWTON_ASSETS_PATH to the root of the newton-assets repo.
-#   Falls back to newton/tests/assets/menagerie/ for local assets.
+#   Assets are downloaded automatically from the newton-assets GitHub repo.
 #
 ###########################################################################
-
-import os
-from pathlib import Path
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
-
-# ---------------------------------------------------------------------------
-# Asset resolution
-# ---------------------------------------------------------------------------
-
-NEWTON_ASSETS_PATH_ENV = "NEWTON_ASSETS_PATH"
-LOCAL_TEST_ASSETS = Path(__file__).parent.parent.parent / "tests" / "assets" / "menagerie"
-
-
-def _assets_root() -> Path:
-    """Return the menagerie USD assets root directory.
-
-    Checks NEWTON_ASSETS_PATH env var first, then falls back to the local
-    test assets bundled in the Newton repo.
-    """
-    env = os.environ.get(NEWTON_ASSETS_PATH_ENV)
-    if env:
-        return Path(env)
-    return LOCAL_TEST_ASSETS
-
+import newton.utils
+from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton
 
 # ---------------------------------------------------------------------------
 # Robot configurations
 # ---------------------------------------------------------------------------
-# Each entry maps a robot key to its USD scene file path (relative to
-# the assets root), plus visualization parameters.
-# The ``usd_scene`` paths follow the layout in newton/tests/assets/menagerie/.
+# Each entry maps a robot key to its newton-assets folder + scene file,
+# plus visualization parameters. Assets are downloaded via download_asset().
 
 MENAGERIE_USD_ROBOTS = {
-    "apptronik_apollo": {"usd_scene": "apptronik_apollo/apptronik_apollo scene.usda", "initial_height": 1.0},
-    "booster_t1": {"usd_scene": "booster_t1/t1 scene.usda", "initial_height": 1.0},
-    "g1_with_hands": {"usd_scene": "g1_with_hands/g1_29dof_with_hand_rev_1_0 scene.usda", "initial_height": 0.8},
-    "h1": {"usd_scene": "h1/h1 scene.usda", "initial_height": 1.0},
-    "robotiq_2f85_v4": {"usd_scene": "robotiq_2f85_v4/2f85 scene.usda", "initial_height": 0.3},
-    "shadow_hand": {"usd_scene": "shadow_hand/right_shadow_hand scene.usda", "initial_height": 0.5},
-    "wonik_allegro": {"usd_scene": "wonik_allegro/allegro_right.usda", "initial_height": 0.5},
+    "apptronik_apollo": {"asset_folder": "apptronik_apollo", "scene_file": "usd_structured/apptronik_apollo.usda", "initial_height": 1.0},
+    "booster_t1": {"asset_folder": "booster_t1", "scene_file": "usd_structured/T1.usda", "initial_height": 1.0},
+    "g1_with_hands": {"asset_folder": "unitree_g1", "scene_file": "usd_structured/g1_29dof_with_hand_rev_1_0.usda", "initial_height": 0.8},
+    "h1": {"asset_folder": "unitree_h1", "scene_file": "usd_structured/h1.usda", "initial_height": 1.0},
+    "robotiq_2f85_v4": {"asset_folder": "robotiq_2f85", "scene_file": "usd_structured/robotiq_2f85.usda", "initial_height": 0.3},
+    "shadow_hand": {"asset_folder": "shadow_hand", "scene_file": "usd_structured/left_shadow_hand.usda", "initial_height": 0.5},
+    "wonik_allegro": {"asset_folder": "wonik_allegro", "scene_file": "usd_structured/allegro_left.usda", "initial_height": 0.5},
 }
 
 
@@ -109,14 +86,8 @@ class Example:
             raise ValueError(f"Unknown robot: {robot_name}. Available: {list(MENAGERIE_USD_ROBOTS.keys())}")
 
         robot_config = MENAGERIE_USD_ROBOTS[robot_name]
-        asset_path = _assets_root() / robot_config["usd_scene"]
-
-        if not asset_path.exists():
-            raise FileNotFoundError(
-                f"Asset not found: {asset_path}\n"
-                f"Set {NEWTON_ASSETS_PATH_ENV} to the newton-assets repo root, or ensure "
-                f"local test assets exist at {LOCAL_TEST_ASSETS}."
-            )
+        asset_root = newton.utils.download_asset(robot_config["asset_folder"])
+        asset_path = asset_root / robot_config["scene_file"]
 
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverMuJoCo.register_custom_attributes(robot_builder)
@@ -128,6 +99,7 @@ class Example:
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             hide_collision_shapes=True,
+            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
         )
 
         robot_builder.approximate_meshes("bounding_box")

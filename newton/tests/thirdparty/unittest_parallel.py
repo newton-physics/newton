@@ -222,6 +222,10 @@ def main(argv=None):
         "style3d",
         "universal_robots_ur10",
         "wonik_allegro",
+        "shadow_hand",
+        "robotiq_2f85",
+        "apptronik_apollo",
+        "booster_t1",
     ]
     # Passing args.maxjobs to respect CLI cap for parallelism.
     _parallel_download(
@@ -231,25 +235,24 @@ def main(argv=None):
         args.maxjobs,
     )
 
-    # Pre-download mujoco_menagerie folders used by test_robot_composer (skip if
-    # NEWTON_MENAGERIE_PATH is set to a local clone).
-    menagerie_path = os.environ.get("NEWTON_MENAGERIE_PATH")
-    if not menagerie_path:
-        from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
+    # Pre-download mujoco_menagerie folders used by test_robot_composer
+    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
-        menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
-        menagerie_folders = [
-            "universal_robots_ur5e",
-            "leap_hand",
-            "wonik_allegro",
-            "robotiq_2f85",
-        ]
-        _parallel_download(
-            menagerie_folders,
-            lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),
-            "mujoco_menagerie folders",
-            args.maxjobs,
-        )
+    menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
+    menagerie_folders = [
+        "universal_robots_ur5e",
+        "apptronik_apollo",
+        "leap_hand",
+        "wonik_allegro",
+        "robotiq_2f85",
+    ]
+    # Passing args.maxjobs to respect CLI cap for parallelism.
+    _parallel_download(
+        menagerie_folders,
+        lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),
+        "mujoco_menagerie folders",
+        args.maxjobs,
+    )
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:

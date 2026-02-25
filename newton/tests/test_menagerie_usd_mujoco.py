@@ -27,16 +27,15 @@ from test_menagerie_mujoco.py to compare per-step simulation state between
 Newton (USD) and native MuJoCo (MJCF).
 
 Menagerie robot stubs. One class per menagerie robot, using the default
-TestMenagerieUSD configuration. Initially these run with no usd_path (skipped
-until a pre-converted USD is available).
+TestMenagerieUSD configuration. Initially these run with no usd_asset_folder
+(skipped until a pre-converted USD is available in newton-assets).
 
-Asset location: newton-assets repo (structured USD from mujoco_menagerie).
-Set NEWTON_ASSETS_PATH to the repo root; default: ~/Documents/Repos/newton-assets.
+Asset location: newton-assets GitHub repo (structured USD from mujoco_menagerie).
+Assets are downloaded automatically via newton.utils.download_asset().
 """
 
 from __future__ import annotations
 
-import os
 import re
 import unittest
 import warnings
@@ -47,6 +46,7 @@ from typing import Any, ClassVar
 import numpy as np
 
 import newton
+import newton.utils
 from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton
 from newton.solvers import SolverMuJoCo
 from newton.tests.test_menagerie_mujoco import (
@@ -109,27 +109,32 @@ def create_newton_model_from_usd(
 # Asset Configuration
 # =============================================================================
 
-
-def _newton_assets_root() -> Path:
-    root = os.environ.get("NEWTON_ASSETS_PATH")
-    if root:
-        return Path(root)
-    return Path.home() / "Documents" / "Repos" / "newton-assets"
-
-
-ASSETS_DIR = _newton_assets_root()
-
-# Menagerie USD asset registry: maps robot name to its USD scene path.
-# Paths are relative to newton-assets repo (usd_structured layout from PR #26).
+# Menagerie USD asset registry: maps robot name to newton-assets folder + scene file.
+# Assets are downloaded from the newton-assets GitHub repo via download_asset().
+# Download at the robot root level so _find_parent_cache can serve subfolder
+# requests (e.g. "unitree_h1/usd" from test_import_usd) from the same clone.
 MENAGERIE_USD_ASSETS = {
-    "h1": {"usd_scene": "unitree_h1/usd_structured/h1.usda"},
-    "g1_with_hands": {"usd_scene": "unitree_g1/usd_structured/g1_29dof_with_hand_rev_1_0.usda"},
-    "shadow_hand": {"usd_scene": "shadow_hand/usd_structured/left_shadow_hand.usda"},
-    "robotiq_2f85_v4": {"usd_scene": "robotiq_2f85/usd_structured/Dual_wrist_camera.usda"},
-    "apptronik_apollo": {"usd_scene": "apptronik_apollo/usd_structured/apptronik_apollo.usda"},
-    "booster_t1": {"usd_scene": "booster_t1/usd_structured/T1.usda"},
-    "wonik_allegro": {"usd_scene": "wonik_allegro/usd_structured/allegro_left.usda"},
+    "h1": {"asset_folder": "unitree_h1", "scene_file": "usd_structured/h1.usda"},
+    "g1_with_hands": {"asset_folder": "unitree_g1", "scene_file": "usd_structured/g1_29dof_with_hand_rev_1_0.usda"},
+    "shadow_hand": {"asset_folder": "shadow_hand", "scene_file": "usd_structured/left_shadow_hand.usda"},
+    "robotiq_2f85_v4": {"asset_folder": "robotiq_2f85", "scene_file": "usd_structured/robotiq_2f85.usda"},
+    "apptronik_apollo": {"asset_folder": "apptronik_apollo", "scene_file": "usd_structured/apptronik_apollo.usda"},
+    "booster_t1": {"asset_folder": "booster_t1", "scene_file": "usd_structured/T1.usda"},
+    "wonik_allegro": {"asset_folder": "wonik_allegro", "scene_file": "usd_structured/allegro_left.usda"},
 }
+
+def download_usd_asset(robot_name: str) -> Path:
+    """Download a menagerie USD asset from newton-assets and return the scene file path.
+
+    Args:
+        robot_name: Key in MENAGERIE_USD_ASSETS.
+
+    Returns:
+        Absolute path to the downloaded USD scene file.
+    """
+    config = MENAGERIE_USD_ASSETS[robot_name]
+    asset_root = newton.utils.download_asset(config["asset_folder"])
+    return asset_root / config["scene_file"]
 
 
 # =============================================================================
@@ -141,8 +146,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
 
     def _load_robot(self, robot_name: str) -> tuple[newton.ModelBuilder, newton.Model]:
         """Load a menagerie USD asset and return the builder and finalized model."""
-        config = MENAGERIE_USD_ASSETS[robot_name]
-        usd_path = ASSETS_DIR / config["usd_scene"]
+        usd_path = download_usd_asset(robot_name)
         self.assertTrue(usd_path.exists(), f"USD asset not found: {usd_path}")
 
         builder = newton.ModelBuilder()
@@ -233,8 +237,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
 
     def test_import_h1_multi_world(self):
         """Verify H1 can be replicated into multiple worlds."""
-        config = MENAGERIE_USD_ASSETS["h1"]
-        usd_path = ASSETS_DIR / config["usd_scene"]
+        usd_path = download_usd_asset("h1")
 
         model = create_newton_model_from_usd(usd_path, num_worlds=4, add_ground=True)
         self.assertEqual(model.world_count, 4)
@@ -832,11 +835,32 @@ def compare_actuator_physics_mapped(
 class TestMenagerieUSD(TestMenagerieBase):
     """Base class for USD-based tests: Newton loads pre-converted USD.
 
-    Subclasses set usd_path to the pre-converted USD file. Native MuJoCo
-    still loads the original MJCF from menagerie for comparison.
+    Subclasses set usd_asset_folder and usd_scene_file to identify the
+    pre-converted USD file in the newton-assets repo. The asset is
+    downloaded lazily in setUpClass. Native MuJoCo still loads the
+    original MJCF from menagerie for comparison.
     """
 
+    usd_asset_folder: str = ""
+    usd_scene_file: str = ""
     usd_path: str = ""
+
+    @classmethod
+    def setUpClass(cls):
+        """Download MJCF and USD assets once for all tests in this class."""
+        super().setUpClass()
+
+        if not cls.usd_asset_folder:
+            return
+
+        try:
+            asset_root = newton.utils.download_asset(cls.usd_asset_folder)
+        except (OSError, TimeoutError, ConnectionError) as e:
+            raise unittest.SkipTest(f"Failed to download USD asset {cls.usd_asset_folder}: {e}") from e
+
+        cls.usd_path = str(asset_root / cls.usd_scene_file)
+        if not Path(cls.usd_path).exists():
+            raise unittest.SkipTest(f"USD file not found: {cls.usd_path}")
 
     # Backfill requires 1:1 body index correspondence; disabled for USD since
     # body ordering may differ from native MJCF.
@@ -994,12 +1018,9 @@ class TestMenagerieUSD(TestMenagerieBase):
     def _create_newton_model(self) -> newton.Model:
         """Create Newton model from pre-converted USD file."""
         if not self.usd_path:
-            raise unittest.SkipTest("usd_path not defined")
-        usd_file = Path(self.usd_path)
-        if not usd_file.exists():
-            raise unittest.SkipTest(f"USD file not found: {usd_file}")
+            raise unittest.SkipTest("usd_path not set (no usd_asset_folder defined)")
         return create_newton_model_from_usd(
-            usd_file,
+            Path(self.usd_path),
             num_worlds=self.num_worlds,
             add_ground=False,  # scene.xml includes ground plane
             ignore_paths=self.usd_ignore_paths or None,
@@ -1009,13 +1030,9 @@ class TestMenagerieUSD(TestMenagerieBase):
 # =============================================================================
 # Simulation Equivalence Tests (pre-converted USD assets)
 # =============================================================================
-# Tests with local pre-converted USD assets and custom configurations.
+# Tests with pre-converted USD assets downloaded from newton-assets.
 # The native MuJoCo model is always loaded from the original MJCF.
 # Newton loads the pre-converted USD file.
-
-
-def _usd_path(asset_key: str) -> str:
-    return str(ASSETS_DIR / MENAGERIE_USD_ASSETS[asset_key]["usd_scene"])
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1024,7 +1041,8 @@ class TestMenagerieUSD_H1(TestMenagerieUSD):
 
     robot_folder = "unitree_h1"
     robot_xml = "h1.xml"
-    usd_path = _usd_path("h1")
+    usd_asset_folder = "unitree_h1"
+    usd_scene_file = "usd_structured/h1.usda"
 
     num_worlds = 2
     num_steps = 100
@@ -1037,7 +1055,8 @@ class TestMenagerieUSD_G1WithHands(TestMenagerieUSD):
 
     robot_folder = "unitree_g1"
     robot_xml = "g1_with_hands.xml"
-    usd_path = _usd_path("g1_with_hands")
+    usd_asset_folder = "unitree_g1"
+    usd_scene_file = "usd_structured/g1_29dof_with_hand_rev_1_0.usda"
 
     num_worlds = 2
     num_steps = 100
@@ -1050,7 +1069,8 @@ class TestMenagerieUSD_ShadowHand(TestMenagerieUSD):
 
     robot_folder = "shadow_hand"
     robot_xml = "left_hand.xml"
-    usd_path = _usd_path("shadow_hand")
+    usd_asset_folder = "shadow_hand"
+    usd_scene_file = "usd_structured/left_shadow_hand.usda"
 
     num_worlds = 2
     num_steps = 100
@@ -1063,7 +1083,8 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
 
     robot_folder = "robotiq_2f85_v4"
     robot_xml = "2f85.xml"
-    usd_path = _usd_path("robotiq_2f85_v4")
+    usd_asset_folder = "robotiq_2f85"
+    usd_scene_file = "usd_structured/robotiq_2f85.usda"
 
     num_worlds = 2
     num_steps = 100
@@ -1076,7 +1097,8 @@ class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
 
     robot_folder = "apptronik_apollo"
     robot_xml = "apptronik_apollo.xml"
-    usd_path = _usd_path("apptronik_apollo")
+    usd_asset_folder = "apptronik_apollo"
+    usd_scene_file = "usd_structured/apptronik_apollo.usda"
 
     num_worlds = 2
     num_steps = 100
@@ -1104,7 +1126,8 @@ class TestMenagerieUSD_BoosterT1(TestMenagerieUSD):
 
     robot_folder = "booster_t1"
     robot_xml = "t1.xml"
-    usd_path = _usd_path("booster_t1")
+    usd_asset_folder = "booster_t1"
+    usd_scene_file = "usd_structured/T1.usda"
 
     num_worlds = 2
     num_steps = 100
@@ -1117,7 +1140,8 @@ class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
 
     robot_folder = "wonik_allegro"
     robot_xml = "left_hand.xml"
-    usd_path = _usd_path("wonik_allegro")
+    usd_asset_folder = "wonik_allegro"
+    usd_scene_file = "usd_structured/allegro_left.usda"
 
     num_worlds = 2
     num_steps = 100
@@ -1133,7 +1157,7 @@ class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
 # Part C: Menagerie Robot USD Test Stubs
 # =============================================================================
 # One class per menagerie robot. These use the default TestMenagerieUSD
-# configuration; without a usd_path they are auto-skipped.
+# configuration; without a usd_asset_folder they are auto-skipped.
 
 
 # -----------------------------------------------------------------------------
