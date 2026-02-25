@@ -850,6 +850,17 @@ def parse_mjcf(
                 )
                 shapes.append(s)
 
+            elif geom_type == "ellipsoid":
+                # MuJoCo ellipsoid size is (rx, ry, rz) semi-axes, same as Newton a, b, c
+                s = builder.add_shape_ellipsoid(
+                    xform=tf,
+                    a=geom_size[0],
+                    b=geom_size[1],
+                    c=geom_size[2],
+                    **shape_kwargs,
+                )
+                shapes.append(s)
+
             else:
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
@@ -1742,7 +1753,7 @@ def parse_mjcf(
             body2_name = sanitize_name(weld.attrib.get("body2", "worldbody")) if weld.attrib.get("body2") else None
             anchor = weld.attrib.get("anchor", "0 0 0")
             relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
-            torquescale = weld.attrib.get("torquescale")
+            torquescale = parse_float(weld.attrib, "torquescale", 1.0)
             site1 = weld.attrib.get("site1")
             site2 = weld.attrib.get("site2")
 
