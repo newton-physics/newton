@@ -186,6 +186,7 @@ def parse_mjcf(
     mesh_maxhullvert: int | None = None,
     ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
+    override_root_xform: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -195,6 +196,9 @@ def parse_mjcf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform (Transform): The transform to apply to the imported mechanism.
+        override_root_xform (bool): If ``True``, the root body's local transform from the
+            MJCF is ignored and the articulation is placed at exactly ``xform``. Useful
+            for cloning articulations at explicit positions. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
@@ -292,6 +296,9 @@ def parse_mjcf(
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
+
+    if override_root_xform and xform is None:
+        raise ValueError("override_root_xform=True requires xform to be set")
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -1273,8 +1280,10 @@ def parse_mjcf(
         # Create local transform from parsed position and orientation
         local_xform = wp.transform(body_pos * scale, body_ori)
 
-        # Compose with incoming transform (or import root xform if none)
-        world_xform = (incoming_xform or xform) * local_xform
+        if override_root_xform and is_mjcf_root:
+            world_xform = incoming_xform or xform
+        else:
+            world_xform = (incoming_xform or xform) * local_xform
 
         # For joint positioning, compute body position relative to the actual parent body
         if parent >= 0:

@@ -1843,6 +1843,7 @@ class ModelBuilder:
         collapse_fixed_joints: bool = False,
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
+        override_root_xform: bool = False,
     ):
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -1850,6 +1851,10 @@ class ModelBuilder:
         Args:
             source (str): The filename of the URDF file to parse, or the URDF XML string content.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
+            override_root_xform (bool): If ``True``, ``xform`` is used as the absolute root transform.
+                In URDF this is equivalent to the default behavior since the root body has no
+                intrinsic world-space transform. Provided for API consistency with the USD and
+                MJCF importers. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body.
 
                 - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
@@ -1954,6 +1959,7 @@ class ModelBuilder:
             collapse_fixed_joints=collapse_fixed_joints,
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
+            override_root_xform=override_root_xform,
         )
 
     def add_usd(
@@ -1984,6 +1990,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
+        override_root_xform: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -1993,11 +2000,11 @@ class ModelBuilder:
 
         Args:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
-            xform (Transform): The world-space transform at which to place the imported
-                articulations. When provided, the articulation root's world-space transform
-                is replaced by ``xform``, preserving only the internal structure (relative
-                body positions) of the articulation. When ``None`` (default), articulations
-                keep their original USD world-space positions.
+            xform (Transform): The transform to apply to the entire scene.
+            override_root_xform (bool): If ``True``, the articulation root's world-space
+                transform is replaced by ``xform`` instead of being composed with it,
+                preserving only the internal structure (relative body positions). Useful
+                for cloning articulations at explicit positions. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body (bodies not connected as
                 a child to any joint).
 
@@ -2172,6 +2179,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
             force_position_velocity_actuation=force_position_velocity_actuation,
+            override_root_xform=override_root_xform,
         )
 
     def add_mjcf(
@@ -2206,6 +2214,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
+        override_root_xform: bool = False,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -2214,6 +2223,9 @@ class ModelBuilder:
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform (Transform): The transform to apply to the imported mechanism.
+            override_root_xform (bool): If ``True``, the root body's local transform from the
+                MJCF is ignored and the articulation is placed at exactly ``xform``. Useful
+                for cloning articulations at explicit positions. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body.
 
                 - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
@@ -2344,6 +2356,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             ctrl_direct=ctrl_direct,
             path_resolver=path_resolver,
+            override_root_xform=override_root_xform,
         )
 
     # endregion

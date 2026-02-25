@@ -71,6 +71,7 @@ def parse_usd(
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
+    override_root_xform: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -81,11 +82,11 @@ def parse_usd(
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
-        xform (Transform): The world-space transform at which to place the imported
-            articulations. When provided, the articulation root's world-space transform
-            is replaced by ``xform``, preserving only the internal structure (relative
-            body positions) of the articulation. When ``None`` (default), articulations
-            keep their original USD world-space positions.
+        xform (Transform): The transform to apply to the entire scene.
+        override_root_xform (bool): If ``True``, the articulation root's world-space
+            transform is replaced by ``xform`` instead of being composed with it,
+            preserving only the internal structure (relative body positions). Useful
+            for cloning articulations at explicit positions. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body (bodies not connected as
             a child to any joint).
 
@@ -1091,6 +1092,9 @@ def parse_usd(
         axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, builder.up_axis))
         if verbose:
             print(f"Rotating stage to align its up axis {stage_up_axis} with builder up axis {builder.up_axis}")
+    if override_root_xform and xform is None:
+        raise ValueError("override_root_xform=True requires xform to be set")
+
     if xform is None:
         incoming_world_xform = axis_xform
     else:
@@ -1275,7 +1279,7 @@ def parse_usd(
             articulation_prim = stage.GetPrimAtPath(path)
             articulation_root_xform = usd.get_transform(articulation_prim, local=False, xform_cache=xform_cache)
             root_joint_xform = (
-                incoming_world_xform if xform is not None else incoming_world_xform * articulation_root_xform
+                incoming_world_xform if override_root_xform else incoming_world_xform * articulation_root_xform
             )
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
@@ -1333,7 +1337,7 @@ def parse_usd(
                     body_desc = body_specs[key]
                     desc_xform = wp.transform(body_desc.position, usd.value_to_warp(body_desc.rotation))
                     body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
-                    if xform is not None:
+                    if override_root_xform:
                         # Strip the articulation root's world-space pose and rebase at the user-specified xform.
                         body_in_root_frame = wp.transform_inverse(articulation_root_xform) * body_world
                         desired_world = incoming_world_xform * body_in_root_frame
