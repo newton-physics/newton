@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 import re
 import warnings
@@ -30,7 +29,7 @@ from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
-from ..sim import ActuatorMode, JointType, ModelBuilder
+from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
@@ -632,9 +631,9 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin for collision thickness (only if explicitly specified)
+            # Parse MJCF margin for collision (only if explicitly specified)
             if "margin" in geom_attrib:
-                shape_cfg.thickness = float(geom_attrib["margin"]) * scale
+                shape_cfg.margin = float(geom_attrib["margin"]) * scale
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name
@@ -744,26 +743,31 @@ def parse_mjcf(
                         start = wp.transform_point(incoming_xform, start)
                         end = wp.transform_point(incoming_xform, end)
 
-                    # compute rotation to align the Warp capsule (along x-axis), with mjcf fromto direction
-                    axis = wp.normalize(end - start)
-                    angle = math.acos(wp.dot(axis, wp.vec3(0.0, 1.0, 0.0)))
-                    axis = wp.normalize(wp.cross(axis, wp.vec3(0.0, 1.0, 0.0)))
-
+                    # Compute pos and quat matching MuJoCo's fromto convention:
+                    # direction = start - end, align Z axis with it (mjuu_z2quat).
+                    # quat_between_vectors degenerates for anti-parallel vectors,
+                    # so handle that case with an explicit 180° rotation around X.
+                    # Guard against zero-length fromto (start == end) which would
+                    # produce NaN from wp.quat_between_vectors.
                     geom_pos = (start + end) * 0.5
-                    geom_rot = wp.quat_from_axis_angle(axis, -angle)
+                    dir_vec = start - end
+                    dir_len = wp.length(dir_vec)
+                    if dir_len < 1.0e-6:
+                        geom_rot = wp.quat_identity()
+                    else:
+                        direction = dir_vec / dir_len
+                        if float(direction[2]) < -0.999999:
+                            geom_rot = wp.quat(1.0, 0.0, 0.0, 0.0)  # 180° around X
+                        else:
+                            geom_rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
                     tf = wp.transform(geom_pos, geom_rot)
 
                     geom_radius = geom_size[0]
-                    geom_height = wp.length(end - start) * 0.5
-                    geom_up_axis = Axis.Y
+                    geom_height = dir_len * 0.5
 
                 else:
                     geom_radius = geom_size[0]
                     geom_height = geom_size[1]
-                    geom_up_axis = up_axis
-
-                # Apply axis rotation to transform
-                tf = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, geom_up_axis))
 
                 if geom_type == "cylinder":
                     s = builder.add_shape_cylinder(
@@ -1312,7 +1316,7 @@ def parse_mjcf(
                     armature=joint_armature[-1],
                     friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
-                    actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
+                    actuator_mode=JointTargetMode.NONE,  # Will be set by parse_actuators
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -2313,15 +2317,15 @@ def parse_mjcf(
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
                         builder.joint_target_ke[dof_idx] = kp
-                        current_mode = builder.joint_act_mode[dof_idx]
-                        if current_mode == int(ActuatorMode.VELOCITY):
+                        current_mode = builder.joint_target_mode[dof_idx]
+                        if current_mode == int(JointTargetMode.VELOCITY):
                             # A velocity actuator was already parsed for this DOF - upgrade to POSITION_VELOCITY.
                             # We intentionally preserve the existing kd from the velocity actuator rather than
                             # overwriting it with this position actuator's kv, since the velocity actuator's
                             # kv takes precedence for velocity control.
-                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
-                        elif current_mode == int(ActuatorMode.NONE):
-                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION)
+                            builder.joint_target_mode[dof_idx] = int(JointTargetMode.POSITION_VELOCITY)
+                        elif current_mode == int(JointTargetMode.NONE):
+                            builder.joint_target_mode[dof_idx] = int(JointTargetMode.POSITION)
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
@@ -2336,11 +2340,11 @@ def parse_mjcf(
                 if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
-                        current_mode = builder.joint_act_mode[dof_idx]
-                        if current_mode == int(ActuatorMode.POSITION):
-                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
-                        elif current_mode == int(ActuatorMode.NONE):
-                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
+                        current_mode = builder.joint_target_mode[dof_idx]
+                        if current_mode == int(JointTargetMode.POSITION):
+                            builder.joint_target_mode[dof_idx] = int(JointTargetMode.POSITION_VELOCITY)
+                        elif current_mode == int(JointTargetMode.NONE):
+                            builder.joint_target_mode[dof_idx] = int(JointTargetMode.VELOCITY)
                         builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "motor":

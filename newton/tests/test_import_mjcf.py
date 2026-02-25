@@ -2254,16 +2254,16 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder.add_mjcf(mjcf_content, up_axis="Z")
 
         self.assertEqual(builder.shape_count, 3)
-        self.assertAlmostEqual(builder.shape_thickness[0], 0.003, places=6)
-        self.assertAlmostEqual(builder.shape_thickness[1], 0.01, places=6)
+        self.assertAlmostEqual(builder.shape_margin[0], 0.003, places=6)
+        self.assertAlmostEqual(builder.shape_margin[1], 0.01, places=6)
         # geom3 has no margin, should use ShapeConfig default (0.0)
-        self.assertAlmostEqual(builder.shape_thickness[2], 0.0, places=8)
+        self.assertAlmostEqual(builder.shape_margin[2], 0.0, places=8)
 
         # Verify scale is applied to margin
         builder_scaled = newton.ModelBuilder()
         builder_scaled.add_mjcf(mjcf_content, up_axis="Z", scale=2.0)
-        self.assertAlmostEqual(builder_scaled.shape_thickness[0], 0.006, places=6)
-        self.assertAlmostEqual(builder_scaled.shape_thickness[1], 0.02, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_margin[0], 0.006, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_margin[1], 0.02, places=6)
 
     def test_mjcf_geom_solref_parsing(self):
         """Test MJCF geom solref parsing for contact stiffness/damping.
@@ -3224,8 +3224,8 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
 
     def test_actuator_mode_inference_from_actuator_type(self):
-        """Test that ActuatorMode is correctly inferred from MJCF actuator types."""
-        from newton._src.sim.joints import ActuatorMode  # noqa: PLC0415
+        """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
+        from newton._src.sim.joints import JointTargetMode  # noqa: PLC0415
 
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_actuator_modes">
@@ -3277,20 +3277,20 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             joint_idx = b.joint_label.index(joint_name)
             return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
 
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jm)], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jp)], int(ActuatorMode.POSITION))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jv)], int(ActuatorMode.VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jpv)], int(ActuatorMode.POSITION_VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jpa)], int(ActuatorMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jm)], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jp)], int(JointTargetMode.POSITION))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jv)], int(JointTargetMode.VELOCITY))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jpv)], int(JointTargetMode.POSITION_VELOCITY))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jpa)], int(JointTargetMode.NONE))
 
         builder2 = newton.ModelBuilder()
         builder2.add_mjcf(mjcf_content, ctrl_direct=True)
 
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jm)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jp)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jv)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jpv)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jpa)], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jm)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jp)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jv)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jpv)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jpa)], int(JointTargetMode.NONE))
 
     def test_frame_transform_composition_geoms(self):
         """Test that frame transforms are correctly composed with child geom positions.
@@ -6906,3 +6906,74 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 2)
+
+
+class TestFromtoCapsuleOrientation(unittest.TestCase):
+    """Verify fromto capsules/cylinders get the correct position and orientation.
+
+    MuJoCo computes fromto orientation by aligning Z with (start - end) via
+    mjuu_z2quat. Position is the midpoint and half_height is half the length.
+    """
+
+    MJCF = """<mujoco>
+        <worldbody>
+            <body name="b" pos="0 0 1">
+                <freejoint/>
+                <geom type="sphere" size="0.1" mass="1"/>
+                <geom name="cap_diag" type="capsule" size="0.03"
+                      fromto="0.02 0 -0.4 -0.02 0 0.02"/>
+                <geom name="cap_down" type="capsule" size="0.03"
+                      fromto="0 0 0 0 0 -0.4"/>
+                <geom name="cap_up" type="capsule" size="0.03"
+                      fromto="0 0 -0.4 0 0 0"/>
+                <geom name="cyl_diag" type="cylinder" size="0.03"
+                      fromto="0.02 0 -0.4 -0.02 0 0.02"/>
+            </body>
+        </worldbody>
+    </mujoco>"""
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(cls.MJCF)
+        cls.model = builder.finalize()
+
+    def _get_shape_transform(self, substring):
+        for i in range(self.model.shape_count):
+            if substring in self.model.shape_label[i]:
+                tf = self.model.shape_transform.numpy()[i]
+                pos = wp.vec3(tf[0], tf[1], tf[2])
+                quat = wp.quat(tf[3], tf[4], tf[5], tf[6])
+                return pos, quat
+        self.fail(f"No shape matching '{substring}'")
+
+    def _assert_z_aligned(self, quat, expected_dir, msg=""):
+        """Assert the shape's Z axis (long axis) aligns with expected direction."""
+        rotated_z = wp.quat_rotate(quat, wp.vec3(0.0, 0.0, 1.0))
+        np.testing.assert_allclose([*rotated_z], [*expected_dir], atol=1e-4, err_msg=msg)
+
+    def test_diagonal_capsule(self):
+        """Diagonal fromto: pos = midpoint, Z aligned with start - end."""
+        pos, quat = self._get_shape_transform("cap_diag")
+        np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
+        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        self._assert_z_aligned(quat, expected)
+
+    def test_downward_capsule(self):
+        """Downward fromto: start - end = +Z, identity rotation."""
+        pos, quat = self._get_shape_transform("cap_down")
+        np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
+        self._assert_z_aligned(quat, wp.vec3(0, 0, 1))
+
+    def test_upward_capsule(self):
+        """Upward fromto: start - end = -Z, 180 deg rotation (anti-parallel case)."""
+        pos, quat = self._get_shape_transform("cap_up")
+        np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
+        self._assert_z_aligned(quat, wp.vec3(0, 0, -1))
+
+    def test_diagonal_cylinder(self):
+        """Diagonal fromto cylinder: same code path as capsule, verify it works for cylinders too."""
+        pos, quat = self._get_shape_transform("cyl_diag")
+        np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
+        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        self._assert_z_aligned(quat, expected)

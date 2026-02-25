@@ -22,6 +22,7 @@ import warnings
 import numpy as np
 import warp as wp
 
+from ..core.types import nparray
 from .types import (
     GeoType,
     Heightfield,
@@ -333,8 +334,8 @@ def compute_hollow_mesh_inertia(
 
 def compute_inertia_mesh(
     density: float,
-    vertices: list,
-    indices: list,
+    vertices: list[Vec3] | nparray,
+    indices: list[int] | nparray,
     is_solid: bool = True,
     thickness: list[float] | float = 0.001,
 ) -> tuple[float, wp.vec3, wp.mat33, float]:
@@ -568,7 +569,7 @@ def compute_inertia_shape(
     elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
         assert src is not None, "src must be provided for mesh or convex hull shapes"
         if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
-            m, c, I = src.mass, src.com, src.I
+            m, c, I = src.mass, src.com, src.inertia
             scale = wp.vec3(scale)
             sx, sy, sz = scale
 
