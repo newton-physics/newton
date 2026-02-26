@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ..core import quat_between_axes, quat_from_euler
+from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
@@ -516,6 +516,24 @@ def parse_mjcf(
 
         return wp.types.vector(length, wp.float32)(out)
 
+    def quat_from_euler_mjcf(e: wp.vec3, i: int, j: int, k: int) -> wp.quat:
+        """Convert Euler angles using MuJoCo's axis-sequence convention."""
+        half_e = e * 0.5
+
+        cr = wp.cos(half_e[i])
+        sr = wp.sin(half_e[i])
+        cp = wp.cos(half_e[j])
+        sp = wp.sin(half_e[j])
+        cy = wp.cos(half_e[k])
+        sy = wp.sin(half_e[k])
+
+        return wp.quat(
+            (cy * sr * cp - sy * cr * sp),
+            (cy * cr * sp + sy * sr * cp),
+            (sy * cr * cp - cy * sr * sp),
+            (cy * cr * cp + sy * sr * sp),
+        )
+
     def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:
             wxyz = np.fromstring(attrib["quat"], sep=" ")
@@ -524,7 +542,8 @@ def parse_mjcf(
             euler = np.fromstring(attrib["euler"], sep=" ")
             if use_degrees:
                 euler *= np.pi / 180
-            return quat_from_euler(wp.vec3(euler), *euler_seq)
+            # Keep MuJoCo-compatible semantics for non-XYZ sequences.
+            return quat_from_euler_mjcf(wp.vec3(euler), *euler_seq)
         if "axisangle" in attrib:
             axisangle = np.fromstring(attrib["axisangle"], sep=" ")
             angle = axisangle[3]
@@ -850,6 +869,17 @@ def parse_mjcf(
                 )
                 shapes.append(s)
 
+            elif geom_type == "ellipsoid":
+                # MuJoCo ellipsoid size is (rx, ry, rz) semi-axes, same as Newton a, b, c
+                s = builder.add_shape_ellipsoid(
+                    xform=tf,
+                    a=geom_size[0],
+                    b=geom_size[1],
+                    c=geom_size[2],
+                    **shape_kwargs,
+                )
+                shapes.append(s)
+
             else:
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
@@ -905,8 +935,8 @@ def parse_mjcf(
                         stacklevel=2,
                     )
 
-                # Add explicit mass and computed inertia to body
-                if inertia_computed:
+                # Add explicit mass and computed inertia to body (skip if inertia is locked by <inertial>)
+                if inertia_computed and not builder.body_lock_inertia[link]:
                     com_body = wp.transform_point(tf, com)
                     builder._update_body_mass(link, geom_mass_explicit, inertia_tensor, com_body, tf.q)
 
@@ -1610,6 +1640,10 @@ def parse_mjcf(
                 builder.body_inv_inertia[link] = wp.inverse(I_m)
             else:
                 builder.body_inv_inertia[link] = I_m
+            # Lock inertia so subsequent shapes (e.g. from child <frame> elements)
+            # don't modify the explicitly specified mass/com/inertia.  This matches
+            # MuJoCo's behavior where <inertial> completely overrides geom contributions.
+            builder.body_lock_inertia[link] = True
 
         # -----------------
         # recurse
@@ -1742,7 +1776,7 @@ def parse_mjcf(
             body2_name = sanitize_name(weld.attrib.get("body2", "worldbody")) if weld.attrib.get("body2") else None
             anchor = weld.attrib.get("anchor", "0 0 0")
             relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
-            torquescale = weld.attrib.get("torquescale")
+            torquescale = parse_float(weld.attrib, "torquescale", 1.0)
             site1 = weld.attrib.get("site1")
             site2 = weld.attrib.get("site2")
 
@@ -2366,7 +2400,7 @@ def parse_mjcf(
 
             # Extract gains based on actuator type
             if actuator_type == "position":
-                kp = parse_float(merged_attrib, "kp", 0.0)
+                kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -2403,7 +2437,7 @@ def parse_mjcf(
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
-                kv = parse_float(merged_attrib, "kv", 0.0)
+                kv = parse_float(merged_attrib, "kv", 1.0)  # MuJoCo default kv=1
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT

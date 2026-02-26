@@ -210,7 +210,7 @@ By changing the order of resolvers in the ``schema_resolvers`` list, different a
    :skipif: True
 
    from newton import ModelBuilder
-   from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx, SchemaResolverMjc
+   from newton.usd import SchemaResolverMjc, SchemaResolverNewton, SchemaResolverPhysx
    
    builder = ModelBuilder()
    
@@ -277,7 +277,7 @@ The collected attributes are returned in the result dictionary and can be access
    :skipif: True
 
    from newton import ModelBuilder
-   from newton._src.usd.schemas import SchemaResolverPhysx, SchemaResolverNewton
+   from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
    
    builder = ModelBuilder()
    result = builder.add_usd(
@@ -531,3 +531,63 @@ After importing the USD file with the custom attributes shown above, they become
 **Namespace Isolation:**
 
 Attributes with the same name in different namespaces are completely independent and stored separately. This allows the same attribute name to be used for different purposes across namespaces. In the example above, ``mass_scale`` appears in both the default namespace (as a model attribute) and in ``namespace_a`` (as a state attribute). These are treated as completely separate attributes with independent values, assignments, and storage locations.
+
+5. Limitations
+----------------------------------------
+
+Importing USD files where many (> 30) mesh colliders are under the same rigid body
+can result in a crash in ``UsdPhysics.LoadUsdPhysicsFromRange``.  This is a known
+thread-safety issue in OpenUSD and will be fixed in a future release of
+``usd-core``.  It can be worked around by setting the work concurrency limit to 1
+before ``pxr`` initializes its thread pool.
+
+.. note::
+
+   Setting the concurrency limit to 1 disables multi-threaded USD processing
+   globally and may degrade performance of other OpenUSD workloads in the same
+   process.
+
+Choose **one** of the two approaches below — do not combine them.
+``PXR_WORK_THREAD_LIMIT`` is evaluated once when ``pxr`` is first imported and
+cached for the lifetime of the process; after that point,
+``Work.SetConcurrencyLimit()`` cannot override it.  Conversely, if the env var
+*is* set, calling ``Work.SetConcurrencyLimit()`` has no effect.
+
+**Option A — environment variable (before any USD import):**
+
+.. code-block:: python
+
+   import os
+   os.environ["PXR_WORK_THREAD_LIMIT"] = "1"  # must precede any pxr import
+
+   from newton import ModelBuilder
+
+   builder = ModelBuilder()
+   result = builder.add_usd(
+       source="rigid_body_with_many_mesh_colliders.usda",
+   )
+
+**Option B —** ``Work.SetConcurrencyLimit`` **(only when the env var is not set):**
+
+.. code-block:: python
+
+   from pxr import Work
+   import os
+
+   if "PXR_WORK_THREAD_LIMIT" not in os.environ:
+       Work.SetConcurrencyLimit(1)
+
+   from newton import ModelBuilder
+
+   builder = ModelBuilder()
+   result = builder.add_usd(
+       source="rigid_body_with_many_mesh_colliders.usda",
+   )
+
+.. seealso::
+
+   `threadLimits.h`_ (API reference) and `threadLimits.cpp`_ (implementation)
+   document the precedence rules between the environment variable and the API.
+
+   .. _threadLimits.h: https://openusd.org/dev/api/thread_limits_8h.html
+   .. _threadLimits.cpp: https://github.com/PixarAnimationStudios/OpenUSD/blob/release/pxr/base/work/threadLimits.cpp
