@@ -40,7 +40,18 @@ class UI:
 
         self.window = window
         self.imgui.create_context()
-        self.impl = pyglet_backend.create_renderer(self.window)
+        try:
+            self.impl = pyglet_backend.create_renderer(self.window)
+        except Exception as e:
+            # Unlikely to happen since RendererGL already sets PYOPENGL_PLATFORM=glx
+            # on Wayland, but just in case the auto-detection missed the session type.
+            if "no valid context" in str(e).lower() or "no current context" in str(e).lower():
+                raise RuntimeError(
+                    "Failed to initialize the OpenGL UI renderer. "
+                    "If you are on Wayland, try setting the environment variable:\n\n"
+                    "  PYOPENGL_PLATFORM=glx uv run -m newton.examples <example>\n"
+                ) from e
+            raise
 
         self.io = self.imgui.get_io()
 
