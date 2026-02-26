@@ -1880,24 +1880,6 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
-                gap_cfg = gap_val
-
-                # MuJoCo -> Newton conversion: check which resolver provided the
-                # margin (respecting priority order).  Only convert when the
-                # winning resolver is the MjC schema.
-                for r in R.resolvers:
-                    v = r.get_value(prim, PrimType.SHAPE, "margin")
-                    if v is not None:
-                        if r.name == "mjc":
-                            margin_val = margin_val - gap_cfg
-                            if margin_val < 0.0:
-                                warnings.warn(
-                                    f"Prim '{prim.GetPath()}': MuJoCo gap ({gap_cfg}) exceeds margin, "
-                                    f"resulting Newton margin is negative ({margin_val}). "
-                                    f"This may indicate an invalid MuJoCo model.",
-                                    stacklevel=2,
-                                )
-                        break
 
                 shape_params = {
                     "body": body_id,
@@ -1916,7 +1898,7 @@ def parse_usd(
                             prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
                         ),
                         margin=margin_val,
-                        gap=gap_cfg,
+                        gap=gap_val,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
                         mu_torsional=material.torsionalFriction,

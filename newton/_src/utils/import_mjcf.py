@@ -670,9 +670,8 @@ def parse_mjcf(
                 mj_margin = float(geom_attrib["margin"]) * scale
                 newton_margin = mj_margin - mj_gap
                 if newton_margin < 0.0:
-                    geom_name_val = geom_attrib.get("name", "<unnamed>")
                     warnings.warn(
-                        f"Geom '{geom_name_val}': MuJoCo gap ({mj_gap}) exceeds margin ({mj_margin}), "
+                        f"Geom '{geom_name}': MuJoCo gap ({mj_gap}) exceeds margin ({mj_margin}), "
                         f"resulting Newton margin is negative ({newton_margin}). "
                         f"This may indicate an invalid MuJoCo model.",
                         stacklevel=2,

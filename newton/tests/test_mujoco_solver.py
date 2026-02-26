@@ -2537,10 +2537,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_gap_conversion_and_update(self):
         """Test per-shape gap conversion to MuJoCo geom_gap and dynamic updates across multiple worlds."""
 
-        # Create a model with custom attributes registered
         world_count = 2
         template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
 
         # Create bodies with shapes
@@ -2555,7 +2553,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_articulation([joint1, joint2])
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
@@ -2638,7 +2635,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         """
         num_worlds = 2
         template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, margin=0.005)
 
         body1 = template_builder.add_link(mass=0.1)
@@ -2652,7 +2648,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_articulation([joint1, joint2])
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(template_builder, num_worlds)
         model = builder.finalize()
 
@@ -2660,10 +2655,11 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         to_newton = solver.mjc_geom_to_newton_shape.numpy()
         num_geoms = solver.mj_model.ngeom
 
-        # Verify initial conversion: geom_margin should equal shape_margin + shape_gap
+        # Verify initial conversion: geom_margin = shape_margin + shape_gap, geom_gap = shape_gap
         shape_margin = model.shape_margin.numpy()
         shape_gap = model.shape_gap.numpy()
         geom_margin = solver.mjw_model.geom_margin.numpy()
+        geom_gap = solver.mjw_model.geom_gap.numpy()
         tested_count = 0
         for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
@@ -2677,6 +2673,12 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     places=5,
                     msg=f"Initial geom_margin mismatch for shape {shape_idx} in world {world_idx}",
                 )
+                self.assertAlmostEqual(
+                    float(geom_gap[world_idx, geom_idx]),
+                    float(shape_gap[shape_idx]),
+                    places=5,
+                    msg=f"Initial geom_gap mismatch for shape {shape_idx} in world {world_idx}",
+                )
         self.assertGreater(tested_count, 0)
 
         # Update margin values at runtime
@@ -2686,6 +2688,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Verify runtime update
         updated_margin = solver.mjw_model.geom_margin.numpy()
+        updated_gap = solver.mjw_model.geom_gap.numpy()
         for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = to_newton[world_idx, geom_idx]
@@ -2696,6 +2699,12 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     float(new_margin[shape_idx]) + float(shape_gap[shape_idx]),
                     places=5,
                     msg=f"Updated geom_margin mismatch for shape {shape_idx} in world {world_idx}",
+                )
+                self.assertAlmostEqual(
+                    float(updated_gap[world_idx, geom_idx]),
+                    float(shape_gap[shape_idx]),
+                    places=5,
+                    msg=f"Updated geom_gap mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
     def test_geom_solmix_conversion_and_update(self):
