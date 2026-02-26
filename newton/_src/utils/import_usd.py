@@ -363,18 +363,19 @@ def parse_usd(
             material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
         return material_props_cache[prim_path]
 
-    def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False) -> Mesh:
+    def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
         """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""
         prim_path = str(prim.GetPath())
-        key = (prim_path, load_uvs)
+        key = (prim_path, load_uvs, load_normals)
         if key in mesh_cache:
             return mesh_cache[key]
 
-        # A mesh loaded with UVs is a superset of the no-UV representation.
-        if not load_uvs and (prim_path, True) in mesh_cache:
-            return mesh_cache[(prim_path, True)]
+        # A mesh loaded with UVs+normals is a superset of simpler representations.
+        full_key = (prim_path, True, True)
+        if key != full_key and full_key in mesh_cache:
+            return mesh_cache[full_key]
 
-        mesh = usd.get_mesh(prim, load_uvs=load_uvs)
+        mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
         mesh_cache[key] = mesh
         return mesh
 
@@ -535,8 +536,9 @@ def parse_usd(
                 # Resolve material properties first (cached) to determine if we need UVs
                 material_props = _get_material_props_cached(prim)
                 texture = material_props.get("texture")
-                # Only load UVs if we have a texture to avoid expensive faceVarying expansion
-                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None))
+                # Only load UVs if we have a texture to avoid expensive faceVarying expansion.
+                # Always load normals so authored shading is preserved.
+                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None), load_normals=True)
                 if texture:
                     mesh.texture = texture
                 if mesh.texture is not None and mesh.uvs is None:
