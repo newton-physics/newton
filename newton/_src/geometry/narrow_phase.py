@@ -1474,7 +1474,7 @@ class NarrowPhase:
         hydroelastic_sdf: HydroelasticSDF | None = None,
         has_meshes: bool = True,
         has_heightfields: bool = False,
-    ):
+    ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
 
@@ -1693,8 +1693,8 @@ class NarrowPhase:
         shape_heightfield_data: wp.array(dtype=HeightfieldData, ndim=1) | None = None,
         heightfield_elevation_data: wp.array(dtype=wp.float32, ndim=1) | None = None,
         writer_data: Any,
-        device=None,  # Device to launch on
-    ):
+        device: Devicelike | None = None,  # Device to launch on
+    ) -> None:
         """
         Launch narrow phase collision detection with a custom contact writer struct.
 
@@ -2067,9 +2067,9 @@ class NarrowPhase:
         contact_count: wp.array(dtype=int),  # Number of active contacts after narrow
         contact_tangent: wp.array(dtype=wp.vec3)
         | None = None,  # Represents x axis of local contact frame (None to disable)
-        device=None,  # Device to launch on
-        **kwargs,
-    ):
+        device: Devicelike | None = None,  # Device to launch on
+        **kwargs: Any,
+    ) -> None:
         """
         Launch narrow phase collision detection on candidate pairs from broad phase.
 

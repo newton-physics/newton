@@ -27,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from ..core.types import Devicelike
 from .broad_phase_common import (
     check_aabb_overlap,
     is_pair_excluded,
@@ -241,7 +242,12 @@ class BroadPhaseAllPairs:
     checking.
     """
 
-    def __init__(self, shape_world, shape_flags=None, device=None):
+    def __init__(
+        self,
+        shape_world: wp.array(dtype=wp.int32, ndim=1) | np.ndarray,
+        shape_flags: wp.array(dtype=wp.int32, ndim=1) | np.ndarray | None = None,
+        device: Devicelike | None = None,
+    ) -> None:
         """Initialize the broad phase with world ID information.
 
         Args:
@@ -319,10 +325,10 @@ class BroadPhaseAllPairs:
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
         candidate_pair_count: wp.array(dtype=int, ndim=1),
-        device=None,  # Device to launch on
+        device: Devicelike | None = None,  # Device to launch on
         filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
-    ):
+    ) -> None:
         """Launch the N x N broad phase collision detection.
 
         This method performs collision detection between all possible pairs of geometries by checking for
@@ -401,7 +407,7 @@ class BroadPhaseExplicit:
     taking into account per-geometry cutoff distances.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     def launch(
@@ -414,8 +420,8 @@ class BroadPhaseExplicit:
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
         candidate_pair_count: wp.array(dtype=int, ndim=1),
-        device=None,  # Device to launch on
-    ):
+        device: Devicelike | None = None,  # Device to launch on
+    ) -> None:
         """Launch the explicit pairs broad phase collision detection.
 
         This method checks for AABB overlaps only between explicitly specified shape pairs,
