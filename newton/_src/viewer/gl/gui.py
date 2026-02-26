@@ -45,7 +45,7 @@ class UI:
         except Exception as e:
             # Unlikely to happen since RendererGL already sets PYOPENGL_PLATFORM=glx
             # on Wayland, but just in case the auto-detection missed the session type.
-            if "context" in str(e).lower():
+            if "no valid context" in str(e).lower() or "no current context" in str(e).lower():
                 raise RuntimeError(
                     "Failed to initialize the OpenGL UI renderer. "
                     "If you are on Wayland, try setting the environment variable:\n\n"
