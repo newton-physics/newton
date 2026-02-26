@@ -31,6 +31,7 @@ AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
 if TYPE_CHECKING:
+    from ..geometry.types import TetMesh
     from ..sim.builder import ModelBuilder
 
 try:
@@ -1146,7 +1147,7 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 )
 
 
-def get_tetmesh(prim: Usd.Prim):
+def get_tetmesh(prim: Usd.Prim) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
     Reads vertex positions from the ``points`` attribute and tetrahedral
@@ -1207,6 +1208,9 @@ def get_tetmesh(prim: Usd.Prim):
         if youngs is not None and poissons is not None:
             E = float(youngs)
             nu = float(poissons)
+            # Clamp Poisson's ratio to the open interval (-1, 0.5) to avoid
+            # division by zero in the Lame parameter conversion.
+            nu = max(-0.999, min(nu, 0.499))
             k_mu = E / (2.0 * (1.0 + nu))
             k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
 
