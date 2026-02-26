@@ -1460,6 +1460,15 @@ def verify_narrow_phase_buffers(
 
 
 class NarrowPhase:
+    """Resolve broad-phase shape pairs into simulation contacts.
+
+    This class orchestrates the narrow-phase collision pipeline by launching the
+    appropriate Warp kernels for primitive, mesh, heightfield, and SDF shape
+    pairs. It owns the intermediate counters and pair buffers used while
+    processing candidate pairs, then writes final contacts through a configurable
+    contact writer function.
+    """
+
     def __init__(
         self,
         *,
