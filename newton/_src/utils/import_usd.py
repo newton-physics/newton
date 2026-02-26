@@ -175,7 +175,7 @@ def parse_usd(
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
             are authored in the USD but not strictly required to build the simulation. This is useful for
             inspection, experimentation, or custom pipelines that read these values via
-            :attr:`newton.usd.SchemaResolverManager.schema_attrs`.
+            ``result["schema_attrs"]`` returned from :func:`parse_usd`.
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
@@ -2308,7 +2308,84 @@ def parse_usd(
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {label: idx for idx, label in enumerate(builder.joint_label)}
 
-    # Mimic constraints (run after collapse so joint indices in path_joint_map are final).
+    # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
+    # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
+    # that couples a follower joint to a leader (reference) joint with a gearing ratio.
+    # PhysX convention: jointPos + gearing * refJointPos + offset = 0
+    # Newton/URDF convention: joint0 = coef0 + coef1 * joint1
+    # Therefore: coef1 = -gearing, coef0 = -offset
+    for joint_path, joint_idx in path_joint_map.items():
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if not joint_prim or not joint_prim.IsValid():
+            continue
+
+        # Skip if NewtonMimicAPI is present — it takes precedence over PhysxMimicJointAPI.
+        if usd.has_applied_api_schema(joint_prim, "NewtonMimicAPI"):
+            continue
+
+        schemas_listop = joint_prim.GetMetadata("apiSchemas")
+        if not schemas_listop:
+            continue
+
+        all_schemas = (
+            list(schemas_listop.prependedItems)
+            + list(schemas_listop.appendedItems)
+            + list(schemas_listop.explicitItems)
+        )
+
+        for schema in all_schemas:
+            schema_str = str(schema)
+            if not schema_str.startswith("PhysxMimicJointAPI"):
+                continue
+
+            # Extract the axis instance name (e.g. "rotZ" from "PhysxMimicJointAPI:rotZ")
+            parts = schema_str.split(":")
+            if len(parts) < 2:
+                continue
+            axis_instance = parts[1]
+
+            ref_joint_rel = joint_prim.GetRelationship(f"physxMimicJoint:{axis_instance}:referenceJoint")
+            if not ref_joint_rel:
+                continue
+            targets = ref_joint_rel.GetTargets()
+            if not targets:
+                continue
+            leader_path = targets[0]
+            if not leader_path.IsAbsolutePath():
+                leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
+            leader_path = str(leader_path)
+
+            leader_idx = path_joint_map.get(leader_path)
+            if leader_idx is None:
+                warnings.warn(
+                    f"PhysxMimicJointAPI on '{joint_path}' references '{leader_path}' "
+                    f"but leader joint was not found, skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            gearing_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:gearing")
+            gearing = float(gearing_attr.Get()) if gearing_attr and gearing_attr.HasValue() else 1.0
+
+            offset_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:offset")
+            offset = float(offset_attr.Get()) if offset_attr and offset_attr.HasValue() else 0.0
+
+            builder.add_constraint_mimic(
+                joint0=joint_idx,
+                joint1=leader_idx,
+                coef0=-offset,
+                coef1=-gearing,
+                enabled=True,
+                label=joint_path,
+            )
+
+            if verbose:
+                print(
+                    f"Added PhysxMimicJointAPI constraint: '{joint_path}' follows '{leader_path}' "
+                    f"(gearing={gearing}, offset={offset}, axis={axis_instance})"
+                )
+
+    # Mimic constraints from NewtonMimicAPI (run after collapse so joint indices are final).
     for joint_path, joint_idx in path_joint_map.items():
         joint_prim = stage.GetPrimAtPath(joint_path)
         if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):
