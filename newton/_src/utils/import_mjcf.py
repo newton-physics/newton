@@ -935,8 +935,8 @@ def parse_mjcf(
                         stacklevel=2,
                     )
 
-                # Add explicit mass and computed inertia to body
-                if inertia_computed:
+                # Add explicit mass and computed inertia to body (skip if inertia is locked by <inertial>)
+                if inertia_computed and not builder.body_lock_inertia[link]:
                     com_body = wp.transform_point(tf, com)
                     builder._update_body_mass(link, geom_mass_explicit, inertia_tensor, com_body, tf.q)
 
@@ -1640,6 +1640,10 @@ def parse_mjcf(
                 builder.body_inv_inertia[link] = wp.inverse(I_m)
             else:
                 builder.body_inv_inertia[link] = I_m
+            # Lock inertia so subsequent shapes (e.g. from child <frame> elements)
+            # don't modify the explicitly specified mass/com/inertia.  This matches
+            # MuJoCo's behavior where <inertial> completely overrides geom contributions.
+            builder.body_lock_inertia[link] = True
 
         # -----------------
         # recurse
