@@ -23,6 +23,8 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
 # USD utility functions
 # ==================================================================================
 from ._src.usd.utils import (
+    find_tetmesh_prims,
+    from_gfquat,
     get_attribute,
     get_attributes_in_namespace,
     get_custom_attribute_declarations,
@@ -32,6 +34,7 @@ from ._src.usd.utils import (
     get_mesh,
     get_quat,
     get_scale,
+    get_tetmesh,
     get_transform,
     has_applied_api_schema,
     has_attribute,
@@ -40,6 +43,8 @@ from ._src.usd.utils import (
 )
 
 __all__ = [
+    "find_tetmesh_prims",
+    "from_gfquat",
     "get_attribute",
     "get_attributes_in_namespace",
     "get_custom_attribute_declarations",
@@ -49,6 +54,7 @@ __all__ = [
     "get_mesh",
     "get_quat",
     "get_scale",
+    "get_tetmesh",
     "get_transform",
     "has_applied_api_schema",
     "has_attribute",
