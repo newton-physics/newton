@@ -671,9 +671,26 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin for collision (only if explicitly specified)
+            # Parse MJCF margin and gap for collision
+            # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap
+            # When gap is absent, mj_gap defaults to 0 for the margin conversion.
+            # When margin is absent but gap is present, shape_cfg.margin keeps its
+            # default (matching MuJoCo's default margin=0 minus gap would produce a
+            # negative value, which is invalid).
+            mj_gap = float(geom_attrib.get("gap", "0")) * scale
             if "margin" in geom_attrib:
-                shape_cfg.margin = float(geom_attrib["margin"]) * scale
+                mj_margin = float(geom_attrib["margin"]) * scale
+                newton_margin = mj_margin - mj_gap
+                if newton_margin < 0.0:
+                    warnings.warn(
+                        f"Geom '{geom_name}': MuJoCo gap ({mj_gap}) exceeds margin ({mj_margin}), "
+                        f"resulting Newton margin is negative ({newton_margin}). "
+                        f"This may indicate an invalid MuJoCo model.",
+                        stacklevel=2,
+                    )
+                shape_cfg.margin = newton_margin
+            if "gap" in geom_attrib:
+                shape_cfg.gap = mj_gap
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name

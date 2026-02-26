@@ -2451,7 +2451,7 @@ wheels = [
 
 [[package]]
 name = "mujoco-warp"
-version = "3.5.0"
+version = "3.5.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -2461,9 +2461,9 @@ dependencies = [
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "warp-lang" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/d9/6651f79dffad6f782cf9cc664f89d1aa0f816a2109bfaae4c79bb972fc8f/mujoco_warp-3.5.0.tar.gz", hash = "sha256:803a86569349e4abf7c7df3bcb2773ad78584c5f674ef56f515a510b9a996b30", size = 1871176, upload-time = "2026-02-13T05:07:10.431Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/98/a00f3f1e9690682149f96539680057ad089bf143334b31096c7e181417ba/mujoco_warp-3.5.0.2.tar.gz", hash = "sha256:c0ca9d9f39495714f24d20da3a22d0c04032c48e9b79d2f852aa63128a38c26a", size = 1881649, upload-time = "2026-02-26T13:31:41.342Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a6/87/754427687c0cb2ee987c2e3ca2645ec12e0123f181140e49f255c677aebb/mujoco_warp-3.5.0-py3-none-any.whl", hash = "sha256:7aa1c5dadbc175dd24e5f60f6a10f27a3154929a4bffd89e3eea3eebf39c6097", size = 1945429, upload-time = "2026-02-13T05:07:07.818Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/2e/90f05ad3818fd4b826f712c9f89a3df3aa3ef204efeaa71f8ddc2ca5fd3b/mujoco_warp-3.5.0.2-py3-none-any.whl", hash = "sha256:877ed9d20d26b24e87233d4e09a34d8999a1414f8477d9a31590374c82c2176a", size = 1960077, upload-time = "2026-02-26T13:31:39.788Z" },
 ]
 
 [[package]]
@@ -2820,11 +2820,11 @@ requires-dist = [
     { name = "mujoco", marker = "extra == 'notebook'", specifier = ">=3.5.0" },
     { name = "mujoco", marker = "extra == 'sim'", specifier = ">=3.5.0" },
     { name = "mujoco", marker = "extra == 'torch-cu12'", specifier = ">=3.5.0" },
-    { name = "mujoco-warp", marker = "extra == 'dev'", specifier = ">=3.5.0" },
-    { name = "mujoco-warp", marker = "extra == 'examples'", specifier = ">=3.5.0" },
-    { name = "mujoco-warp", marker = "extra == 'notebook'", specifier = ">=3.5.0" },
-    { name = "mujoco-warp", marker = "extra == 'sim'", specifier = ">=3.5.0" },
-    { name = "mujoco-warp", marker = "extra == 'torch-cu12'", specifier = ">=3.5.0" },
+    { name = "mujoco-warp", marker = "extra == 'dev'", specifier = ">=3.5.0.2" },
+    { name = "mujoco-warp", marker = "extra == 'examples'", specifier = ">=3.5.0.2" },
+    { name = "mujoco-warp", marker = "extra == 'notebook'", specifier = ">=3.5.0.2" },
+    { name = "mujoco-warp", marker = "extra == 'sim'", specifier = ">=3.5.0.2" },
+    { name = "mujoco-warp", marker = "extra == 'torch-cu12'", specifier = ">=3.5.0.2" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
     { name = "newton-actuators" },

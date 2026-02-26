@@ -1928,7 +1928,6 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
-                gap_cfg = gap_val
 
                 shape_params = {
                     "body": body_id,
@@ -1947,7 +1946,7 @@ def parse_usd(
                             prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
                         ),
                         margin=margin_val,
-                        gap=gap_cfg,
+                        gap=gap_val,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
                         mu_torsional=material.torsionalFriction,
