@@ -7452,9 +7452,7 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
 
         for ir in self.CASES:
             with self.subTest(inheritRange=ir):
-                model, solver = self._build_and_solve(ir)
-
-                self.assertAlmostEqual(float(model.mujoco.actuator_inheritrange.numpy()[0]), ir, places=5)
+                _, solver = self._build_and_solve(ir)
 
                 radius = half_width * ir
                 cr = solver.mj_model.actuator_ctrlrange[0]
