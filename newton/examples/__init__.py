@@ -297,7 +297,7 @@ def create_parser():
     parser.add_argument(
         "--viewer",
         type=str,
-        default="gl",
+        default="rerun",
         choices=["gl", "usd", "rerun", "null", "viser"],
         help="Viewer to use (gl, usd, rerun, or null).",
     )
