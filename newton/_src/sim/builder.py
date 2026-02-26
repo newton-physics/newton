@@ -1858,8 +1858,7 @@ class ModelBuilder:
                 specified, ``xform`` is applied as the full parent transform (including
                 rotation) rather than splitting position/rotation. Not intended for
                 sources containing multiple articulations, as all roots would be placed
-                at the same ``xform``; import such sources once per articulation instead.
-                Defaults to ``False``.
+                at the same ``xform``. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body.
 
                 - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
@@ -2011,8 +2010,7 @@ class ModelBuilder:
                 preserving only the internal structure (relative body positions). Useful
                 for cloning articulations at explicit positions. Not intended for sources
                 containing multiple articulations, as all roots would be placed at the
-                same ``xform``; import such sources once per articulation instead.
-                Defaults to ``False``.
+                same ``xform``. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body (bodies not connected as
                 a child to any joint).
 
@@ -2236,8 +2234,7 @@ class ModelBuilder:
                 preserving only the internal structure (relative body positions). Useful
                 for cloning articulations at explicit positions. Not intended for sources
                 containing multiple articulations, as all roots would be placed at the
-                same ``xform``; import such sources once per articulation instead.
-                Defaults to ``False``.
+                same ``xform``. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body.
 
                 - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,

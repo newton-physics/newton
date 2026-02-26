@@ -201,8 +201,7 @@ def parse_mjcf(
             preserving only the internal structure (relative body positions). Useful
             for cloning articulations at explicit positions. Not intended for sources
             containing multiple articulations, as all roots would be placed at the
-            same ``xform``; import such sources once per articulation instead.
-            Defaults to ``False``.
+            same ``xform``. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,

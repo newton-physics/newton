@@ -101,8 +101,7 @@ def parse_urdf(
             specified, ``xform`` is applied as the full parent transform (including
             rotation) rather than splitting position/rotation. Not intended for
             sources containing multiple articulations, as all roots would be placed
-            at the same ``xform``; import such sources once per articulation instead.
-            Defaults to ``False``.
+            at the same ``xform``. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
