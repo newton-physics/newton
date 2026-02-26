@@ -898,6 +898,13 @@ class RendererGL:
         self.sky_upper = self.background_color
         self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
+        # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
+        # that pyglet creates via XWayland. Force GLX so both libraries agree.
+        if "PYOPENGL_PLATFORM" not in os.environ:
+            wayland = os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland"
+            if wayland:
+                os.environ["PYOPENGL_PLATFORM"] = "glx"
+
         try:
             import pyglet
 
