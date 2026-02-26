@@ -6567,10 +6567,9 @@ class TestOverrideRootXform(unittest.TestCase):
         with self.assertRaises(ValueError):
             builder.add_usd(stage, floating=False, override_root_xform=True)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_override_visual_shape_aligned_with_body(self):
-        """Visual shapes stay aligned with their rigid body when override_root_xform=True
-        strips a non-identity ancestor transform."""
+    @staticmethod
+    def _make_stage_with_visual():
+        """Create a USD stage with a visual-only cube under a rigid body beneath a translated ancestor."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -6603,6 +6602,39 @@ class TestOverrideRootXform(unittest.TestCase):
         joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
         joint.CreateAxisAttr().Set("Z")
 
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_shape_aligned_with_body(self):
+        """Visual shapes stay aligned with their rigid body with default override_root_xform=False."""
+        stage = self._make_stage_with_visual()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            floating=False,
+        )
+
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        visual_shapes = [i for i, b in enumerate(builder.shape_body) if b == base_idx]
+        self.assertGreater(len(visual_shapes), 0, "Expected at least one visual shape on Base")
+
+        for sid in visual_shapes:
+            shape_tf = builder.shape_transform[sid]
+            np.testing.assert_allclose(
+                shape_tf.p, [0.0, 0.0, 0.0], atol=1e-4, err_msg="Visual shape position should be at body origin"
+            )
+            np.testing.assert_allclose(
+                shape_tf.q, [0.0, 0.0, 0.0, 1.0], atol=1e-4, err_msg="Visual shape rotation should be identity"
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_visual_shape_aligned_with_body(self):
+        """Visual shapes stay aligned with their rigid body when override_root_xform=True
+        strips a non-identity ancestor transform."""
+        stage = self._make_stage_with_visual()
+
         builder = newton.ModelBuilder()
         builder.add_usd(
             stage,
@@ -6618,16 +6650,10 @@ class TestOverrideRootXform(unittest.TestCase):
         for sid in visual_shapes:
             shape_tf = builder.shape_transform[sid]
             np.testing.assert_allclose(
-                shape_tf.p,
-                [0.0, 0.0, 0.0],
-                atol=1e-4,
-                err_msg="Visual shape position should be at body origin",
+                shape_tf.p, [0.0, 0.0, 0.0], atol=1e-4, err_msg="Visual shape position should be at body origin"
             )
             np.testing.assert_allclose(
-                shape_tf.q,
-                [0.0, 0.0, 0.0, 1.0],
-                atol=1e-4,
-                err_msg="Visual shape rotation should be identity",
+                shape_tf.q, [0.0, 0.0, 0.0, 1.0], atol=1e-4, err_msg="Visual shape rotation should be identity"
             )
 
 
