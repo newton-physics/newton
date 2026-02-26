@@ -57,7 +57,6 @@ from .kernels import (
     create_inverse_shape_mapping_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
-    sync_compiled_actuator_params_kernel,
     sync_qpos0_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
@@ -5827,45 +5826,6 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.actuator_actrange,
                 self.mjw_model.actuator_gear,
                 self.mjw_model.actuator_cranklength,
-            ],
-            device=self.model.device,
-        )
-
-    def _sync_compiled_actuator_params(self):
-        """Sync compiler-resolved actuator biasprm/gainprm back to Newton custom attributes.
-
-        MuJoCo's compiler resolves dampratio into biasprm[2] during model compilation.
-        This launches a kernel to copy the compiled values from mjw_model into Newton's
-        custom attributes so that _update_actuator_properties writes the correct values.
-        """
-        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
-            return
-
-        mujoco_attrs = getattr(self.model, "mujoco", None)
-        if mujoco_attrs is None:
-            return
-
-        newton_biasprm = getattr(mujoco_attrs, "actuator_biasprm", None)
-        newton_gainprm = getattr(mujoco_attrs, "actuator_gainprm", None)
-        if newton_biasprm is None or newton_gainprm is None:
-            return
-
-        nu = self.mjc_actuator_ctrl_source.shape[0]
-        if nu == 0:
-            return
-
-        wp.launch(
-            sync_compiled_actuator_params_kernel,
-            dim=nu,
-            inputs=[
-                self.mjc_actuator_ctrl_source,
-                self.mjc_actuator_to_newton_idx,
-                self.mjw_model.actuator_gainprm,
-                self.mjw_model.actuator_biasprm,
-            ],
-            outputs=[
-                newton_gainprm,
-                newton_biasprm,
             ],
             device=self.model.device,
         )
