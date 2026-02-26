@@ -1058,6 +1058,71 @@ class SolverMuJoCo(SolverBase):
 
             return transform
 
+        def _resolve_inheritrange_as_ctrlrange(prim, context: dict[str, Any]) -> tuple[float, float] | None:
+            """Resolve mjc:inheritRange to a concrete (lower, upper) control range.
+
+            Reads the target joint's limits from the builder and computes the
+            control range Returns None if inheritRange is not authored, zero, or the target joint cannot be found.
+            """
+            inherit_attr = prim.GetAttribute("mjc:inheritRange")
+            if not inherit_attr or not inherit_attr.HasAuthoredValue():
+                return None
+            inheritrange = float(inherit_attr.Get())
+            if inheritrange <= 0:
+                return None
+            result = context.get("result")
+            b = context.get("builder")
+            if not result or not b:
+                return None
+            try:
+                target_path = resolve_actuator_target_path(prim)
+            except ValueError:
+                return None
+            path_joint_map = result.get("path_joint_map", {})
+            joint_idx = path_joint_map.get(target_path, -1)
+            if joint_idx < 0 or joint_idx >= len(b.joint_qd_start):
+                return None
+            dof_idx = b.joint_qd_start[joint_idx]
+            if dof_idx < 0 or dof_idx >= len(b.joint_limit_lower):
+                return None
+            lower = b.joint_limit_lower[dof_idx]
+            upper = b.joint_limit_upper[dof_idx]
+            if lower >= upper:
+                return None
+            mean = (upper + lower) / 2.0
+            radius = (upper - lower) / 2.0 * inheritrange
+            return (mean - radius, mean + radius)
+
+        def transform_ctrlrange(_: Any, context: dict[str, Any]) -> wp.vec2 | None:
+            """Parse mjc:ctrlRange, falling back to inheritrange-derived range."""
+            prim = context["prim"]
+            range_vals = get_usd_range_if_authored(prim, "mjc:ctrlRange")
+            if range_vals is not None:
+                return wp.vec2(range_vals[0], range_vals[1])
+            resolved = _resolve_inheritrange_as_ctrlrange(prim, context)
+            if resolved is not None:
+                return wp.vec2(float(resolved[0]), float(resolved[1]))
+            return None
+
+        def transform_has_ctrlrange(_: Any, context: dict[str, Any]) -> int:
+            """Return 1 when ctrlRange is authored or inheritrange resolves a range."""
+            prim = context["prim"]
+            if get_usd_range_if_authored(prim, "mjc:ctrlRange") is not None:
+                return 1
+            if _resolve_inheritrange_as_ctrlrange(prim, context) is not None:
+                return 1
+            return 0
+
+        def transform_ctrllimited(_: Any, context: dict[str, Any]) -> int:
+            """Parse mjc:ctrlLimited, defaulting to true when inheritrange resolves."""
+            prim = context["prim"]
+            limited_attr = prim.GetAttribute("mjc:ctrlLimited")
+            if limited_attr and limited_attr.HasAuthoredValue():
+                return parse_tristate(limited_attr.Get())
+            if _resolve_inheritrange_as_ctrlrange(prim, context) is not None:
+                return 1
+            return 2
+
         def resolve_prim_name(_: str, context: dict[str, Any]) -> str:
             """Return the USD prim path as the attribute value.
 
@@ -1189,28 +1254,6 @@ class SolverMuJoCo(SolverBase):
         # If target resolution is not possible yet (for example tendon target parsed later),
         # we preserve sentinel values and resolve deterministically in _init_actuators
         # using actuator_target_label.
-        def resolve_actuator_transmission_index(_: str, context: dict[str, Any]) -> wp.vec2i:
-            """Resolve the transmission target index for a USD actuator prim.
-
-            Reads the ``mjc:target`` relationship from the actuator prim and returns
-            the resolved target index packed into a ``wp.vec2i``.
-
-            Args:
-                _: The attribute name (unused).
-                context: A dictionary containing at least a ``"prim"`` key with the USD prim
-                    for the actuator being processed.
-
-            Returns:
-                A ``wp.vec2i`` where the first element is the target index and
-                the second element is unused (set to 0). Returns ``(-1, -1)`` if
-                target resolution is deferred.
-            """
-            prim = context["prim"]
-            _trntype, target_idx, _target_path = resolve_actuator_target(prim)
-            if target_idx < 0:
-                return wp.vec2i(wp.int32(-1), wp.int32(-1))
-            return wp.vec2i(wp.int32(target_idx), wp.int32(0))
-
         def resolve_actuator_transmission_type(_: str, context: dict[str, Any]) -> int:
             """Resolve transmission type for a USD actuator prim from its target path."""
             prim = context["prim"]
@@ -1231,8 +1274,6 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.vec2i,
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
-                usd_attribute_name="*",
-                usd_value_transformer=resolve_actuator_transmission_index,
             )
         )
 
@@ -1289,6 +1330,7 @@ class SolverMuJoCo(SolverBase):
                 usd_value_transformer=resolve_actuator_transmission_type,
             )
         )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_dyntype",
@@ -1299,6 +1341,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="dyntype",
                 mjcf_value_transformer=parse_dyntype,
+                usd_attribute_name="mjc:dynType",
+                usd_value_transformer=parse_dyntype,
             )
         )
         builder.add_custom_attribute(
@@ -1311,6 +1355,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="gaintype",
                 mjcf_value_transformer=parse_gaintype,
+                usd_attribute_name="mjc:gainType",
+                usd_value_transformer=parse_gaintype,
             )
         )
         builder.add_custom_attribute(
@@ -1323,6 +1369,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="biastype",
                 mjcf_value_transformer=parse_biastype,
+                usd_attribute_name="mjc:biasType",
+                usd_value_transformer=parse_biastype,
             )
         )
 
@@ -1360,7 +1408,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="ctrllimited",
                 mjcf_value_transformer=parse_tristate,
                 usd_attribute_name="*",
-                usd_value_transformer=make_usd_limited_transformer("mjc:ctrlLimited", "mjc:ctrlRange"),
+                usd_value_transformer=transform_ctrllimited,
             )
         )
         builder.add_custom_attribute(
@@ -1387,7 +1435,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="ctrlrange",
                 usd_attribute_name="*",
-                usd_value_transformer=make_usd_range_transformer("mjc:ctrlRange"),
+                usd_value_transformer=transform_ctrlrange,
             )
         )
         builder.add_custom_attribute(
@@ -1401,7 +1449,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="ctrlrange",
                 mjcf_value_transformer=parse_presence,
                 usd_attribute_name="*",
-                usd_value_transformer=make_usd_has_range_transformer("mjc:ctrlRange"),
+                usd_value_transformer=transform_has_ctrlrange,
             )
         )
         builder.add_custom_attribute(
@@ -2428,6 +2476,7 @@ class SolverMuJoCo(SolverBase):
         mjc_joint_names: list[str],
         selected_tendons: list[int],
         mjc_tendon_names: list[str],
+        body_name_mapping: dict[int, str],
     ) -> int:
         """Initialize MuJoCo general actuators from custom attributes.
 
@@ -2451,7 +2500,7 @@ class SolverMuJoCo(SolverBase):
                 Used to resolve CTRL_DIRECT joint actuators to their MuJoCo targets.
             mjc_joint_names: List of MuJoCo joint names indexed by MuJoCo joint index.
                 Used together with dof_to_mjc_joint to get the correct joint name.
-
+            body_name_mapping: Mapping from Newton body index to de-duplicated MuJoCo body name
         Returns:
             int: Number of actuators added.
         """
@@ -2585,7 +2634,14 @@ class SolverMuJoCo(SolverBase):
                     if wp.config.verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
                     continue
-                target_name = model.body_label[target_idx].replace("/", "_")
+                target_name = body_name_mapping.get(target_idx)
+                if target_name is None:
+                    if wp.config.verbose:
+                        print(
+                            f"Warning: MuJoCo actuator {mujoco_act_idx} references body {target_idx} "
+                            "not present in the MuJoCo export."
+                        )
+                    continue
             else:
                 # TODO: Support site, slidercrank, and jointinparent transmission types
                 if wp.config.verbose:
@@ -2637,7 +2693,6 @@ class SolverMuJoCo(SolverBase):
             if hasattr(mujoco_attrs, "actuator_biastype"):
                 biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
                 general_args["biastype"] = biastype
-
             # Detect position/velocity actuator shortcuts. Use set_to_position/
             # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
             # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
@@ -2648,10 +2703,13 @@ class SolverMuJoCo(SolverBase):
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
                 # Position shortcut: biasprm = [0, -kp, -kv]
+                # A positive biasprm[2] indicates a dampratio placeholder
                 if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
                     shortcut = "position"
                     shortcut_args["kp"] = kp
-                    kv = -bp[2] if bp[2] != 0 else 0.0
+                    if bp[2] > 0 and dampratio == 0.0:
+                        dampratio = bp[2]
+                    kv = -bp[2] if bp[2] < 0 else 0.0
                     if kv > 0:
                         shortcut_args["kv"] = kv
                     if dampratio > 0:
@@ -2902,7 +2960,7 @@ class SolverMuJoCo(SolverBase):
             self._mujoco.mj_step(self.mj_model, self.mj_data)
             self._update_newton_state(self.model, state_out, self.mj_data)
         else:
-            self.enable_rne_postconstraint(state_out)
+            self._enable_rne_postconstraint(state_out)
             self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self._update_mjc_data(self.mjw_data, self.model, state_in)
@@ -2918,7 +2976,7 @@ class SolverMuJoCo(SolverBase):
         self._step += 1
         return state_out
 
-    def enable_rne_postconstraint(self, state_out: State):
+    def _enable_rne_postconstraint(self, state_out: State):
         """Request computation of RNE forces if required for state fields."""
         rne_postconstraint_fields = {"body_qdd", "body_parent_f"}
         # TODO: handle use_mujoco_cpu
@@ -2997,16 +3055,16 @@ class SolverMuJoCo(SolverBase):
             self._update_joint_dof_properties()
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
-            self.update_pair_properties()
+            self._update_pair_properties()
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self._update_model_properties()
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
-            self.update_eq_properties()
-            self.update_mimic_eq_properties()
+            self._update_eq_properties()
+            self._update_mimic_eq_properties()
         if flags & SolverNotifyFlags.TENDON_PROPERTIES:
-            self.update_tendon_properties()
+            self._update_tendon_properties()
         if flags & SolverNotifyFlags.ACTUATOR_PROPERTIES:
-            self.update_actuator_properties()
+            self._update_actuator_properties()
 
     def _create_inverse_shape_mapping(self):
         """
@@ -3833,6 +3891,8 @@ class SolverMuJoCo(SolverBase):
         site_mapping = {}
         # Store mapping from Newton joint index to MuJoCo joint name
         joint_mapping = {}
+        # Store mapping from Newton body index to MuJoCo body name
+        body_name_mapping = {}
         # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
         newton_body_to_mocap_index = {}
         # counter for assigning sequential mocap indices
@@ -4155,6 +4215,7 @@ class SolverMuJoCo(SolverBase):
                 while name in body_name_counts:
                     body_name_counts[name] += 1
                     name = f"{name}_{body_name_counts[name]}"
+            body_name_mapping[child] = name  # store the final de-duplicated name
 
             inertia = body_inertia[child]
             mass = body_mass[child]
@@ -4165,14 +4226,22 @@ class SolverMuJoCo(SolverBase):
             if mass > 0.0:
                 body_kwargs["mass"] = mass
                 body_kwargs["ipos"] = body_com[child, :]
-                body_kwargs["fullinertia"] = [
-                    inertia[0, 0],
-                    inertia[1, 1],
-                    inertia[2, 2],
-                    inertia[0, 1],
-                    inertia[0, 2],
-                    inertia[1, 2],
-                ]
+                # Use diaginertia when off-diagonals are exactly zero to preserve
+                # MuJoCo's sameframe optimization (body_simple=1).  fullinertia
+                # triggers eigendecomposition that reorders eigenvalues and applies
+                # a permutation rotation, setting body_simple=0 even for diagonal
+                # matrices whose entries are not in descending order.
+                if inertia[0, 1] == 0.0 and inertia[0, 2] == 0.0 and inertia[1, 2] == 0.0:
+                    body_kwargs["inertia"] = [inertia[0, 0], inertia[1, 1], inertia[2, 2]]
+                else:
+                    body_kwargs["fullinertia"] = [
+                        inertia[0, 0],
+                        inertia[1, 1],
+                        inertia[2, 2],
+                        inertia[0, 1],
+                        inertia[0, 2],
+                        inertia[1, 2],
+                    ]
                 body_kwargs["explicitinertial"] = True
             body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
@@ -4480,7 +4549,15 @@ class SolverMuJoCo(SolverBase):
             """Get body name, handling world body (-1) correctly."""
             if body_idx == -1:
                 return "world"
-            return model.body_label[body_idx].replace("/", "_")
+            target_name = body_name_mapping.get(body_idx)
+            if target_name is None:
+                target_name = model.body_label[body_idx].replace("/", "_")
+                if wp.config.verbose:
+                    print(
+                        f"Warning: MuJoCo equality constraint references body {body_idx} "
+                        "not present in the MuJoCo export."
+                    )
+            return target_name
 
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
@@ -4633,6 +4710,7 @@ class SolverMuJoCo(SolverBase):
             mjc_joint_names,
             selected_tendons,
             mjc_tendon_names,
+            body_name_mapping,
         )
 
         # Convert actuator mapping lists to warp arrays
@@ -4683,7 +4761,7 @@ class SolverMuJoCo(SolverBase):
 
             # Sync compiler-resolved actuator params back to Newton custom
             # attributes. MuJoCo's compiler resolves dampratio into biasprm[2]
-            # during compilation; without this sync, update_actuator_properties
+            # during compilation; without this sync, _update_actuator_properties
             # would overwrite the resolved values with the unresolved originals.
             self._sync_compiled_actuator_params()
 
@@ -5425,7 +5503,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_pair_properties(self):
+    def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.
 
         Updates the randomizable pair properties (solref, solreffriction, solimp,
@@ -5506,7 +5584,7 @@ class SolverMuJoCo(SolverBase):
                     device=self.model.device,
                 )
 
-    def update_eq_properties(self):
+    def _update_eq_properties(self):
         """Update equality constraint properties in the MuJoCo model.
 
         Updates:
@@ -5573,7 +5651,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_mimic_eq_properties(self):
+    def _update_mimic_eq_properties(self):
         """Update mimic constraint properties in the MuJoCo model.
 
         Updates:
@@ -5609,7 +5687,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_tendon_properties(self):
+    def _update_tendon_properties(self):
         """Update fixed tendon properties in the MuJoCo model.
 
         Updates tendon stiffness, damping, frictionloss, range, margin, solref, solimp,
@@ -5677,7 +5755,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_actuator_properties(self):
+    def _update_actuator_properties(self):
         """Update CTRL_DIRECT actuator properties (gainprm, biasprm) in the MuJoCo model.
 
         Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
@@ -5724,7 +5802,7 @@ class SolverMuJoCo(SolverBase):
 
         MuJoCo's compiler resolves dampratio into biasprm[2] during model compilation.
         This launches a kernel to copy the compiled values from mjw_model into Newton's
-        custom attributes so that update_actuator_properties writes the correct values.
+        custom attributes so that _update_actuator_properties writes the correct values.
         """
         if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
             return

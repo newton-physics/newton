@@ -953,8 +953,8 @@ def parse_mjcf(
                         stacklevel=2,
                     )
 
-                # Add explicit mass and computed inertia to body
-                if inertia_computed:
+                # Add explicit mass and computed inertia to body (skip if inertia is locked by <inertial>)
+                if inertia_computed and not builder.body_lock_inertia[link]:
                     com_body = wp.transform_point(tf, com)
                     builder._update_body_mass(link, geom_mass_explicit, inertia_tensor, com_body, tf.q)
 
@@ -1148,7 +1148,7 @@ def parse_mjcf(
                 body_name,
                 link,
                 geoms=visuals,
-                density=0.0,
+                density=default_shape_density,
                 just_visual=True,
                 visible=not hide_visuals,
                 incoming_xform=incoming_xform,
@@ -1658,6 +1658,10 @@ def parse_mjcf(
                 builder.body_inv_inertia[link] = wp.inverse(I_m)
             else:
                 builder.body_inv_inertia[link] = I_m
+            # Lock inertia so subsequent shapes (e.g. from child <frame> elements)
+            # don't modify the explicitly specified mass/com/inertia.  This matches
+            # MuJoCo's behavior where <inertial> completely overrides geom contributions.
+            builder.body_lock_inertia[link] = True
 
         # -----------------
         # recurse
@@ -2414,7 +2418,7 @@ def parse_mjcf(
 
             # Extract gains based on actuator type
             if actuator_type == "position":
-                kp = parse_float(merged_attrib, "kp", 0.0)
+                kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -2451,7 +2455,7 @@ def parse_mjcf(
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
-                kv = parse_float(merged_attrib, "kv", 0.0)
+                kv = parse_float(merged_attrib, "kv", 1.0)  # MuJoCo default kv=1
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT

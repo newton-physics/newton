@@ -13,18 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-USD schema resolvers.
-"""
+"""Concrete USD schema resolvers used by :mod:`newton.usd`."""
 
-from typing import Any, ClassVar
+from __future__ import annotations
 
-from ..sim.builder import ModelBuilder
-from ..usd.schema_resolver import PrimType, SchemaAttribute, SchemaResolver
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, ClassVar
+
+from ..core.types import override
+from ..usd.schema_resolver import PrimType, SchemaResolver
 from . import utils as usd
 
+if TYPE_CHECKING:
+    from pxr import Usd
 
-def _physx_gap_from_prim(prim: Any) -> float | None:
+    from ..sim.builder import ModelBuilder
+
+
+SchemaAttribute = SchemaResolver.SchemaAttribute
+
+
+def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
     """Compute Newton gap from PhysX: contactOffset - restOffset [m].
 
     Returns None if either attribute is missing or -inf (PhysX uses -inf for "engine default").
@@ -41,8 +50,7 @@ def _physx_gap_from_prim(prim: Any) -> float | None:
 
 
 class SchemaResolverNewton(SchemaResolver):
-    """
-    Resolver for the Newton USD schema.
+    """Schema resolver for Newton-authored USD attributes.
 
     .. note::
         The Newton USD schema is under development and may change in the future.
@@ -57,7 +65,7 @@ class SchemaResolverNewton(SchemaResolver):
         },
         PrimType.JOINT: {
             # warning: there is no NewtonJointAPI, none of these are schema attributes
-            "armature": SchemaAttribute("newton:armature", 1.0e-2),
+            "armature": SchemaAttribute("newton:armature", 0.0),
             "friction": SchemaAttribute("newton:friction", 0.0),
             "limit_linear_ke": SchemaAttribute("newton:linear:limitStiffness", 1.0e4),
             "limit_angular_ke": SchemaAttribute("newton:angular:limitStiffness", 1.0e4),
@@ -100,9 +108,7 @@ class SchemaResolverNewton(SchemaResolver):
 
 
 class SchemaResolverPhysx(SchemaResolver):
-    """
-    Resolver for the PhysX USD schema.
-    """
+    """Schema resolver for PhysX USD attributes."""
 
     name: ClassVar[str] = "physx"
     extra_attr_namespaces: ClassVar[list[str]] = [
@@ -195,7 +201,7 @@ class SchemaResolverPhysx(SchemaResolver):
     }
 
 
-def solref_to_stiffness_damping(solref):
+def solref_to_stiffness_damping(solref: Sequence[float] | None) -> tuple[float | None, float | None]:
     """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness and damping.
 
     Returns a tuple (stiffness, damping).
@@ -208,6 +214,9 @@ def solref_to_stiffness_damping(solref):
         k = -timeconst
         b = -dampratio
     """
+    if solref is None:
+        return None, None
+
     try:
         timeconst = float(solref[0])
         dampratio = float(solref[1])
@@ -228,7 +237,7 @@ def solref_to_stiffness_damping(solref):
     return stiffness, damping
 
 
-def solref_to_stiffness(solref):
+def solref_to_stiffness(solref: Sequence[float] | None) -> float | None:
     """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness.
 
     Standard mode (timeconst > 0): k = 1 / (timeconst^2 * dampratio^2)
@@ -238,7 +247,7 @@ def solref_to_stiffness(solref):
     return stiffness
 
 
-def solref_to_damping(solref):
+def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     """Convert MuJoCo solref (timeconst, dampratio) to internal damping.
 
     Standard mode (both positive): b = 2 / timeconst
@@ -249,9 +258,7 @@ def solref_to_damping(solref):
 
 
 class SchemaResolverMjc(SchemaResolver):
-    """
-    Resolver for the MuJoCo USD schema.
-    """
+    """Schema resolver for MuJoCo USD attributes."""
 
     name: ClassVar[str] = "mjc"
 
@@ -327,11 +334,12 @@ class SchemaResolverMjc(SchemaResolver):
         },
     }
 
+    @override
     def validate_custom_attributes(self, builder: ModelBuilder) -> None:
         """
         Validate that MuJoCo custom attributes have been registered on the builder.
 
-        Users must call :meth:`SolverMuJoCo.register_custom_attributes` before parsing
+        Users must call :meth:`newton.solvers.SolverMuJoCo.register_custom_attributes` before parsing
         USD files with this resolver.
 
         Raises:
@@ -340,6 +348,7 @@ class SchemaResolverMjc(SchemaResolver):
         has_mujoco_attrs = any(attr.namespace == "mujoco" for attr in builder.custom_attributes.values())
         if not has_mujoco_attrs:
             raise RuntimeError(
-                "MuJoCo custom attributes not registered. "
-                "Call SolverMuJoCo.register_custom_attributes(builder) before parsing USD with SchemaResolverMjc."
+                "MuJoCo custom attributes not registered. Call "
+                + "SolverMuJoCo.register_custom_attributes(builder) before parsing "
+                + "USD with SchemaResolverMjc."
             )
