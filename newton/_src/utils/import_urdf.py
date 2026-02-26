@@ -85,6 +85,7 @@ def parse_urdf(
     collapse_fixed_joints: bool = False,
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
+    override_root_xform: bool = False,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -93,6 +94,14 @@ def parse_urdf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the URDF file to parse, or the URDF XML string content.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
+        override_root_xform (bool): If ``True``, the articulation root's world-space
+            transform is replaced by ``xform`` instead of being composed with it,
+            preserving only the internal structure (relative body positions). Useful
+            for cloning articulations at explicit positions. When a ``base_joint`` is
+            specified, ``xform`` is applied as the full parent transform (including
+            rotation) rather than splitting position/rotation. Not intended for
+            sources containing multiple articulations, as all roots would be placed
+            at the same ``xform``. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
@@ -178,6 +187,9 @@ def parse_urdf(
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
+
+    if override_root_xform and xform is None:
+        raise ValueError("override_root_xform=True requires xform to be set")
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -675,11 +687,14 @@ def parse_urdf(
     base_parent = parent_body
 
     if base_joint is not None:
-        # in case of a given base joint, the position is applied first, the rotation only
-        # after the base joint itself to not rotate its axis
-        # When parent_body is set, xform is interpreted as relative to the parent body
-        base_parent_xform = wp.transform(xform.p, wp.quat_identity())
-        base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
+        if override_root_xform:
+            base_parent_xform = xform
+            base_child_xform = wp.transform_identity()
+        else:
+            # Split xform: position goes to parent, rotation to child (inverted)
+            # so the custom base joint's axis isn't rotated by xform.
+            base_parent_xform = wp.transform(xform.p, wp.quat_identity())
+            base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
         base_joint_id = builder._add_base_joint(
             child=root,
             base_joint=base_joint,
