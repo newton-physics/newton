@@ -1160,7 +1160,7 @@ def get_tetmesh(prim: Usd.Prim):
 
     Example:
 
-        .. testcode::
+        .. code-block:: python
 
             from pxr import Usd
             import newton
@@ -1303,7 +1303,7 @@ def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
 
     Example:
 
-        .. testcode::
+        .. code-block:: python
 
             from pxr import Usd
             import newton.usd
