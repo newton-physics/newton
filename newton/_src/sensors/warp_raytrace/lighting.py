@@ -15,8 +15,8 @@
 
 import warp as wp
 
-from . import ray_cast
-from .ray import MAXVAL
+from ...core import MAXVAL
+from . import raytrace
 
 
 @wp.func
@@ -91,7 +91,7 @@ def compute_lighting(
         if light_type == 1:  # directional light
             max_t = wp.float32(1.0e8)
 
-        shadow_hit = ray_cast.first_hit(
+        shadow_hit = raytrace.first_hit(
             bvh_shapes_size,
             bvh_shapes_id,
             bvh_shapes_group_roots,

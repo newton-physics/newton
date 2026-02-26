@@ -43,7 +43,7 @@ DEFAULT_CLEAR_DATA = ClearData()
 
 class RenderContext:
     @dataclass
-    class Options:
+    class Config:
         enable_global_world: bool = True
         enable_textures: bool = True
         enable_shadows: bool = True
@@ -55,10 +55,10 @@ class RenderContext:
         tile_height: int = 8
         max_distance: float = 1000.0
 
-    def __init__(self, world_count: int = 1, options: Options | None = None, device: str | None = None):
+    def __init__(self, world_count: int = 1, config: Config | None = None, device: str | None = None):
         self.device = device
         self.utils = Utils(self)
-        self.options = options if options else RenderContext.Options()
+        self.config = config if config else RenderContext.Config()
 
         self.world_count = world_count
 
@@ -261,9 +261,9 @@ class RenderContext:
                 if clear_data is not None and clear_data.clear_albedo is not None:
                     albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
 
-            if self.options.render_order == RenderOrder.TILED:
-                assert width % self.options.tile_width == 0, "render width must be a multiple of tile_width"
-                assert height % self.options.tile_height == 0, "render height must be a multiple of tile_height"
+            if self.config.render_order == RenderOrder.TILED:
+                assert width % self.config.tile_width == 0, "render width must be a multiple of tile_width"
+                assert height % self.config.tile_height == 0, "render height must be a multiple of tile_height"
 
             # Reshaping output images to one dimension, slightly improves performance in the Kernel.
             if color_image is not None:
@@ -281,22 +281,22 @@ class RenderContext:
                 kernel=render_megakernel,
                 dim=(self.world_count * camera_count * width * height),
                 inputs=[
-                    # Model and Options
+                    # Model and config
                     self.world_count,
                     camera_count,
                     self.light_count,
                     width,
                     height,
-                    self.options.render_order,
-                    self.options.tile_width,
-                    self.options.tile_height,
-                    self.options.enable_shadows,
-                    self.options.enable_textures,
-                    self.options.enable_ambient_lighting,
-                    self.options.enable_particles and self.has_particles,
-                    self.options.enable_backface_culling,
-                    self.options.enable_global_world,
-                    self.options.max_distance,
+                    self.config.render_order,
+                    self.config.tile_width,
+                    self.config.tile_height,
+                    self.config.enable_shadows,
+                    self.config.enable_textures,
+                    self.config.enable_ambient_lighting,
+                    self.config.enable_particles and self.has_particles,
+                    self.config.enable_backface_culling,
+                    self.config.enable_global_world,
+                    self.config.max_distance,
                     # Camera
                     camera_rays,
                     camera_transforms,
@@ -396,7 +396,7 @@ class RenderContext:
 
     @property
     def world_count_total(self) -> int:
-        if self.options.enable_global_world:
+        if self.config.enable_global_world:
             return self.world_count + 1
         return self.world_count
 

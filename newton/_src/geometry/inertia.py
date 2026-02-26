@@ -425,13 +425,13 @@ def compute_inertia_mesh(
 
 
 @wp.func
-def transform_inertia(m: float, I: wp.mat33, p: wp.vec3, q: wp.quat) -> wp.mat33:
+def transform_inertia(mass: float, inertia: wp.mat33, offset: wp.vec3, quat: wp.quat) -> wp.mat33:
     """
     Compute a rigid body's inertia tensor expressed in a new coordinate frame.
 
-    The transformation applies (1) a rotation by quaternion ``q`` and
-    (2) a parallel-axis shift by vector ``p`` (Steiner's theorem).
-    Let ``R`` be the rotation matrix corresponding to ``q``. The returned
+    The transformation applies (1) a rotation by quaternion ``quat`` and
+    (2) a parallel-axis shift by vector ``offset`` (Steiner's theorem).
+    Let ``R`` be the rotation matrix corresponding to ``quat``. The returned
     inertia tensor :math:`\\mathbf{I}'` is
 
     .. math::
@@ -443,23 +443,23 @@ def transform_inertia(m: float, I: wp.mat33, p: wp.vec3, q: wp.quat) -> wp.mat33
     where :math:`\\mathbf{I}_3` is the :math:`3\\times3` identity matrix.
 
     Args:
-        m (float): Mass of the rigid body.
-        I (wp.mat33): Inertia tensor expressed in the body's local frame, relative
+        mass (float): Mass of the rigid body.
+        inertia (wp.mat33): Inertia tensor expressed in the body's local frame, relative
             to its center of mass.
-        p (wp.vec3): Position vector from the new frame's origin to the body's
+        offset (wp.vec3): Position vector from the new frame's origin to the body's
             center of mass.
-        q (wp.quat): Orientation of the body relative to the new frame, expressed
+        quat (wp.quat): Orientation of the body relative to the new frame, expressed
             as a quaternion.
 
     Returns:
         wp.mat33: The transformed inertia tensor expressed in the new frame.
     """
 
-    R = wp.quat_to_matrix(q)
+    R = wp.quat_to_matrix(quat)
 
     # Steiner's theorem
-    return R @ I @ wp.transpose(R) + m * (
-        wp.dot(p, p) * wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0) - wp.outer(p, p)
+    return R @ inertia @ wp.transpose(R) + mass * (
+        wp.dot(offset, offset) * wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0) - wp.outer(offset, offset)
     )
 
 

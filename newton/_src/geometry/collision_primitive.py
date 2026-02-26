@@ -39,8 +39,8 @@ Returns (multi contact): (distances: vecN, positions: matNx3, normals: vecN or m
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-from newton._src.math import normalize_with_norm, safe_div
+from ..core.types import MAXVAL
+from ..math import normalize_with_norm, safe_div
 
 # Local type definitions for use within kernels
 _vec8f = wp.types.vector(8, wp.float32)

@@ -38,14 +38,9 @@ import warp as wp
 import yaml
 
 import newton
-
-# Test: Disable CUDA-OpenGL interop to see if that fixes the issue
-import newton._src.viewer.gl.opengl as opengl_module
 import newton.examples
 import newton.utils
 from newton import JointTargetMode, State
-
-opengl_module.ENABLE_CUDA_INTEROP = False
 
 
 @dataclass

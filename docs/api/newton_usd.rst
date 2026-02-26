@@ -3,7 +3,22 @@ newton.usd
 
 Utilities for working with the Universal Scene Description (USD) format.
 
+This module provides both low-level USD utility helpers and public schema
+resolver types used by :meth:`newton.ModelBuilder.add_usd`.
+
 .. currentmodule:: newton.usd
+
+.. rubric:: Classes
+
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
+
+   PrimType
+   SchemaResolver
+   SchemaResolverMjc
+   SchemaResolverNewton
+   SchemaResolverPhysx
 
 .. rubric:: Functions
 

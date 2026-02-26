@@ -48,7 +48,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from newton._src.core.types import MAXVAL
+from newton._src.core.types import MAXVAL, Devicelike
 
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
@@ -240,9 +240,9 @@ class HydroelasticSDF:
         shape_material_kh: wp.array(dtype=wp.float32),
         n_shapes: int,
         config: HydroelasticSDF.Config | None = None,
-        device: Any = None,
+        device: Devicelike | None = None,
         writer_func: Any = None,
-    ):
+    ) -> None:
         if config is None:
             config = HydroelasticSDF.Config()
 
