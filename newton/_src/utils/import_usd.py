@@ -175,7 +175,7 @@ def parse_usd(
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
             are authored in the USD but not strictly required to build the simulation. This is useful for
             inspection, experimentation, or custom pipelines that read these values via
-            :attr:`newton.usd.SchemaResolverManager.schema_attrs`.
+            ``result["schema_attrs"]`` returned from :func:`parse_usd`.
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.

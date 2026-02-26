@@ -51,17 +51,15 @@ from typing import Any
 import warp as wp
 
 from newton import Model, ModelBuilder
-from newton._src.usd.schema_resolver import (
+from newton._src.usd.schema_resolver import SchemaResolverManager
+from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.usd import (
     PrimType,
-    SchemaResolverManager,
-)
-from newton._src.usd.schemas import (
     SchemaResolverMjc,
     SchemaResolverNewton,
     SchemaResolverPhysx,
 )
-from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE
 
 AttributeFrequency = Model.AttributeFrequency
 
