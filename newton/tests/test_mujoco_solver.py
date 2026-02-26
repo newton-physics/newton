@@ -7429,6 +7429,7 @@ class TestUsdActuatorTypeAttributes(unittest.TestCase):
 
         # Compiled MuJoCo model must match
         self.assertEqual(self.solver.mj_model.actuator_dyntype[0], 2)
+        self.assertEqual(self.solver.mj_model.actuator_gaintype[0], 0)
         self.assertEqual(self.solver.mj_model.actuator_biastype[0], 1)
 
 
