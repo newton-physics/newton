@@ -702,7 +702,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Test 3: No authored value, no explicit default, use Newton mapping default
         val3 = resolver_newton_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=None)
-        self.assertAlmostEqual(val3, 1.0e-2, places=6)
+        self.assertAlmostEqual(val3, 0.0, places=6)
 
         # Test 3b: Use SchemaResolverMjc only - should return SchemaResolverMjc armature default (0.0)
         resolver_mjc_only = SchemaResolverManager([SchemaResolverMjc()])
