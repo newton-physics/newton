@@ -6431,6 +6431,69 @@ class TestOverrideRootXform(unittest.TestCase):
                 err_msg=f"{name} should be at xform + original offset",
             )
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_visual_shape_aligned_with_body(self):
+        """Visual shapes stay aligned with their rigid body when override_root_xform=True
+        strips a non-identity ancestor transform."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        UsdGeom.Cube.Define(stage, "/World/env/Robot/Base/Visual").GetSizeAttr().Set(0.1)
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/env/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        joint.CreateBody1Rel().SetTargets(["/World/env/Robot/Link"])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            floating=False,
+            override_root_xform=True,
+        )
+
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        visual_shapes = [i for i, b in enumerate(builder.shape_body) if b == base_idx]
+        self.assertGreater(len(visual_shapes), 0, "Expected at least one visual shape on Base")
+
+        for sid in visual_shapes:
+            shape_tf = builder.shape_transform[sid]
+            np.testing.assert_allclose(
+                shape_tf.p,
+                [0.0, 0.0, 0.0],
+                atol=1e-4,
+                err_msg="Visual shape position should be at body origin",
+            )
+            np.testing.assert_allclose(
+                shape_tf.q,
+                [0.0, 0.0, 0.0, 1.0],
+                atol=1e-4,
+                err_msg="Visual shape rotation should be identity",
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)

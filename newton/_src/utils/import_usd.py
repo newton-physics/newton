@@ -382,6 +382,7 @@ def parse_usd(
         parent_body_id: int,
         prim: Usd.Prim,
         body_xform: wp.transform | None = None,
+        articulation_root_xform: wp.transform | None = None,
     ):
         """Load visual-only shapes (non-physics) for a prim subtree.
 
@@ -392,6 +393,9 @@ def parse_usd(
             body_xform: Rigid body transform actually used by the builder.
                 This matches any physics-authored pose, scene-level transforms,
                 and incoming transforms that were applied when the body was created.
+            articulation_root_xform: When override_root_xform=True, the articulation
+                root's world-space transform. Used to rebase visual prim transforms
+                to match the rebased body transforms.
         """
         if _is_enabled_collider(prim) or prim.HasAPI(UsdPhysics.RigidBodyAPI):
             return
@@ -400,6 +404,9 @@ def parse_usd(
             return
 
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
+        if articulation_root_xform is not None:
+            rebase_mat = _xform_to_mat44(wp.transform_inverse(articulation_root_xform))
+            prim_world_mat = rebase_mat @ prim_world_mat
         if incoming_world_xform is not None and (parent_body_id == -1 or body_xform is not None):
             # Apply the incoming world transform in model space (static shapes or when using body_xform).
             incoming_mat = _xform_to_mat44(incoming_world_xform)
@@ -420,7 +427,7 @@ def parse_usd(
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                _load_visual_shapes_impl(parent_body_id, inst_child, body_xform)
+                _load_visual_shapes_impl(parent_body_id, inst_child, body_xform, articulation_root_xform)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
@@ -562,9 +569,9 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            _load_visual_shapes_impl(parent_body_id, child, body_xform)
+            _load_visual_shapes_impl(parent_body_id, child, body_xform, articulation_root_xform)
 
-    def add_body(prim: Usd.Prim, xform: wp.transform, label: str, armature: float) -> int:
+    def add_body(prim: Usd.Prim, xform: wp.transform, label: str, armature: float, articulation_root_xform: wp.transform | None = None) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
         # Extract custom attributes for this body
         body_custom_attrs = usd.get_custom_attribute_values(
@@ -580,7 +587,7 @@ def parse_usd(
         path_body_map[label] = b
         if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
-                _load_visual_shapes_impl(b, child, body_xform=xform)
+                _load_visual_shapes_impl(b, child, body_xform=xform, articulation_root_xform=articulation_root_xform)
         return b
 
     def parse_body(
@@ -588,6 +595,7 @@ def parse_usd(
         prim: Usd.Prim,
         incoming_xform: wp.transform | None = None,
         add_body_to_builder: bool = True,
+        articulation_root_xform: wp.transform | None = None,
     ) -> int | dict[str, Any]:
         """Parses a rigid body description.
         If `add_body_to_builder` is True, adds it to the builder and returns the resulting body index.
@@ -609,14 +617,17 @@ def parse_usd(
         )
 
         if add_body_to_builder:
-            return add_body(prim, origin, path, body_armature)
+            return add_body(prim, origin, path, body_armature, articulation_root_xform=articulation_root_xform)
         else:
-            return {
+            result = {
                 "prim": prim,
                 "xform": origin,
                 "label": path,
                 "armature": body_armature,
             }
+            if articulation_root_xform is not None:
+                result["articulation_root_xform"] = articulation_root_xform
+            return result
 
     def resolve_joint_parent_child(
         joint_desc: UsdPhysics.JointDesc,
@@ -1344,6 +1355,7 @@ def parse_usd(
                     else:
                         desired_world = incoming_world_xform * body_world
                     body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
+                    art_root_for_visuals = articulation_root_xform if override_root_xform else None
                     if bodies_follow_joint_ordering:
                         # we just parse the body information without yet adding it to the builder
                         body_data[current_body_id] = parse_body(
@@ -1351,6 +1363,7 @@ def parse_usd(
                             stage.GetPrimAtPath(p),
                             incoming_xform=body_incoming_xform,
                             add_body_to_builder=False,
+                            articulation_root_xform=art_root_for_visuals,
                         )
                     else:
                         # look up description and add body to builder
@@ -1359,6 +1372,7 @@ def parse_usd(
                             stage.GetPrimAtPath(p),
                             incoming_xform=body_incoming_xform,
                             add_body_to_builder=True,
+                            articulation_root_xform=art_root_for_visuals,
                         )
                         if bid >= 0:
                             art_bodies.append(bid)
