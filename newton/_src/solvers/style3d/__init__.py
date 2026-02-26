@@ -16,20 +16,17 @@
 """
 Style3D solver module.
 
-This module provides the :class:`~newton.solvers.SolverStyle3D` cloth simulation
-solver along with helper functions for setting up cloth assets. It includes
-utilities for creating cloth meshes and grids, handling collisions, and sewing
-cloth vertices together.
+This module provides helper functions for setting up Style3D cloth assets.
+Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver
+import path.
 """
 
 from .cloth import (
     add_cloth_grid,
     add_cloth_mesh,
 )
-from .solver_style3d import SolverStyle3D
 
 __all__ = [
-    "SolverStyle3D",
     "add_cloth_grid",
     "add_cloth_mesh",
 ]
