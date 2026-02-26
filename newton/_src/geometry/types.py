@@ -915,6 +915,53 @@ class Mesh:
         return Mesh(vertices=mesh_points, indices=mesh_indices, **kwargs)
 
 
+def compute_surface_triangles(tet_indices: nparray) -> np.ndarray:
+    """Extract boundary triangles from tetrahedral element indices.
+
+    Finds faces that belong to exactly one tetrahedron (boundary faces)
+    using a vectorized approach.
+
+    Args:
+        tet_indices: Flattened tetrahedral element indices (4 per tet).
+
+    Returns:
+        Flattened boundary triangle indices, 3 per triangle, int32.
+    """
+    tet_indices = np.asarray(tet_indices, dtype=np.int32).flatten()
+    tets = tet_indices.reshape(-1, 4)
+    n = len(tets)
+    if n == 0:
+        return np.array([], dtype=np.int32)
+
+    # Each tet contributes 4 faces with specific winding order:
+    #   face 0: (v0, v2, v1)
+    #   face 1: (v1, v2, v3)
+    #   face 2: (v0, v1, v3)
+    #   face 3: (v0, v3, v2)
+    # fmt: off
+    face_idx = np.array([
+        [0, 2, 1],
+        [1, 2, 3],
+        [0, 1, 3],
+        [0, 3, 2],
+    ])
+    # fmt: on
+
+    # Build all faces: shape (4*n, 3) with original winding
+    all_faces = tets[:, face_idx].reshape(-1, 3)
+
+    # Sort vertex indices per face to create canonical keys
+    sorted_faces = np.sort(all_faces, axis=1)
+
+    # Find unique sorted faces and their counts
+    _, inverse, counts = np.unique(sorted_faces, axis=0, return_inverse=True, return_counts=True)
+
+    # Boundary faces appear exactly once
+    boundary_mask = counts[inverse] == 1
+
+    return all_faces[boundary_mask].astype(np.int32).flatten()
+
+
 class TetMesh:
     """Represents a tetrahedral mesh for volumetric deformable simulation.
 
@@ -1048,44 +1095,7 @@ class TetMesh:
         )
 
     def _compute_surface_triangles(self) -> np.ndarray:
-        """Extract boundary faces (faces belonging to exactly one tet).
-
-        Uses a vectorized approach: build all 4*T faces, sort vertex indices
-        per face to create canonical keys, then keep only faces that appear
-        an odd number of times (boundary faces).
-        """
-        tets = self._tet_indices.reshape(-1, 4)
-        n = len(tets)
-        if n == 0:
-            return np.array([], dtype=np.int32)
-
-        # Each tet contributes 4 faces with specific winding order:
-        #   face 0: (v0, v2, v1)
-        #   face 1: (v1, v2, v3)
-        #   face 2: (v0, v1, v3)
-        #   face 3: (v0, v3, v2)
-        # fmt: off
-        face_idx = np.array([
-            [0, 2, 1],
-            [1, 2, 3],
-            [0, 1, 3],
-            [0, 3, 2],
-        ])
-        # fmt: on
-
-        # Build all faces: shape (4*n, 3) with original winding
-        all_faces = tets[:, face_idx].reshape(-1, 3)
-
-        # Sort vertex indices per face to create canonical keys
-        sorted_faces = np.sort(all_faces, axis=1)
-
-        # Find unique sorted faces and their counts
-        _, inverse, counts = np.unique(sorted_faces, axis=0, return_inverse=True, return_counts=True)
-
-        # Boundary faces appear exactly once
-        boundary_mask = counts[inverse] == 1
-
-        return all_faces[boundary_mask].astype(np.int32).flatten()
+        return compute_surface_triangles(self._tet_indices)
 
     # ---- Properties --------------------------------------------------------
 

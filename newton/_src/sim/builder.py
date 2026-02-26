@@ -7515,21 +7515,7 @@ class ModelBuilder:
             p_custom = {k: arr[vi] for k, arr in particle_custom.items()} if particle_custom else None
             self.add_particle(p, vel, 0.0, particle_radius, custom_attributes=p_custom)
 
-        # Use pre-computed surface triangles from TetMesh if available
-        has_precomputed_surface = mesh is not None and len(mesh.surface_tri_indices) > 0
-
         # add tetrahedra
-        if not has_precomputed_surface:
-            # dict of open faces (legacy path)
-            faces = {}
-
-            def add_face(i, j, k):
-                key = tuple(sorted((i, j, k)))
-                if key not in faces:
-                    faces[key] = (i, j, k)
-                else:
-                    del faces[key]
-
         for t in range(num_tets):
             v0 = start_vertex + indices[t * 4 + 0]
             v1 = start_vertex + indices[t * 4 + 1]
@@ -7555,33 +7541,31 @@ class ModelBuilder:
                 self.particle_mass[v2] += density * volume / 4.0
                 self.particle_mass[v3] += density * volume / 4.0
 
-                if not has_precomputed_surface:
-                    # build open faces
-                    add_face(v0, v2, v1)
-                    add_face(v1, v2, v3)
-                    add_face(v0, v1, v3)
-                    add_face(v0, v3, v2)
+        # Compute surface triangles — reuse pre-computed result from TetMesh
+        # or derive from raw indices via the same vectorized function.
+        from ..geometry.types import compute_surface_triangles  # noqa: PLC0415
+
+        if mesh is not None and len(mesh.surface_tri_indices) > 0:
+            surface_tri_indices = mesh.surface_tri_indices
+        else:
+            surface_tri_indices = compute_surface_triangles(indices)
 
         # add surface triangles
         start_tri = len(self.tri_indices)
-        if has_precomputed_surface:
-            surf = mesh.surface_tri_indices.reshape(-1, 3)
-            for ti, tri in enumerate(surf):
-                tr_custom = {k: arr[ti] for k, arr in tri_custom.items()} if tri_custom else None
-                self.add_triangle(
-                    start_vertex + int(tri[0]),
-                    start_vertex + int(tri[1]),
-                    start_vertex + int(tri[2]),
-                    tri_ke,
-                    tri_ka,
-                    tri_kd,
-                    tri_drag,
-                    tri_lift,
-                    custom_attributes=tr_custom,
-                )
-        else:
-            for _k, v in faces.items():
-                self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        surf = surface_tri_indices.reshape(-1, 3)
+        for ti, tri in enumerate(surf):
+            tr_custom = {k: arr[ti] for k, arr in tri_custom.items()} if tri_custom else None
+            self.add_triangle(
+                start_vertex + int(tri[0]),
+                start_vertex + int(tri[1]),
+                start_vertex + int(tri[2]),
+                tri_ke,
+                tri_ka,
+                tri_kd,
+                tri_drag,
+                tri_lift,
+                custom_attributes=tr_custom,
+            )
         end_tri = len(self.tri_indices)
 
         if add_surface_mesh_edges:
