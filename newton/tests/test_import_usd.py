@@ -15,6 +15,7 @@
 
 import math
 import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -7026,6 +7027,86 @@ def Mesh "JustAMesh" ()
         self.assertIsNone(tm.k_lambda)
         self.assertIsNone(tm.density)
 >>>>>>> d65c3437 (Add TetMesh class and USD loading API)
+
+    def test_tetmesh_save_load_npz(self):
+        """Test TetMesh round-trip save/load via .npz."""
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices, k_mu=1000.0, k_lambda=2000.0, density=40.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
+            path = f.name
+
+        try:
+            tm.save(path)
+            tm2 = newton.TetMesh.create_from_file(path)
+
+            assert_np_equal(tm2.vertices, tm.vertices)
+            assert_np_equal(tm2.tet_indices, tm.tet_indices)
+            assert_np_equal(tm2.k_mu, tm.k_mu)
+            assert_np_equal(tm2.k_lambda, tm.k_lambda)
+            self.assertAlmostEqual(tm2.density, 40.0)
+        finally:
+            os.unlink(path)
+
+    def test_tetmesh_save_load_vtk(self):
+        """Test TetMesh round-trip save/load via .vtk (meshio)."""
+
+        meshio = None
+        try:
+            import meshio
+        except ImportError:
+            pass
+        if meshio is None:
+            self.skipTest("meshio not installed")
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+
+        with tempfile.NamedTemporaryFile(suffix=".vtk", delete=False) as f:
+            path = f.name
+
+        try:
+            tm.save(path)
+            tm2 = newton.TetMesh.create_from_file(path)
+
+            self.assertEqual(tm2.vertex_count, 5)
+            self.assertEqual(tm2.tet_count, 2)
+            assert_np_equal(tm2.tet_indices[:4], np.array([0, 1, 2, 3], dtype=np.int32))
+            assert_np_equal(tm2.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
+        finally:
+            os.unlink(path)
+
+    def test_mesh_create_from_file_obj(self):
+        """Test Mesh.create_from_file with an OBJ file."""
+
+        # Write a minimal OBJ file (single triangle)
+        obj_content = "v 0.0 0.0 0.0\nv 1.0 0.0 0.0\nv 0.0 1.0 0.0\nf 1 2 3\n"
+
+        with tempfile.NamedTemporaryFile(suffix=".obj", delete=False, mode="w") as f:
+            f.write(obj_content)
+            path = f.name
+
+        try:
+            mesh = newton.Mesh.create_from_file(path)
+
+            self.assertIsInstance(mesh, newton.Mesh)
+            self.assertEqual(len(mesh.vertices), 3)
+            self.assertEqual(len(mesh.indices), 3)
+        finally:
+            os.unlink(path)
+
+    def test_mesh_create_from_file_not_found(self):
+        """Test Mesh.create_from_file raises on missing file."""
+        with self.assertRaises(FileNotFoundError):
+            newton.Mesh.create_from_file("nonexistent_file.obj")
+
+    def test_tetmesh_create_from_file_not_found(self):
+        """Test TetMesh.create_from_file raises on missing file."""
+        with self.assertRaises(FileNotFoundError):
+            newton.TetMesh.create_from_file("nonexistent_file.vtk")
 
 
 if __name__ == "__main__":

@@ -887,6 +887,29 @@ class Mesh:
 
         return get_mesh(prim, **kwargs)
 
+    @staticmethod
+    def create_from_file(filename: str, method: str | None = None, **kwargs) -> "Mesh":
+        """Load a Mesh from a 3D model file.
+
+        Supports common surface mesh formats including OBJ, PLY, STL, and
+        other formats supported by trimesh, meshio, openmesh, or pcu.
+
+        Args:
+            filename: Path to the mesh file.
+            method: Loading backend to use (``"trimesh"``, ``"meshio"``,
+                ``"pcu"``, ``"openmesh"``). If ``None``, each backend is
+                tried in order until one succeeds.
+            **kwargs: Additional arguments passed to the :class:`Mesh`
+                constructor (e.g. ``compute_inertia``, ``is_solid``).
+
+        Returns:
+            Mesh: A new Mesh instance.
+        """
+        from .utils import load_mesh  # noqa: PLC0415
+
+        mesh_points, mesh_indices = load_mesh(filename, method=method)
+        return Mesh(vertices=mesh_points, indices=mesh_indices, **kwargs)
+
 
 class TetMesh:
     """Represents a tetrahedral mesh for volumetric deformable simulation.
@@ -1058,6 +1081,94 @@ class TetMesh:
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 
         return get_tetmesh(prim)
+
+    @staticmethod
+    def create_from_file(filename: str) -> "TetMesh":
+        """Load a TetMesh from a volumetric mesh file.
+
+        Supports ``.vtk``, ``.msh``, ``.vtu``, and other formats with
+        tetrahedral cells via meshio. Also supports ``.npz`` files saved
+        by :meth:`TetMesh.save` (numpy only, no extra dependencies).
+
+        Args:
+            filename: Path to the volumetric mesh file.
+
+        Returns:
+            TetMesh: A new TetMesh instance.
+        """
+        import os  # noqa: PLC0415
+
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"File not found: {filename}")
+
+        ext = os.path.splitext(filename)[1].lower()
+
+        if ext == ".npz":
+            data = np.load(filename)
+            kwargs = {}
+            for key in ("k_mu", "k_lambda", "k_damp"):
+                if key in data:
+                    kwargs[key] = data[key]
+            if "density" in data:
+                kwargs["density"] = float(data["density"])
+            return TetMesh(
+                vertices=data["vertices"],
+                tet_indices=data["tet_indices"],
+                **kwargs,
+            )
+
+        import meshio
+
+        m = meshio.read(filename)
+
+        # Find tetrahedral cells
+        tet_indices = None
+        for cell_block in m.cells:
+            if cell_block.type == "tetra":
+                tet_indices = np.array(cell_block.data, dtype=np.int32).flatten()
+                break
+
+        if tet_indices is None:
+            raise ValueError(f"No tetrahedral cells found in '{filename}'.")
+
+        vertices = np.array(m.points, dtype=np.float32)
+        return TetMesh(vertices=vertices, tet_indices=tet_indices)
+
+    def save(self, filename: str):
+        """Save the TetMesh to a file.
+
+        For ``.npz``, saves all arrays via :func:`numpy.savez` (no extra
+        dependencies). For other formats (``.vtk``, ``.msh``, ``.vtu``,
+        etc.), uses meshio.
+
+        Args:
+            filename: Path to write the file to.
+        """
+        import os  # noqa: PLC0415
+
+        ext = os.path.splitext(filename)[1].lower()
+
+        if ext == ".npz":
+            save_dict = {
+                "vertices": self._vertices,
+                "tet_indices": self._tet_indices,
+            }
+            if self._k_mu is not None:
+                save_dict["k_mu"] = self._k_mu
+            if self._k_lambda is not None:
+                save_dict["k_lambda"] = self._k_lambda
+            if self._k_damp is not None:
+                save_dict["k_damp"] = self._k_damp
+            if self._density is not None:
+                save_dict["density"] = np.array(self._density)
+            np.savez(filename, **save_dict)
+            return
+
+        import meshio
+
+        cells = [("tetra", self._tet_indices.reshape(-1, 4))]
+        mesh = meshio.Mesh(points=self._vertices, cells=cells)
+        mesh.write(filename)
 
     def __eq__(self, other):
         if not isinstance(other, TetMesh):
