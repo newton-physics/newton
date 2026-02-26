@@ -38,6 +38,7 @@ from .types import (
     GeoType,
     Heightfield,
     Mesh,
+    TetMesh,
 )
 from .utils import compute_shape_radius
 
@@ -51,6 +52,7 @@ __all__ = [
     "Mesh",
     "ParticleFlags",
     "ShapeFlags",
+    "TetMesh",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",

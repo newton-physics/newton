@@ -1130,6 +1130,133 @@ def get_mesh(
     return mesh_out
 
 
+def get_tetmesh(prim: Usd.Prim):
+    """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
+
+    Reads vertex positions from the ``points`` attribute and tetrahedral
+    connectivity from ``tetVertexIndices``. If a physics material is bound
+    to the prim (via ``material:binding:physics``) and contains
+    ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
+    (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+    those values are read and converted to Lame parameters (``k_mu``,
+    ``k_lambda``) and density on the returned TetMesh. Material properties
+    are set to ``None`` if not present.
+
+    Example:
+
+        .. testcode::
+
+            from pxr import Usd
+            import newton
+            import newton.usd
+
+            usd_stage = Usd.Stage.Open("tetmesh.usda")
+            tetmesh = newton.usd.get_tetmesh(usd_stage.GetPrimAtPath("/MyTetMesh"))
+
+            # tetmesh.vertices  -- np.ndarray, shape (N, 3)
+            # tetmesh.tet_indices -- np.ndarray, shape (M, 4)
+
+    Args:
+        prim: The USD prim to load the tetrahedral mesh from.
+
+    Returns:
+        TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
+    """
+    from ..geometry.types import TetMesh  # noqa: PLC0415
+
+    tet_mesh = UsdGeom.TetMesh(prim)
+
+    points_attr = tet_mesh.GetPointsAttr().Get()
+    if points_attr is None:
+        raise ValueError(f"TetMesh prim '{prim.GetPath()}' has no points attribute.")
+
+    tet_indices_attr = tet_mesh.GetTetVertexIndicesAttr().Get()
+    if tet_indices_attr is None:
+        raise ValueError(f"TetMesh prim '{prim.GetPath()}' has no tetVertexIndices attribute.")
+
+    vertices = np.array(points_attr, dtype=np.float32)
+    tet_indices = np.array(tet_indices_attr, dtype=np.int32).flatten()
+
+    # Try to read physics material properties if bound
+    k_mu = None
+    k_lambda = None
+    density = None
+
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is not None:
+        youngs = _read_physics_attr(material_prim, "youngsModulus")
+        poissons = _read_physics_attr(material_prim, "poissonsRatio")
+        density_val = _read_physics_attr(material_prim, "density")
+
+        if youngs is not None and poissons is not None:
+            E = float(youngs)
+            nu = float(poissons)
+            k_mu = E / (2.0 * (1.0 + nu))
+            k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+
+        if density_val is not None:
+            density = float(density_val)
+
+    return TetMesh(
+        vertices=vertices,
+        tet_indices=tet_indices,
+        k_mu=k_mu,
+        k_lambda=k_lambda,
+        density=density,
+    )
+
+
+def _find_physics_material_prim(prim: Usd.Prim):
+    """Find the physics material prim bound to a prim or its ancestors."""
+    p = prim
+    while p and p.IsValid():
+        binding_api = UsdShade.MaterialBindingAPI(p)
+        rel = binding_api.GetDirectBindingRel("physics")
+        if rel and rel.GetTargets():
+            mat_path = rel.GetTargets()[0]
+            mat_prim = prim.GetStage().GetPrimAtPath(mat_path)
+            if mat_prim and mat_prim.IsValid():
+                return mat_prim
+        p = p.GetParent()
+    return None
+
+
+def _read_physics_attr(prim: Usd.Prim, name: str):
+    """Read a physics attribute from a prim, trying known namespaces."""
+    for prefix in ("omniphysics:", "physxDeformableBody:", "physics:"):
+        attr = prim.GetAttribute(f"{prefix}{name}")
+        if attr and attr.HasAuthoredValue():
+            return attr.Get()
+    return None
+
+
+def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
+    """Find all prims with the ``UsdGeom.TetMesh`` schema in a USD stage.
+
+    Example:
+
+        .. testcode::
+
+            from pxr import Usd
+            import newton.usd
+
+            stage = Usd.Stage.Open("scene.usda")
+            prims = newton.usd.find_tetmesh_prims(stage)
+            tetmeshes = [newton.usd.get_tetmesh(p) for p in prims]
+
+    Args:
+        stage: The USD stage to search.
+
+    Returns:
+        list[Usd.Prim]: All prims in the stage that have the TetMesh schema.
+    """
+    result = []
+    for prim in stage.Traverse():
+        if prim.IsA(UsdGeom.TetMesh):
+            result.append(prim)
+    return result
+
+
 def _resolve_asset_path(
     asset: Sdf.AssetPath | str | os.PathLike[str] | None,
     prim: Usd.Prim,

@@ -6834,5 +6834,199 @@ class TestOverrideRootXform(unittest.TestCase):
         self.assertEqual(builder.joint_articulation[loop_idx], -1)
 
 
+class TestTetMesh(unittest.TestCase):
+    def test_tetmesh_basic(self):
+        """Test TetMesh construction from raw arrays."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+
+        self.assertEqual(tm.vertex_count, 5)
+        self.assertEqual(tm.tet_count, 2)
+        self.assertEqual(tm.vertices.shape, (5, 3))
+        self.assertEqual(len(tm.tet_indices), 8)
+        self.assertIsNone(tm.k_mu)
+        self.assertIsNone(tm.density)
+
+    def test_tetmesh_surface_triangles(self):
+        """Test that surface triangles are correctly extracted from a single tet."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+
+        # A single tet has 4 boundary faces = 4 surface triangles
+        self.assertEqual(len(tm.surface_tri_indices), 4 * 3)
+
+    def test_tetmesh_material_scalar_broadcast(self):
+        """Test that scalar material values are broadcast to per-element arrays."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices, k_mu=1000.0, k_lambda=2000.0, k_damp=5.0, density=1.0)
+
+        self.assertEqual(tm.k_mu.shape, (2,))
+        assert_np_equal(tm.k_mu, np.array([1000.0, 1000.0], dtype=np.float32))
+        assert_np_equal(tm.k_lambda, np.array([2000.0, 2000.0], dtype=np.float32))
+        assert_np_equal(tm.k_damp, np.array([5.0, 5.0], dtype=np.float32))
+        self.assertEqual(tm.density, 1.0)
+
+    def test_tetmesh_material_per_element(self):
+        """Test per-element material arrays."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        k_mu = np.array([1000.0, 5000.0], dtype=np.float32)
+        tm = newton.TetMesh(vertices, tet_indices, k_mu=k_mu)
+
+        assert_np_equal(tm.k_mu, k_mu)
+
+    def test_tetmesh_invalid_tet_indices_length(self):
+        """Test that non-multiple-of-4 tet_indices raises ValueError."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        with self.assertRaises(ValueError):
+            newton.TetMesh(vertices, np.array([0, 1, 2], dtype=np.int32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_simple.usda"))
+        prim = stage.GetPrimAtPath("/SimpleTetMesh")
+        tm = usd.get_tetmesh(prim)
+
+        self.assertEqual(tm.vertex_count, 5)
+        self.assertEqual(tm.tet_count, 2)
+        self.assertEqual(tm.vertices.dtype, np.float32)
+        self.assertEqual(tm.tet_indices.dtype, np.int32)
+
+        # Check vertices
+        assert_np_equal(tm.vertices[0], np.array([0.0, 0.0, 0.0], dtype=np.float32))
+        assert_np_equal(tm.vertices[4], np.array([1.0, 1.0, 1.0], dtype=np.float32))
+
+        # Check tet indices (flattened)
+        assert_np_equal(tm.tet_indices[:4], np.array([0, 1, 2, 3], dtype=np.int32))
+        assert_np_equal(tm.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_usd_convenience(self):
+        """Test newton.usd.get_tetmesh convenience function."""
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_simple.usda"))
+        prim = stage.GetPrimAtPath("/SimpleTetMesh")
+        tm = usd.get_tetmesh(prim)
+
+        self.assertIsInstance(tm, newton.TetMesh)
+        self.assertEqual(tm.tet_count, 2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_missing_points(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def TetMesh "Empty" ()
+{
+    int4[] tetVertexIndices = [(0, 1, 2, 3)]
+}
+"""
+        )
+        prim = stage.GetPrimAtPath("/Empty")
+        with self.assertRaises(ValueError):
+            usd.get_tetmesh(prim)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_missing_tet_indices(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def TetMesh "NoTets" ()
+{
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+}
+"""
+        )
+        prim = stage.GetPrimAtPath("/NoTets")
+        with self.assertRaises(ValueError):
+            usd.get_tetmesh(prim)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_find_tetmesh_prims(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_multi.usda"))
+        prims = usd.find_tetmesh_prims(stage)
+
+        # Should find TetA and TetB, but not NotATetMesh
+        self.assertEqual(len(prims), 2)
+        paths = sorted(str(p.GetPath()) for p in prims)
+        self.assertEqual(paths, ["/Root/TetA", "/Root/TetB"])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_find_tetmesh_prims_load_all(self):
+        """Test loading all TetMesh prims from a multi-mesh stage."""
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_multi.usda"))
+        prims = usd.find_tetmesh_prims(stage)
+        tetmeshes = [usd.get_tetmesh(p) for p in prims]
+
+        self.assertEqual(len(tetmeshes), 2)
+        # TetA: 4 verts, 1 tet; TetB: 5 verts, 2 tets
+        counts = sorted((tm.vertex_count, tm.tet_count) for tm in tetmeshes)
+        self.assertEqual(counts, [(4, 1), (5, 2)])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_find_tetmesh_prims_empty_stage(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Mesh "JustAMesh" ()
+{
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+}
+"""
+        )
+        prims = usd.find_tetmesh_prims(stage)
+        self.assertEqual(len(prims), 0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_with_material(self):
+        """Test that physics material properties are read from USD."""
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_material.usda"))
+        prim = stage.GetPrimAtPath("/World/SoftBody")
+        tm = usd.get_tetmesh(prim)
+
+        # E = 300000, nu = 0.3
+        # k_mu = E / (2 * (1 + nu)) = 300000 / 2.6 = 115384.615...
+        # k_lambda = E * nu / ((1 + nu) * (1 - 2*nu)) = 90000 / (1.3 * 0.4) = 173076.923...
+        self.assertIsNotNone(tm.k_mu)
+        self.assertIsNotNone(tm.k_lambda)
+        self.assertAlmostEqual(tm.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(tm.k_lambda[0], 300000.0 * 0.3 / (1.3 * 0.4), places=0)
+        self.assertAlmostEqual(tm.density, 40.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_no_material(self):
+        """Test that TetMesh without material binding has None material properties."""
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_simple.usda"))
+        prim = stage.GetPrimAtPath("/SimpleTetMesh")
+        tm = usd.get_tetmesh(prim)
+
+        self.assertIsNone(tm.k_mu)
+        self.assertIsNone(tm.k_lambda)
+        self.assertIsNone(tm.density)
+>>>>>>> d65c3437 (Add TetMesh class and USD loading API)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)

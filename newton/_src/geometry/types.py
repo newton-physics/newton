@@ -866,6 +866,214 @@ class Mesh:
             )
         return self._cached_hash
 
+    # ---- Factory methods ---------------------------------------------------
+
+    @staticmethod
+    def create_from_usd(prim, **kwargs) -> "Mesh":
+        """Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.
+
+        This is a convenience wrapper around :func:`newton.usd.get_mesh`.
+        See that function for full documentation.
+
+        Args:
+            prim: The USD prim to load the mesh from.
+            **kwargs: Additional arguments passed to :func:`newton.usd.get_mesh`
+                (e.g. ``load_normals``, ``load_uvs``).
+
+        Returns:
+            Mesh: A new Mesh instance.
+        """
+        from ..usd.utils import get_mesh  # noqa: PLC0415
+
+        return get_mesh(prim, **kwargs)
+
+
+class TetMesh:
+    """Represents a tetrahedral mesh for volumetric deformable simulation.
+
+    Stores vertex positions (surface + interior nodes), tetrahedral element
+    connectivity, and an optional surface triangle mesh. If no surface mesh
+    is provided, it is automatically computed from the open (unshared) faces
+    of the tetrahedra.
+
+    Optionally carries per-element material arrays and a density value loaded
+    from file. These are used as defaults by builder methods and can be
+    overridden at instantiation time.
+
+    Example:
+        Create a TetMesh from raw arrays:
+
+        .. code-block:: python
+
+            import numpy as np
+            import newton
+
+            vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+            tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+            tet_mesh = newton.TetMesh(vertices, tet_indices)
+    """
+
+    def __init__(
+        self,
+        vertices: Sequence[Vec3] | nparray,
+        tet_indices: Sequence[int] | nparray,
+        k_mu: nparray | float | None = None,
+        k_lambda: nparray | float | None = None,
+        k_damp: nparray | float | None = None,
+        density: float | None = None,
+    ):
+        """Construct a TetMesh from vertex positions and tet connectivity.
+
+        Args:
+            vertices: Vertex positions [m], shape (N, 3).
+            tet_indices: Tetrahedral element indices, flattened (4 per tet).
+            k_mu: First elastic Lame parameter [Pa]. Scalar (uniform) or
+                per-element array of shape (tet_count,).
+            k_lambda: Second elastic Lame parameter [Pa]. Scalar (uniform) or
+                per-element array of shape (tet_count,).
+            k_damp: Damping stiffness. Scalar (uniform) or per-element array
+                of shape (tet_count,).
+            density: Uniform density [kg/m^3] for mass computation.
+        """
+        self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        self._tet_indices = np.array(tet_indices, dtype=np.int32).flatten()
+        if len(self._tet_indices) % 4 != 0:
+            raise ValueError(f"tet_indices length must be a multiple of 4, got {len(self._tet_indices)}.")
+
+        tet_count = len(self._tet_indices) // 4
+
+        self._k_mu = self._broadcast_material(k_mu, tet_count, "k_mu")
+        self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
+        self._k_damp = self._broadcast_material(k_damp, tet_count, "k_damp")
+        self._density = density
+
+        # Compute surface triangles from boundary faces
+        self._surface_tri_indices = self._compute_surface_triangles()
+
+        self._cached_hash: int | None = None
+
+    @staticmethod
+    def _broadcast_material(value: nparray | float | None, tet_count: int, name: str) -> np.ndarray | None:
+        if value is None:
+            return None
+        if np.isscalar(value):
+            return np.full(tet_count, value, dtype=np.float32)
+        arr = np.asarray(value, dtype=np.float32).flatten()
+        if len(arr) != tet_count:
+            raise ValueError(f"{name} array length ({len(arr)}) does not match tet count ({tet_count}).")
+        return arr
+
+    def _compute_surface_triangles(self) -> np.ndarray:
+        """Extract boundary faces (faces belonging to exactly one tet)."""
+        faces: dict[tuple[int, ...], tuple[int, int, int]] = {}
+
+        def add_face(i: int, j: int, k: int):
+            key = tuple(sorted((i, j, k)))
+            if key in faces:
+                del faces[key]
+            else:
+                faces[key] = (i, j, k)
+
+        indices = self._tet_indices
+        for t in range(len(indices) // 4):
+            v0 = indices[t * 4 + 0]
+            v1 = indices[t * 4 + 1]
+            v2 = indices[t * 4 + 2]
+            v3 = indices[t * 4 + 3]
+            add_face(v0, v2, v1)
+            add_face(v1, v2, v3)
+            add_face(v0, v1, v3)
+            add_face(v0, v3, v2)
+
+        if faces:
+            return np.array(list(faces.values()), dtype=np.int32).flatten()
+        return np.array([], dtype=np.int32)
+
+    # ---- Properties --------------------------------------------------------
+
+    @property
+    def vertices(self) -> nparray:
+        """Vertex positions [m], shape (N, 3), float32."""
+        return self._vertices
+
+    @property
+    def tet_indices(self) -> nparray:
+        """Tetrahedral element indices, flattened, 4 per tet."""
+        return self._tet_indices
+
+    @property
+    def tet_count(self) -> int:
+        """Number of tetrahedral elements."""
+        return len(self._tet_indices) // 4
+
+    @property
+    def vertex_count(self) -> int:
+        """Number of vertices."""
+        return len(self._vertices)
+
+    @property
+    def surface_tri_indices(self) -> nparray:
+        """Surface triangle indices (open faces), flattened, 3 per tri.
+
+        Automatically computed from tet connectivity at construction time
+        by extracting boundary faces (faces belonging to exactly one tet).
+        """
+        return self._surface_tri_indices
+
+    @property
+    def k_mu(self) -> nparray | None:
+        """Per-element first Lame parameter [Pa], shape (tet_count,) or None."""
+        return self._k_mu
+
+    @property
+    def k_lambda(self) -> nparray | None:
+        """Per-element second Lame parameter [Pa], shape (tet_count,) or None."""
+        return self._k_lambda
+
+    @property
+    def k_damp(self) -> nparray | None:
+        """Per-element damping, shape (tet_count,) or None."""
+        return self._k_damp
+
+    @property
+    def density(self) -> float | None:
+        """Uniform density [kg/m^3] or None."""
+        return self._density
+
+    # ---- Factory methods ---------------------------------------------------
+
+    @staticmethod
+    def create_from_usd(prim) -> "TetMesh":
+        """Load a TetMesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
+
+        This is a convenience wrapper around :func:`newton.usd.get_tetmesh`.
+        See that function for full documentation.
+
+        Args:
+            prim: The USD prim to load the tet mesh from.
+
+        Returns:
+            TetMesh: A new TetMesh instance.
+        """
+        from ..usd.utils import get_tetmesh  # noqa: PLC0415
+
+        return get_tetmesh(prim)
+
+    def __eq__(self, other):
+        if not isinstance(other, TetMesh):
+            return NotImplemented
+        return np.array_equal(self._vertices, other._vertices) and np.array_equal(self._tet_indices, other._tet_indices)
+
+    def __hash__(self):
+        if self._cached_hash is None:
+            self._cached_hash = hash(
+                (
+                    tuple(self._vertices.flatten()),
+                    tuple(self._tet_indices.flatten()),
+                )
+            )
+        return self._cached_hash
+
 
 class Heightfield:
     """
