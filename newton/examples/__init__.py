@@ -41,7 +41,7 @@ def download_external_git_folder(git_url: str, folder_path: str, force_refresh: 
     return download_git_folder(git_url, folder_path, force_refresh=force_refresh)
 
 
-def _test_body_state(
+def test_body_state(
     model: newton.Model,
     state: newton.State,
     test_name: str,
@@ -119,7 +119,7 @@ def _test_body_state(
             raise ValueError(f'Test "{test_name}" failed for the following bodies: [{", ".join(failed_details)}]')
 
 
-def _test_particle_state(
+def test_particle_state(
     state: newton.State,
     test_name: str,
     test_fn: wp.Function | Callable[[wp.vec3, wp.vec3], bool],
@@ -479,8 +479,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_parser", "init", "run"]
-
-# Backward-compatibility aliases kept out of __all__.
-test_body_state = _test_body_state
-test_particle_state = _test_particle_state
+__all__ = ["create_parser", "init", "run", "test_body_state", "test_particle_state"]
