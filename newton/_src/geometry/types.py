@@ -905,6 +905,9 @@ class Mesh:
         Returns:
             Mesh: A new Mesh instance.
         """
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"File not found: {filename}")
+
         from .utils import load_mesh  # noqa: PLC0415
 
         mesh_points, mesh_indices = load_mesh(filename, method=method)
@@ -936,6 +939,8 @@ class TetMesh:
             tet_mesh = newton.TetMesh(vertices, tet_indices)
     """
 
+    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"})
+
     def __init__(
         self,
         vertices: Sequence[Vec3] | nparray,
@@ -944,6 +949,7 @@ class TetMesh:
         k_lambda: nparray | float | None = None,
         k_damp: nparray | float | None = None,
         density: float | None = None,
+        custom_attributes: dict[str, nparray] | None = None,
     ):
         """Construct a TetMesh from vertex positions and tet connectivity.
 
@@ -957,6 +963,9 @@ class TetMesh:
             k_damp: Damping stiffness. Scalar (uniform) or per-element array
                 of shape (tet_count,).
             density: Uniform density [kg/m^3] for mass computation.
+            custom_attributes: Dictionary of named custom arrays. Typically
+                per-vertex (length N), per-tet (length tet_count), or
+                per-surface-triangle data parsed from USD or other sources.
         """
         self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
         self._tet_indices = np.array(tet_indices, dtype=np.int32).flatten()
@@ -969,6 +978,13 @@ class TetMesh:
         self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
         self._k_damp = self._broadcast_material(k_damp, tet_count, "k_damp")
         self._density = density
+        self.custom_attributes: dict[str, np.ndarray] = {}
+        for k, v in (custom_attributes or {}).items():
+            if k in self._RESERVED_ATTR_KEYS:
+                raise ValueError(
+                    f"Custom attribute name '{k}' is reserved. Reserved names: {sorted(self._RESERVED_ATTR_KEYS)}"
+                )
+            self.custom_attributes[k] = np.asarray(v)
 
         # Compute surface triangles from boundary faces
         self._surface_tri_indices = self._compute_surface_triangles()
@@ -987,30 +1003,44 @@ class TetMesh:
         return arr
 
     def _compute_surface_triangles(self) -> np.ndarray:
-        """Extract boundary faces (faces belonging to exactly one tet)."""
-        faces: dict[tuple[int, ...], tuple[int, int, int]] = {}
+        """Extract boundary faces (faces belonging to exactly one tet).
 
-        def add_face(i: int, j: int, k: int):
-            key = tuple(sorted((i, j, k)))
-            if key in faces:
-                del faces[key]
-            else:
-                faces[key] = (i, j, k)
+        Uses a vectorized approach: build all 4*T faces, sort vertex indices
+        per face to create canonical keys, then keep only faces that appear
+        an odd number of times (boundary faces).
+        """
+        tets = self._tet_indices.reshape(-1, 4)
+        n = len(tets)
+        if n == 0:
+            return np.array([], dtype=np.int32)
 
-        indices = self._tet_indices
-        for t in range(len(indices) // 4):
-            v0 = indices[t * 4 + 0]
-            v1 = indices[t * 4 + 1]
-            v2 = indices[t * 4 + 2]
-            v3 = indices[t * 4 + 3]
-            add_face(v0, v2, v1)
-            add_face(v1, v2, v3)
-            add_face(v0, v1, v3)
-            add_face(v0, v3, v2)
+        # Each tet contributes 4 faces with specific winding order:
+        #   face 0: (v0, v2, v1)
+        #   face 1: (v1, v2, v3)
+        #   face 2: (v0, v1, v3)
+        #   face 3: (v0, v3, v2)
+        # fmt: off
+        face_idx = np.array([
+            [0, 2, 1],
+            [1, 2, 3],
+            [0, 1, 3],
+            [0, 3, 2],
+        ])
+        # fmt: on
 
-        if faces:
-            return np.array(list(faces.values()), dtype=np.int32).flatten()
-        return np.array([], dtype=np.int32)
+        # Build all faces: shape (4*n, 3) with original winding
+        all_faces = tets[:, face_idx].reshape(-1, 3)
+
+        # Sort vertex indices per face to create canonical keys
+        sorted_faces = np.sort(all_faces, axis=1)
+
+        # Find unique sorted faces and their counts
+        _, inverse, counts = np.unique(sorted_faces, axis=0, return_inverse=True, return_counts=True)
+
+        # Boundary faces appear exactly once
+        boundary_mask = counts[inverse] == 1
+
+        return all_faces[boundary_mask].astype(np.int32).flatten()
 
     # ---- Properties --------------------------------------------------------
 
@@ -1096,8 +1126,6 @@ class TetMesh:
         Returns:
             TetMesh: A new TetMesh instance.
         """
-        import os  # noqa: PLC0415
-
         if not os.path.exists(filename):
             raise FileNotFoundError(f"File not found: {filename}")
 
@@ -1111,6 +1139,10 @@ class TetMesh:
                     kwargs[key] = data[key]
             if "density" in data:
                 kwargs["density"] = float(data["density"])
+            known_keys = {"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"}
+            custom = {k: data[k] for k in data.files if k not in known_keys}
+            if custom:
+                kwargs["custom_attributes"] = custom
             return TetMesh(
                 vertices=data["vertices"],
                 tet_indices=data["tet_indices"],
@@ -1123,16 +1155,43 @@ class TetMesh:
 
         # Find tetrahedral cells
         tet_indices = None
-        for cell_block in m.cells:
+        tet_cell_idx = None
+        for i, cell_block in enumerate(m.cells):
             if cell_block.type == "tetra":
                 tet_indices = np.array(cell_block.data, dtype=np.int32).flatten()
+                tet_cell_idx = i
                 break
 
         if tet_indices is None:
             raise ValueError(f"No tetrahedral cells found in '{filename}'.")
 
         vertices = np.array(m.points, dtype=np.float32)
-        return TetMesh(vertices=vertices, tet_indices=tet_indices)
+
+        # Read material arrays from cell data
+        kwargs: dict = {}
+        material_keys = {"k_mu", "k_lambda", "k_damp", "density"}
+        if m.cell_data and tet_cell_idx is not None:
+            for key in material_keys:
+                if key in m.cell_data:
+                    arr = np.asarray(m.cell_data[key][tet_cell_idx], dtype=np.float32)
+                    if key == "density":
+                        kwargs["density"] = float(arr[0])
+                    else:
+                        kwargs[key] = arr
+
+        # Read custom attributes from cell data and point data
+        custom: dict[str, np.ndarray] = {}
+        if m.cell_data and tet_cell_idx is not None:
+            for key, arrays in m.cell_data.items():
+                if key not in material_keys:
+                    custom[key] = np.asarray(arrays[tet_cell_idx])
+        if m.point_data:
+            for key, arr in m.point_data.items():
+                custom[key] = np.asarray(arr)
+        if custom:
+            kwargs["custom_attributes"] = custom
+
+        return TetMesh(vertices=vertices, tet_indices=tet_indices, **kwargs)
 
     def save(self, filename: str):
         """Save the TetMesh to a file.
@@ -1144,8 +1203,6 @@ class TetMesh:
         Args:
             filename: Path to write the file to.
         """
-        import os  # noqa: PLC0415
-
         ext = os.path.splitext(filename)[1].lower()
 
         if ext == ".npz":
@@ -1161,13 +1218,37 @@ class TetMesh:
                 save_dict["k_damp"] = self._k_damp
             if self._density is not None:
                 save_dict["density"] = np.array(self._density)
+            for k, v in self.custom_attributes.items():
+                save_dict[k] = v
             np.savez(filename, **save_dict)
             return
 
         import meshio
 
         cells = [("tetra", self._tet_indices.reshape(-1, 4))]
-        mesh = meshio.Mesh(points=self._vertices, cells=cells)
+        cell_data: dict[str, list[np.ndarray]] = {}
+        point_data: dict[str, np.ndarray] = {}
+
+        # Save material arrays as cell data
+        for name, arr in [("k_mu", self._k_mu), ("k_lambda", self._k_lambda), ("k_damp", self._k_damp)]:
+            if arr is not None:
+                cell_data[name] = [arr]
+        if self._density is not None:
+            cell_data["density"] = [np.full(self.tet_count, self._density, dtype=np.float32)]
+
+        # Save custom attributes as point or cell data based on length
+        for name, arr in self.custom_attributes.items():
+            if len(arr) == self.tet_count:
+                cell_data[name] = [arr]
+            elif len(arr) == self.vertex_count:
+                point_data[name] = arr
+
+        mesh = meshio.Mesh(
+            points=self._vertices,
+            cells=cells,
+            cell_data=cell_data if cell_data else {},
+            point_data=point_data if point_data else {},
+        )
         mesh.write(filename)
 
     def __eq__(self, other):
@@ -1177,12 +1258,7 @@ class TetMesh:
 
     def __hash__(self):
         if self._cached_hash is None:
-            self._cached_hash = hash(
-                (
-                    tuple(self._vertices.flatten()),
-                    tuple(self._tet_indices.flatten()),
-                )
-            )
+            self._cached_hash = hash((self._vertices.tobytes(), self._tet_indices.tobytes()))
         return self._cached_hash
 
 

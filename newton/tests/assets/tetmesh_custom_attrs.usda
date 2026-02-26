@@ -1,0 +1,23 @@
+#usda 1.0
+(
+    defaultPrim = "TetMeshWithAttrs"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def TetMesh "TetMeshWithAttrs" ()
+{
+    float3[] extent = [(0, 0, 0), (1, 1, 1)]
+    uniform token orientation = "rightHanded"
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)]
+    int4[] tetVertexIndices = [(0, 1, 2, 3), (1, 2, 3, 4)]
+
+    # Per-vertex custom attribute
+    float[] primvars:temperature = [100.0, 200.0, 300.0, 400.0, 500.0]
+
+    # Per-tet custom attribute
+    int[] primvars:regionId = [0, 1]
+
+    # Per-vertex vector attribute (e.g. velocity field)
+    float3[] primvars:velocityField = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (0, 1, 1)]
+}

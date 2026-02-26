@@ -6858,6 +6858,21 @@ class TestTetMesh(unittest.TestCase):
         # A single tet has 4 boundary faces = 4 surface triangles
         self.assertEqual(len(tm.surface_tri_indices), 4 * 3)
 
+    def test_tetmesh_surface_triangles_shared_face(self):
+        """Test that shared faces between adjacent tets are eliminated."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+
+        # 2 tets * 4 faces = 8 total, minus 2 shared (face 1-2-3 appears in both) = 6 boundary
+        self.assertEqual(len(tm.surface_tri_indices), 6 * 3)
+
+        # Verify original winding is preserved (not lexicographically sorted)
+        tris = tm.surface_tri_indices.reshape(-1, 3)
+        sorted_tris = np.sort(tris, axis=1)
+        has_unsorted = np.any(tris != sorted_tris)
+        self.assertTrue(has_unsorted, "Surface triangles should preserve winding, not be sorted")
+
     def test_tetmesh_material_scalar_broadcast(self):
         """Test that scalar material values are broadcast to per-element arrays."""
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
@@ -6907,16 +6922,17 @@ class TestTetMesh(unittest.TestCase):
         assert_np_equal(tm.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_get_tetmesh_usd_convenience(self):
-        """Test newton.usd.get_tetmesh convenience function."""
+    def test_tetmesh_create_from_usd(self):
+        """Test TetMesh.create_from_usd() static factory method."""
         from pxr import Usd
 
         stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_simple.usda"))
         prim = stage.GetPrimAtPath("/SimpleTetMesh")
-        tm = usd.get_tetmesh(prim)
+        tm = newton.TetMesh.create_from_usd(prim)
 
         self.assertIsInstance(tm, newton.TetMesh)
         self.assertEqual(tm.tet_count, 2)
+        self.assertEqual(tm.vertex_count, 5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_tetmesh_missing_points(self):
@@ -7053,17 +7069,23 @@ def Mesh "JustAMesh" ()
     def test_tetmesh_save_load_vtk(self):
         """Test TetMesh round-trip save/load via .vtk (meshio)."""
 
-        meshio = None
         try:
-            import meshio
+            import meshio  # noqa: F401
         except ImportError:
-            pass
-        if meshio is None:
             self.skipTest("meshio not installed")
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
-        tm = newton.TetMesh(vertices, tet_indices)
+        per_tet_region = np.array([10, 20], dtype=np.int32)
+        per_vertex_temp = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            k_mu=1000.0,
+            k_lambda=2000.0,
+            density=40.0,
+            custom_attributes={"regionId": per_tet_region, "temperature": per_vertex_temp},
+        )
 
         with tempfile.NamedTemporaryFile(suffix=".vtk", delete=False) as f:
             path = f.name
@@ -7076,6 +7098,98 @@ def Mesh "JustAMesh" ()
             self.assertEqual(tm2.tet_count, 2)
             assert_np_equal(tm2.tet_indices[:4], np.array([0, 1, 2, 3], dtype=np.int32))
             assert_np_equal(tm2.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
+
+            # Material arrays round-trip
+            self.assertIsNotNone(tm2.k_mu)
+            assert_np_equal(tm2.k_mu, np.array([1000.0, 1000.0], dtype=np.float32))
+            assert_np_equal(tm2.k_lambda, np.array([2000.0, 2000.0], dtype=np.float32))
+            self.assertAlmostEqual(tm2.density, 40.0)
+
+            # Custom attributes round-trip
+            self.assertIn("regionId", tm2.custom_attributes)
+            self.assertIn("temperature", tm2.custom_attributes)
+        finally:
+            os.unlink(path)
+
+    def test_tetmesh_custom_attributes_reserved_name(self):
+        """Test that reserved custom attribute names are rejected."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+
+        for reserved in ("vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"):
+            with self.assertRaises(ValueError, msg=f"Should reject reserved name '{reserved}'"):
+                newton.TetMesh(vertices, tet_indices, custom_attributes={reserved: np.array([1.0])})
+
+    def test_tetmesh_custom_attributes_constructor(self):
+        """Test TetMesh stores custom attributes passed at construction."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        temperature = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
+        region_id = np.array([7], dtype=np.int32)
+
+        tm = newton.TetMesh(
+            vertices, tet_indices, custom_attributes={"temperature": temperature, "regionId": region_id}
+        )
+
+        self.assertIn("temperature", tm.custom_attributes)
+        self.assertIn("regionId", tm.custom_attributes)
+        assert_np_equal(tm.custom_attributes["temperature"], temperature)
+        assert_np_equal(tm.custom_attributes["regionId"], region_id)
+
+    def test_tetmesh_custom_attributes_empty_by_default(self):
+        """Test TetMesh has empty custom_attributes when none are provided."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+        self.assertEqual(len(tm.custom_attributes), 0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_tetmesh_custom_attributes_from_usd(self):
+        """Test that custom primvars are parsed from USD into custom_attributes."""
+        from pxr import Usd
+
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        stage = Usd.Stage.Open(os.path.join(assets_dir, "tetmesh_custom_attrs.usda"))
+        prim = stage.GetPrimAtPath("/TetMeshWithAttrs")
+        tm = newton.TetMesh.create_from_usd(prim)
+
+        self.assertEqual(tm.vertex_count, 5)
+        self.assertEqual(tm.tet_count, 2)
+
+        # Per-vertex temperature primvar
+        self.assertIn("temperature", tm.custom_attributes)
+        assert_np_equal(tm.custom_attributes["temperature"], np.array([100, 200, 300, 400, 500], dtype=np.float32))
+
+        # Per-tet regionId primvar
+        self.assertIn("regionId", tm.custom_attributes)
+        assert_np_equal(tm.custom_attributes["regionId"], np.array([0, 1], dtype=np.int32))
+
+        # Per-vertex vector primvar
+        self.assertIn("velocityField", tm.custom_attributes)
+        self.assertEqual(tm.custom_attributes["velocityField"].shape, (5, 3))
+
+    def test_tetmesh_custom_attributes_npz_roundtrip(self):
+        """Test custom attributes survive save/load via .npz."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        temperature = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
+        region_id = np.array([3], dtype=np.int32)
+
+        tm = newton.TetMesh(
+            vertices, tet_indices, custom_attributes={"temperature": temperature, "regionId": region_id}
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
+            path = f.name
+
+        try:
+            tm.save(path)
+            tm2 = newton.TetMesh.create_from_file(path)
+
+            self.assertIn("temperature", tm2.custom_attributes)
+            assert_np_equal(tm2.custom_attributes["temperature"], temperature)
+            self.assertIn("regionId", tm2.custom_attributes)
+            assert_np_equal(tm2.custom_attributes["regionId"], region_id)
         finally:
             os.unlink(path)
 
