@@ -186,6 +186,7 @@ def parse_mjcf(
     mesh_maxhullvert: int | None = None,
     ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
+    override_root_xform: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -195,6 +196,12 @@ def parse_mjcf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform (Transform): The transform to apply to the imported mechanism.
+        override_root_xform (bool): If ``True``, the articulation root's world-space
+            transform is replaced by ``xform`` instead of being composed with it,
+            preserving only the internal structure (relative body positions). Useful
+            for cloning articulations at explicit positions. Not intended for sources
+            containing multiple articulations, as all roots would be placed at the
+            same ``xform``. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
@@ -292,6 +299,9 @@ def parse_mjcf(
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
+
+    if override_root_xform and xform is None:
+        raise ValueError("override_root_xform=True requires xform to be set")
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -1320,8 +1330,11 @@ def parse_mjcf(
         # Create local transform from parsed position and orientation
         local_xform = wp.transform(body_pos * scale, body_ori)
 
-        # Compose with incoming transform (or import root xform if none)
-        world_xform = (incoming_xform or xform) * local_xform
+        parent_xform = incoming_xform if incoming_xform is not None else xform
+        if override_root_xform and is_mjcf_root:
+            world_xform = parent_xform
+        else:
+            world_xform = parent_xform * local_xform
 
         # For joint positioning, compute body position relative to the actual parent body
         if parent >= 0:
@@ -1505,11 +1518,14 @@ def parse_mjcf(
 
             # Add base joint based on parameters
             if base_joint is not None:
-                # In case of a given base joint, the position is applied first, the rotation only
-                # after the base joint itself to not rotate its axis
-                # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
-                base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
-                base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
+                if override_root_xform:
+                    base_parent_xform = _xform
+                    base_child_xform = wp.transform_identity()
+                else:
+                    # Split xform: position goes to parent, rotation to child (inverted)
+                    # so the custom base joint's axis isn't rotated by xform.
+                    base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
+                    base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
                 joint_indices.append(
                     builder._add_base_joint(
                         child=link,
