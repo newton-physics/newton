@@ -2488,6 +2488,7 @@ class SolverMuJoCo(SolverBase):
         mjc_joint_names: list[str],
         selected_tendons: list[int],
         mjc_tendon_names: list[str],
+        body_name_mapping: dict[int, str],
     ) -> int:
         """Initialize MuJoCo general actuators from custom attributes.
 
@@ -2511,7 +2512,7 @@ class SolverMuJoCo(SolverBase):
                 Used to resolve CTRL_DIRECT joint actuators to their MuJoCo targets.
             mjc_joint_names: List of MuJoCo joint names indexed by MuJoCo joint index.
                 Used together with dof_to_mjc_joint to get the correct joint name.
-
+            body_name_mapping: Mapping from Newton body index to de-duplicated MuJoCo body name
         Returns:
             int: Number of actuators added.
         """
@@ -2645,7 +2646,14 @@ class SolverMuJoCo(SolverBase):
                     if wp.config.verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
                     continue
-                target_name = model.body_label[target_idx].replace("/", "_")
+                target_name = body_name_mapping.get(target_idx)
+                if target_name is None:
+                    if wp.config.verbose:
+                        print(
+                            f"Warning: MuJoCo actuator {mujoco_act_idx} references body {target_idx} "
+                            "not present in the MuJoCo export."
+                        )
+                    continue
             else:
                 # TODO: Support site, slidercrank, and jointinparent transmission types
                 if wp.config.verbose:
@@ -3895,6 +3903,8 @@ class SolverMuJoCo(SolverBase):
         site_mapping = {}
         # Store mapping from Newton joint index to MuJoCo joint name
         joint_mapping = {}
+        # Store mapping from Newton body index to MuJoCo body name
+        body_name_mapping = {}
         # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
         newton_body_to_mocap_index = {}
         # counter for assigning sequential mocap indices
@@ -4219,6 +4229,7 @@ class SolverMuJoCo(SolverBase):
                 while name in body_name_counts:
                     body_name_counts[name] += 1
                     name = f"{name}_{body_name_counts[name]}"
+            body_name_mapping[child] = name  # store the final de-duplicated name
 
             inertia = body_inertia[child]
             mass = body_mass[child]
@@ -4552,7 +4563,15 @@ class SolverMuJoCo(SolverBase):
             """Get body name, handling world body (-1) correctly."""
             if body_idx == -1:
                 return "world"
-            return model.body_label[body_idx].replace("/", "_")
+            target_name = body_name_mapping.get(body_idx)
+            if target_name is None:
+                target_name = model.body_label[body_idx].replace("/", "_")
+                if wp.config.verbose:
+                    print(
+                        f"Warning: MuJoCo equality constraint references body {body_idx} "
+                        "not present in the MuJoCo export."
+                    )
+            return target_name
 
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
@@ -4705,6 +4724,7 @@ class SolverMuJoCo(SolverBase):
             mjc_joint_names,
             selected_tendons,
             mjc_tendon_names,
+            body_name_mapping,
         )
 
         # Convert actuator mapping lists to warp arrays
