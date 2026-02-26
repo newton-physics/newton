@@ -1130,6 +1130,22 @@ def get_mesh(
     return mesh_out
 
 
+# Schema-defined TetMesh attribute names excluded from custom attribute parsing.
+_TETMESH_SCHEMA_ATTRS = frozenset(
+    {
+        "points",
+        "tetVertexIndices",
+        "surfaceFaceVertexIndices",
+        "extent",
+        "orientation",
+        "purpose",
+        "visibility",
+        "xformOpOrder",
+        "proxyPrim",
+    }
+)
+
+
 def get_tetmesh(prim: Usd.Prim):
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
@@ -1154,7 +1170,7 @@ def get_tetmesh(prim: Usd.Prim):
             tetmesh = newton.usd.get_tetmesh(usd_stage.GetPrimAtPath("/MyTetMesh"))
 
             # tetmesh.vertices  -- np.ndarray, shape (N, 3)
-            # tetmesh.tet_indices -- np.ndarray, shape (M, 4)
+            # tetmesh.tet_indices -- np.ndarray, flattened (4 per tet)
 
     Args:
         prim: The USD prim to load the tetrahedral mesh from.
@@ -1197,12 +1213,43 @@ def get_tetmesh(prim: Usd.Prim):
         if density_val is not None:
             density = float(density_val)
 
+    # Read custom primvars and attributes (per-vertex, per-tet, etc.)
+    custom_attributes: dict[str, np.ndarray] = {}
+
+    primvars_api = UsdGeom.PrimvarsAPI(prim)
+    for primvar in primvars_api.GetPrimvarsWithValues():
+        name = primvar.GetPrimvarName()
+        if name in ("st", "normals"):
+            continue  # skip well-known primvars handled elsewhere
+        val = primvar.Get()
+        if val is not None:
+            custom_attributes[str(name)] = np.array(val)
+
+    # Also read non-schema custom attributes (not primvars, not relationships)
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if name in _TETMESH_SCHEMA_ATTRS:
+            continue
+        if name.startswith("primvars:") or name.startswith("xformOp:"):
+            continue
+        if not attr.HasAuthoredValue():
+            continue
+        val = attr.Get()
+        if val is not None:
+            try:
+                arr = np.array(val)
+                if arr.ndim >= 1:
+                    custom_attributes[name] = arr
+            except (TypeError, ValueError):
+                pass  # skip non-array attributes
+
     return TetMesh(
         vertices=vertices,
         tet_indices=tet_indices,
         k_mu=k_mu,
         k_lambda=k_lambda,
         density=density,
+        custom_attributes=custom_attributes if custom_attributes else None,
     )
 
 
@@ -1250,11 +1297,7 @@ def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
     Returns:
         list[Usd.Prim]: All prims in the stage that have the TetMesh schema.
     """
-    result = []
-    for prim in stage.Traverse():
-        if prim.IsA(UsdGeom.TetMesh):
-            result.append(prim)
-    return result
+    return [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.TetMesh)]
 
 
 def _resolve_asset_path(

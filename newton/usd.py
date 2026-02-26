@@ -24,7 +24,6 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
 # ==================================================================================
 from ._src.usd.utils import (
     find_tetmesh_prims,
-    from_gfquat,
     get_attribute,
     get_attributes_in_namespace,
     get_custom_attribute_declarations,
@@ -44,7 +43,6 @@ from ._src.usd.utils import (
 
 __all__ = [
     "find_tetmesh_prims",
-    "from_gfquat",
     "get_attribute",
     "get_attributes_in_namespace",
     "get_custom_attribute_declarations",
