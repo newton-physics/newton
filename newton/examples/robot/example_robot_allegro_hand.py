@@ -93,6 +93,7 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
         allegro_hand.default_shape_cfg.ke = 1.0e3
         allegro_hand.default_shape_cfg.kd = 1.0e2
+        allegro_hand.default_shape_cfg.gap = 0.0
 
         asset_path = newton.utils.download_asset("wonik_allegro")
         asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
@@ -116,6 +117,7 @@ class Example:
 
         builder.default_shape_cfg.ke = 1.0e3
         builder.default_shape_cfg.kd = 1.0e2
+        builder.default_shape_cfg.gap = 0.0
         builder.add_ground_plane()
 
         self.model = builder.finalize()

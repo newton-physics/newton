@@ -3193,8 +3193,8 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             actual = geom_solmix[shape_idx].tolist()
             self.assertAlmostEqual(actual, expected, places=4)
 
-    def test_geom_gap_parsing(self):
-        """Test that geom_gap attribute is parsed correctly from MJCF."""
+    def test_shape_gap_from_mjcf(self):
+        """Test that MJCF gap attribute is parsed into shape_gap."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
@@ -3218,22 +3218,125 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
-        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
-
-        geom_gap = model.mujoco.geom_gap.numpy()
+        shape_gap = model.shape_gap.numpy()
         self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
 
-        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
         expected_values = {
             0: 0.1,
-            1: 0.0,  # default
+            1: builder.rigid_gap,  # default gap when not specified in MJCF
             2: 0.2,
         }
 
         for shape_idx, expected in expected_values.items():
-            actual = geom_gap[shape_idx].tolist()
+            actual = float(shape_gap[shape_idx])
             self.assertAlmostEqual(actual, expected, places=4)
+
+    def test_margin_gap_combined_conversion(self):
+        """Test MuJoCo->Newton conversion when both margin and gap are set.
+
+        Verifies that newton_margin = mj_margin - mj_gap and
+        newton_gap = mj_gap when both attributes are present on the same geom.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom name="both" type="box" size="0.1 0.1 0.1" margin="0.5" gap="0.2"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom name="margin_only" type="sphere" size="0.05" margin="0.3"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom name="gap_only" type="capsule" size="0.05 0.1" gap="0.15"/>
+        </body>
+        <body name="body4">
+            <freejoint/>
+            <geom name="neither" type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+        self.assertEqual(model.shape_count, 4)
+
+        # geom "both": margin=0.5, gap=0.2 -> newton_margin=0.3, newton_gap=0.2
+        self.assertAlmostEqual(float(shape_margin[0]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[0]), 0.2, places=5)
+
+        # geom "margin_only": margin=0.3, gap absent -> newton_margin=0.3, gap=default
+        self.assertAlmostEqual(float(shape_margin[1]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[1]), builder.rigid_gap, places=5)
+
+        # geom "gap_only": margin absent, gap=0.15 -> margin=default(0.0), gap=0.15
+        self.assertAlmostEqual(float(shape_margin[2]), 0.0, places=5)
+        self.assertAlmostEqual(float(shape_gap[2]), 0.15, places=5)
+
+        # geom "neither": both absent -> defaults
+        self.assertAlmostEqual(float(shape_margin[3]), 0.0, places=5)
+        self.assertAlmostEqual(float(shape_gap[3]), builder.rigid_gap, places=5)
+
+    def test_margin_gap_mjcf_roundtrip(self):
+        """Verify MJCF margin/gap roundtrips through Newton->MuJoCo solver.
+
+        Parses MJCF with explicit margin and gap values, builds the Newton model,
+        creates a MuJoCo solver, and checks that solver.mjw_model.geom_margin and
+        geom_gap satisfy geom_margin = shape_margin + shape_gap and
+        geom_gap = shape_gap.  When both margin and gap are explicitly set in MJCF,
+        the original values are recovered exactly.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom name="both" type="box" size="0.1 0.1 0.1" margin="0.5" gap="0.2"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom name="margin_only" type="sphere" size="0.05" margin="0.3"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom name="gap_only" type="capsule" size="0.05 0.1" gap="0.15"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        geom_margin = solver.mjw_model.geom_margin.numpy()
+        geom_gap = solver.mjw_model.geom_gap.numpy()
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+
+        # geom "both": margin=0.5, gap=0.2 — exact roundtrip
+        self.assertAlmostEqual(float(geom_margin[0, 0]), 0.5, places=5)
+        self.assertAlmostEqual(float(geom_gap[0, 0]), 0.2, places=5)
+
+        # geom "margin_only": margin=0.3, gap unset (falls back to builder default)
+        # geom_margin = shape_margin + shape_gap = 0.3 + builder.rigid_gap
+        self.assertAlmostEqual(
+            float(geom_margin[0, 1]),
+            float(shape_margin[1]) + float(shape_gap[1]),
+            places=5,
+        )
+        self.assertAlmostEqual(float(geom_gap[0, 1]), float(shape_gap[1]), places=5)
+
+        # geom "gap_only": margin=0 (MuJoCo default), gap=0.15
+        # geom_margin = 0 + 0.15 = 0.15
+        self.assertAlmostEqual(float(geom_margin[0, 2]), 0.15, places=5)
+        self.assertAlmostEqual(float(geom_gap[0, 2]), 0.15, places=5)
 
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
@@ -6273,7 +6376,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         cls.model = cls.builder.finalize()
 
     def test_shape_defaults(self):
-        """SHAPE: condim, priority, solmix, gap, solimp."""
+        """SHAPE: condim, priority, solmix, solimp (custom attrs), gap (shape_gap)."""
         m = self.model.mujoco
         wb = "worldbody/b_default"
         idx = self.builder.shape_label.index
@@ -6282,14 +6385,14 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(m.condim.numpy()[g_def], 4)
         self.assertEqual(m.geom_priority.numpy()[g_def], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_def]), 2.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_def]), 0.01, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_def]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
 
         g_cls = idx(f"{wb}/b_class/g_class")
         self.assertEqual(m.condim.numpy()[g_cls], 6)
         self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_cls]), 0.01, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_cls]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_cls], [0.7, 0.85, 0.005, 0.3, 1.5], atol=1e-4)
 
         g_ovr = idx(f"{wb}/b_class/b_override/g_override")
@@ -6299,7 +6402,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(m.condim.numpy()[g_child], 6)
         self.assertEqual(m.geom_priority.numpy()[g_child], 99)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_child]), 0.05, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_child]), 0.05, places=5)
 
     def test_body_defaults(self):
         """BODY: gravcomp."""
