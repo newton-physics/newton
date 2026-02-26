@@ -1130,7 +1130,7 @@ def parse_mjcf(
                 body_name,
                 link,
                 geoms=visuals,
-                density=0.0,
+                density=default_shape_density,
                 just_visual=True,
                 visible=not hide_visuals,
                 incoming_xform=incoming_xform,

@@ -2061,6 +2061,40 @@ class TestImportMjcfGeometry(unittest.TestCase):
             msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
         )
 
+    def test_visual_geom_density_with_parse_visuals(self):
+        """Regression: visual geoms must use the default density when parse_visuals=True.
+
+        When a model has only visual geoms providing mass (collision geoms have
+        mass=0) and no class-level density override, parse_visuals=True should
+        use the default density (1000) for the visual geoms.  Previously, visual
+        geoms were always parsed with density=0, producing zero body mass.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="test" pos="0 0 0.5">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="vis" type="box" size="0.1 0.1 0.1"
+            contype="0" conaffinity="0" group="2"/>
+      <geom name="col" type="box" size="0.1 0.1 0.1"
+            mass="0" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=True)
+        model = builder.finalize()
+
+        # density(1000) * volume(8 * 0.1^3) = 8.0
+        expected_mass = 1000.0 * (8 * 0.1**3)
+        actual_mass = float(model.body_mass.numpy()[0])
+        self.assertAlmostEqual(
+            actual_mass,
+            expected_mass,
+            places=2,
+            msg=f"Visual geom with default density should produce mass={expected_mass}, got {actual_mass}",
+        )
+
     def test_inertial_locks_body_against_frame_geom_mass(self):
         """Regression: explicit <inertial> must lock body mass/COM against later frame geoms.
 
