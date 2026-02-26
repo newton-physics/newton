@@ -3853,7 +3853,7 @@ class SolverMuJoCo(SolverBase):
         site_mapping = {}
         # Store mapping from Newton joint index to MuJoCo joint name
         joint_mapping = {}
-        # Store mapping from Newton body index to MuJoco body name
+        # Store mapping from Newton body index to MuJoCo body name
         body_name_mapping = {}
         # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
         newton_body_to_mocap_index = {}
