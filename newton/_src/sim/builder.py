@@ -4422,7 +4422,7 @@ class ModelBuilder:
                 if verbose:
                     print(
                         f"Skipping collapse of joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is listed in the joints_to_keep list and will not be merged into world"
+                        f"{child_lbl} is listed in joints_to_keep and this fixed joint will be preserved"
                     )
                 # Warn if the child_body of skipped joint has zero or negative mass
                 if body_data[child_body]["mass"] <= 0:
