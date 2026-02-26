@@ -234,6 +234,7 @@ def _setup_quadruped(articulation_builder):
 
 
 def _setup_allegro(articulation_builder):
+    articulation_builder.default_shape_cfg.gap = 0.0
     asset_path = newton.utils.download_asset("wonik_allegro")
     asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
     articulation_builder.add_usd(
