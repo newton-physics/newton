@@ -7583,3 +7583,174 @@ class TestFromtoCapsuleOrientation(unittest.TestCase):
         np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
         expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
         self._assert_z_aligned(quat, expected)
+
+
+class TestOverrideRootXform(unittest.TestCase):
+    """Tests for override_root_xform parameter in the MJCF importer."""
+
+    MJCF_WITH_ROOT_OFFSET = """
+<mujoco>
+  <worldbody>
+    <body name="base" pos="10 20 30">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+    def test_default_xform_is_relative(self):
+        """With override_root_xform=False (default), xform composes with root body position."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        # xform (5,0,0) composed with root body pos (10,20,30) => (15, 20, 30)
+        np.testing.assert_allclose(body_q[base_idx, :3], [15.0, 20.0, 30.0], atol=1e-4)
+
+    def test_override_places_at_xform(self):
+        """With override_root_xform=True, root body is placed at exactly xform."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        # Root body should be at (5, 0, 0) — root's original pos (10, 20, 30) is ignored
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+
+    def test_override_preserves_child_offset(self):
+        """With override_root_xform=True, child body keeps its relative offset from root."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        child_idx = builder.body_label.index("worldbody/base/child")
+        # Child is at pos="0 0 1" relative to root, root is at (5,0,0) => child at (5,0,1)
+        np.testing.assert_allclose(body_q[child_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    def test_override_with_rotation(self):
+        """override_root_xform=True with a non-identity rotation correctly rotates the articulation."""
+        angle = np.pi / 2
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), quat),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        child_idx = builder.body_label.index("worldbody/base/child")
+
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[base_idx, 3:], [*quat], atol=1e-4)
+        # Child is at pos="0 0 1" relative to root; Z-rotation doesn't affect Z offset
+        np.testing.assert_allclose(body_q[child_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    def test_override_cloning(self):
+        """Cloning the same MJCF at different positions with override_root_xform=True."""
+        builder = newton.ModelBuilder()
+        positions = [(0.0, 0.0, 0.0), (3.0, 0.0, 0.0), (6.0, 0.0, 0.0)]
+        for pos in positions:
+            builder.add_mjcf(
+                self.MJCF_WITH_ROOT_OFFSET,
+                xform=wp.transform(pos, wp.quat_identity()),
+                override_root_xform=True,
+            )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_indices = [j for j, lbl in enumerate(builder.body_label) if lbl.endswith("/base")]
+        for i, expected_pos in enumerate(positions):
+            np.testing.assert_allclose(
+                body_q[base_indices[i], :3],
+                list(expected_pos),
+                atol=1e-4,
+                err_msg=f"Clone {i} not at expected position",
+            )
+
+    MJCF_TWO_ARTICULATIONS = """
+<mujoco>
+  <worldbody>
+    <body name="robotA" pos="10 0 0">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+    <body name="robotB" pos="0 20 0">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+    def test_override_without_xform_raises(self):
+        """override_root_xform=True without providing xform should raise a ValueError."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_mjcf(self.MJCF_WITH_ROOT_OFFSET, override_root_xform=True)
+
+    def test_multiple_articulations_default_keeps_relative(self):
+        """Without override, multiple articulations keep their relative positions shifted by xform."""
+        shift = (1.0, 2.0, 3.0)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_TWO_ARTICULATIONS,
+            xform=wp.transform(shift, wp.quat_identity()),
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        offsets = {"robotA": (10.0, 0.0, 0.0), "robotB": (0.0, 20.0, 0.0)}
+        for name, offset in offsets.items():
+            idx = builder.body_label.index(f"worldbody/{name}")
+            expected = [shift[k] + offset[k] for k in range(3)]
+            np.testing.assert_allclose(
+                body_q[idx, :3],
+                expected,
+                atol=1e-4,
+                err_msg=f"{name} should be at xform + original offset",
+            )
