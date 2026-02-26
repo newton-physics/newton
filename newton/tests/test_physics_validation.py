@@ -758,7 +758,6 @@ def test_static_friction(test, device, solver_fn, uses_newton_contacts, uses_gen
         if i > 20:
             # Settling period in the first few steps
             state_0.body_f.assign(wrenches)
-            state_1.body_f.assign(wrenches)
         if contacts is not None:
             model.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
@@ -1099,7 +1098,7 @@ def test_fourbar_linkage(test, device, solver_fn, use_mujoco_cpu):
     )
 
     # Joint: crank - coupler
-    builder.add_joint_revolute(
+    j1 = builder.add_joint_revolute(
         parent=crank_body,
         child=coupler_body,
         axis=(0, 0, 1),
@@ -1118,7 +1117,7 @@ def test_fourbar_linkage(test, device, solver_fn, use_mujoco_cpu):
         armature=0.0,
     )
 
-    builder.add_articulation([j0, j0 + 1, j2])
+    builder.add_articulation([j0, j1, j2])
     # Loop closure
     builder.add_equality_constraint_connect(body1=-1, body2=rocker_body, anchor=wp.vec3(d_link, 0.0, 0.0))
     model = builder.finalize(device=device)
@@ -1321,7 +1320,7 @@ for device in devices:
 
     # Articulation tests (generalized-coord solvers only)
     articulation_solvers = {
-        "featherstone": ( 
+        "featherstone": (
             lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
             True,
         ),
@@ -1353,7 +1352,7 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
             uses_generalized_coords=uses_gen_coords,
-            sim_dt=3e-4 if solver_name == "xpbd" or "semi_implicit" else 1e-3,
+            sim_dt=3e-4 if solver_name in ("xpbd", "semi_implicit") else 1e-3,
             sphere_radius=0.1 if solver_name == "semi_implicit" else 0.01,
         )
 
@@ -1368,7 +1367,7 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
             uses_generalized_coords=uses_gen_coords,
-            sim_dt=3e-4 if solver_name == "xpbd" or "semi_implicit" else 1e-3,
+            sim_dt=3e-4 if solver_name in ("xpbd", "semi_implicit") else 1e-3,
             sphere_radius=0.1 if solver_name == "semi_implicit" else 0.01,
         )
 
