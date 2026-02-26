@@ -63,7 +63,7 @@ class Example:
         self.model.mpm.hardening[mud_particles].fill_(2.0)
         self.model.mpm.friction[mud_particles].fill_(0.0)
 
-        mpm_options = SolverImplicitMPM.Options()
+        mpm_options = SolverImplicitMPM.Config()
         mpm_options.voxel_size = options.voxel_size
         mpm_options.tolerance = options.tolerance
         mpm_options.max_iterations = options.max_iterations

@@ -20,7 +20,7 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton import ActuatorMode
+from newton import JointTargetMode
 from newton._src.utils.download_assets import download_git_folder
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import add_function_test, find_nan_members, get_cuda_test_devices
@@ -208,7 +208,7 @@ class RobotComposerSim:
         ur5e_with_robotiq_gripper.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur5e_with_robotiq_gripper.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_robotiq_gripper.joint_target_kd[:3] = [50.0] * 3
-        ur5e_with_robotiq_gripper.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur5e_with_robotiq_gripper.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_robotiq_gripper.joint_q[-6:] = init_q[:6]
@@ -217,7 +217,7 @@ class RobotComposerSim:
         ur5e_with_robotiq_gripper.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_robotiq_gripper.joint_effort_limit[-6:] = [100.0] * 6
         ur5e_with_robotiq_gripper.joint_armature[-6:] = [0.2] * 6
-        ur5e_with_robotiq_gripper.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur5e_with_robotiq_gripper.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         # Find end effector body by searching body names
         ee_body_idx = next(
@@ -249,7 +249,7 @@ class RobotComposerSim:
             ur5e_with_robotiq_gripper.joint_target_ke[idx] = 20.0
             ur5e_with_robotiq_gripper.joint_target_kd[idx] = 1.0
             ur5e_with_robotiq_gripper.joint_target_pos[idx] = self.gripper_target_pos
-            ur5e_with_robotiq_gripper.joint_act_mode[idx] = int(ActuatorMode.POSITION)
+            ur5e_with_robotiq_gripper.joint_target_mode[idx] = int(JointTargetMode.POSITION)
 
         builder.add_builder(ur5e_with_robotiq_gripper)
 
@@ -275,7 +275,7 @@ class RobotComposerSim:
         ur5e_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur5e_with_hand.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_hand.joint_target_kd[:3] = [50.0] * 3
-        ur5e_with_hand.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur5e_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_hand.joint_q[-6:] = init_q[:6]
@@ -284,7 +284,7 @@ class RobotComposerSim:
         ur5e_with_hand.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_hand.joint_effort_limit[-6:] = [100.0] * 6
         ur5e_with_hand.joint_armature[-6:] = [0.2] * 6
-        ur5e_with_hand.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur5e_with_hand.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         # Find end effector body by searching body names
         ee_body_idx = next(i for i, lbl in enumerate(ur5e_with_hand.body_label) if lbl.endswith("/wrist_3_link"))
@@ -328,7 +328,7 @@ class RobotComposerSim:
         franka_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         franka_with_hand.joint_target_ke[:3] = [500.0] * 3
         franka_with_hand.joint_target_kd[:3] = [50.0] * 3
-        franka_with_hand.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        franka_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         # Set panda joint positions and joint targets
         init_q = [
@@ -347,7 +347,7 @@ class RobotComposerSim:
         franka_with_hand.joint_target_kd[-7:] = [450, 450, 350, 350, 200, 200, 200]
         franka_with_hand.joint_effort_limit[-7:] = [87, 87, 87, 87, 12, 12, 12]
         franka_with_hand.joint_armature[-7:] = [0.195] * 4 + [0.074] * 3
-        franka_with_hand.joint_act_mode[-7:] = [int(ActuatorMode.POSITION)] * 7
+        franka_with_hand.joint_target_mode[-7:] = [int(JointTargetMode.POSITION)] * 7
 
         # Find end effector body by searching body names
         franka_ee_idx = next(i for i, lbl in enumerate(franka_with_hand.body_label) if lbl.endswith("/fr3_link8"))
@@ -396,7 +396,7 @@ class RobotComposerSim:
         ur10_builder.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur10_builder.joint_target_ke[:3] = [500.0] * 3
         ur10_builder.joint_target_kd[:3] = [50.0] * 3
-        ur10_builder.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur10_builder.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         # Initialize arm joints to elbow down configuration (same as UR5e)
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
@@ -408,7 +408,7 @@ class RobotComposerSim:
         ur10_builder.joint_target_kd[-6:] = [450.0] * 6
         ur10_builder.joint_effort_limit[-6:] = [100.0] * 6
         ur10_builder.joint_armature[-6:] = [0.2] * 6
-        ur10_builder.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur10_builder.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         builder.add_builder(ur10_builder)
 

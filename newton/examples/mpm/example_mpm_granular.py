@@ -92,7 +92,7 @@ class Example:
         self.model.set_gravity(options.gravity)
 
         # Copy all remaining CLI arguments to MPM options or per-particle material custom attributes
-        mpm_options = SolverImplicitMPM.Options()
+        mpm_options = SolverImplicitMPM.Config()
         for key in vars(options):
             if hasattr(mpm_options, key):
                 setattr(mpm_options, key, getattr(options, key))

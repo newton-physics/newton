@@ -35,7 +35,6 @@ newton.geometry
    collide_sphere_sphere
    compute_inertia_shape
    create_empty_sdf_data
-   remesh_mesh
    sdf_box
    sdf_capsule
    sdf_cone

@@ -67,7 +67,7 @@ class Example:
         layer_gap = cable_radius * 6.0
 
         builder = newton.ModelBuilder()
-        builder.rigid_contact_margin = 0.05  # Default for all shapes
+        builder.rigid_gap = 0.05  # Default for all shapes
 
         rod_bodies_all: list[int] = []
 
