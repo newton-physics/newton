@@ -333,6 +333,10 @@ class HydroelasticSDF:
             self._empty_vec3 = wp.empty((0,), dtype=wp.vec3, device=device)
             self._empty_vec3i = wp.empty((0,), dtype=wp.vec3i, device=device)
 
+            # Pre-allocate per-shape SDF data buffer used in launch() so that
+            # no wp.empty() call occurs during CUDA graph capture (#1616).
+            self._shape_sdf_data = wp.empty(n_shapes, dtype=SDFData, device=device)
+
             self.generate_contacts_kernel = get_generate_contacts_kernel(
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
@@ -500,7 +504,7 @@ class HydroelasticSDF:
             shape_pairs_sdf_sdf_count: Number of valid shape pairs.
             writer_data: Contact data writer for output.
         """
-        shape_sdf_data = wp.empty(shape=(shape_sdf_index.shape[0],), dtype=SDFData, device=self.device)
+        shape_sdf_data = self._shape_sdf_data
         wp.launch(
             kernel=map_shape_sdf_data_kernel,
             dim=shape_sdf_index.shape[0],
