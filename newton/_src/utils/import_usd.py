@@ -571,7 +571,13 @@ def parse_usd(
         for child in prim.GetChildren():
             _load_visual_shapes_impl(parent_body_id, child, body_xform, articulation_root_xform)
 
-    def add_body(prim: Usd.Prim, xform: wp.transform, label: str, armature: float, articulation_root_xform: wp.transform | None = None) -> int:
+    def add_body(
+        prim: Usd.Prim,
+        xform: wp.transform,
+        label: str,
+        armature: float,
+        articulation_root_xform: wp.transform | None = None,
+    ) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
         # Extract custom attributes for this body
         body_custom_attrs = usd.get_custom_attribute_values(
