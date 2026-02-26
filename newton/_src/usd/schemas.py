@@ -57,7 +57,7 @@ class SchemaResolverNewton(SchemaResolver):
         },
         PrimType.JOINT: {
             # warning: there is no NewtonJointAPI, none of these are schema attributes
-            "armature": SchemaAttribute("newton:armature", 1.0e-2),
+            "armature": SchemaAttribute("newton:armature", 0.0),
             "friction": SchemaAttribute("newton:friction", 0.0),
             "limit_linear_ke": SchemaAttribute("newton:linear:limitStiffness", 1.0e4),
             "limit_angular_ke": SchemaAttribute("newton:angular:limitStiffness", 1.0e4),
