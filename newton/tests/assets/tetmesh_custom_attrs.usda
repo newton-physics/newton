@@ -13,11 +13,17 @@ def TetMesh "TetMeshWithAttrs" ()
     int4[] tetVertexIndices = [(0, 1, 2, 3), (1, 2, 3, 4)]
 
     # Per-vertex custom attribute
-    float[] primvars:temperature = [100.0, 200.0, 300.0, 400.0, 500.0]
+    float[] primvars:temperature = [100.0, 200.0, 300.0, 400.0, 500.0] (
+        interpolation = "vertex"
+    )
 
     # Per-tet custom attribute
-    int[] primvars:regionId = [0, 1]
+    int[] primvars:regionId = [0, 1] (
+        interpolation = "uniform"
+    )
 
     # Per-vertex vector attribute (e.g. velocity field)
-    float3[] primvars:velocityField = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (0, 1, 1)]
+    float3[] primvars:velocityField = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (0, 1, 1)] (
+        interpolation = "vertex"
+    )
 }

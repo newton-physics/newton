@@ -1214,7 +1214,21 @@ def get_tetmesh(prim: Usd.Prim):
             density = float(density_val)
 
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
-    custom_attributes: dict[str, np.ndarray] = {}
+    # Primvar interpolation is used to determine the attribute frequency
+    # when available, falling back to length-based inference in TetMesh.__init__.
+    from ..sim.model import Model as _Model  # noqa: PLC0415
+
+    # USD interpolation → Newton frequency for TetMesh prims.
+    # "uniform" means one value per geometric element (cell); for a TetMesh
+    # the cells are tetrahedra, so it maps to TETRAHEDRON.
+    _INTERP_TO_FREQ = {
+        "vertex": _Model.AttributeFrequency.PARTICLE,
+        "varying": _Model.AttributeFrequency.PARTICLE,
+        "uniform": _Model.AttributeFrequency.TETRAHEDRON,
+        "constant": _Model.AttributeFrequency.ONCE,
+    }
+
+    custom_attributes: dict[str, np.ndarray | tuple[np.ndarray, _Model.AttributeFrequency]] = {}
 
     primvars_api = UsdGeom.PrimvarsAPI(prim)
     for primvar in primvars_api.GetPrimvarsWithValues():
@@ -1223,7 +1237,14 @@ def get_tetmesh(prim: Usd.Prim):
             continue  # skip well-known primvars handled elsewhere
         val = primvar.Get()
         if val is not None:
-            custom_attributes[str(name)] = np.array(val)
+            arr = np.array(val)
+            interp = primvar.GetInterpolation()
+            freq = _INTERP_TO_FREQ.get(interp)
+            if freq is not None:
+                custom_attributes[str(name)] = (arr, freq)
+            else:
+                # Unknown interpolation — let TetMesh infer from length
+                custom_attributes[str(name)] = arr
 
     # Also read non-schema custom attributes (not primvars, not relationships)
     for attr in prim.GetAttributes():
