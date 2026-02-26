@@ -176,6 +176,41 @@ for dtype in [float, int, wp.transform, wp.spatial_vector]:
 
 
 # ========================================================================================
+# Differentiable gather kernels for indexed -> contiguous copy
+
+
+@wp.kernel
+def _gather_indexed_3d_kernel(
+    src: Any,  # 3d wp.array (pre-indexed, has .grad)
+    indices: wp.array(dtype=int),  # index mapping for dimension 2
+    dst: Any,  # 3d wp.array (contiguous staging buffer, has .grad)
+):
+    i, j, k = wp.tid()
+    dst[i, j, k] = src[i, j, indices[k]]
+
+
+@wp.kernel
+def _gather_indexed_4d_kernel(
+    src: Any,  # 4d wp.array
+    indices: wp.array(dtype=int),
+    dst: Any,  # 4d wp.array
+):
+    i, j, k, l = wp.tid()
+    dst[i, j, k, l] = src[i, j, indices[k], l]
+
+
+for _dtype in [float, wp.transform, wp.spatial_vector]:
+    wp.overload(
+        _gather_indexed_3d_kernel,
+        {"src": wp.array(dtype=_dtype, ndim=3), "dst": wp.array(dtype=_dtype, ndim=3)},
+    )
+    wp.overload(
+        _gather_indexed_4d_kernel,
+        {"src": wp.array(dtype=_dtype, ndim=4), "dst": wp.array(dtype=_dtype, ndim=4)},
+    )
+
+
+# ========================================================================================
 # Actuator scatter/gather kernels
 
 
@@ -1193,11 +1228,15 @@ class ArticulationView:
         )
 
         # apply selection (slices or indices)
+        pre_indexed = attrib
         attrib = attrib[slices]
 
         if is_indexed:
-            # create a contiguous staging array for non-grad reads
             attrib._staging_array = wp.empty_like(attrib)
+            if grad_view is not None:
+                attrib._staging_array.requires_grad = True
+                attrib._gather_src = pre_indexed
+                attrib._gather_indices = layout.indices
         else:
             # fixup for empty slices - FIXME: this should be handled by Warp, above
             if attrib.size == 0:
@@ -1207,11 +1246,24 @@ class ArticulationView:
 
     def _get_attribute_values(self, name: str, source: Model | State | Control, _slice: slice | None = None):
         attrib = self._get_attribute_array(name, source, _slice=_slice)
-        if hasattr(attrib, "_staging_array") and not getattr(attrib, "requires_grad", False):
-            wp.copy(attrib._staging_array, attrib)
+        if hasattr(attrib, "_staging_array"):
+            if hasattr(attrib, "_gather_src"):
+                kernel = _gather_indexed_4d_kernel if attrib.ndim == 4 else _gather_indexed_3d_kernel
+                wp.launch(
+                    kernel,
+                    dim=attrib._staging_array.shape,
+                    inputs=[attrib._gather_src, attrib._gather_indices],
+                    outputs=[attrib._staging_array],
+                )
+                src_grad = attrib._gather_src.grad
+                dst_grad = attrib._staging_array.grad
+                if src_grad is not None and dst_grad is not None:
+                    grad_slices = tuple(attrib._gather_indices if d == 2 else slice(None) for d in range(src_grad.ndim))
+                    wp.copy(dst_grad, src_grad[grad_slices])
+            else:
+                wp.copy(attrib._staging_array, attrib)
             return attrib._staging_array
-        else:
-            return attrib
+        return attrib
 
     def _set_attribute_values(
         self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None
