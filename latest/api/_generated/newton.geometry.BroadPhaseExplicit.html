@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=a47416a6"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -132,7 +132,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.3)</span></p>
   
 </a></div>
     
@@ -811,7 +811,7 @@
 <h1>newton.geometry.BroadPhaseExplicit<a class="headerlink" href="#newton-geometry-broadphaseexplicit" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.geometry.BroadPhaseExplicit">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">BroadPhaseExplicit</span></span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/broad_phase_nxn.py#L393"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.BroadPhaseExplicit" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">BroadPhaseExplicit</span></span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/broad_phase_nxn.py#L399"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.BroadPhaseExplicit" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>A broad phase collision detection class that only checks explicitly provided geometry pairs.</p>
 <p>This class performs collision detection only between geometry pairs that are explicitly specified,
@@ -819,10 +819,14 @@ rather than checking all possible pairs. This can be more efficient when the set
 collision pairs is known ahead of time.</p>
 <p>The class checks for axis-aligned bounding box (AABB) overlaps between the specified geometry pairs,
 taking into account per-geometry cutoff distances.</p>
+<dl class="field-list simple">
+</dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.geometry.BroadPhaseExplicit.__init__">
 <span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.BroadPhaseExplicit.__init__" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.geometry.BroadPhaseExplicit.launch">
@@ -842,7 +846,7 @@ assumes AABBs are pre-expanded (gaps = 0). If provided, gaps are added during ov
 <li><p><strong>shape_pair_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of shape pairs to check</p></li>
 <li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store overlapping shape pairs</p></li>
 <li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store number of overlapping pairs found</p></li>
-<li><p><strong>device</strong> – Device to launch on. If None, uses the device of the input arrays.</p></li>
+<li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to launch on. If None, uses the device of the input arrays.</p></li>
 </ul>
 </dd>
 </dl>

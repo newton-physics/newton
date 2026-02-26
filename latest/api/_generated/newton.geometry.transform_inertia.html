@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=a47416a6"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -134,7 +134,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.3)</span></p>
   
 </a></div>
     
@@ -813,11 +813,11 @@
 <h1>newton.geometry.transform_inertia<a class="headerlink" href="#newton-geometry-transform-inertia" title="Link to this heading">#</a></h1>
 <dl class="py function">
 <dt class="sig sig-object py" id="newton.geometry.transform_inertia">
-<span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">transform_inertia</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">I</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">p</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">q</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/inertia.py#L427"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.transform_inertia" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">transform_inertia</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mass</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inertia</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">offset</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">quat</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/inertia.py#L427"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.transform_inertia" title="Link to this definition">#</a></dt>
 <dd><p>Compute a rigid body’s inertia tensor expressed in a new coordinate frame.</p>
-<p>The transformation applies (1) a rotation by quaternion <code class="docutils literal notranslate"><span class="pre">q</span></code> and
-(2) a parallel-axis shift by vector <code class="docutils literal notranslate"><span class="pre">p</span></code> (Steiner’s theorem).
-Let <code class="docutils literal notranslate"><span class="pre">R</span></code> be the rotation matrix corresponding to <code class="docutils literal notranslate"><span class="pre">q</span></code>. The returned
+<p>The transformation applies (1) a rotation by quaternion <code class="docutils literal notranslate"><span class="pre">quat</span></code> and
+(2) a parallel-axis shift by vector <code class="docutils literal notranslate"><span class="pre">offset</span></code> (Steiner’s theorem).
+Let <code class="docutils literal notranslate"><span class="pre">R</span></code> be the rotation matrix corresponding to <code class="docutils literal notranslate"><span class="pre">quat</span></code>. The returned
 inertia tensor <span class="math notranslate nohighlight">\(\mathbf{I}'\)</span> is</p>
 <div class="math notranslate nohighlight">
 \[\mathbf{I}' \,=\, \mathbf{R}\,\mathbf{I}\,\mathbf{R}^\top
@@ -827,12 +827,12 @@ inertia tensor <span class="math notranslate nohighlight">\(\mathbf{I}'\)</span>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>m</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mass of the rigid body.</p></li>
-<li><p><strong>I</strong> (<em>wp.mat33</em>) – Inertia tensor expressed in the body’s local frame, relative
+<li><p><strong>mass</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mass of the rigid body.</p></li>
+<li><p><strong>inertia</strong> (<em>wp.mat33</em>) – Inertia tensor expressed in the body’s local frame, relative
 to its center of mass.</p></li>
-<li><p><strong>p</strong> (<em>wp.vec3</em>) – Position vector from the new frame’s origin to the body’s
+<li><p><strong>offset</strong> (<em>wp.vec3</em>) – Position vector from the new frame’s origin to the body’s
 center of mass.</p></li>
-<li><p><strong>q</strong> (<em>wp.quat</em>) – Orientation of the body relative to the new frame, expressed
+<li><p><strong>quat</strong> (<em>wp.quat</em>) – Orientation of the body relative to the new frame, expressed
 as a quaternion.</p></li>
 </ul>
 </dd>

@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/documentation_options.js?v=a47416a6"></script>
     <script src="../_static/doctools.js?v=9bcbadda"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -58,7 +58,7 @@
         </script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="newton.usd.get_attribute" href="_generated/newton.usd.get_attribute.html" />
+    <link rel="next" title="newton.usd.PrimType" href="_generated/newton.usd.PrimType.html" />
     <link rel="prev" title="newton.eval_mass_matrix" href="_generated/newton.eval_mass_matrix.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -132,7 +132,7 @@
     <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.3)</span></p>
   
 </a></div>
     
@@ -800,6 +800,29 @@
   <section id="newton-usd">
 <h1>newton.usd<a class="headerlink" href="#newton-usd" title="Link to this heading">#</a></h1>
 <p>Utilities for working with the Universal Scene Description (USD) format.</p>
+<p>This module provides both low-level USD utility helpers and public schema
+resolver types used by <a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a>.</p>
+<p class="rubric">Classes</p>
+<div class="pst-scrollable-table-container"><table class="autosummary longtable table">
+<tbody>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.usd.PrimType.html#newton.usd.PrimType" title="newton.usd.PrimType"><code class="xref py py-obj docutils literal notranslate"><span class="pre">PrimType</span></code></a></p></td>
+<td><p>Enumeration of USD prim types that can be resolved by schema resolvers.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.usd.SchemaResolver.html#newton.usd.SchemaResolver" title="newton.usd.SchemaResolver"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SchemaResolver</span></code></a></p></td>
+<td><p>Base class mapping USD schema attributes to Newton attributes.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.usd.SchemaResolverMjc.html#newton.usd.SchemaResolverMjc" title="newton.usd.SchemaResolverMjc"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SchemaResolverMjc</span></code></a></p></td>
+<td><p>Schema resolver for MuJoCo USD attributes.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.usd.SchemaResolverNewton.html#newton.usd.SchemaResolverNewton" title="newton.usd.SchemaResolverNewton"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SchemaResolverNewton</span></code></a></p></td>
+<td><p>Schema resolver for Newton-authored USD attributes.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.usd.SchemaResolverPhysx.html#newton.usd.SchemaResolverPhysx" title="newton.usd.SchemaResolverPhysx"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SchemaResolverPhysx</span></code></a></p></td>
+<td><p>Schema resolver for PhysX USD attributes.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 <p class="rubric">Functions</p>
 <div class="pst-scrollable-table-container"><table class="autosummary longtable table">
 <tbody>

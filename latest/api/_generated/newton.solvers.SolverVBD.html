@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=a47416a6"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -132,7 +132,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.3)</span></p>
   
 </a></div>
     
@@ -1002,48 +1002,6 @@ wp.array(dtype=wp.int32),</p>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverVBD.finalize_particles">
-<span class="sig-name descname"><span class="pre">finalize_particles</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.finalize_particles" title="Link to this definition">#</a></dt>
-<dd><p>Finalize particle velocities after VBD iterations.</p>
-<dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverVBD.finalize_rigid_bodies">
-<span class="sig-name descname"><span class="pre">finalize_rigid_bodies</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.finalize_rigid_bodies" title="Link to this definition">#</a></dt>
-<dd><p>Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).</p>
-<p>Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for cable bending.</p>
-<dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverVBD.initialize_particles">
-<span class="sig-name descname"><span class="pre">initialize_particles</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.initialize_particles" title="Link to this definition">#</a></dt>
-<dd><p>Initialize particle positions for the VBD iteration.</p>
-<dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverVBD.initialize_rigid_bodies">
-<span class="sig-name descname"><span class="pre">initialize_rigid_bodies</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">update_rigid_history</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.initialize_rigid_bodies" title="Link to this definition">#</a></dt>
-<dd><p>Initialize rigid body states for AVBD solver (pre-iteration phase).</p>
-<p>Performs forward integration and initializes contact-related AVBD state when contacts are provided.</p>
-<p>If <code class="docutils literal notranslate"><span class="pre">contacts</span></code> is None, rigid contact-related work is skipped:
-no per-body contact adjacency is built, and no contact penalties are warmstarted.</p>
-<dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverVBD.penetration_free_truncation">
-<span class="sig-name descname"><span class="pre">penetration_free_truncation</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">particle_q_out</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.penetration_free_truncation" title="Link to this definition">#</a></dt>
-<dd><p>Modify displacements_in in-place, also modify particle_q if its not None</p>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverVBD.rebuild_bvh">
 <span class="sig-name descname"><span class="pre">rebuild_bvh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.rebuild_bvh" title="Link to this definition">#</a></dt>
 <dd><p>This function will rebuild the BVHs used for detecting self-contacts using the input <cite>state</cite>.</p>
@@ -1067,24 +1025,6 @@ simulation step frequency (e.g. updating only on the first substep).</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>update</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, update rigid warmstart state. If False, reuse previous.</p>
 </dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverVBD.solve_particle_iteration">
-<span class="sig-name descname"><span class="pre">solve_particle_iteration</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">iter_num</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.solve_particle_iteration" title="Link to this definition">#</a></dt>
-<dd><p>Solve one VBD iteration for particles.</p>
-<dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverVBD.solve_rigid_body_iteration">
-<span class="sig-name descname"><span class="pre">solve_rigid_body_iteration</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.solve_rigid_body_iteration" title="Link to this definition">#</a></dt>
-<dd><p>Solve one AVBD iteration for rigid bodies (per-iteration phase).</p>
-<p>Accumulates contact and joint forces/hessians, solves 6x6 rigid body systems per color,
-and updates AVBD penalty parameters (dual update).</p>
-<dl class="field-list simple">
 </dl>
 </dd></dl>
 
@@ -1145,15 +1085,8 @@ depend on this argument.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.register_custom_attributes"><code class="docutils literal notranslate"><span class="pre">SolverVBD.register_custom_attributes()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.__init__"><code class="docutils literal notranslate"><span class="pre">SolverVBD.__init__()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.collect_rigid_contact_forces"><code class="docutils literal notranslate"><span class="pre">SolverVBD.collect_rigid_contact_forces()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.finalize_particles"><code class="docutils literal notranslate"><span class="pre">SolverVBD.finalize_particles()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.finalize_rigid_bodies"><code class="docutils literal notranslate"><span class="pre">SolverVBD.finalize_rigid_bodies()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.initialize_particles"><code class="docutils literal notranslate"><span class="pre">SolverVBD.initialize_particles()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.initialize_rigid_bodies"><code class="docutils literal notranslate"><span class="pre">SolverVBD.initialize_rigid_bodies()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.penetration_free_truncation"><code class="docutils literal notranslate"><span class="pre">SolverVBD.penetration_free_truncation()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.rebuild_bvh"><code class="docutils literal notranslate"><span class="pre">SolverVBD.rebuild_bvh()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.set_rigid_history_update"><code class="docutils literal notranslate"><span class="pre">SolverVBD.set_rigid_history_update()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.solve_particle_iteration"><code class="docutils literal notranslate"><span class="pre">SolverVBD.solve_particle_iteration()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.solve_rigid_body_iteration"><code class="docutils literal notranslate"><span class="pre">SolverVBD.solve_rigid_body_iteration()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.step"><code class="docutils literal notranslate"><span class="pre">SolverVBD.step()</span></code></a></li>
 </ul>
 </li>

@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=a47416a6"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -132,7 +132,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.3)</span></p>
   
 </a></div>
     
@@ -811,7 +811,7 @@
 <h1>newton.geometry.BroadPhaseAllPairs<a class="headerlink" href="#newton-geometry-broadphaseallpairs" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.geometry.BroadPhaseAllPairs">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">BroadPhaseAllPairs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">shape_world</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_flags</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/broad_phase_nxn.py#L228"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.BroadPhaseAllPairs" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">BroadPhaseAllPairs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">shape_world</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_flags</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/broad_phase_nxn.py#L229"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.BroadPhaseAllPairs" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>A broad phase collision detection class that performs N x N collision checks between all geometry pairs.</p>
 <p>This class performs collision detection between all possible pairs of geometries by checking for
@@ -823,6 +823,8 @@ will only be considered as a candidate pair if:
 2. Their collision groups allow interaction (determined by test_group_pair())</p>
 <p>The class outputs an array of candidate collision pairs that need more detailed narrow phase collision
 checking.</p>
+<dl class="field-list simple">
+</dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.geometry.BroadPhaseAllPairs.__init__">
 <span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">shape_world</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_flags</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.BroadPhaseAllPairs.__init__" title="Link to this definition">#</a></dt>
@@ -830,13 +832,13 @@ checking.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>shape_world</strong> – Array of world IDs (numpy or warp array).
+<li><p><strong>shape_world</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>np.ndarray</em>) – Array of world IDs (numpy or warp array).
 Positive/zero values represent distinct worlds, negative values represent
 shared entities that belong to all worlds.</p></li>
-<li><p><strong>shape_flags</strong> – Optional array of shape flags (numpy or warp array). If provided,
+<li><p><strong>shape_flags</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>np.ndarray</em><em> | </em><em>None</em>) – Optional array of shape flags (numpy or warp array). If provided,
 only shapes with the COLLIDE_SHAPES flag will be included in collision checks.
 This efficiently filters out visual-only shapes.</p></li>
-<li><p><strong>device</strong> – Device to store the precomputed arrays on. If None, uses CPU for numpy
+<li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to store the precomputed arrays on. If None, uses CPU for numpy
 arrays or the device of the input warp array.</p></li>
 </ul>
 </dd>
@@ -845,7 +847,7 @@ arrays or the device of the input warp array.</p></li>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.geometry.BroadPhaseAllPairs.launch">
-<span class="sig-name descname"><span class="pre">launch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">shape_lower</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_upper</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_gap</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_group</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_shape_world</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">candidate_pair</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">candidate_pair_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">filter_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_filter_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.BroadPhaseAllPairs.launch" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">launch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">shape_lower</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_upper</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_gap</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_group</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_world</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">candidate_pair</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">candidate_pair_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">filter_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_filter_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.BroadPhaseAllPairs.launch" title="Link to this definition">#</a></dt>
 <dd><p>Launch the N x N broad phase collision detection.</p>
 <p>This method performs collision detection between all possible pairs of geometries by checking for
 axis-aligned bounding box (AABB) overlaps. It uses a lower triangular matrix approach to avoid
@@ -860,12 +862,12 @@ assumes AABBs are pre-expanded (gaps = 0). If provided, gaps are added during ov
 <li><p><strong>shape_collision_group</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of collision group IDs for each shape. Positive values indicate
 groups that only collide with themselves (and with negative groups). Negative values indicate
 groups that collide with everything except their negative counterpart. Zero indicates no collisions.</p></li>
-<li><p><strong>shape_shape_world</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of world indices for each shape. Index -1 indicates global entities
+<li><p><strong>shape_world</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of world indices for each shape. Index -1 indicates global entities
 that collide with all worlds. Indices 0, 1, 2, … indicate world-specific entities.</p></li>
 <li><p><strong>shape_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of active bounding boxes to check</p></li>
 <li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store overlapping shape pairs</p></li>
 <li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store number of overlapping pairs found</p></li>
-<li><p><strong>device</strong> – Device to launch on. If None, uses the device of the input arrays.</p></li>
+<li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to launch on. If None, uses the device of the input arrays.</p></li>
 </ul>
 </dd>
 </dl>

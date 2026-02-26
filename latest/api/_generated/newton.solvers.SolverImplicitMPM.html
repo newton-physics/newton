@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=a47416a6"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -132,7 +132,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.3)</span></p>
   
 </a></div>
     
@@ -979,41 +979,9 @@ for the implicit MPM solver.</p>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.collect_collider_impulses">
-<span class="sig-name descname"><span class="pre">collect_collider_impulses</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.collect_collider_impulses" title="Link to this definition">#</a></dt>
-<dd><p>Collect current collider impulses and their application positions.</p>
-<dl class="simple">
-<dt>Returns a tuple of 3 arrays:</dt><dd><ul class="simple">
-<li><p>Impulse values in world units.</p></li>
-<li><p>Collider positions in world units.</p></li>
-<li><p>Collider id, that can be mapped back to the model’s body ids using the <code class="docutils literal notranslate"><span class="pre">collider_body_index</span></code> property.</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.notify_model_changed">
 <span class="sig-name descname"><span class="pre">notify_model_changed</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">flags</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.notify_model_changed" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.project_outside">
-<span class="sig-name descname"><span class="pre">project_outside</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_dist</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.project_outside" title="Link to this definition">#</a></dt>
-<dd><p>Project particles outside of colliders, and adjust their velocity and velocity gradients</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>state_in</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The input state.</p></li>
-<li><p><strong>state_out</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The output state. Only particle_q, particle_qd, and particle_qd_grad are written.</p></li>
-<li><p><strong>dt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The time step, for extrapolating the collider end-of-step positions from its current position and velocity.</p></li>
-<li><p><strong>max_dist</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).</p></li>
-</ul>
-</dd>
 </dl>
 </dd></dl>
 
@@ -1065,33 +1033,6 @@ collider sources, materials, or to read colliders from a different model.</p>
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.step">
 <span class="sig-name descname"><span class="pre">step</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">control</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.step" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.update_particle_frames">
-<span class="sig-name descname"><span class="pre">update_particle_frames</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_prev</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_stretch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.25</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_stretch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.update_particle_frames" title="Link to this definition">#</a></dt>
-<dd><p>Update per-particle deformation frames for rendering and projection.</p>
-<p>Integrates the particle deformation gradient using the velocity gradient
-and clamps its principal stretches to the provided bounds for
-robustness.</p>
-<dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.update_render_grains">
-<span class="sig-name descname"><span class="pre">update_render_grains</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_prev</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grains</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.update_render_grains" title="Link to this definition">#</a></dt>
-<dd><p>Advect grain samples with the grid velocity and keep them inside the deformed particle.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>state_prev</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Previous state (t_n).</p></li>
-<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Current state (t_{n+1}).</p></li>
-<li><p><strong>grains</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a>) – 2D array of grain positions per particle to be updated in place. See <code class="docutils literal notranslate"><span class="pre">sample_render_grains</span></code>.</p></li>
-<li><p><strong>dt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Time step duration.</p></li>
-</ul>
-</dd>
 </dl>
 </dd></dl>
 
@@ -1161,14 +1102,10 @@ robustness.</p>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.register_custom_attributes"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.register_custom_attributes()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.__init__"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.collect_collider_impulses"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.collect_collider_impulses()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.notify_model_changed"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.notify_model_changed()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.project_outside"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.project_outside()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.sample_render_grains"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.sample_render_grains()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.setup_collider"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.setup_collider()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.step"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.step()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.update_particle_frames"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.update_particle_frames()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.update_render_grains"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.update_render_grains()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.collider_body_index"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.collider_body_index</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.voxel_size"><code class="docutils literal notranslate"><span class="pre">SolverImplicitMPM.voxel_size</span></code></a></li>
 </ul>
