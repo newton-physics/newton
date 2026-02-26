@@ -4561,8 +4561,9 @@ class SolverMuJoCo(SolverBase):
             """Get body name, handling world body (-1) correctly."""
             if body_idx == -1:
                 return "world"
-            target_name = body_name_mapping.get(body_idx, model.body_label[body_idx].replace("/", "_"))
+            target_name = body_name_mapping.get(body_idx)
             if target_name is None:
+                target_name = model.body_label[body_idx].replace("/", "_")
                 if wp.config.verbose:
                     print(
                         f"Warning: MuJoCo equality constraint references body {body_idx} "
