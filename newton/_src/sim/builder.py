@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import warp as wp
 
-from ..core.spatial import quat_between_vectors_robust
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -57,6 +56,7 @@ from ..geometry import (
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
+from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
@@ -379,7 +379,7 @@ class ModelBuilder:
             target_vel: float = 0.0,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
-            armature: float = 1e-2,
+            armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
             friction: float = 0.0,
@@ -406,7 +406,7 @@ class ModelBuilder:
             self.target_kd = target_kd
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
             self.armature = armature
-            """Artificial inertia added around the joint axis. Defaults to 1e-2."""
+            """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
             """Maximum effort (force or torque) the joint axis can exert. Defaults to 1e6."""
             self.velocity_limit = velocity_limit
@@ -2099,7 +2099,7 @@ class ModelBuilder:
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
                 are authored in the USD but not strictly required to build the simulation. This is useful for
                 inspection, experimentation, or custom pipelines that read these values via
-                :attr:`newton.usd.SchemaResolverManager.schema_attrs`.
+                ``result["schema_attrs"]`` returned from :func:`parse_usd`.
 
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.

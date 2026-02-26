@@ -136,7 +136,7 @@ class Example:
             model=self.model,
             iterations=self.iterations,
         )
-        self.solver.precompute(
+        self.solver._precompute(
             builder,
         )
         self.state_0 = self.model.state()

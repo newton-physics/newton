@@ -29,6 +29,7 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ..core.types import Devicelike
 from .broad_phase_common import (
     binary_search,
     check_aabb_overlap,
@@ -415,17 +416,17 @@ class BroadPhaseSAP:
 
     def __init__(
         self,
-        shape_shape_world,
-        shape_flags=None,
+        shape_world: wp.array(dtype=wp.int32, ndim=1) | np.ndarray,
+        shape_flags: wp.array(dtype=wp.int32, ndim=1) | np.ndarray | None = None,
         sweep_thread_count_multiplier: int = 5,
-        sort_type: str = "segmented",
+        sort_type: Literal["segmented", "tile"] = "segmented",
         tile_block_dim: int | None = None,
-        device=None,
-    ):
+        device: Devicelike | None = None,
+    ) -> None:
         """Initialize arrays for sweep and prune broad phase collision detection.
 
         Args:
-            shape_shape_world: Array of world indices for each shape (numpy or warp array).
+            shape_world: Array of world indices for each shape (numpy or warp array).
                 Represents which world each shape belongs to for world-aware collision detection.
             shape_flags: Optional array of shape flags (numpy or warp array). If provided,
                 only shapes with the COLLIDE_SHAPES flag will be included in collision checks.
@@ -435,7 +436,7 @@ class BroadPhaseSAP:
                 ``wp.utils.segmented_sort_pairs`` or ``"tile"`` for
                 tile-based sorting via ``wp.tile_sort``.
             tile_block_dim: Block dimension for tile-based sorting (optional, auto-calculated if None).
-                If None, will be set to next power of 2 >= max_shapes_per_world, capped at 512.
+                If None, will be set to next power of 2 >= ``max_shapes_per_world``, capped at 512.
                 Minimum value is 32 (required by wp.tile_sort). If provided, will be clamped to [32, 1024].
             device: Device to store the precomputed arrays on. If None, uses CPU for numpy
                 arrays or the device of the input warp array.
@@ -445,12 +446,12 @@ class BroadPhaseSAP:
         self.tile_block_dim_override = tile_block_dim  # Store user override if provided
 
         # Convert to numpy if it's a warp array
-        if isinstance(shape_shape_world, wp.array):
-            shape_shape_world_np = shape_shape_world.numpy()
+        if isinstance(shape_world, wp.array):
+            shape_world_np = shape_world.numpy()
             if device is None:
-                device = shape_shape_world.device
+                device = shape_world.device
         else:
-            shape_shape_world_np = shape_shape_world
+            shape_world_np = shape_world
             if device is None:
                 device = "cpu"
 
@@ -463,7 +464,7 @@ class BroadPhaseSAP:
                 shape_flags_np = shape_flags
 
         # Precompute the world map (filters out non-colliding shapes if flags provided)
-        index_map_np, slice_ends_np = precompute_world_map(shape_shape_world_np, shape_flags_np)
+        index_map_np, slice_ends_np = precompute_world_map(shape_world_np, shape_flags_np)
 
         # Calculate number of regular worlds (excluding dedicated -1 segment at end)
         # Must be derived from filtered slices since precompute_world_map applies flags
@@ -524,15 +525,15 @@ class BroadPhaseSAP:
         shape_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of shape bounding boxes
         shape_gap: wp.array(dtype=float, ndim=1) | None,  # Optional per-shape effective gaps
         shape_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        shape_shape_world: wp.array(dtype=int, ndim=1),  # World index per box
+        shape_world: wp.array(dtype=int, ndim=1),  # World index per box
         shape_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
         candidate_pair_count: wp.array(dtype=int, ndim=1),
-        device=None,  # Device to launch on
+        device: Devicelike | None = None,  # Device to launch on
         filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
-    ):
+    ) -> None:
         """Launch the sweep and prune broad phase collision detection with per-world segmented sort.
 
         This method performs collision detection between geometries using a sweep and prune algorithm along a fixed axis.
@@ -547,7 +548,7 @@ class BroadPhaseSAP:
             shape_collision_group: Array of collision group IDs for each shape. Positive values indicate
                 groups that only collide with themselves (and with negative groups). Negative values indicate
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
-            shape_shape_world: Array of world indices for each shape. Index -1 indicates global entities
+            shape_world: Array of world indices for each shape. Index -1 indicates global entities
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             shape_count: Number of active bounding boxes to check (not used in world-based approach)
             candidate_pair: Output array to store overlapping shape pairs
@@ -657,7 +658,7 @@ class BroadPhaseSAP:
                 shape_upper,
                 shape_gap,
                 shape_collision_group,
-                shape_shape_world,
+                shape_world,
                 self.world_index_map,
                 self.world_slice_ends,
                 self.sap_sort_index,

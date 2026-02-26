@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from .ray import MAXVAL
+from ...core import MAXVAL
 from .types import RenderLightType
 
 if TYPE_CHECKING:
@@ -313,7 +313,7 @@ class Utils:
         self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.__render_context.device)
 
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
-        self.__render_context.options.enable_shadows = enable_shadows
+        self.__render_context.config.enable_shadows = enable_shadows
         self.__render_context.lights_active = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
         self.__render_context.lights_type = wp.array(
             [RenderLightType.DIRECTIONAL], dtype=wp.int32, device=self.__render_context.device
@@ -334,7 +334,7 @@ class Utils:
         ) % 2 == 0
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).flatten()
 
-        self.__render_context.options.enable_textures = True
+        self.__render_context.config.enable_textures = True
         self.__render_context.texture_data = wp.array(pixels, dtype=wp.uint32, device=self.__render_context.device)
         self.__render_context.texture_offsets = wp.array([0], dtype=wp.int32, device=self.__render_context.device)
         self.__render_context.texture_width = wp.array(

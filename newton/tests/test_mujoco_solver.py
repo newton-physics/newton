@@ -4184,6 +4184,40 @@ class TestMuJoCoConversion(unittest.TestCase):
             err_msg="Child body quaternion should match composed joint transforms (with joint_q and translations)",
         )
 
+    def test_diagonal_inertia_preserves_sameframe(self):
+        """Regression: diagonal inertia exported as diaginertia preserves body_simple=1.
+
+        When a free body has diagonal inertia (zero off-diagonals), the solver
+        must emit diaginertia (not fullinertia) so that MuJoCo keeps body_simple=1.
+        fullinertia triggers eigendecomposition that reorders eigenvalues and applies
+        a permutation rotation, causing body_simple=0 even with zero off-diagonals.
+        """
+        builder = newton.ModelBuilder()
+        # Asymmetric diagonal so eigenvalues are NOT in descending order: I_zz > I_xx > I_yy.
+        # This is what triggers the permutation rotation when using fullinertia.
+        inertia_3x3 = np.diag([4.0e-5, 2.6e-5, 5.0e-5]).astype(np.float64)
+        body = builder.add_link(
+            mass=0.1,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(inertia_3x3),
+        )
+        builder.add_shape_box(body=body, hx=0.03, hy=0.04, hz=0.02)
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        model = builder.finalize()
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo not installed: {e}")
+            return
+        mjc_body_id = 1  # body 0 = world
+        self.assertEqual(
+            int(solver.mj_model.body_simple[mjc_body_id]),
+            1,
+            "Free body with diagonal inertia (zero off-diagonals) must have body_simple=1; "
+            "solver should emit diaginertia, not fullinertia.",
+        )
+
     def test_global_joint_solver_params(self):
         """Test that global joint solver parameters affect joint limit behavior."""
         # Create a simple pendulum model
@@ -5281,7 +5315,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         """Test mjc:damping attributes are parsed via SchemaResolverMjc."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
-        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+        from newton.usd import SchemaResolverMjc  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -7318,6 +7352,284 @@ class TestActuatorInheritrangeFractional(unittest.TestCase):
         # inheritrange=0.5 → radius = 2.0 * 0.5 = 1.0 → ctrlrange = [-1.0, 1.0]
         cr = self.solver.mj_model.actuator_ctrlrange[0]
         np.testing.assert_allclose(cr, [-1.0, 1.0], atol=1e-6)
+
+
+def _create_actuator_test_stage(extra_joint_attrs=None, extra_actuator_attrs=None):
+    """Create a minimal USD stage with one revolute joint and one MjcActuator.
+
+    Returns the stage. Caller can add additional attributes before building.
+    """
+    from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+    base = UsdGeom.Cube.Define(stage, "/World/base")
+    base_prim = base.GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(base_prim)
+    UsdPhysics.ArticulationRootAPI.Apply(base_prim)
+    UsdPhysics.CollisionAPI.Apply(base_prim)
+
+    link = UsdGeom.Cube.Define(stage, "/World/link")
+    link_prim = link.GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(link_prim)
+    UsdPhysics.CollisionAPI.Apply(link_prim)
+
+    joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint")
+    joint.CreateAxisAttr().Set("Z")
+    joint.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
+    joint.CreateBody1Rel().SetTargets([Sdf.Path("/World/link")])
+
+    if extra_joint_attrs:
+        extra_joint_attrs(joint)
+
+    act = stage.DefinePrim("/World/actuator", "MjcActuator")
+    act.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path("/World/joint")])
+
+    if extra_actuator_attrs:
+        extra_actuator_attrs(act)
+
+    return stage
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestUsdActuatorTypeAttributes(unittest.TestCase):
+    """Verify dynType, gainType, biasType are parsed from MjcActuator USD prims."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pxr import Sdf, Vt
+
+        def set_actuator_attrs(act):
+            act.CreateAttribute("mjc:dynType", Sdf.ValueTypeNames.Token, True).Set("filter")
+            act.CreateAttribute("mjc:gainType", Sdf.ValueTypeNames.Token, True).Set("fixed")
+            act.CreateAttribute("mjc:biasType", Sdf.ValueTypeNames.Token, True).Set("affine")
+            act.CreateAttribute("mjc:gainPrm", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )
+            act.CreateAttribute("mjc:biasPrm", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([0.0, -100.0, -10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )
+
+        stage = _create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        cls.model = builder.finalize()
+        cls.solver = SolverMuJoCo(cls.model)
+
+    def test_type_attributes_parsed_and_compiled(self):
+        """dynType, gainType, biasType should be parsed from USD and reflected in the compiled model."""
+        # Newton model stores the parsed enum integers
+        self.assertEqual(int(self.model.mujoco.actuator_dyntype.numpy()[0]), 2)  # filter
+        self.assertEqual(int(self.model.mujoco.actuator_gaintype.numpy()[0]), 0)  # fixed
+        self.assertEqual(int(self.model.mujoco.actuator_biastype.numpy()[0]), 1)  # affine
+
+        # Compiled MuJoCo model must match
+        self.assertEqual(self.solver.mj_model.actuator_dyntype[0], 2)
+        self.assertEqual(self.solver.mj_model.actuator_gaintype[0], 0)
+        self.assertEqual(self.solver.mj_model.actuator_biastype[0], 1)
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestUsdActuatorInheritrange(unittest.TestCase):
+    """Verify inheritRange from USD scales ctrlrange around the joint-range midpoint.
+
+    Per the MjcActuator schema, a positive inheritRange X sets the actuator's
+    ctrlrange to [midpoint - half_width*X, midpoint + half_width*X] where
+    midpoint and half_width come from the transmission target's range.
+    """
+
+    JOINT_LO_DEG = -90.0
+    JOINT_HI_DEG = 90.0
+
+    CASES = (0.8, 1.0, 1.2)
+
+    def _build_and_solve(self, inherit_range_value):
+        from pxr import Sdf, Vt
+
+        lo, hi = self.JOINT_LO_DEG, self.JOINT_HI_DEG
+
+        def set_joint_limits(joint):
+            joint.CreateLowerLimitAttr().Set(lo)
+            joint.CreateUpperLimitAttr().Set(hi)
+
+        def set_actuator_attrs(act):
+            act.CreateAttribute("mjc:gainType", Sdf.ValueTypeNames.Token, True).Set("fixed")
+            act.CreateAttribute("mjc:biasType", Sdf.ValueTypeNames.Token, True).Set("affine")
+            act.CreateAttribute("mjc:gainPrm", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )
+            act.CreateAttribute("mjc:biasPrm", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([0.0, -100.0, -10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )
+            act.CreateAttribute("mjc:inheritRange", Sdf.ValueTypeNames.Double, True).Set(inherit_range_value)
+
+        stage = _create_actuator_test_stage(
+            extra_joint_attrs=set_joint_limits,
+            extra_actuator_attrs=set_actuator_attrs,
+        )
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        return model, solver
+
+    def test_inheritrange_ctrlrange(self):
+        """ctrlrange should scale around midpoint for each inheritRange value."""
+        lo_rad = self.JOINT_LO_DEG * np.pi / 180.0
+        hi_rad = self.JOINT_HI_DEG * np.pi / 180.0
+        mean = (lo_rad + hi_rad) / 2.0
+        half_width = (hi_rad - lo_rad) / 2.0
+
+        for ir in self.CASES:
+            with self.subTest(inheritRange=ir):
+                _, solver = self._build_and_solve(ir)
+
+                radius = half_width * ir
+                cr = solver.mj_model.actuator_ctrlrange[0]
+                np.testing.assert_allclose(cr, [mean - radius, mean + radius], atol=1e-4)
+
+                self.assertEqual(solver.mj_model.actuator_ctrllimited[0], 1)
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestUsdPositionShortcutBiasprmDampratio(unittest.TestCase):
+    """Verify that positive biasprm[2] in a position-shortcut pattern is treated as dampratio."""
+
+    KP = 200.0
+    DAMPRATIO_PLACEHOLDER = 1.5
+
+    @classmethod
+    def setUpClass(cls):
+        from pxr import Sdf, Vt
+
+        kp = cls.KP
+        dampratio_placeholder = cls.DAMPRATIO_PLACEHOLDER
+
+        def set_actuator_attrs(act):
+            act.CreateAttribute("mjc:gainType", Sdf.ValueTypeNames.Token, True).Set("fixed")
+            act.CreateAttribute("mjc:biasType", Sdf.ValueTypeNames.Token, True).Set("affine")
+            act.CreateAttribute("mjc:gainPrm", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )
+            act.CreateAttribute("mjc:biasPrm", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([0.0, -kp, dampratio_placeholder, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )
+
+        stage = _create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        cls.model = builder.finalize()
+        cls.solver = SolverMuJoCo(cls.model)
+
+    def test_position_shortcut_with_dampratio_from_biasprm(self):
+        """Position shortcut should detect positive biasprm[2] as dampratio and resolve kd."""
+        mj = self.solver.mj_model
+        self.assertEqual(mj.actuator_biastype[0], 1)
+        np.testing.assert_allclose(mj.actuator_gainprm[0, 0], self.KP, atol=1e-5)
+        np.testing.assert_allclose(mj.actuator_biasprm[0, 1], -self.KP, atol=1e-5)
+
+        bp2 = mj.actuator_biasprm[0, 2]
+        self.assertLess(bp2, 0.0, "biasprm[2] should be negative (resolved kd)")
+
+
+class TestEqualityWeldConstraintDefaults(unittest.TestCase):
+    def test_equality_weld_constraint_defaults(self):
+        """Test the default values of equality weld constraints."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+    <mujoco model="equality_weld_constraint">
+    <option timestep="0.002" gravity="0 0 0"/>
+
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+     <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+
+     <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+      </body>
+    </body>
+  </worldbody>
+
+    <!-- Equality constraint tying the two bodies together -->
+  <equality>
+    <!-- type="weld" constrains body positions; here link1 follows link2 -->
+    <weld name="body_couple" body1="link1"/>
+  </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        measured_torquescale = model.equality_constraint_torquescale.numpy()[0]
+        expected_torquescale = 1.0
+        self.assertAlmostEqual(
+            expected_torquescale,
+            measured_torquescale,
+            places=4,
+            msg=f"expected_torquescale is {expected_torquescale}, measured_torquescale is {measured_torquescale}",
+        )
+
+        measured_body2 = model.equality_constraint_body2.numpy()[0]
+        expected_body2 = -1
+        self.assertEqual(
+            expected_body2,
+            measured_body2,
+            msg=f"expected_body2 is {expected_body2}, measured_body2 is {measured_body2}",
+        )
+
+        measured_anchor = model.equality_constraint_anchor.numpy()[0]
+        expected_anchor = [0, 0, 0]
+        for i in range(0, 3):
+            self.assertEqual(
+                measured_anchor[i],
+                expected_anchor[i],
+                msg=f"expected_anchor[{i}] is {expected_anchor[i]}, measured_anchor[{i}] is {measured_anchor[i]}",
+            )
+
+        measured_relpose = model.equality_constraint_relpose.numpy()[0]
+        expected_relpose = [0, 1, 0, 0, 0, 0, 0]
+        for i in range(0, 7):
+            self.assertEqual(
+                measured_relpose[i],
+                expected_relpose[i],
+                msg=f"expected_relpose[{i}] is {expected_relpose[i]}, measured_relpose[{i}] is {measured_relpose[i]}",
+            )
+
+        measured_solimp = solver.mjw_model.eq_solimp.numpy()[0]
+        expected_solimp = [0.9, 0.95, 0.001, 0.5, 2]
+        for i in range(0, 5):
+            self.assertAlmostEqual(
+                measured_solimp[0][i],
+                expected_solimp[i],
+                places=4,
+                msg=f"expected_solimp[{i}] is {expected_solimp[i]}, measured_solimp[{i}] is {measured_solimp[0][i]}",
+            )
+
+        measured_solref = solver.mjw_model.eq_solref.numpy()[0]
+        expected_solref = [0.02, 1]
+        for i in range(0, 2):
+            self.assertAlmostEqual(
+                measured_solref[0][i],
+                expected_solref[i],
+                places=4,
+                msg=f"expected_solref[{i}] is {expected_solref[i]}, measured_solref[{i}] is {measured_solref[0][i]}",
+            )
 
 
 if __name__ == "__main__":

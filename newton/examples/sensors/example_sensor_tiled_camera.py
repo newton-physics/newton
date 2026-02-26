@@ -193,7 +193,7 @@ class Example:
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
-            options=SensorTiledCamera.Options(
+            config=SensorTiledCamera.Config(
                 default_light=True,
                 default_light_shadows=True,
                 colors_per_shape=True,
