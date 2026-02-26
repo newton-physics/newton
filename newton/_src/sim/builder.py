@@ -764,6 +764,18 @@ class ModelBuilder:
         self.default_edge_kd = 0.0
         """Default edge-bending damping."""
 
+        self.default_tet_k_mu = 1.0e3
+        """Default first Lame parameter [Pa] for tetrahedral elements."""
+
+        self.default_tet_k_lambda = 1.0e3
+        """Default second Lame parameter [Pa] for tetrahedral elements."""
+
+        self.default_tet_k_damp = 0.0
+        """Default damping stiffness for tetrahedral elements."""
+
+        self.default_tet_density = 1.0
+        """Default density [kg/m^3] for tetrahedral soft bodies."""
+
         self.default_body_armature = 0.0
         """Default body armature value used when body armature is not provided."""
         # endregion
@@ -7452,6 +7464,11 @@ class ModelBuilder:
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
 
         Note:
+            **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
+            attribute > builder default (:attr:`default_tet_density`,
+            :attr:`default_tet_k_mu`, :attr:`default_tet_k_lambda`,
+            :attr:`default_tet_k_damp`).
+
             The generated surface triangles and optional edges are for collision purposes.
             Their stiffness and damping values default to zero so they do not introduce additional
             elastic forces. Set the stiffness parameters above to non-zero values if you
@@ -7479,13 +7496,13 @@ class ModelBuilder:
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
         if density is None:
-            density = 1.0
+            density = self.default_tet_density
         if k_mu is None:
-            k_mu = 1.0e3
+            k_mu = self.default_tet_k_mu
         if k_lambda is None:
-            k_lambda = 1.0e3
+            k_lambda = self.default_tet_k_lambda
         if k_damp is None:
-            k_damp = 0.0
+            k_damp = self.default_tet_k_damp
 
         num_tets = int(len(indices) / 4)
         k_mu_arr = np.broadcast_to(np.asarray(k_mu, dtype=np.float32).flatten(), num_tets)
