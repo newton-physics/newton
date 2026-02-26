@@ -1460,6 +1460,15 @@ def verify_narrow_phase_buffers(
 
 
 class NarrowPhase:
+    """Resolve broad-phase shape pairs into simulation contacts.
+
+    This class orchestrates the narrow-phase collision pipeline by launching the
+    appropriate Warp kernels for primitive, mesh, heightfield, and SDF shape
+    pairs. It owns the intermediate counters and pair buffers used while
+    processing candidate pairs, then writes final contacts through a configurable
+    contact writer function.
+    """
+
     def __init__(
         self,
         *,
@@ -1474,7 +1483,7 @@ class NarrowPhase:
         hydroelastic_sdf: HydroelasticSDF | None = None,
         has_meshes: bool = True,
         has_heightfields: bool = False,
-    ):
+    ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
 
@@ -1693,8 +1702,8 @@ class NarrowPhase:
         shape_heightfield_data: wp.array(dtype=HeightfieldData, ndim=1) | None = None,
         heightfield_elevation_data: wp.array(dtype=wp.float32, ndim=1) | None = None,
         writer_data: Any,
-        device=None,  # Device to launch on
-    ):
+        device: Devicelike | None = None,  # Device to launch on
+    ) -> None:
         """
         Launch narrow phase collision detection with a custom contact writer struct.
 
@@ -2067,9 +2076,9 @@ class NarrowPhase:
         contact_count: wp.array(dtype=int),  # Number of active contacts after narrow
         contact_tangent: wp.array(dtype=wp.vec3)
         | None = None,  # Represents x axis of local contact frame (None to disable)
-        device=None,  # Device to launch on
-        **kwargs,
-    ):
+        device: Devicelike | None = None,  # Device to launch on
+        **kwargs: Any,
+    ) -> None:
         """
         Launch narrow phase collision detection on candidate pairs from broad phase.
 

@@ -210,7 +210,7 @@ By changing the order of resolvers in the ``schema_resolvers`` list, different a
    :skipif: True
 
    from newton import ModelBuilder
-   from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx, SchemaResolverMjc
+   from newton.usd import SchemaResolverMjc, SchemaResolverNewton, SchemaResolverPhysx
    
    builder = ModelBuilder()
    
@@ -277,7 +277,7 @@ The collected attributes are returned in the result dictionary and can be access
    :skipif: True
 
    from newton import ModelBuilder
-   from newton._src.usd.schemas import SchemaResolverPhysx, SchemaResolverNewton
+   from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
    
    builder = ModelBuilder()
    result = builder.add_usd(

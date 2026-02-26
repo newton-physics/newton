@@ -130,7 +130,7 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
-            self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
+            self.solver._project_outside(self.state_1, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -170,7 +170,7 @@ class Example:
 
         if self.show_normals:
             # for debugging purposes, we can visualize the collider normals
-            _impulses, pos, _cid = self.solver.collect_collider_impulses(self.state_0)
+            _impulses, pos, _cid = self.solver._collect_collider_impulses(self.state_0)
             normals = self.state_0.collider_normal_field.dof_values
 
             normal_vecs = 0.25 * self.solver.voxel_size * normals

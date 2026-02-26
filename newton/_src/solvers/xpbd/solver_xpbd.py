@@ -105,7 +105,7 @@ class SolverXPBD(SolverBase):
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
 
-    def apply_particle_deltas(
+    def _apply_particle_deltas(
         self,
         model: Model,
         state_in: State,
@@ -151,7 +151,7 @@ class SolverXPBD(SolverBase):
 
         return new_particle_q, new_particle_qd
 
-    def apply_body_deltas(
+    def _apply_body_deltas(
         self,
         model: Model,
         state_in: State,
@@ -436,7 +436,7 @@ class SolverXPBD(SolverBase):
                                 device=model.device,
                             )
 
-                        particle_q, particle_qd = self.apply_particle_deltas(
+                        particle_q, particle_qd = self._apply_particle_deltas(
                             model, state_in, state_out, particle_deltas, dt
                         )
 
@@ -512,7 +512,7 @@ class SolverXPBD(SolverBase):
                             device=model.device,
                         )
 
-                        body_q, body_qd = self.apply_body_deltas(model, state_in, state_out, body_deltas, dt)
+                        body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
                     # Solve rigid contact constraints
                     if model.body_count and contacts is not None:
@@ -569,7 +569,7 @@ class SolverXPBD(SolverBase):
                             else:
                                 rigid_contact_inv_weight_init = None
 
-                        body_q, body_qd = self.apply_body_deltas(
+                        body_q, body_qd = self._apply_body_deltas(
                             model, state_in, state_out, body_deltas, dt, rigid_contact_inv_weight
                         )
 
