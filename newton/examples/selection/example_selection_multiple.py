@@ -106,6 +106,7 @@ class Example:
 
         # load articulation
         arti = newton.ModelBuilder()
+        arti.default_shape_cfg.gap = 0.0
         arti.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
@@ -114,12 +115,14 @@ class Example:
 
         # create world with multiple articulations
         world = newton.ModelBuilder()
+        world.default_shape_cfg.gap = 0.0
         world.add_builder(arti, xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
         world.add_builder(arti, xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
         world.add_builder(arti, xform=wp.transform((0.0, 0.0, 3.0), wp.quat_identity()))
 
         # create scene
         scene = newton.ModelBuilder()
+        scene.default_shape_cfg.gap = 0.0
         scene.add_ground_plane()
         scene.replicate(world, world_count=self.world_count)
 
