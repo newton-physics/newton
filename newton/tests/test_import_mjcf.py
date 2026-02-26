@@ -7754,3 +7754,7 @@ class TestOverrideRootXform(unittest.TestCase):
                 atol=1e-4,
                 err_msg=f"{name} should be at xform + original offset",
             )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
