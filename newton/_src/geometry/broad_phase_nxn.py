@@ -314,7 +314,7 @@ class BroadPhaseAllPairs:
         shape_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of shape bounding boxes
         shape_gap: wp.array(dtype=float, ndim=1) | None,  # Optional per-shape effective gaps
         shape_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        shape_shape_world: wp.array(dtype=int, ndim=1),  # World index per box
+        shape_world: wp.array(dtype=int, ndim=1),  # World index per box
         shape_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
@@ -337,7 +337,7 @@ class BroadPhaseAllPairs:
             shape_collision_group: Array of collision group IDs for each shape. Positive values indicate
                 groups that only collide with themselves (and with negative groups). Negative values indicate
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
-            shape_shape_world: Array of world indices for each shape. Index -1 indicates global entities
+            shape_world: Array of world indices for each shape. Index -1 indicates global entities
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             shape_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping shape pairs
@@ -377,7 +377,7 @@ class BroadPhaseAllPairs:
                 shape_upper,
                 shape_gap,
                 shape_collision_group,
-                shape_shape_world,
+                shape_world,
                 self.world_cumsum_lower_tri,
                 self.world_slice_ends,
                 self.world_index_map,
