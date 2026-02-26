@@ -86,7 +86,10 @@ def parse_usd(
         override_root_xform (bool): If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
-            for cloning articulations at explicit positions. Defaults to ``False``.
+            for cloning articulations at explicit positions. Not intended for sources
+            containing multiple articulations, as all roots would be placed at the
+            same ``xform``; import such sources once per articulation instead.
+            Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body (bodies not connected as
             a child to any joint).
 
@@ -393,9 +396,9 @@ def parse_usd(
             body_xform: Rigid body transform actually used by the builder.
                 This matches any physics-authored pose, scene-level transforms,
                 and incoming transforms that were applied when the body was created.
-            articulation_root_xform: When override_root_xform=True, the articulation
-                root's world-space transform. Used to rebase visual prim transforms
-                to match the rebased body transforms.
+            articulation_root_xform: The articulation root's world-space transform,
+                passed when override_root_xform=True. Strips the root's original
+                pose from visual prim transforms to match the rebased body transforms.
         """
         if _is_enabled_collider(prim) or prim.HasAPI(UsdPhysics.RigidBodyAPI):
             return

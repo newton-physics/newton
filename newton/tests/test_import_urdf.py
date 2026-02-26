@@ -1745,7 +1745,10 @@ class TestOverrideRootXformURDF(unittest.TestCase):
 
         # Default splits: child_xform gets inverse rotation
         np.testing.assert_allclose(
-            [*override_child.q], [0, 0, 0, 1], atol=1e-6, err_msg="override child_xform should be identity"
+            [*override_child.p], [0, 0, 0], atol=1e-6, err_msg="override child_xform translation should be zero"
+        )
+        np.testing.assert_allclose(
+            [*override_child.q], [0, 0, 0, 1], atol=1e-6, err_msg="override child_xform rotation should be identity"
         )
         # Default child_xform has the inverse rotation applied
         self.assertFalse(

@@ -7619,6 +7619,30 @@ class TestOverrideRootXform(unittest.TestCase):
         # Child is at pos="0 0 1" relative to root, root is at (5,0,0) => child at (5,0,1)
         np.testing.assert_allclose(body_q[child_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
 
+    def test_override_with_rotation(self):
+        """override_root_xform=True with a non-identity rotation correctly rotates the articulation."""
+        angle = np.pi / 2
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), quat),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        child_idx = builder.body_label.index("worldbody/base/child")
+
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[base_idx, 3:], [*quat], atol=1e-4)
+        # Child is at pos="0 0 1" relative to root; Z-rotation doesn't affect Z offset
+        np.testing.assert_allclose(body_q[child_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
     def test_override_cloning(self):
         """Cloning the same MJCF at different positions with override_root_xform=True."""
         builder = newton.ModelBuilder()

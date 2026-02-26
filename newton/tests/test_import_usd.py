@@ -6474,6 +6474,34 @@ class TestOverrideRootXform(unittest.TestCase):
         np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_with_rotation(self):
+        """override_root_xform=True with a non-identity rotation correctly rotates the articulation."""
+        stage = self._make_stage_with_root_offset()
+        angle = np.pi / 2
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), quat),
+            floating=False,
+            override_root_xform=True,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        link_idx = builder.body_label.index("/World/env/Robot/Link")
+
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[base_idx, 3:], [*quat], atol=1e-4)
+        # Link is at (0,0,1) relative to root; Z-rotation doesn't affect Z offset
+        np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_override_cloning(self):
         """Cloning the same articulation at multiple positions with override_root_xform=True."""
         stage = self._make_stage_with_root_offset()
@@ -6655,6 +6683,97 @@ class TestOverrideRootXform(unittest.TestCase):
             np.testing.assert_allclose(
                 shape_tf.q, [0.0, 0.0, 0.0, 1.0], atol=1e-4, err_msg="Visual shape rotation should be identity"
             )
+
+    @staticmethod
+    def _make_stage_with_loop_joint():
+        """Create a USD stage with a 3-body chain and an excludeFromArticulation loop joint."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        for name, pos in [("Base", (0, 0, 0)), ("Mid", (0, 0, 1)), ("Tip", (0, 0, 2))]:
+            body = UsdGeom.Xform.Define(stage, f"/World/env/Robot/{name}")
+            body.AddTranslateOp().Set(Gf.Vec3d(*pos))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).GetMassAttr().Set(1.0)
+
+        for jname, b0, b1 in [("J1", "Base", "Mid"), ("J2", "Mid", "Tip")]:
+            j = UsdPhysics.RevoluteJoint.Define(stage, f"/World/env/Robot/{jname}")
+            j.CreateBody0Rel().SetTargets([f"/World/env/Robot/{b0}"])
+            j.CreateBody1Rel().SetTargets([f"/World/env/Robot/{b1}"])
+            j.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 1))
+            j.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+            j.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+            j.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+            j.CreateAxisAttr().Set("Z")
+
+        loop = UsdPhysics.FixedJoint.Define(stage, "/World/env/Robot/LoopJoint")
+        loop.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        loop.CreateBody1Rel().SetTargets(["/World/env/Robot/Tip"])
+        loop.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 2))
+        loop.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+        loop.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        loop.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        from pxr import Sdf
+
+        loop.GetPrim().CreateAttribute("physics:excludeFromArticulation", Sdf.ValueTypeNames.Bool).Set(True)
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_loop_joint_default(self):
+        """Loop joint body positions are correct with default xform (relative)."""
+        stage = self._make_stage_with_loop_joint()
+        shift = (5.0, 0.0, 0.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform(shift, wp.quat_identity()), floating=False)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        # Default: xform composes with ancestor (100,200,0)
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        tip_idx = builder.body_label.index("/World/env/Robot/Tip")
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[tip_idx, :3], [105.0, 200.0, 2.0], atol=1e-4)
+
+        # Loop joint should exist and not be part of the articulation
+        loop_idx = builder.joint_label.index("/World/env/Robot/LoopJoint")
+        self.assertEqual(builder.joint_articulation[loop_idx], -1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_loop_joint_override(self):
+        """Loop joint body positions are correct with override_root_xform=True."""
+        stage = self._make_stage_with_loop_joint()
+        shift = (5.0, 0.0, 0.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform(shift, wp.quat_identity()), floating=False, override_root_xform=True)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        # Override: ancestor stripped, bodies at xform + internal offsets
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        tip_idx = builder.body_label.index("/World/env/Robot/Tip")
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[tip_idx, :3], [5.0, 0.0, 2.0], atol=1e-4)
+
+        loop_idx = builder.joint_label.index("/World/env/Robot/LoopJoint")
+        self.assertEqual(builder.joint_articulation[loop_idx], -1)
 
 
 if __name__ == "__main__":

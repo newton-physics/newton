@@ -94,11 +94,15 @@ def parse_urdf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the URDF file to parse, or the URDF XML string content.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-        override_root_xform (bool): If ``True``, ``xform`` is applied as the full parent
-            transform (including rotation) when a ``base_joint`` is specified, which may
-            rotate the joint's axis. By default (``False``), the rotation component of
-            ``xform`` is split into the child transform (inverted) so the base joint's
-            axis is not rotated. Defaults to ``False``.
+        override_root_xform (bool): If ``True``, the articulation root's world-space
+            transform is replaced by ``xform`` instead of being composed with it,
+            preserving only the internal structure (relative body positions). Useful
+            for cloning articulations at explicit positions. When a ``base_joint`` is
+            specified, ``xform`` is applied as the full parent transform (including
+            rotation) rather than splitting position/rotation. Not intended for
+            sources containing multiple articulations, as all roots would be placed
+            at the same ``xform``; import such sources once per articulation instead.
+            Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
