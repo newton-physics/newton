@@ -15,6 +15,7 @@
 
 import enum
 import os
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -886,7 +887,10 @@ class Mesh:
         """
         from ..usd.utils import get_mesh  # noqa: PLC0415
 
-        return get_mesh(prim, **kwargs)
+        result = get_mesh(prim, **kwargs)
+        if isinstance(result, tuple):
+            return result[0]
+        return result
 
     @staticmethod
     def create_from_file(filename: str, method: str | None = None, **kwargs) -> "Mesh":
@@ -1008,8 +1012,8 @@ class TetMesh:
                 per-element array of shape (tet_count,).
             k_lambda: Second elastic Lame parameter [Pa]. Scalar (uniform) or
                 per-element array of shape (tet_count,).
-            k_damp: Damping stiffness. Scalar (uniform) or per-element array
-                of shape (tet_count,).
+            k_damp: Rayleigh damping coefficient [-] (dimensionless). Scalar
+                (uniform) or per-element array of shape (tet_count,).
             density: Uniform density [kg/m^3] for mass computation.
             custom_attributes: Dictionary of named custom arrays with their
                 :class:`~newton.Model.AttributeFrequency`. Each value can be
@@ -1021,8 +1025,16 @@ class TetMesh:
         if len(self._tet_indices) % 4 != 0:
             raise ValueError(f"tet_indices length must be a multiple of 4, got {len(self._tet_indices)}.")
 
-        tet_count = len(self._tet_indices) // 4
         vertex_count = len(self._vertices)
+        if len(self._tet_indices) > 0:
+            idx_min = int(self._tet_indices.min())
+            idx_max = int(self._tet_indices.max())
+            if idx_min < 0:
+                raise ValueError(f"tet_indices contains negative index {idx_min}.")
+            if idx_max >= vertex_count:
+                raise ValueError(f"tet_indices contains index {idx_max} which exceeds vertex count {vertex_count}.")
+
+        tet_count = len(self._tet_indices) // 4
 
         self._k_mu = self._broadcast_material(k_mu, tet_count, "k_mu")
         self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
@@ -1051,9 +1063,12 @@ class TetMesh:
     def _broadcast_material(value: nparray | float | None, tet_count: int, name: str) -> np.ndarray | None:
         if value is None:
             return None
-        if np.isscalar(value):
-            return np.full(tet_count, value, dtype=np.float32)
-        arr = np.asarray(value, dtype=np.float32).flatten()
+        arr = np.asarray(value, dtype=np.float32)
+        if arr.ndim == 0:
+            return np.full(tet_count, arr.item(), dtype=np.float32)
+        arr = arr.flatten()
+        if len(arr) == 1:
+            return np.full(tet_count, arr[0], dtype=np.float32)
         if len(arr) != tet_count:
             raise ValueError(f"{name} array length ({len(arr)}) does not match tet count ({tet_count}).")
         return arr
@@ -1140,7 +1155,7 @@ class TetMesh:
 
     @property
     def k_damp(self) -> nparray | None:
-        """Per-element damping, shape (tet_count,) or None."""
+        """Per-element Rayleigh damping coefficient [-], shape (tet_count,) or None."""
         return self._k_damp
 
     @property
@@ -1256,6 +1271,11 @@ class TetMesh:
                 if key in m.cell_data:
                     arr = np.asarray(m.cell_data[key][tet_cell_idx], dtype=np.float32)
                     if key == "density":
+                        if arr.size > 1 and not np.allclose(arr, arr[0]):
+                            raise ValueError(
+                                f"Non-uniform per-element density found in '{filename}'. "
+                                f"TetMesh only supports a single uniform density value."
+                            )
                         kwargs["density"] = float(arr[0])
                     else:
                         kwargs[key] = arr
@@ -1334,6 +1354,12 @@ class TetMesh:
                 cell_data[name] = [arr]
             elif freq == _Model.AttributeFrequency.PARTICLE:
                 point_data[name] = arr
+            else:
+                warnings.warn(
+                    f"Custom attribute '{name}' with frequency {freq} cannot be saved to meshio format "
+                    f"(only PARTICLE and TETRAHEDRON are supported). Skipping.",
+                    stacklevel=2,
+                )
 
         mesh = meshio.Mesh(
             points=self._vertices,

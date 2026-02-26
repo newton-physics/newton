@@ -7104,9 +7104,13 @@ def Mesh "JustAMesh" ()
             assert_np_equal(tm2.k_lambda, np.array([2000.0, 2000.0], dtype=np.float32))
             self.assertAlmostEqual(tm2.density, 40.0)
 
-            # Custom attributes round-trip
+            # Custom attributes round-trip (check values, not just keys)
             self.assertIn("regionId", tm2.custom_attributes)
             self.assertIn("temperature", tm2.custom_attributes)
+            region_arr, _region_freq = tm2.custom_attributes["regionId"]
+            temp_arr, _temp_freq = tm2.custom_attributes["temperature"]
+            assert_np_equal(region_arr.flatten(), per_tet_region)
+            assert_np_equal(temp_arr.flatten(), per_vertex_temp)
         finally:
             os.unlink(path)
 
@@ -7116,7 +7120,7 @@ def Mesh "JustAMesh" ()
         tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
 
         for reserved in ("vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"):
-            with self.assertRaises(ValueError, msg=f"Should reject reserved name '{reserved}'"):
+            with self.assertRaisesRegex(ValueError, "reserved", msg=f"Should reject reserved name '{reserved}'"):
                 newton.TetMesh(vertices, tet_indices, custom_attributes={reserved: np.array([1.0])})
 
     def test_tetmesh_custom_attributes_constructor(self):
@@ -7323,8 +7327,21 @@ def Mesh "JustAMesh" ()
     def test_add_soft_mesh_tetmesh_density_override(self):
         """Test that explicit density overrides TetMesh density."""
         tm = self._make_two_tet_mesh(density=10.0)
-        builder = newton.ModelBuilder()
-        builder.add_soft_mesh(
+
+        # Build with TetMesh density (10.0)
+        builder_base = newton.ModelBuilder()
+        builder_base.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        mass_base = sum(builder_base.particle_mass)
+
+        # Build with overridden density (99.0)
+        builder_override = newton.ModelBuilder()
+        builder_override.add_soft_mesh(
             pos=(0.0, 0.0, 0.0),
             rot=wp.quat_identity(),
             scale=1.0,
@@ -7332,9 +7349,11 @@ def Mesh "JustAMesh" ()
             mesh=tm,
             density=99.0,
         )
-        # Particles should have mass based on density=99.0, not 10.0
-        total_mass = sum(builder.particle_mass)
-        self.assertGreater(total_mass, 0.0)
+        mass_override = sum(builder_override.particle_mass)
+
+        # Mass should scale with density ratio
+        self.assertGreater(mass_base, 0.0)
+        self.assertAlmostEqual(mass_override / mass_base, 99.0 / 10.0, places=4)
 
     def test_add_soft_mesh_tetmesh_per_element_materials(self):
         """Test per-element material arrays flow through to the builder."""

@@ -78,6 +78,8 @@ if TYPE_CHECKING:
     from newton_actuators import Actuator
     from pxr import Usd
 
+    from ..geometry.types import TetMesh
+
 
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
@@ -7559,10 +7561,10 @@ class ModelBuilder:
                 self.particle_mass[v3] += density * volume / 4.0
 
         # Compute surface triangles — reuse pre-computed result from TetMesh
-        # or derive from raw indices via the same vectorized function.
+        # only when the caller did not override the indices.
         from ..geometry.types import compute_surface_triangles  # noqa: PLC0415
 
-        if mesh is not None and len(mesh.surface_tri_indices) > 0:
+        if mesh is not None and indices is mesh.tet_indices and len(mesh.surface_tri_indices) > 0:
             surface_tri_indices = mesh.surface_tri_indices
         else:
             surface_tri_indices = compute_surface_triangles(indices)
