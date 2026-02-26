@@ -1990,8 +1990,8 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertTrue(found_explicit_2, f"Expected solmix {expected_explicit_2} not found in model")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_geom_gap_parsing(self):
-        """Test that geom_gap attribute is parsed correctly from USD."""
+    def test_shape_gap_from_usd(self):
+        """Test that mjc:gap attribute is parsed into shape_gap from USD."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -2079,32 +2079,90 @@ def PhysicsRevoluteJoint "Joint2"
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
 
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
-        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
-
-        geom_gap = model.mujoco.geom_gap.numpy()
+        shape_gap = model.shape_gap.numpy()
 
         def floats_match(arr, expected, tol=1e-4):
             return abs(arr - expected) < tol
 
         # Check that we have shapes with expected values
         expected_explicit_1 = 0.8
-        expected_default = 0.0  # default
         expected_explicit_2 = 0.7
 
         # Find shapes matching each expected value
-        found_explicit_1 = any(floats_match(geom_gap[i], expected_explicit_1) for i in range(model.shape_count))
-        found_default = any(floats_match(geom_gap[i], expected_default) for i in range(model.shape_count))
-        found_explicit_2 = any(floats_match(geom_gap[i], expected_explicit_2) for i in range(model.shape_count))
+        found_explicit_1 = any(floats_match(shape_gap[i], expected_explicit_1) for i in range(model.shape_count))
+        found_explicit_2 = any(floats_match(shape_gap[i], expected_explicit_2) for i in range(model.shape_count))
 
         self.assertTrue(found_explicit_1, f"Expected gap {expected_explicit_1} not found in model")
-        self.assertTrue(found_default, f"Expected default gap {expected_default} not found in model")
         self.assertTrue(found_explicit_2, f"Expected gap {expected_explicit_2} not found in model")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_margin_gap_combined_conversion(self):
+        """Test MuJoCo->Newton conversion when both mjc:margin and mjc:gap are authored.
+
+        Verifies that newton_margin = mjc_margin - mjc_gap when mjc:margin is
+        explicitly authored. Also tests the case where only mjc:margin is authored
+        (gap defaults to 0, so no conversion effect).
+        """
+        from pxr import Sdf, Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Body 1: both mjc:margin and mjc:gap authored
+        prim1 = stage.DefinePrim("/Body1", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim1)
+        UsdPhysics.ArticulationRootAPI.Apply(prim1)
+        col1 = stage.DefinePrim("/Body1/Collision1", "Cube")
+        UsdPhysics.CollisionAPI.Apply(col1)
+        col1.GetAttribute("size").Set(0.2)
+        col1.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.5)
+        col1.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Double).Set(0.2)
+
+        # Body 2: only mjc:margin authored (gap defaults to 0)
+        prim2 = stage.DefinePrim("/Body2", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim2)
+        col2 = stage.DefinePrim("/Body2/Collision2", "Sphere")
+        UsdPhysics.CollisionAPI.Apply(col2)
+        col2.GetAttribute("radius").Set(0.1)
+        col2.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.4)
+
+        # Joint connecting them
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/Joint1")
+        joint.GetBody0Rel().SetTargets(["/Body1"])
+        joint.GetBody1Rel().SetTargets(["/Body2"])
+        joint.GetAxisAttr().Set("Z")
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+
+        # Body 1: mjc_margin=0.5, mjc_gap=0.2 -> newton_margin = 0.5 - 0.2 = 0.3
+        found_combined = any(
+            abs(float(shape_margin[i]) - 0.3) < 1e-4 and abs(float(shape_gap[i]) - 0.2) < 1e-4
+            for i in range(model.shape_count)
+        )
+        self.assertTrue(found_combined, "Expected margin=0.3, gap=0.2 from combined conversion")
+
+        # Body 2: mjc_margin=0.4, mjc_gap not authored -> gap defaults to 0.0
+        # from SchemaResolverMjc, so newton_margin = 0.4 - 0 = 0.4, gap = 0.0
+        found_margin_only = any(
+            abs(float(shape_margin[i]) - 0.4) < 1e-4 and abs(float(shape_gap[i])) < 1e-4
+            for i in range(model.shape_count)
+        )
+        self.assertTrue(found_margin_only, "Expected margin=0.4 with gap=0.0 when only margin authored")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_actuator_mode_inference_from_drive(self):
