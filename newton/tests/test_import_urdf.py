@@ -1703,6 +1703,12 @@ class TestOverrideRootXformURDF(unittest.TestCase):
         base_idx = builder.body_label.index("test/base")
         np.testing.assert_allclose(body_q[base_idx, :3], [3.0, 4.0, 0.0], atol=1e-4)
 
+    def test_override_without_xform_raises(self):
+        """override_root_xform=True without providing xform should raise a ValueError."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_urdf(self.SIMPLE_URDF, override_root_xform=True)
+
     def test_override_base_joint(self):
         """override_root_xform=True with a custom base_joint applies xform directly
         instead of splitting position/rotation."""

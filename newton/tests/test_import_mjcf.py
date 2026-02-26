@@ -7667,6 +7667,12 @@ class TestOverrideRootXform(unittest.TestCase):
 </mujoco>
 """
 
+    def test_override_without_xform_raises(self):
+        """override_root_xform=True without providing xform should raise a ValueError."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_mjcf(self.MJCF_WITH_ROOT_OFFSET, override_root_xform=True)
+
     def test_multiple_articulations_default_keeps_relative(self):
         """Without override, multiple articulations keep their relative positions shifted by xform."""
         shift = (1.0, 2.0, 3.0)

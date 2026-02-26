@@ -6560,6 +6560,14 @@ class TestOverrideRootXform(unittest.TestCase):
             )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_without_xform_raises(self):
+        """override_root_xform=True without providing xform should raise a ValueError."""
+        stage = self._make_stage_with_root_offset()
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_usd(stage, floating=False, override_root_xform=True)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_override_visual_shape_aligned_with_body(self):
         """Visual shapes stay aligned with their rigid body when override_root_xform=True
         strips a non-identity ancestor transform."""
