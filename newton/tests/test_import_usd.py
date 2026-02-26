@@ -7042,7 +7042,6 @@ def Mesh "JustAMesh" ()
         self.assertIsNone(tm.k_mu)
         self.assertIsNone(tm.k_lambda)
         self.assertIsNone(tm.density)
->>>>>>> d65c3437 (Add TetMesh class and USD loading API)
 
     def test_tetmesh_save_load_npz(self):
         """Test TetMesh round-trip save/load via .npz."""
@@ -7133,8 +7132,12 @@ def Mesh "JustAMesh" ()
 
         self.assertIn("temperature", tm.custom_attributes)
         self.assertIn("regionId", tm.custom_attributes)
-        assert_np_equal(tm.custom_attributes["temperature"], temperature)
-        assert_np_equal(tm.custom_attributes["regionId"], region_id)
+        arr, freq = tm.custom_attributes["temperature"]
+        assert_np_equal(arr, temperature)
+        self.assertEqual(freq, newton.Model.AttributeFrequency.PARTICLE)
+        arr, freq = tm.custom_attributes["regionId"]
+        assert_np_equal(arr, region_id)
+        self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
 
     def test_tetmesh_custom_attributes_empty_by_default(self):
         """Test TetMesh has empty custom_attributes when none are provided."""
@@ -7158,15 +7161,21 @@ def Mesh "JustAMesh" ()
 
         # Per-vertex temperature primvar
         self.assertIn("temperature", tm.custom_attributes)
-        assert_np_equal(tm.custom_attributes["temperature"], np.array([100, 200, 300, 400, 500], dtype=np.float32))
+        arr, freq = tm.custom_attributes["temperature"]
+        assert_np_equal(arr, np.array([100, 200, 300, 400, 500], dtype=np.float32))
+        self.assertEqual(freq, newton.Model.AttributeFrequency.PARTICLE)
 
         # Per-tet regionId primvar
         self.assertIn("regionId", tm.custom_attributes)
-        assert_np_equal(tm.custom_attributes["regionId"], np.array([0, 1], dtype=np.int32))
+        arr, freq = tm.custom_attributes["regionId"]
+        assert_np_equal(arr, np.array([0, 1], dtype=np.int32))
+        self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
 
         # Per-vertex vector primvar
         self.assertIn("velocityField", tm.custom_attributes)
-        self.assertEqual(tm.custom_attributes["velocityField"].shape, (5, 3))
+        arr, freq = tm.custom_attributes["velocityField"]
+        self.assertEqual(arr.shape, (5, 3))
+        self.assertEqual(freq, newton.Model.AttributeFrequency.PARTICLE)
 
     def test_tetmesh_custom_attributes_npz_roundtrip(self):
         """Test custom attributes survive save/load via .npz."""
@@ -7187,11 +7196,74 @@ def Mesh "JustAMesh" ()
             tm2 = newton.TetMesh.create_from_file(path)
 
             self.assertIn("temperature", tm2.custom_attributes)
-            assert_np_equal(tm2.custom_attributes["temperature"], temperature)
+            arr, freq = tm2.custom_attributes["temperature"]
+            assert_np_equal(arr, temperature)
+            self.assertEqual(freq, newton.Model.AttributeFrequency.PARTICLE)
             self.assertIn("regionId", tm2.custom_attributes)
-            assert_np_equal(tm2.custom_attributes["regionId"], region_id)
+            arr, freq = tm2.custom_attributes["regionId"]
+            assert_np_equal(arr, region_id)
+            self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
         finally:
             os.unlink(path)
+
+    def test_tetmesh_custom_attributes_to_model(self):
+        """Test custom attributes flow from TetMesh through add_soft_mesh into the finalized Model."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+
+        # Per-vertex attribute (5 vertices)
+        temperature = np.array([100.0, 200.0, 300.0, 400.0, 500.0], dtype=np.float32)
+        # Per-tet attribute (2 tets)
+        region_id = np.array([0, 1], dtype=np.int32)
+
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            custom_attributes={
+                "temperature": temperature,
+                "regionId": region_id,
+            },
+        )
+
+        builder = newton.ModelBuilder()
+
+        # Register custom attributes before calling add_soft_mesh
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="temperature",
+                dtype=wp.float32,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="regionId",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.TETRAHEDRON,
+            )
+        )
+
+        builder.add_soft_mesh(
+            mesh=tm,
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+        )
+
+        model = builder.finalize()
+
+        # Verify per-vertex attribute (PARTICLE frequency)
+        self.assertTrue(hasattr(model, "temperature"))
+        temp_arr = model.temperature.numpy()
+        self.assertEqual(len(temp_arr), model.particle_count)
+        np.testing.assert_allclose(temp_arr, temperature)
+
+        # Verify per-tet attribute (TETRAHEDRON frequency)
+        self.assertTrue(hasattr(model, "regionId"))
+        region_arr = model.regionId.numpy()
+        self.assertEqual(len(region_arr), model.tet_count)
+        np.testing.assert_array_equal(region_arr, region_id)
 
     def test_mesh_create_from_file_obj(self):
         """Test Mesh.create_from_file with an OBJ file."""

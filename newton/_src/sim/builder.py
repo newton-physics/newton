@@ -7492,14 +7492,28 @@ class ModelBuilder:
         k_lambda_arr = np.broadcast_to(np.asarray(k_lambda, dtype=np.float32).flatten(), num_tets)
         k_damp_arr = np.broadcast_to(np.asarray(k_damp, dtype=np.float32).flatten(), num_tets)
 
+        # Extract custom attributes grouped by frequency
+        particle_custom: dict[str, np.ndarray] = {}
+        tet_custom: dict[str, np.ndarray] = {}
+        tri_custom: dict[str, np.ndarray] = {}
+        if mesh is not None and mesh.custom_attributes:
+            for attr_name, (arr, freq) in mesh.custom_attributes.items():
+                if freq == Model.AttributeFrequency.PARTICLE:
+                    particle_custom[attr_name] = arr
+                elif freq == Model.AttributeFrequency.TETRAHEDRON:
+                    tet_custom[attr_name] = arr
+                elif freq == Model.AttributeFrequency.TRIANGLE:
+                    tri_custom[attr_name] = arr
+
         start_vertex = len(self.particle_q)
 
         pos = wp.vec3(pos[0], pos[1], pos[2])
         # add particles
-        for v in vertices:
+        for vi, v in enumerate(vertices):
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
 
-            self.add_particle(p, vel, 0.0, particle_radius)
+            p_custom = {k: arr[vi] for k, arr in particle_custom.items()} if particle_custom else None
+            self.add_particle(p, vel, 0.0, particle_radius, custom_attributes=p_custom)
 
         # Use pre-computed surface triangles from TetMesh if available
         has_precomputed_surface = mesh is not None and len(mesh.surface_tri_indices) > 0
@@ -7522,8 +7536,16 @@ class ModelBuilder:
             v2 = start_vertex + indices[t * 4 + 2]
             v3 = start_vertex + indices[t * 4 + 3]
 
+            t_custom = {k: arr[t] for k, arr in tet_custom.items()} if tet_custom else None
             volume = self.add_tetrahedron(
-                v0, v1, v2, v3, float(k_mu_arr[t]), float(k_lambda_arr[t]), float(k_damp_arr[t])
+                v0,
+                v1,
+                v2,
+                v3,
+                float(k_mu_arr[t]),
+                float(k_lambda_arr[t]),
+                float(k_damp_arr[t]),
+                custom_attributes=t_custom,
             )
 
             # distribute volume fraction to particles
@@ -7544,7 +7566,8 @@ class ModelBuilder:
         start_tri = len(self.tri_indices)
         if has_precomputed_surface:
             surf = mesh.surface_tri_indices.reshape(-1, 3)
-            for tri in surf:
+            for ti, tri in enumerate(surf):
+                tr_custom = {k: arr[ti] for k, arr in tri_custom.items()} if tri_custom else None
                 self.add_triangle(
                     start_vertex + int(tri[0]),
                     start_vertex + int(tri[1]),
@@ -7554,6 +7577,7 @@ class ModelBuilder:
                     tri_kd,
                     tri_drag,
                     tri_lift,
+                    custom_attributes=tr_custom,
                 )
         else:
             for _k, v in faces.items():

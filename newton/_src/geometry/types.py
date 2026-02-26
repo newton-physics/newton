@@ -25,6 +25,7 @@ from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
+    from ..sim.model import Model
     from .sdf_utils import SDF
 
 
@@ -949,7 +950,7 @@ class TetMesh:
         k_lambda: nparray | float | None = None,
         k_damp: nparray | float | None = None,
         density: float | None = None,
-        custom_attributes: dict[str, nparray] | None = None,
+        custom_attributes: ("dict[str, nparray] | dict[str, tuple[nparray, Model.AttributeFrequency]] | None") = None,
     ):
         """Construct a TetMesh from vertex positions and tet connectivity.
 
@@ -963,9 +964,10 @@ class TetMesh:
             k_damp: Damping stiffness. Scalar (uniform) or per-element array
                 of shape (tet_count,).
             density: Uniform density [kg/m^3] for mass computation.
-            custom_attributes: Dictionary of named custom arrays. Typically
-                per-vertex (length N), per-tet (length tet_count), or
-                per-surface-triangle data parsed from USD or other sources.
+            custom_attributes: Dictionary of named custom arrays with their
+                :class:`~newton.Model.AttributeFrequency`. Each value can be
+                either a bare array (frequency auto-inferred from length) or a
+                ``(array, frequency)`` tuple.
         """
         self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
         self._tet_indices = np.array(tet_indices, dtype=np.int32).flatten()
@@ -973,18 +975,25 @@ class TetMesh:
             raise ValueError(f"tet_indices length must be a multiple of 4, got {len(self._tet_indices)}.")
 
         tet_count = len(self._tet_indices) // 4
+        vertex_count = len(self._vertices)
 
         self._k_mu = self._broadcast_material(k_mu, tet_count, "k_mu")
         self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
         self._k_damp = self._broadcast_material(k_damp, tet_count, "k_damp")
         self._density = density
-        self.custom_attributes: dict[str, np.ndarray] = {}
+        self.custom_attributes: dict[str, tuple[np.ndarray, int]] = {}
         for k, v in (custom_attributes or {}).items():
             if k in self._RESERVED_ATTR_KEYS:
                 raise ValueError(
                     f"Custom attribute name '{k}' is reserved. Reserved names: {sorted(self._RESERVED_ATTR_KEYS)}"
                 )
-            self.custom_attributes[k] = np.asarray(v)
+            if isinstance(v, tuple):
+                arr, freq = v
+                self.custom_attributes[k] = (np.asarray(arr), freq)
+            else:
+                arr = np.asarray(v)
+                freq = self._infer_frequency(arr, vertex_count, tet_count, k)
+                self.custom_attributes[k] = (arr, freq)
 
         # Compute surface triangles from boundary faces
         self._surface_tri_indices = self._compute_surface_triangles()
@@ -1001,6 +1010,42 @@ class TetMesh:
         if len(arr) != tet_count:
             raise ValueError(f"{name} array length ({len(arr)}) does not match tet count ({tet_count}).")
         return arr
+
+    @staticmethod
+    def _infer_frequency(arr: np.ndarray, vertex_count: int, tet_count: int, name: str) -> "Model.AttributeFrequency":
+        """Infer :class:`~newton.Model.AttributeFrequency` from array length.
+
+        Args:
+            arr: The attribute array.
+            vertex_count: Number of vertices in the mesh.
+            tet_count: Number of tetrahedra in the mesh.
+            name: Attribute name (for error messages).
+
+        Returns:
+            The inferred frequency.
+
+        Raises:
+            ValueError: If the array length matches neither vertex_count nor
+                tet_count, or if both counts are equal and the mapping is
+                ambiguous.
+        """
+        from ..sim.model import Model  # noqa: PLC0415
+
+        first_dim = arr.shape[0] if arr.ndim >= 1 else 1
+        if first_dim == vertex_count and first_dim == tet_count:
+            raise ValueError(
+                f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches both "
+                f"vertex_count and tet_count. Pass an explicit (array, frequency) tuple instead."
+            )
+        if first_dim == vertex_count:
+            return Model.AttributeFrequency.PARTICLE
+        if first_dim == tet_count:
+            return Model.AttributeFrequency.TETRAHEDRON
+        raise ValueError(
+            f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches neither "
+            f"vertex_count ({vertex_count}) nor tet_count ({tet_count}). "
+            f"Pass an explicit (array, frequency) tuple instead."
+        )
 
     def _compute_surface_triangles(self) -> np.ndarray:
         """Extract boundary faces (faces belonging to exactly one tet).
@@ -1139,8 +1184,34 @@ class TetMesh:
                     kwargs[key] = data[key]
             if "density" in data:
                 kwargs["density"] = float(data["density"])
-            known_keys = {"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"}
-            custom = {k: data[k] for k in data.files if k not in known_keys}
+            known_keys = {
+                "vertices",
+                "tet_indices",
+                "k_mu",
+                "k_lambda",
+                "k_damp",
+                "density",
+                "__custom_names__",
+                "__custom_freqs__",
+            }
+            freq_map: dict[str, int] = {}
+            if "__custom_names__" in data and "__custom_freqs__" in data:
+                from ..sim.model import Model as _Model  # noqa: PLC0415
+
+                names = data["__custom_names__"]
+                freqs = data["__custom_freqs__"]
+                for n, f in zip(names, freqs, strict=True):
+                    freq_map[str(n)] = int(f)
+            custom: dict[str, np.ndarray | tuple] = {}
+            for k in data.files:
+                if k not in known_keys:
+                    arr = np.asarray(data[k])
+                    if k in freq_map:
+                        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+                        custom[k] = (arr, _Model.AttributeFrequency(freq_map[k]))
+                    else:
+                        custom[k] = arr
             if custom:
                 kwargs["custom_attributes"] = custom
             return TetMesh(
@@ -1180,14 +1251,16 @@ class TetMesh:
                         kwargs[key] = arr
 
         # Read custom attributes from cell data and point data
-        custom: dict[str, np.ndarray] = {}
+        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+        custom: dict[str, tuple[np.ndarray, _Model.AttributeFrequency]] = {}
         if m.cell_data and tet_cell_idx is not None:
             for key, arrays in m.cell_data.items():
                 if key not in material_keys:
-                    custom[key] = np.asarray(arrays[tet_cell_idx])
+                    custom[key] = (np.asarray(arrays[tet_cell_idx]), _Model.AttributeFrequency.TETRAHEDRON)
         if m.point_data:
             for key, arr in m.point_data.items():
-                custom[key] = np.asarray(arr)
+                custom[key] = (np.asarray(arr), _Model.AttributeFrequency.PARTICLE)
         if custom:
             kwargs["custom_attributes"] = custom
 
@@ -1218,8 +1291,15 @@ class TetMesh:
                 save_dict["k_damp"] = self._k_damp
             if self._density is not None:
                 save_dict["density"] = np.array(self._density)
-            for k, v in self.custom_attributes.items():
-                save_dict[k] = v
+            custom_names = []
+            custom_freqs = []
+            for k, (arr, freq) in self.custom_attributes.items():
+                save_dict[k] = arr
+                custom_names.append(k)
+                custom_freqs.append(int(freq))
+            if custom_names:
+                save_dict["__custom_names__"] = np.array(custom_names)
+                save_dict["__custom_freqs__"] = np.array(custom_freqs, dtype=np.int32)
             np.savez(filename, **save_dict)
             return
 
@@ -1236,11 +1316,13 @@ class TetMesh:
         if self._density is not None:
             cell_data["density"] = [np.full(self.tet_count, self._density, dtype=np.float32)]
 
-        # Save custom attributes as point or cell data based on length
-        for name, arr in self.custom_attributes.items():
-            if len(arr) == self.tet_count:
+        # Save custom attributes as point or cell data based on frequency
+        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+        for name, (arr, freq) in self.custom_attributes.items():
+            if freq == _Model.AttributeFrequency.TETRAHEDRON:
                 cell_data[name] = [arr]
-            elif len(arr) == self.vertex_count:
+            elif freq == _Model.AttributeFrequency.PARTICLE:
                 point_data[name] = arr
 
         mesh = meshio.Mesh(
