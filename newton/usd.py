@@ -71,12 +71,8 @@ from ._src.usd.schemas import (
     SchemaResolverPhysx,
 )
 
-# Public alias for the nested schema attribute specification type.
-SchemaAttribute = SchemaResolver.SchemaAttribute
-
 __all__ += [
     "PrimType",
-    "SchemaAttribute",
     "SchemaResolver",
     "SchemaResolverMjc",
     "SchemaResolverNewton",
