@@ -935,8 +935,8 @@ def parse_mjcf(
                         stacklevel=2,
                     )
 
-                # Add explicit mass and computed inertia to body
-                if inertia_computed:
+                # Add explicit mass and computed inertia to body (skip if inertia is locked by <inertial>)
+                if inertia_computed and not builder.body_lock_inertia[link]:
                     com_body = wp.transform_point(tf, com)
                     builder._update_body_mass(link, geom_mass_explicit, inertia_tensor, com_body, tf.q)
 
