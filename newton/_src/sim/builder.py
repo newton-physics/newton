@@ -1841,6 +1841,7 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
+        joints_to_keep: list[str] | None = None,
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
     ):
@@ -1925,6 +1926,7 @@ class ModelBuilder:
             joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
             bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
+            joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
@@ -1952,6 +1954,7 @@ class ModelBuilder:
             joint_ordering=joint_ordering,
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
+            joints_to_keep=joints_to_keep,
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
         )
@@ -1970,6 +1973,7 @@ class ModelBuilder:
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
         collapse_fixed_joints: bool = False,
+        joints_to_keep: list[str] | None = None,
         enable_self_collisions: bool = True,
         apply_up_axis_from_stage: bool = False,
         root_path: str = "/",
@@ -2066,6 +2070,7 @@ class ModelBuilder:
             verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
+            joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
             enable_self_collisions (bool): Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path (str): The USD path to import, defaults to "/".
@@ -2154,6 +2159,7 @@ class ModelBuilder:
             verbose=verbose,
             ignore_paths=ignore_paths,
             collapse_fixed_joints=collapse_fixed_joints,
+            joints_to_keep=joints_to_keep,
             enable_self_collisions=enable_self_collisions,
             apply_up_axis_from_stage=apply_up_axis_from_stage,
             root_path=root_path,
@@ -2196,6 +2202,7 @@ class ModelBuilder:
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
         collapse_fixed_joints: bool = False,
+        joints_to_keep: list[str] | None = None,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_3d_hinge_to_ball_joints: bool = False,
@@ -2294,6 +2301,7 @@ class ModelBuilder:
             enable_self_collisions (bool): If True, self-collisions are enabled.
             ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
+            joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
             verbose (bool): If True, print additional information about parsing the MJCF.
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
@@ -2334,6 +2342,7 @@ class ModelBuilder:
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
             collapse_fixed_joints=collapse_fixed_joints,
+            joints_to_keep=joints_to_keep,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
             convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
@@ -4248,7 +4257,7 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(self, verbose=wp.config.verbose):
+    def collapse_fixed_joints(self, verbose=wp.config.verbose, joints_to_keep=None):
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation."""
 
         body_data = {}
@@ -4358,11 +4367,17 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
+            nonlocal joints_to_keep
 
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
             # and would be merged into world (last_dynamic_body == -1)
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+
+            # Don't merge fixed joints listed in joints_to_keep list
+            if joints_to_keep is None:
+                joints_to_keep = []
+            joint_in_keep_list = joint["label"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
@@ -4374,7 +4389,25 @@ class ModelBuilder:
                         f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
                     )
 
-            if joint["type"] == JointType.FIXED and not should_skip_merge:
+            if joint_in_keep_list and joint["type"] == JointType.FIXED:
+                # Skip merging this joint if it is listed in the joints_to_keep list
+                parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
+                child_lbl = self.body_label[child_body]
+                if verbose:
+                    print(
+                        f"Skipping collapse of joint {joint['label']} between {parent_lbl} and {child_lbl}: "
+                        f"{child_lbl} is listed in the joints_to_keep list and will not be merged into world"
+                    )
+                # Warn if the child_body of skipped joint has zero or negative mass
+                if body_data[child_body]["mass"] <= 0:
+                    warnings.warn(
+                        f"Skipped joint {joint['label']} has a child {child_lbl} with zero or negative mass ({body_data[child_body]['mass']}). "
+                        f"This may cause unexpected behavior.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+
+            if joint["type"] == JointType.FIXED and not should_skip_merge and not joint_in_keep_list:
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"

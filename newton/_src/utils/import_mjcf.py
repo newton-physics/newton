@@ -180,6 +180,7 @@ def parse_mjcf(
     enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = False,
     collapse_fixed_joints: bool = False,
+    joints_to_keep: list[str] | None = None,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
@@ -279,6 +280,7 @@ def parse_mjcf(
         enable_self_collisions (bool): If True, self-collisions are enabled.
         ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
+        joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
         verbose (bool): If True, print additional information about parsing the MJCF.
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
@@ -2573,4 +2575,4 @@ def parse_mjcf(
             )
 
     if collapse_fixed_joints:
-        builder.collapse_fixed_joints()
+        builder.collapse_fixed_joints(joints_to_keep=joints_to_keep)
