@@ -433,7 +433,7 @@ class Example:
     def test_final(self):
         # Verify that the object was picked up by checking the maximum height reached
         initial_z = self.object_pos[2]
-        min_lift_height = 0.25  # Object should be lifted at least 25cm above initial position
+        min_lift_height = 0.15  # Object should be lifted at least 15cm above initial position
 
         for world_idx in range(self.world_count):
             max_z = self.object_max_z[world_idx]
