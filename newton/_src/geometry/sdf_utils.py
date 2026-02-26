@@ -655,6 +655,14 @@ def _compute_sdf_from_shape_impl(
             inputs=[shape_type, effective_scale, coarse_volume.id, coarse_tile_points_wp, shape_margin],
         )
 
+    if shape_type == GeoType.MESH:
+        # Synchronize to ensure all kernels reading from the temporary wp.Mesh
+        # (created above for SDF construction) have completed before it goes
+        # out of scope.  Without this, wp.Mesh.__del__ can free the BVH / winding-
+        # number data while an asynchronous kernel is still reading it, corrupting
+        # the CUDA context on some driver/GPU combinations (#1616).
+        wp.synchronize()
+
     if verbose:
         print(f"Coarse SDF: dims={coarse_dims}x{coarse_dims}x{coarse_dims}, voxel size: {coarse_voxel_size}")
 
