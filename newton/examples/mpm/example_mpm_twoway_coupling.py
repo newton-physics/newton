@@ -17,7 +17,7 @@
 # Example MPM 2-Way Coupling
 #
 # A simple scene spawning a dozen rigid shapes above a plane. The shapes
-# fall and collide using the XPBD solver. Demonstrates basic builder APIs
+# fall and collide using the MuJoCo solver. Demonstrates basic builder APIs
 # and the standard example structure.
 #
 # Command: python -m newton.examples mpm_twoway_coupling
@@ -146,7 +146,7 @@ class Example:
         self.mpm_solver.setup_collider(model=self.model)
 
         # setup rigid-body solver
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, use_mujoco_contacts=False, njmax=100)
 
         # simulation state
         self.state_0 = self.model.state()
@@ -231,7 +231,7 @@ class Example:
         self.simulate_sand()
 
     def collect_collider_impulses(self):
-        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
+        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver._collect_collider_impulses(
             self.sand_state_0
         )
         self.collider_impulse_ids.fill_(-1)
@@ -300,7 +300,7 @@ class Example:
         )
 
         if self.show_impulses:
-            impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(self.sand_state_0)
+            impulses, pos, _cid = self.mpm_solver._collect_collider_impulses(self.sand_state_0)
             self.viewer.log_lines(
                 "/impulses",
                 starts=pos,

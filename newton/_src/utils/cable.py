@@ -20,7 +20,7 @@ from collections.abc import Sequence
 
 import warp as wp
 
-from ..core.spatial import quat_between_vectors_robust
+from ..math import quat_between_vectors_robust
 
 
 def create_cable_stiffness_from_elastic_moduli(

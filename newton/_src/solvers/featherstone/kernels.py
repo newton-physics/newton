@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...core import transform_twist
+from ...math import transform_twist
 from ...sim import JointType, Model, State
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
