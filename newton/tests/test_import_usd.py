@@ -7222,6 +7222,135 @@ def Mesh "JustAMesh" ()
         with self.assertRaises(FileNotFoundError):
             newton.TetMesh.create_from_file("nonexistent_file.vtk")
 
+    # ------------------------------------------------------------------
+    # add_soft_mesh(mesh=TetMesh) builder integration
+    # ------------------------------------------------------------------
+
+    def _make_two_tet_mesh(self, **kwargs):
+        """Helper: 5 vertices, 2 tets sharing face (1,2,3)."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        return newton.TetMesh(vertices, tet_indices, **kwargs)
+
+    def test_add_soft_mesh_with_tetmesh(self):
+        """Test add_soft_mesh accepts a TetMesh and populates the builder."""
+        tm = self._make_two_tet_mesh()
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        self.assertEqual(len(builder.particle_q), 5)
+        self.assertEqual(len(builder.tet_indices), 2)
+        # 6 boundary triangles (2 tets * 4 faces - 2 shared)
+        self.assertEqual(len(builder.tri_indices), 6)
+
+    def test_add_soft_mesh_tetmesh_density_override(self):
+        """Test that explicit density overrides TetMesh density."""
+        tm = self._make_two_tet_mesh(density=10.0)
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+            density=99.0,
+        )
+        # Particles should have mass based on density=99.0, not 10.0
+        total_mass = sum(builder.particle_mass)
+        self.assertGreater(total_mass, 0.0)
+
+    def test_add_soft_mesh_tetmesh_per_element_materials(self):
+        """Test per-element material arrays flow through to the builder."""
+        tm = self._make_two_tet_mesh(
+            k_mu=np.array([100.0, 200.0], dtype=np.float32),
+            k_lambda=np.array([300.0, 400.0], dtype=np.float32),
+            k_damp=np.array([0.1, 0.2], dtype=np.float32),
+        )
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        # Verify per-element values are stored
+        self.assertAlmostEqual(builder.tet_materials[0][0], 100.0)
+        self.assertAlmostEqual(builder.tet_materials[1][0], 200.0)
+        self.assertAlmostEqual(builder.tet_materials[0][1], 300.0)
+        self.assertAlmostEqual(builder.tet_materials[1][1], 400.0)
+
+    def test_add_soft_mesh_backward_compat(self):
+        """Test raw vertices/indices still work (backward compatibility)."""
+        vertices = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        indices = [0, 1, 2, 3]
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            vertices=vertices,
+            indices=indices,
+            density=1.0,
+            k_mu=1000.0,
+            k_lambda=1000.0,
+            k_damp=0.0,
+        )
+        self.assertEqual(len(builder.particle_q), 4)
+        self.assertEqual(len(builder.tet_indices), 1)
+        self.assertEqual(len(builder.tri_indices), 4)
+
+    def test_add_soft_mesh_no_input_raises(self):
+        """Test ValueError when neither mesh nor vertices/indices provided."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_soft_mesh(
+                pos=(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=(0.0, 0.0, 0.0),
+            )
+
+    def test_add_soft_mesh_invalid_mesh_type(self):
+        """Test TypeError when mesh is not a TetMesh."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(TypeError):
+            builder.add_soft_mesh(
+                pos=(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=(0.0, 0.0, 0.0),
+                mesh="not_a_tetmesh",
+            )
+
+    def test_add_soft_mesh_instancing(self):
+        """Test adding the same TetMesh twice creates independent instances."""
+        tm = self._make_two_tet_mesh(k_mu=500.0, k_lambda=500.0, density=1.0)
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        builder.add_soft_mesh(
+            pos=(2.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        self.assertEqual(len(builder.particle_q), 10)
+        self.assertEqual(len(builder.tet_indices), 4)
+        self.assertEqual(len(builder.tri_indices), 12)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)

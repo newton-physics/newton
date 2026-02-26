@@ -7396,12 +7396,13 @@ class ModelBuilder:
         rot: Quat,
         scale: float,
         vel: Vec3,
-        vertices: list[Vec3],
-        indices: list[int],
-        density: float,
-        k_mu: float,
-        k_lambda: float,
-        k_damp: float,
+        mesh: TetMesh | None = None,
+        vertices: list[Vec3] | None = None,
+        indices: list[int] | None = None,
+        density: float | None = None,
+        k_mu: float | nparray | None = None,
+        k_lambda: float | nparray | None = None,
+        k_damp: float | nparray | None = None,
         tri_ke: float = 0.0,
         tri_ka: float = 0.0,
         tri_kd: float = 0.0,
@@ -7412,18 +7413,33 @@ class ModelBuilder:
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
     ) -> None:
-        """Helper to create a tetrahedral model from an input tetrahedral mesh
+        """Helper to create a tetrahedral model from an input tetrahedral mesh.
+
+        Can be called with either a :class:`~newton.TetMesh` object or raw
+        ``vertices``/``indices`` arrays. When both are provided, explicit
+        parameters override the values from the TetMesh.
 
         Args:
-            pos: The position of the solid in world space
-            rot: The orientation of the solid in world space
-            vel: The velocity of the solid in world space
-            vertices: A list of vertex positions, array of 3D points
-            indices: A list of tetrahedron indices, 4 entries per-element, flattened array
-            density: The density per-area of the mesh
-            k_mu: The first elastic Lame parameter
-            k_lambda: The second elastic Lame parameter
-            k_damp: The damping stiffness
+            pos: The position of the solid in world space.
+            rot: The orientation of the solid in world space.
+            scale: Uniform scale applied to vertex positions.
+            vel: The velocity of the solid in world space.
+            mesh: A :class:`~newton.TetMesh` object. When provided, its
+                vertices, indices, material arrays, density, and pre-computed
+                surface triangles are used directly.
+            vertices: A list of vertex positions, array of 3D points.
+                Required if ``mesh`` is not provided.
+            indices: A list of tetrahedron indices, 4 entries per-element,
+                flattened array. Required if ``mesh`` is not provided.
+            density: The density [kg/m^3] of the mesh. Overrides ``mesh.density``
+                if both are provided.
+            k_mu: The first elastic Lame parameter [Pa]. Scalar or per-element
+                array. Overrides ``mesh.k_mu`` if both are provided.
+            k_lambda: The second elastic Lame parameter [Pa]. Scalar or
+                per-element array. Overrides ``mesh.k_lambda`` if both are
+                provided.
+            k_damp: The damping stiffness. Scalar or per-element array.
+                Overrides ``mesh.k_damp`` if both are provided.
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
@@ -7433,7 +7449,7 @@ class ModelBuilder:
                 generated surface mesh. These edges improve collision robustness for VBD solver. Defaults to True.
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
-            particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -7441,20 +7457,42 @@ class ModelBuilder:
             elastic forces. Set the stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
+        from ..geometry.types import TetMesh  # noqa: PLC0415
+
+        # Resolve parameters: explicit args > mesh attributes > error
+        if mesh is not None:
+            if not isinstance(mesh, TetMesh):
+                raise TypeError(f"mesh must be a TetMesh, got {type(mesh).__name__}")
+            if vertices is None:
+                vertices = mesh.vertices
+            if indices is None:
+                indices = mesh.tet_indices
+            if density is None:
+                density = mesh.density
+            if k_mu is None:
+                k_mu = mesh.k_mu
+            if k_lambda is None:
+                k_lambda = mesh.k_lambda
+            if k_damp is None:
+                k_damp = mesh.k_damp
+
+        if vertices is None or indices is None:
+            raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
+        if density is None:
+            density = 1.0
+        if k_mu is None:
+            k_mu = 1.0e3
+        if k_lambda is None:
+            k_lambda = 1.0e3
+        if k_damp is None:
+            k_damp = 0.0
+
         num_tets = int(len(indices) / 4)
+        k_mu_arr = np.broadcast_to(np.asarray(k_mu, dtype=np.float32).flatten(), num_tets)
+        k_lambda_arr = np.broadcast_to(np.asarray(k_lambda, dtype=np.float32).flatten(), num_tets)
+        k_damp_arr = np.broadcast_to(np.asarray(k_damp, dtype=np.float32).flatten(), num_tets)
 
         start_vertex = len(self.particle_q)
-
-        # dict of open faces
-        faces = {}
-
-        def add_face(i, j, k):
-            key = tuple(sorted((i, j, k)))
-
-            if key not in faces:
-                faces[key] = (i, j, k)
-            else:
-                del faces[key]
 
         pos = wp.vec3(pos[0], pos[1], pos[2])
         # add particles
@@ -7463,14 +7501,30 @@ class ModelBuilder:
 
             self.add_particle(p, vel, 0.0, particle_radius)
 
+        # Use pre-computed surface triangles from TetMesh if available
+        has_precomputed_surface = mesh is not None and len(mesh.surface_tri_indices) > 0
+
         # add tetrahedra
+        if not has_precomputed_surface:
+            # dict of open faces (legacy path)
+            faces = {}
+
+            def add_face(i, j, k):
+                key = tuple(sorted((i, j, k)))
+                if key not in faces:
+                    faces[key] = (i, j, k)
+                else:
+                    del faces[key]
+
         for t in range(num_tets):
             v0 = start_vertex + indices[t * 4 + 0]
             v1 = start_vertex + indices[t * 4 + 1]
             v2 = start_vertex + indices[t * 4 + 2]
             v3 = start_vertex + indices[t * 4 + 3]
 
-            volume = self.add_tetrahedron(v0, v1, v2, v3, k_mu, k_lambda, k_damp)
+            volume = self.add_tetrahedron(
+                v0, v1, v2, v3, float(k_mu_arr[t]), float(k_lambda_arr[t]), float(k_damp_arr[t])
+            )
 
             # distribute volume fraction to particles
             if volume > 0.0:
@@ -7479,16 +7533,31 @@ class ModelBuilder:
                 self.particle_mass[v2] += density * volume / 4.0
                 self.particle_mass[v3] += density * volume / 4.0
 
-                # build open faces
-                add_face(v0, v2, v1)
-                add_face(v1, v2, v3)
-                add_face(v0, v1, v3)
-                add_face(v0, v3, v2)
+                if not has_precomputed_surface:
+                    # build open faces
+                    add_face(v0, v2, v1)
+                    add_face(v1, v2, v3)
+                    add_face(v0, v1, v3)
+                    add_face(v0, v3, v2)
 
         # add surface triangles
         start_tri = len(self.tri_indices)
-        for _k, v in faces.items():
-            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        if has_precomputed_surface:
+            surf = mesh.surface_tri_indices.reshape(-1, 3)
+            for tri in surf:
+                self.add_triangle(
+                    start_vertex + int(tri[0]),
+                    start_vertex + int(tri[1]),
+                    start_vertex + int(tri[2]),
+                    tri_ke,
+                    tri_ka,
+                    tri_kd,
+                    tri_drag,
+                    tri_lift,
+                )
+        else:
+            for _k, v in faces.items():
+                self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
         end_tri = len(self.tri_indices)
 
         if add_surface_mesh_edges:
