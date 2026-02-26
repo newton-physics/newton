@@ -57,7 +57,6 @@ def parse_usd(
     verbose: bool = False,
     ignore_paths: list[str] | None = None,
     collapse_fixed_joints: bool = False,
-    joints_to_keep: list[str] | None = None,
     enable_self_collisions: bool = True,
     apply_up_axis_from_stage: bool = False,
     root_path: str = "/",
@@ -162,7 +161,6 @@ def parse_usd(
         verbose (bool): If True, print additional information about the parsed USD file. Default is False.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
         enable_self_collisions (bool): Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
@@ -2331,7 +2329,7 @@ def parse_usd(
     collapse_results = None
     path_body_relative_transform = {}
     if scene_attributes.get("newton:collapse_fixed_joints", collapse_fixed_joints):
-        collapse_results = builder.collapse_fixed_joints(joints_to_keep=joints_to_keep)
+        collapse_results = builder.collapse_fixed_joints()
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]
         body_remap = collapse_results["body_remap"]

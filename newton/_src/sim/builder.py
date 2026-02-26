@@ -1841,7 +1841,6 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
-        joints_to_keep: list[str] | None = None,
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
@@ -1935,7 +1934,6 @@ class ModelBuilder:
             joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
             bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
-            joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
@@ -1963,7 +1961,6 @@ class ModelBuilder:
             joint_ordering=joint_ordering,
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
-            joints_to_keep=joints_to_keep,
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
@@ -1983,7 +1980,6 @@ class ModelBuilder:
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
         collapse_fixed_joints: bool = False,
-        joints_to_keep: list[str] | None = None,
         enable_self_collisions: bool = True,
         apply_up_axis_from_stage: bool = False,
         root_path: str = "/",
@@ -2087,7 +2083,6 @@ class ModelBuilder:
             verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-            joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
             enable_self_collisions (bool): Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path (str): The USD path to import, defaults to "/".
@@ -2176,7 +2171,6 @@ class ModelBuilder:
             verbose=verbose,
             ignore_paths=ignore_paths,
             collapse_fixed_joints=collapse_fixed_joints,
-            joints_to_keep=joints_to_keep,
             enable_self_collisions=enable_self_collisions,
             apply_up_axis_from_stage=apply_up_axis_from_stage,
             root_path=root_path,
@@ -2220,7 +2214,6 @@ class ModelBuilder:
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
         collapse_fixed_joints: bool = False,
-        joints_to_keep: list[str] | None = None,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_3d_hinge_to_ball_joints: bool = False,
@@ -2326,7 +2319,6 @@ class ModelBuilder:
             enable_self_collisions (bool): If True, self-collisions are enabled.
             ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
-            joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
             verbose (bool): If True, print additional information about parsing the MJCF.
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
@@ -2367,7 +2359,6 @@ class ModelBuilder:
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
             collapse_fixed_joints=collapse_fixed_joints,
-            joints_to_keep=joints_to_keep,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
             convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
@@ -4284,7 +4275,12 @@ class ModelBuilder:
         plt.show()
 
     def collapse_fixed_joints(self, verbose=wp.config.verbose, joints_to_keep=None):
-        """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation."""
+        """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
+
+        Args:
+            verbose (bool): If True, print additional information about the collapsed joints. Defaults to the value of `wp.config.verbose`.
+            joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process.
+        """
 
         body_data = {}
         body_children = {-1: []}

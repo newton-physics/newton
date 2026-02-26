@@ -83,7 +83,6 @@ def parse_urdf(
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
     collapse_fixed_joints: bool = False,
-    joints_to_keep: list[str] | None = None,
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
@@ -178,7 +177,6 @@ def parse_urdf(
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
-        joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process when ``collapse_fixed_joints`` is enabled.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
             (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
@@ -883,4 +881,4 @@ def parse_urdf(
                 builder.add_shape_collision_filter_pair(i, j)
 
     if collapse_fixed_joints:
-        builder.collapse_fixed_joints(joints_to_keep=joints_to_keep)
+        builder.collapse_fixed_joints()
