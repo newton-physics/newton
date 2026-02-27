@@ -82,7 +82,11 @@ examples = [
 # Extra dependency needed to run examples that inference an RL policy
 torch-cu12 = [
     "newton[examples]", # include example dependencies
-    "torch>=2.7.0",     # Cuda 12 PyTorch
+    "torch>=2.7.0",     # CUDA 12 PyTorch
+]
+torch-cu13 = [
+    "newton[examples]", # include example dependencies
+    "torch>=2.10.0",    # CUDA 13 PyTorch
 ]
 
 # Development and Testing
@@ -130,9 +134,20 @@ name = "nvidia"
 url = "https://pypi.nvidia.com/"
 explicit = true
 
+[tool.uv]
+conflicts = [
+    [
+        { extra = "torch-cu12" },
+        { extra = "torch-cu13" },
+    ],
+]
+
 [tool.uv.sources]
 warp-lang = { index = "nvidia" }
-torch = [{ index = "pytorch-cu128", extra = "torch-cu12" }]
+torch = [
+    { index = "pytorch-cu128", extra = "torch-cu12" },
+    { index = "pytorch-cu130", extra = "torch-cu13" },
+]
 
 [dependency-groups]
 dev = ["asv>=0.6.4"]
@@ -146,6 +161,11 @@ exclude = ["*.js"]
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.ruff.lint]
