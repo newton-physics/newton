@@ -218,7 +218,7 @@ class Example:
         )
 
         # add the T-shirt
-        usd_stage = Usd.Stage.Open(r"D:\Code\Graphics\warp-dev-demos\Data\RoboticsManipulation\tshirt_6K.usd")
+        usd_stage = Usd.Stage.Open(newton.examples.get_asset("unisex_shirt.usd"))
         usd_prim = usd_stage.GetPrimAtPath("/root/shirt")
 
         shirt_mesh = newton.usd.get_mesh(usd_prim)
@@ -471,10 +471,10 @@ class Example:
                 [3, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [2, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # bottom
-                [2, 0.0, -28.0, 30.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.0, -28.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.0, -28.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 0.0, -28.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.0, -20.0, 30.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -20.0, 19.5, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -20.0, 19.5, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.0, -20.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1.5, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1.5, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
