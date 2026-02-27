@@ -382,7 +382,7 @@ class SolverVBD(SolverBase):
                 edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
             )
 
-            self.compute_particle_contact_filtering_list(
+            self._compute_particle_contact_filtering_list(
                 particle_external_vertex_contact_filtering_map, particle_external_edge_contact_filtering_map
             )
 
@@ -1006,7 +1006,7 @@ class SolverVBD(SolverBase):
 
         return particle_adjacency
 
-    def compute_particle_contact_filtering_list(
+    def _compute_particle_contact_filtering_list(
         self, external_vertex_contact_filtering_map, external_edge_contact_filtering_map
     ):
         if self.model.tri_count:
@@ -1178,17 +1178,17 @@ class SolverVBD(SolverBase):
         update_rigid_history = self.update_rigid_history
         self.update_rigid_history = True
 
-        self.initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history)
-        self.initialize_particles(state_in, state_out, dt)
+        self._initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history)
+        self._initialize_particles(state_in, state_out, dt)
 
         for iter_num in range(self.iterations):
-            self.solve_rigid_body_iteration(state_in, state_out, contacts, dt)
-            self.solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
+            self._solve_rigid_body_iteration(state_in, state_out, contacts, dt)
+            self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
-        self.finalize_rigid_bodies(state_out, dt)
-        self.finalize_particles(state_out, dt)
+        self._finalize_rigid_bodies(state_out, dt)
+        self._finalize_particles(state_out, dt)
 
-    def penetration_free_truncation(self, particle_q_out=None):
+    def _penetration_free_truncation(self, particle_q_out=None):
         """
         Modify displacements_in in-place, also modify particle_q if its not None
 
@@ -1250,7 +1250,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def initialize_particles(self, state_in: State, state_out: State, dt: float):
+    def _initialize_particles(self, state_in: State, state_out: State, dt: float):
         """Initialize particle positions for the VBD iteration."""
         model = self.model
 
@@ -1287,9 +1287,9 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-        self.penetration_free_truncation(state_in.particle_q)
+        self._penetration_free_truncation(state_in.particle_q)
 
-    def initialize_rigid_bodies(
+    def _initialize_rigid_bodies(
         self,
         state_in: State,
         contacts: Contacts | None,
@@ -1475,7 +1475,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def solve_particle_iteration(
+    def _solve_particle_iteration(
         self, state_in: State, state_out: State, contacts: Contacts | None, dt: float, iter_num: int
     ):
         """Solve one VBD iteration for particles."""
@@ -1659,11 +1659,11 @@ class SolverVBD(SolverBase):
                     ],
                     device=self.device,
                 )
-            self.penetration_free_truncation(state_in.particle_q)
+            self._penetration_free_truncation(state_in.particle_q)
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
-    def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
+    def _solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
         """Solve one AVBD iteration for rigid bodies (per-iteration phase).
 
         Accumulates contact and joint forces/hessians, solves 6x6 rigid body systems per color,
@@ -2053,7 +2053,7 @@ class SolverVBD(SolverBase):
             contacts.rigid_contact_count,
         )
 
-    def finalize_particles(self, state_out: State, dt: float):
+    def _finalize_particles(self, state_out: State, dt: float):
         """Finalize particle velocities after VBD iterations."""
         # Early exit if no particles
         if self.model.particle_count == 0:
@@ -2066,7 +2066,7 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-    def finalize_rigid_bodies(self, state_out: State, dt: float):
+    def _finalize_rigid_bodies(self, state_out: State, dt: float):
         """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
 
         Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for cable bending.

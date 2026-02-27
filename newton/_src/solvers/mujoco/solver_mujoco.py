@@ -481,18 +481,6 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="geom_gap",
-                frequency=AttributeFrequency.SHAPE,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.float32,
-                default=0.0,
-                namespace="mujoco",
-                usd_attribute_name="mjc:gap",
-                mjcf_attribute_name="gap",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
                 name="limit_margin",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -2488,6 +2476,7 @@ class SolverMuJoCo(SolverBase):
         mjc_joint_names: list[str],
         selected_tendons: list[int],
         mjc_tendon_names: list[str],
+        body_name_mapping: dict[int, str],
     ) -> int:
         """Initialize MuJoCo general actuators from custom attributes.
 
@@ -2511,7 +2500,7 @@ class SolverMuJoCo(SolverBase):
                 Used to resolve CTRL_DIRECT joint actuators to their MuJoCo targets.
             mjc_joint_names: List of MuJoCo joint names indexed by MuJoCo joint index.
                 Used together with dof_to_mjc_joint to get the correct joint name.
-
+            body_name_mapping: Mapping from Newton body index to de-duplicated MuJoCo body name
         Returns:
             int: Number of actuators added.
         """
@@ -2645,7 +2634,14 @@ class SolverMuJoCo(SolverBase):
                     if wp.config.verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
                     continue
-                target_name = model.body_label[target_idx].replace("/", "_")
+                target_name = body_name_mapping.get(target_idx)
+                if target_name is None:
+                    if wp.config.verbose:
+                        print(
+                            f"Warning: MuJoCo actuator {mujoco_act_idx} references body {target_idx} "
+                            "not present in the MuJoCo export."
+                        )
+                    continue
             else:
                 # TODO: Support site, slidercrank, and jointinparent transmission types
                 if wp.config.verbose:
@@ -2964,7 +2960,7 @@ class SolverMuJoCo(SolverBase):
             self._mujoco.mj_step(self.mj_model, self.mj_data)
             self._update_newton_state(self.model, state_out, self.mj_data)
         else:
-            self.enable_rne_postconstraint(state_out)
+            self._enable_rne_postconstraint(state_out)
             self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self._update_mjc_data(self.mjw_data, self.model, state_in)
@@ -2980,7 +2976,7 @@ class SolverMuJoCo(SolverBase):
         self._step += 1
         return state_out
 
-    def enable_rne_postconstraint(self, state_out: State):
+    def _enable_rne_postconstraint(self, state_out: State):
         """Request computation of RNE forces if required for state fields."""
         rne_postconstraint_fields = {"body_qdd", "body_parent_f"}
         # TODO: handle use_mujoco_cpu
@@ -3059,16 +3055,16 @@ class SolverMuJoCo(SolverBase):
             self._update_joint_dof_properties()
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
-            self.update_pair_properties()
+            self._update_pair_properties()
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self._update_model_properties()
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
-            self.update_eq_properties()
-            self.update_mimic_eq_properties()
+            self._update_eq_properties()
+            self._update_mimic_eq_properties()
         if flags & SolverNotifyFlags.TENDON_PROPERTIES:
-            self.update_tendon_properties()
+            self._update_tendon_properties()
         if flags & SolverNotifyFlags.ACTUATOR_PROPERTIES:
-            self.update_actuator_properties()
+            self._update_actuator_properties()
 
     def _create_inverse_shape_mapping(self):
         """
@@ -3801,6 +3797,7 @@ class SolverMuJoCo(SolverBase):
         shape_mu_torsional = model.shape_material_mu_torsional.numpy()
         shape_mu_rolling = model.shape_material_mu_rolling.numpy()
         shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -3817,7 +3814,6 @@ class SolverMuJoCo(SolverBase):
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
         shape_geom_solmix = get_custom_attribute("geom_solmix")
-        shape_geom_gap = get_custom_attribute("geom_gap")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
         joint_dof_solref = get_custom_attribute("solreffriction")
@@ -3895,6 +3891,8 @@ class SolverMuJoCo(SolverBase):
         site_mapping = {}
         # Store mapping from Newton joint index to MuJoCo joint name
         joint_mapping = {}
+        # Store mapping from Newton body index to MuJoCo body name
+        body_name_mapping = {}
         # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
         newton_body_to_mocap_index = {}
         # counter for assigning sequential mocap indices
@@ -4156,10 +4154,8 @@ class SolverMuJoCo(SolverBase):
                     geom_params["solimp"] = shape_geom_solimp[shape]
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
-                if shape_geom_gap is not None:
-                    geom_params["gap"] = shape_geom_gap[shape]
-
-                geom_params["margin"] = float(shape_margin[shape])
+                geom_params["gap"] = float(shape_gap[shape])
+                geom_params["margin"] = float(shape_margin[shape]) + float(shape_gap[shape])
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -4219,6 +4215,7 @@ class SolverMuJoCo(SolverBase):
                 while name in body_name_counts:
                     body_name_counts[name] += 1
                     name = f"{name}_{body_name_counts[name]}"
+            body_name_mapping[child] = name  # store the final de-duplicated name
 
             inertia = body_inertia[child]
             mass = body_mass[child]
@@ -4552,7 +4549,15 @@ class SolverMuJoCo(SolverBase):
             """Get body name, handling world body (-1) correctly."""
             if body_idx == -1:
                 return "world"
-            return model.body_label[body_idx].replace("/", "_")
+            target_name = body_name_mapping.get(body_idx)
+            if target_name is None:
+                target_name = model.body_label[body_idx].replace("/", "_")
+                if wp.config.verbose:
+                    print(
+                        f"Warning: MuJoCo equality constraint references body {body_idx} "
+                        "not present in the MuJoCo export."
+                    )
+            return target_name
 
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
@@ -4705,6 +4710,7 @@ class SolverMuJoCo(SolverBase):
             mjc_joint_names,
             selected_tendons,
             mjc_tendon_names,
+            body_name_mapping,
         )
 
         # Convert actuator mapping lists to warp arrays
@@ -4755,7 +4761,7 @@ class SolverMuJoCo(SolverBase):
 
             # Sync compiler-resolved actuator params back to Newton custom
             # attributes. MuJoCo's compiler resolves dampratio into biasprm[2]
-            # during compilation; without this sync, update_actuator_properties
+            # during compilation; without this sync, _update_actuator_properties
             # would overwrite the resolved values with the unresolved originals.
             self._sync_compiled_actuator_params()
 
@@ -5461,8 +5467,6 @@ class SolverMuJoCo(SolverBase):
         mujoco_attrs = getattr(self.model, "mujoco", None)
         shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
         shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
-        shape_geom_gap = getattr(mujoco_attrs, "geom_gap", None) if mujoco_attrs is not None else None
-
         wp.launch(
             update_geom_properties_kernel,
             dim=(world_count, num_geoms),
@@ -5482,7 +5486,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_material_mu_rolling,
                 shape_geom_solimp,
                 shape_geom_solmix,
-                shape_geom_gap,
+                self.model.shape_gap,
                 self.model.shape_margin,
             ],
             outputs=[
@@ -5499,7 +5503,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_pair_properties(self):
+    def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.
 
         Updates the randomizable pair properties (solref, solreffriction, solimp,
@@ -5580,7 +5584,7 @@ class SolverMuJoCo(SolverBase):
                     device=self.model.device,
                 )
 
-    def update_eq_properties(self):
+    def _update_eq_properties(self):
         """Update equality constraint properties in the MuJoCo model.
 
         Updates:
@@ -5647,7 +5651,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_mimic_eq_properties(self):
+    def _update_mimic_eq_properties(self):
         """Update mimic constraint properties in the MuJoCo model.
 
         Updates:
@@ -5683,7 +5687,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_tendon_properties(self):
+    def _update_tendon_properties(self):
         """Update fixed tendon properties in the MuJoCo model.
 
         Updates tendon stiffness, damping, frictionloss, range, margin, solref, solimp,
@@ -5751,7 +5755,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_actuator_properties(self):
+    def _update_actuator_properties(self):
         """Update CTRL_DIRECT actuator properties (gainprm, biasprm) in the MuJoCo model.
 
         Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
@@ -5798,7 +5802,7 @@ class SolverMuJoCo(SolverBase):
 
         MuJoCo's compiler resolves dampratio into biasprm[2] during model compilation.
         This launches a kernel to copy the compiled values from mjw_model into Newton's
-        custom attributes so that update_actuator_properties writes the correct values.
+        custom attributes so that _update_actuator_properties writes the correct values.
         """
         if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
             return

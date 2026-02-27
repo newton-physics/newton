@@ -16,6 +16,7 @@
 import types
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -248,6 +249,9 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
+        # gap=0 keeps geom_margin=0 so MuJoCo CCD generates full multi-contact
+        # patches (multi-contact is disabled when margin > 0).
+        builder.default_shape_cfg.gap = 0.0
 
         builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, label="base")
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), label="a")
@@ -311,6 +315,9 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
+        # gap=0 keeps geom_margin=0 so MuJoCo CCD generates full multi-contact
+        # patches (multi-contact is disabled when margin > 0).
+        builder.default_shape_cfg.gap = 0.0
 
         builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, label="base")
         body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), label="a")
@@ -353,7 +360,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
                 solver.step(state_out, state_in, control, None, sim_dt)
             graph = capture.graph
 
-        remaining = num_steps - (4 if use_cuda_graph else 0)
+        avg_steps = 10  # average forces over last few steps for stability
+        remaining = num_steps - avg_steps - (4 if use_cuda_graph else 0)
         for _ in range(remaining // 2 if use_cuda_graph else remaining):
             if use_cuda_graph:
                 wp.capture_launch(graph)
@@ -363,18 +371,27 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         if use_cuda_graph and remaining % 2 == 1:
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
-        solver.update_contacts(contacts, state_in)
-        sensor_abc.update(state_in, contacts)
-        sensor_base.update(state_in, contacts)
 
-        forces = sensor_abc.net_force.numpy()
+        forces_acc = np.zeros((3, 1, 3))
+        base_acc = np.zeros((1, 1, 3))
+        for _ in range(avg_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+            solver.update_contacts(contacts, state_in)
+            sensor_abc.update(state_in, contacts)
+            sensor_base.update(state_in, contacts)
+            forces_acc += sensor_abc.net_force.numpy()
+            base_acc += sensor_base.net_force.numpy()
+        forces = forces_acc / avg_steps
+        base_force = base_acc / avg_steps
+
         g = 9.81
         self.assertAlmostEqual(forces[0, 0, 2], mass_a * g, delta=mass_a * g * 0.01)
         self.assertAlmostEqual(forces[1, 0, 2], mass_b * g, delta=mass_b * g * 0.01)
         self.assertAlmostEqual(forces[2, 0, 2], mass_c * g, delta=mass_c * g * 0.01)
 
         total_weight = (mass_a + mass_b + mass_c) * g
-        self.assertAlmostEqual(sensor_base.net_force.numpy()[0, 0, 2], -total_weight, delta=total_weight * 0.01)
+        self.assertAlmostEqual(base_force[0, 0, 2], -total_weight, delta=total_weight * 0.01)
 
 
 if __name__ == "__main__":

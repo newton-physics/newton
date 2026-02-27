@@ -186,6 +186,7 @@ def parse_mjcf(
     mesh_maxhullvert: int | None = None,
     ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
+    override_root_xform: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -195,6 +196,12 @@ def parse_mjcf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform (Transform): The transform to apply to the imported mechanism.
+        override_root_xform (bool): If ``True``, the articulation root's world-space
+            transform is replaced by ``xform`` instead of being composed with it,
+            preserving only the internal structure (relative body positions). Useful
+            for cloning articulations at explicit positions. Not intended for sources
+            containing multiple articulations, as all roots would be placed at the
+            same ``xform``. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
@@ -292,6 +299,9 @@ def parse_mjcf(
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
+
+    if override_root_xform and xform is None:
+        raise ValueError("override_root_xform=True requires xform to be set")
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -659,9 +669,26 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin for collision (only if explicitly specified)
+            # Parse MJCF margin and gap for collision
+            # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap
+            # When gap is absent, mj_gap defaults to 0 for the margin conversion.
+            # When margin is absent but gap is present, shape_cfg.margin keeps its
+            # default (matching MuJoCo's default margin=0 minus gap would produce a
+            # negative value, which is invalid).
+            mj_gap = float(geom_attrib.get("gap", "0")) * scale
             if "margin" in geom_attrib:
-                shape_cfg.margin = float(geom_attrib["margin"]) * scale
+                mj_margin = float(geom_attrib["margin"]) * scale
+                newton_margin = mj_margin - mj_gap
+                if newton_margin < 0.0:
+                    warnings.warn(
+                        f"Geom '{geom_name}': MuJoCo gap ({mj_gap}) exceeds margin ({mj_margin}), "
+                        f"resulting Newton margin is negative ({newton_margin}). "
+                        f"This may indicate an invalid MuJoCo model.",
+                        stacklevel=2,
+                    )
+                shape_cfg.margin = newton_margin
+            if "gap" in geom_attrib:
+                shape_cfg.gap = mj_gap
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name
@@ -1130,7 +1157,7 @@ def parse_mjcf(
                 body_name,
                 link,
                 geoms=visuals,
-                density=0.0,
+                density=default_shape_density,
                 just_visual=True,
                 visible=not hide_visuals,
                 incoming_xform=incoming_xform,
@@ -1303,8 +1330,11 @@ def parse_mjcf(
         # Create local transform from parsed position and orientation
         local_xform = wp.transform(body_pos * scale, body_ori)
 
-        # Compose with incoming transform (or import root xform if none)
-        world_xform = (incoming_xform or xform) * local_xform
+        parent_xform = incoming_xform if incoming_xform is not None else xform
+        if override_root_xform and is_mjcf_root:
+            world_xform = parent_xform
+        else:
+            world_xform = parent_xform * local_xform
 
         # For joint positioning, compute body position relative to the actual parent body
         if parent >= 0:
@@ -1488,11 +1518,14 @@ def parse_mjcf(
 
             # Add base joint based on parameters
             if base_joint is not None:
-                # In case of a given base joint, the position is applied first, the rotation only
-                # after the base joint itself to not rotate its axis
-                # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
-                base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
-                base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
+                if override_root_xform:
+                    base_parent_xform = _xform
+                    base_child_xform = wp.transform_identity()
+                else:
+                    # Split xform: position goes to parent, rotation to child (inverted)
+                    # so the custom base joint's axis isn't rotated by xform.
+                    base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
+                    base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
                 joint_indices.append(
                     builder._add_base_joint(
                         child=link,

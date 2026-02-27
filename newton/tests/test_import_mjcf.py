@@ -2061,6 +2061,40 @@ class TestImportMjcfGeometry(unittest.TestCase):
             msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
         )
 
+    def test_visual_geom_density_with_parse_visuals(self):
+        """Regression: visual geoms must use the default density when parse_visuals=True.
+
+        When a model has only visual geoms providing mass (collision geoms have
+        mass=0) and no class-level density override, parse_visuals=True should
+        use the default density (1000) for the visual geoms.  Previously, visual
+        geoms were always parsed with density=0, producing zero body mass.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="test" pos="0 0 0.5">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="vis" type="box" size="0.1 0.1 0.1"
+            contype="0" conaffinity="0" group="2"/>
+      <geom name="col" type="box" size="0.1 0.1 0.1"
+            mass="0" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=True)
+        model = builder.finalize()
+
+        # density(1000) * volume(8 * 0.1^3) = 8.0
+        expected_mass = 1000.0 * (8 * 0.1**3)
+        actual_mass = float(model.body_mass.numpy()[0])
+        self.assertAlmostEqual(
+            actual_mass,
+            expected_mass,
+            places=2,
+            msg=f"Visual geom with default density should produce mass={expected_mass}, got {actual_mass}",
+        )
+
     def test_inertial_locks_body_against_frame_geom_mass(self):
         """Regression: explicit <inertial> must lock body mass/COM against later frame geoms.
 
@@ -3159,8 +3193,8 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             actual = geom_solmix[shape_idx].tolist()
             self.assertAlmostEqual(actual, expected, places=4)
 
-    def test_geom_gap_parsing(self):
-        """Test that geom_gap attribute is parsed correctly from MJCF."""
+    def test_shape_gap_from_mjcf(self):
+        """Test that MJCF gap attribute is parsed into shape_gap."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
@@ -3184,22 +3218,125 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
-        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
-
-        geom_gap = model.mujoco.geom_gap.numpy()
+        shape_gap = model.shape_gap.numpy()
         self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
 
-        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
         expected_values = {
             0: 0.1,
-            1: 0.0,  # default
+            1: builder.rigid_gap,  # default gap when not specified in MJCF
             2: 0.2,
         }
 
         for shape_idx, expected in expected_values.items():
-            actual = geom_gap[shape_idx].tolist()
+            actual = float(shape_gap[shape_idx])
             self.assertAlmostEqual(actual, expected, places=4)
+
+    def test_margin_gap_combined_conversion(self):
+        """Test MuJoCo->Newton conversion when both margin and gap are set.
+
+        Verifies that newton_margin = mj_margin - mj_gap and
+        newton_gap = mj_gap when both attributes are present on the same geom.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom name="both" type="box" size="0.1 0.1 0.1" margin="0.5" gap="0.2"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom name="margin_only" type="sphere" size="0.05" margin="0.3"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom name="gap_only" type="capsule" size="0.05 0.1" gap="0.15"/>
+        </body>
+        <body name="body4">
+            <freejoint/>
+            <geom name="neither" type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+        self.assertEqual(model.shape_count, 4)
+
+        # geom "both": margin=0.5, gap=0.2 -> newton_margin=0.3, newton_gap=0.2
+        self.assertAlmostEqual(float(shape_margin[0]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[0]), 0.2, places=5)
+
+        # geom "margin_only": margin=0.3, gap absent -> newton_margin=0.3, gap=default
+        self.assertAlmostEqual(float(shape_margin[1]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[1]), builder.rigid_gap, places=5)
+
+        # geom "gap_only": margin absent, gap=0.15 -> margin=default(0.0), gap=0.15
+        self.assertAlmostEqual(float(shape_margin[2]), 0.0, places=5)
+        self.assertAlmostEqual(float(shape_gap[2]), 0.15, places=5)
+
+        # geom "neither": both absent -> defaults
+        self.assertAlmostEqual(float(shape_margin[3]), 0.0, places=5)
+        self.assertAlmostEqual(float(shape_gap[3]), builder.rigid_gap, places=5)
+
+    def test_margin_gap_mjcf_roundtrip(self):
+        """Verify MJCF margin/gap roundtrips through Newton->MuJoCo solver.
+
+        Parses MJCF with explicit margin and gap values, builds the Newton model,
+        creates a MuJoCo solver, and checks that solver.mjw_model.geom_margin and
+        geom_gap satisfy geom_margin = shape_margin + shape_gap and
+        geom_gap = shape_gap.  When both margin and gap are explicitly set in MJCF,
+        the original values are recovered exactly.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom name="both" type="box" size="0.1 0.1 0.1" margin="0.5" gap="0.2"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom name="margin_only" type="sphere" size="0.05" margin="0.3"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom name="gap_only" type="capsule" size="0.05 0.1" gap="0.15"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        geom_margin = solver.mjw_model.geom_margin.numpy()
+        geom_gap = solver.mjw_model.geom_gap.numpy()
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+
+        # geom "both": margin=0.5, gap=0.2 — exact roundtrip
+        self.assertAlmostEqual(float(geom_margin[0, 0]), 0.5, places=5)
+        self.assertAlmostEqual(float(geom_gap[0, 0]), 0.2, places=5)
+
+        # geom "margin_only": margin=0.3, gap unset (falls back to builder default)
+        # geom_margin = shape_margin + shape_gap = 0.3 + builder.rigid_gap
+        self.assertAlmostEqual(
+            float(geom_margin[0, 1]),
+            float(shape_margin[1]) + float(shape_gap[1]),
+            places=5,
+        )
+        self.assertAlmostEqual(float(geom_gap[0, 1]), float(shape_gap[1]), places=5)
+
+        # geom "gap_only": margin=0 (MuJoCo default), gap=0.15
+        # geom_margin = 0 + 0.15 = 0.15
+        self.assertAlmostEqual(float(geom_margin[0, 2]), 0.15, places=5)
+        self.assertAlmostEqual(float(geom_gap[0, 2]), 0.15, places=5)
 
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
@@ -6239,7 +6376,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         cls.model = cls.builder.finalize()
 
     def test_shape_defaults(self):
-        """SHAPE: condim, priority, solmix, gap, solimp."""
+        """SHAPE: condim, priority, solmix, solimp (custom attrs), gap (shape_gap)."""
         m = self.model.mujoco
         wb = "worldbody/b_default"
         idx = self.builder.shape_label.index
@@ -6248,14 +6385,14 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(m.condim.numpy()[g_def], 4)
         self.assertEqual(m.geom_priority.numpy()[g_def], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_def]), 2.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_def]), 0.01, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_def]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
 
         g_cls = idx(f"{wb}/b_class/g_class")
         self.assertEqual(m.condim.numpy()[g_cls], 6)
         self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_cls]), 0.01, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_cls]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_cls], [0.7, 0.85, 0.005, 0.3, 1.5], atol=1e-4)
 
         g_ovr = idx(f"{wb}/b_class/b_override/g_override")
@@ -6265,7 +6402,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(m.condim.numpy()[g_child], 6)
         self.assertEqual(m.geom_priority.numpy()[g_child], 99)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_child]), 0.05, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_child]), 0.05, places=5)
 
     def test_body_defaults(self):
         """BODY: gravcomp."""
@@ -7549,3 +7686,178 @@ class TestFromtoCapsuleOrientation(unittest.TestCase):
         np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
         expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
         self._assert_z_aligned(quat, expected)
+
+
+class TestOverrideRootXform(unittest.TestCase):
+    """Tests for override_root_xform parameter in the MJCF importer."""
+
+    MJCF_WITH_ROOT_OFFSET = """
+<mujoco>
+  <worldbody>
+    <body name="base" pos="10 20 30">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+    def test_default_xform_is_relative(self):
+        """With override_root_xform=False (default), xform composes with root body position."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        # xform (5,0,0) composed with root body pos (10,20,30) => (15, 20, 30)
+        np.testing.assert_allclose(body_q[base_idx, :3], [15.0, 20.0, 30.0], atol=1e-4)
+
+    def test_override_places_at_xform(self):
+        """With override_root_xform=True, root body is placed at exactly xform."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        # Root body should be at (5, 0, 0) — root's original pos (10, 20, 30) is ignored
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+
+    def test_override_preserves_child_offset(self):
+        """With override_root_xform=True, child body keeps its relative offset from root."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        child_idx = builder.body_label.index("worldbody/base/child")
+        # Child is at pos="0 0 1" relative to root, root is at (5,0,0) => child at (5,0,1)
+        np.testing.assert_allclose(body_q[child_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    def test_override_with_rotation(self):
+        """override_root_xform=True with a non-identity rotation correctly rotates the articulation."""
+        angle = np.pi / 2
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), quat),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        child_idx = builder.body_label.index("worldbody/base/child")
+
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[base_idx, 3:], [*quat], atol=1e-4)
+        # Child is at pos="0 0 1" relative to root; Z-rotation doesn't affect Z offset
+        np.testing.assert_allclose(body_q[child_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    def test_override_cloning(self):
+        """Cloning the same MJCF at different positions with override_root_xform=True."""
+        builder = newton.ModelBuilder()
+        positions = [(0.0, 0.0, 0.0), (3.0, 0.0, 0.0), (6.0, 0.0, 0.0)]
+        for pos in positions:
+            builder.add_mjcf(
+                self.MJCF_WITH_ROOT_OFFSET,
+                xform=wp.transform(pos, wp.quat_identity()),
+                override_root_xform=True,
+            )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_indices = [j for j, lbl in enumerate(builder.body_label) if lbl.endswith("/base")]
+        for i, expected_pos in enumerate(positions):
+            np.testing.assert_allclose(
+                body_q[base_indices[i], :3],
+                list(expected_pos),
+                atol=1e-4,
+                err_msg=f"Clone {i} not at expected position",
+            )
+
+    MJCF_TWO_ARTICULATIONS = """
+<mujoco>
+  <worldbody>
+    <body name="robotA" pos="10 0 0">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+    <body name="robotB" pos="0 20 0">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+    def test_override_without_xform_raises(self):
+        """override_root_xform=True without providing xform should raise a ValueError."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_mjcf(self.MJCF_WITH_ROOT_OFFSET, override_root_xform=True)
+
+    def test_multiple_articulations_default_keeps_relative(self):
+        """Without override, multiple articulations keep their relative positions shifted by xform."""
+        shift = (1.0, 2.0, 3.0)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_TWO_ARTICULATIONS,
+            xform=wp.transform(shift, wp.quat_identity()),
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        offsets = {"robotA": (10.0, 0.0, 0.0), "robotB": (0.0, 20.0, 0.0)}
+        for name, offset in offsets.items():
+            idx = builder.body_label.index(f"worldbody/{name}")
+            expected = [shift[k] + offset[k] for k in range(3)]
+            np.testing.assert_allclose(
+                body_q[idx, :3],
+                expected,
+                atol=1e-4,
+                err_msg=f"{name} should be at xform + original offset",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

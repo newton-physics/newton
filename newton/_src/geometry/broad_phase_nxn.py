@@ -27,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from ..core.types import Devicelike
 from .broad_phase_common import (
     check_aabb_overlap,
     is_pair_excluded,
@@ -241,7 +242,12 @@ class BroadPhaseAllPairs:
     checking.
     """
 
-    def __init__(self, shape_world, shape_flags=None, device=None):
+    def __init__(
+        self,
+        shape_world: wp.array(dtype=wp.int32, ndim=1) | np.ndarray,
+        shape_flags: wp.array(dtype=wp.int32, ndim=1) | np.ndarray | None = None,
+        device: Devicelike | None = None,
+    ) -> None:
         """Initialize the broad phase with world ID information.
 
         Args:
@@ -314,15 +320,15 @@ class BroadPhaseAllPairs:
         shape_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of shape bounding boxes
         shape_gap: wp.array(dtype=float, ndim=1) | None,  # Optional per-shape effective gaps
         shape_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        shape_shape_world: wp.array(dtype=int, ndim=1),  # World index per box
+        shape_world: wp.array(dtype=int, ndim=1),  # World index per box
         shape_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
         candidate_pair_count: wp.array(dtype=int, ndim=1),
-        device=None,  # Device to launch on
+        device: Devicelike | None = None,  # Device to launch on
         filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
-    ):
+    ) -> None:
         """Launch the N x N broad phase collision detection.
 
         This method performs collision detection between all possible pairs of geometries by checking for
@@ -337,7 +343,7 @@ class BroadPhaseAllPairs:
             shape_collision_group: Array of collision group IDs for each shape. Positive values indicate
                 groups that only collide with themselves (and with negative groups). Negative values indicate
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
-            shape_shape_world: Array of world indices for each shape. Index -1 indicates global entities
+            shape_world: Array of world indices for each shape. Index -1 indicates global entities
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             shape_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping shape pairs
@@ -377,7 +383,7 @@ class BroadPhaseAllPairs:
                 shape_upper,
                 shape_gap,
                 shape_collision_group,
-                shape_shape_world,
+                shape_world,
                 self.world_cumsum_lower_tri,
                 self.world_slice_ends,
                 self.world_index_map,
@@ -401,7 +407,7 @@ class BroadPhaseExplicit:
     taking into account per-geometry cutoff distances.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     def launch(
@@ -414,8 +420,8 @@ class BroadPhaseExplicit:
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
         candidate_pair_count: wp.array(dtype=int, ndim=1),
-        device=None,  # Device to launch on
-    ):
+        device: Devicelike | None = None,  # Device to launch on
+    ) -> None:
         """Launch the explicit pairs broad phase collision detection.
 
         This method checks for AABB overlaps only between explicitly specified shape pairs,

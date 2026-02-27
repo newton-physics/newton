@@ -285,8 +285,8 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_rolling_cloth.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_rolling_cloth.jpg" alt="Rolling Cloth">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_rollers.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_rolling_cloth.jpg" alt="Cloth Rollers">
       </a>
     </td>
   </tr>
@@ -298,7 +298,27 @@ uv sync --extra examples
       <code>uv run -m newton.examples cloth_twist</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples rolling_cloth</code>
+      <code>uv run -m newton.examples cloth_rollers</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_poker_cards.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_poker_cards_stacking.jpg" alt="Cloth Poker Cards">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>uv run -m newton.examples cloth_poker_cards</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
     </td>
   </tr>
   <tr>
@@ -517,8 +537,8 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_falling_gift.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_falling_gift.jpg" alt="Falling Gift">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_softbody_gift.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_falling_gift.jpg" alt="Softbody Gift">
       </a>
     </td>
     <td align="center" width="33%">
@@ -527,20 +547,16 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_poker_cards_stacking.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_poker_cards_stacking.jpg" alt="Poker Cards Stacking">
-      </a>
     </td>
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples falling_gift</code>
+      <code>uv run -m newton.examples softbody_gift</code>
     </td>
     <td align="center" width="33%">
       <code>uv run -m newton.examples softbody_dropping_to_cloth</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples poker_cards_stacking</code>
     </td>
   </tr>
   <tr>
