@@ -592,14 +592,24 @@ def compare_models(
     """Run all model comparison checks between Newton and native MuJoCo models.
 
     Consolidates the full suite of structural, physical, and compiled-field
-    comparisons into a single entry point.
+    comparisons into a single entry point. Checks that involve per-index body,
+    geom, joint, or DOF comparison are skipped when the corresponding field
+    prefix is in skip_fields (as used by USD tests with reordered indices).
+
+    Args:
+        skip_fields: Substrings to skip in field-level comparison.
+        backfill_fields: Fields to validate at relaxed tolerance via
+            :func:`compare_compiled_model_fields`.
     """
     if skip_fields is None:
         skip_fields = set()
 
+    def _skipped(prefix: str) -> bool:
+        return any(s in prefix for s in skip_fields)
+
     compare_mjw_models(newton_mjw, native_mjw, skip_fields=skip_fields)
 
-    if not any("compare_inertia" in s for s in skip_fields):
+    if not _skipped("body_inertia"):
         compare_inertia_tensors(newton_mjw, native_mjw)
 
     for solref_field in [
@@ -621,12 +631,17 @@ def compare_models(
                 if hasattr(newton_arr, "shape") and newton_arr.shape == native_arr.shape and newton_arr.shape[0] > 0:
                     compare_solref_physics(newton_mjw, native_mjw, solref_field)
 
-    if newton_mjw.ngeom == native_mjw.ngeom:
+    if not _skipped("geom_") and newton_mjw.ngeom == native_mjw.ngeom:
         compare_geom_fields_unordered(newton_mjw, native_mjw, skip_fields=skip_fields)
 
-    compare_jnt_range(newton_mjw, native_mjw)
+    if not _skipped("jnt_"):
+        compare_jnt_range(newton_mjw, native_mjw)
 
-    compare_compiled_model_fields(newton_mjw, native_mjw, backfill_fields)
+    if not _skipped("body_invweight0"):
+        compare_compiled_model_fields(newton_mjw, native_mjw, backfill_fields)
+
+    if not _skipped("site_"):
+        compare_site_sizes(newton_mjw, native_mjw)
 
 
 def compare_inertia_tensors(
@@ -1905,10 +1920,9 @@ class TestMenagerieBase(unittest.TestCase):
     def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare inertia tensors between Newton and native models.
 
-        Default: per-index comparison of reconstructed 3x3 tensors.
+        Default: no-op (covered by compare_models for same-order pipelines).
         Override in subclasses where body ordering may differ.
         """
-        compare_inertia_tensors(newton_mjw, native_mjw)
 
     def _init_control(self, native_mjw_data: Any, newton_control: Any) -> None:
         """Initialize control strategy with the ctrl arrays from both sides.
@@ -1920,22 +1934,16 @@ class TestMenagerieBase(unittest.TestCase):
     def _compare_geoms(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare geom fields between Newton and native models.
 
-        Uses unordered matching by (body_id, geom_type) to handle models where
-        Newton and native MuJoCo may order geoms differently.
+        Default: no-op (covered by compare_models for same-order pipelines).
+        Override in subclasses where geom ordering may differ.
         """
-        if newton_mjw.ngeom == native_mjw.ngeom:
-            compare_geom_fields_unordered(newton_mjw, native_mjw, skip_fields=self.model_skip_fields)
-
-    def _compare_sites(self, newton_mjw: Any, native_mjw: Any) -> None:
-        """Compare site sizes between Newton and native models."""
-        compare_site_sizes(newton_mjw, native_mjw)
 
     def _compare_jnt_range(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare joint ranges between Newton and native models.
 
-        Default: compare limited joints. Override in subclasses where joint ordering may differ.
+        Default: no-op (covered by compare_models for same-order pipelines).
+        Override in subclasses where joint ordering may differ.
         """
-        compare_jnt_range(newton_mjw, native_mjw)
 
     def _compare_body_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare physics-relevant body fields (mass, pos, quat, etc.).
@@ -1961,11 +1969,9 @@ class TestMenagerieBase(unittest.TestCase):
     def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare compilation-dependent fields at relaxed tolerance.
 
-        Default: validates MODEL_BACKFILL_FIELDS at 1e-3 to catch parser bugs
-        while allowing expected compilation differences.
+        Default: no-op (covered by compare_models for same-order pipelines).
         Override in subclasses to skip or adjust.
         """
-        compare_compiled_model_fields(newton_mjw, native_mjw, self.backfill_fields)
 
     def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare actuator fields (gainprm, biasprm, acc0, gear, etc.).
@@ -2085,56 +2091,30 @@ class TestMenagerieBase(unittest.TestCase):
         # Hook for subclass-specific model alignment (USD fixups, etc.)
         self._align_models(newton_solver, native_mjw_model, mj_model)
 
-        # Compare mjw_model structures
-        compare_mjw_models(newton_solver.mjw_model, native_mjw_model, skip_fields=self.model_skip_fields)
         # Disable sensor_rne_postconstraint on native — Newton doesn't support
         # sensors, so rne_postconstraint would compute cacc/cfrc_int on native
         # but not on Newton, causing spurious diffs.
         native_mjw_model.sensor_rne_postconstraint = False
-        # Compare reconstructed inertia tensors (principal + iquat -> full 3x3)
+
+        # Run all standard model comparisons (strict field match, inertia tensors,
+        # solref physics equivalence, geom/joint checks, compiled field validation).
+        compare_models(
+            newton_solver.mjw_model,
+            native_mjw_model,
+            skip_fields=self.model_skip_fields,
+            backfill_fields=self.backfill_fields,
+        )
+
+        # Subclass hooks for pipelines with reordered bodies/DOFs/actuators (USD).
+        # Default implementations are no-ops; compare_models already covers the
+        # same-order case.
         self._compare_inertia(newton_solver.mjw_model, native_mjw_model)
-
-        # Compare solref fields by physics equivalence (direct mode vs standard mode)
-        for solref_field in [
-            "dof_solref",
-            "eq_solref",
-            "geom_solref",
-            "jnt_solref",
-            "pair_solref",
-            "pair_solreffriction",
-            "tendon_solref_fri",
-            "tendon_solref_lim",
-        ]:
-            if any(s in solref_field for s in self.model_skip_fields):
-                continue
-            if hasattr(newton_solver.mjw_model, solref_field) and hasattr(native_mjw_model, solref_field):
-                newton_arr = getattr(newton_solver.mjw_model, solref_field)
-                native_arr = getattr(native_mjw_model, solref_field)
-                # Only compare if both have data and shapes match (geom counts may differ)
-                if newton_arr is not None and native_arr is not None:
-                    if (
-                        hasattr(newton_arr, "shape")
-                        and newton_arr.shape == native_arr.shape
-                        and newton_arr.shape[0] > 0
-                    ):
-                        compare_solref_physics(newton_solver.mjw_model, native_mjw_model, solref_field)
-
-        # Compare geom fields
         self._compare_geoms(newton_solver.mjw_model, native_mjw_model)
-
-        # Compare site sizes (type-aware: only meaningful elements per site type)
-        self._compare_sites(newton_solver.mjw_model, native_mjw_model)
-
-        # Compare joint ranges
         self._compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
-
-        # Compare physics-relevant body/DOF/actuator fields (mapped comparison for reordered pipelines)
         self._compare_body_physics(newton_solver.mjw_model, native_mjw_model)
         self._compare_dof_physics(newton_solver.mjw_model, native_mjw_model)
         self._compare_mass_matrix_structure(newton_solver.mjw_model, native_mjw_model)
         self._compare_actuator_physics(newton_solver.mjw_model, native_mjw_model)
-
-        # Validate compilation-dependent fields at relaxed tolerance (1e-3).
         self._compare_compiled_fields(newton_solver.mjw_model, native_mjw_model)
 
         # Optional: backfill computed fields from native to Newton to eliminate

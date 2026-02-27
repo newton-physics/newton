@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
+import warp as wp
 
 import newton
 import newton.utils
@@ -54,6 +55,7 @@ from newton.tests.test_menagerie_mujoco import (
     StructuredControlStrategy,
     TestMenagerieBase,
     ZeroControlStrategy,
+    compare_inertia_tensors,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
 
@@ -259,65 +261,53 @@ class TestMenagerieUsdImport(unittest.TestCase):
 # =============================================================================
 # USD-specific sorted comparison helpers
 # =============================================================================
-def compare_bodies_sorted(
+def compare_inertia_tensors_mapped(
     newton_mjw: Any,
     native_mjw: Any,
-    tol: float = 0.1,
+    body_map: dict[int, int],
+    tol: float = 1e-5,
 ) -> None:
-    """Compare body properties between Newton and native, handling reordering.
+    """Compare inertia tensors using a name-based body index mapping.
 
-    The USD importer may assign body properties to different indices than the
-    MJCF parser. This function matches bodies by (mass, body_ipos) signature
-    and verifies the multisets are equal.
+    Reindexes Newton's body_inertia, body_iquat, and body_mass arrays to
+    native ordering via body_map, then delegates to
+    :func:`compare_inertia_tensors` for the full 3x3 tensor reconstruction.
+
+    Args:
+        body_map: native_body_idx -> newton_body_idx.
+        tol: Absolute tolerance for tensor comparison.
     """
-    from scipy.spatial.transform import Rotation
+    newton_inertia = newton_mjw.body_inertia.numpy()
+    newton_iquat = newton_mjw.body_iquat.numpy()
+    newton_mass = newton_mjw.body_mass.numpy()
 
-    assert newton_mjw.nbody == native_mjw.nbody, (
-        f"nbody mismatch: newton={newton_mjw.nbody} vs native={native_mjw.nbody}"
+    reindexed_inertia = np.zeros_like(newton_inertia)
+    reindexed_iquat = np.zeros_like(newton_iquat)
+    reindexed_mass = np.zeros_like(newton_mass)
+
+    for native_i, newton_i in body_map.items():
+        reindexed_inertia[:, native_i] = newton_inertia[:, newton_i]
+        reindexed_iquat[:, native_i] = newton_iquat[:, newton_i]
+        reindexed_mass[:, native_i] = newton_mass[:, newton_i]
+
+    np.testing.assert_allclose(
+        reindexed_mass,
+        native_mjw.body_mass.numpy(),
+        atol=tol,
+        rtol=0,
+        err_msg="body_mass (reindexed)",
     )
 
-    nbody = newton_mjw.nbody
-
-    newton_mass = newton_mjw.body_mass.numpy().flatten()
-    native_mass = native_mjw.body_mass.numpy().flatten()
-    newton_inertia = newton_mjw.body_inertia.numpy().reshape(-1, 3)
-    native_inertia = native_mjw.body_inertia.numpy().reshape(-1, 3)
-    newton_iquat = newton_mjw.body_iquat.numpy().reshape(-1, 4)
-    native_iquat = native_mjw.body_iquat.numpy().reshape(-1, 4)
-
-    def _reconstruct_tensor(principal: np.ndarray, iquat_wxyz: np.ndarray) -> np.ndarray:
-        iquat_xyzw = np.roll(iquat_wxyz, -1, axis=-1)
-        R = Rotation.from_quat(iquat_xyzw).as_matrix()
-        D = np.diag(principal)
-        return R @ D @ R.T
-
-    # Build signatures for matching: sorted eigenvalues of the inertia tensor + mass.
-    # Eigenvalues are invariant to the axis convention used for iquat.
-    def _body_signature(mass: float, inertia: np.ndarray, iquat: np.ndarray) -> np.ndarray:
-        tensor = _reconstruct_tensor(inertia, iquat)
-        eigvals = sorted(np.linalg.eigvalsh(tensor))
-        return np.array([float(mass), *eigvals], dtype=np.float64)
-
-    newton_sigs = [_body_signature(newton_mass[i], newton_inertia[i], newton_iquat[i]) for i in range(nbody)]
-    native_sigs = [_body_signature(native_mass[i], native_inertia[i], native_iquat[i]) for i in range(nbody)]
-
-    # Sort by signature values and compare with tolerance
-    newton_order = sorted(range(nbody), key=lambda i: tuple(newton_sigs[i]))
-    native_order = sorted(range(nbody), key=lambda i: tuple(native_sigs[i]))
-
-    mismatches = []
-    for k in range(nbody):
-        ni = newton_order[k]
-        nati = native_order[k]
-        diff = np.max(np.abs(newton_sigs[ni] - native_sigs[nati]))
-        if diff > tol:
-            mismatches.append(
-                f"sorted[{k}]: newton body {ni}={newton_sigs[ni]} "
-                f"native body {nati}={native_sigs[nati]} (max diff={diff:.2e})"
-            )
-    assert not mismatches, f"Body multiset mismatch ({len(mismatches)}/{nbody} after sorting):\n" + "\n".join(
-        mismatches[:5]
-    )
+    device = newton_mjw.body_inertia.device
+    saved_inertia = newton_mjw.body_inertia
+    saved_iquat = newton_mjw.body_iquat
+    try:
+        newton_mjw.body_inertia = wp.array(reindexed_inertia, dtype=saved_inertia.dtype, device=device)
+        newton_mjw.body_iquat = wp.array(reindexed_iquat, dtype=saved_iquat.dtype, device=device)
+        compare_inertia_tensors(newton_mjw, native_mjw, tol=tol)
+    finally:
+        newton_mjw.body_inertia = saved_inertia
+        newton_mjw.body_iquat = saved_iquat
 
 
 def compare_joints_sorted(
@@ -704,7 +694,7 @@ def compare_body_physics_mapped(
 
     # Structural fields that verify the body tree topology is preserved
     # under the index mapping.  Mass and inertia are already covered by
-    # compare_bodies_sorted(); body_pos/body_quat are in DEFAULT skip
+    # compare_inertia_tensors_mapped(); body_pos/body_quat are in DEFAULT skip
     # (re-diagonalization / backfill) so we do not duplicate them here.
     fields_exact = ["body_dofnum", "body_jntnum"]
     fields_remapped = ["body_treeid"]
@@ -1027,8 +1017,8 @@ class TestMenagerieUSD(TestMenagerieBase):
         """
 
     def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
-        """Compare inertia using sorted body signatures (handles reordering)."""
-        compare_bodies_sorted(newton_mjw, native_mjw)
+        """Compare inertia tensors using name-based body index mapping."""
+        compare_inertia_tensors_mapped(newton_mjw, native_mjw, self._body_map)
 
     def _compare_geoms(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare geom subset: Newton excludes visual-only geoms."""
@@ -1347,6 +1337,10 @@ class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
     num_worlds = 2
     num_steps = 100
     control_strategy = StructuredControlStrategy(seed=42)
+
+    def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
+        # TODO: USD asset has different mass/inertia values than the original MJCF.
+        pass
 
     def _compare_dof_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         # The original MJCF has armature=0 which the converter omits from USD.
