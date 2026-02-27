@@ -9,6 +9,11 @@
   - Add re-exports in the appropriate public module (e.g. `newton/geometry.py`, `newton/solvers.py`, `newton/sensors.py`, etc.).
   - Prefer a single, discoverable public import path. Example: `from newton.geometry import BroadPhaseAllPairs` (not `from newton._src.geometry.broad_phase_all_pairs import BroadPhaseAllPairs`).
 
+## Breaking API changes
+
+- **Breaking changes require a deprecation first.** Do not remove or rename public API symbols without deprecating them in a prior release.
+- Changes targeting a cherry-pick to 1.0.0 are exempt from this policy.
+
 ## API design rules (naming + structure)
 
 - **Prefix-first naming for discoverability (autocomplete).**
