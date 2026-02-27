@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
@@ -258,32 +257,6 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
-def _mjc_margin_from_prim(prim: Usd.Prim) -> float | None:
-    """Compute Newton margin from MuJoCo: margin - gap [m].
-
-    MuJoCo uses ``margin`` as the full contact detection envelope and ``gap``
-    as a sub-threshold that suppresses constraint activation.  Newton stores
-    them separately, so: ``newton_margin = mjc_margin - mjc_gap``.
-
-    Returns None if the MuJoCo margin attribute is not authored.
-    """
-    mjc_margin = usd.get_attribute(prim, "mjc:margin")
-    if mjc_margin is None:
-        return None
-    mjc_gap = usd.get_attribute(prim, "mjc:gap")
-    if mjc_gap is None:
-        mjc_gap = 0.0
-    result = float(mjc_margin) - float(mjc_gap)
-    if result < 0.0:
-        warnings.warn(
-            f"Prim '{prim.GetPath()}': MuJoCo gap ({mjc_gap}) exceeds margin ({mjc_margin}), "
-            f"resulting Newton margin is negative ({result}). "
-            f"This may indicate an invalid MuJoCo model.",
-            stacklevel=4,
-        )
-    return result
-
-
 class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
@@ -321,15 +294,10 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
-            # Collisions: MuJoCo -> Newton conversion applied via getter.
-            # newton_margin = mjc_margin - mjc_gap (see _mjc_margin_from_prim).
-            "margin": SchemaAttribute(
-                "mjc:margin",
-                0.0,
-                usd_value_getter=_mjc_margin_from_prim,
-                attribute_names=("mjc:margin", "mjc:gap"),
-            ),
-            "gap": SchemaAttribute("mjc:gap", 0.0),
+            # Collisions: newton margin == mjc margin, gap is not mapped
+            # (MuJoCo solver always sets geom_gap=0 since inactive contacts
+            # provide no benefit when contact generation runs every step).
+            "margin": SchemaAttribute("mjc:margin", 0.0),
         },
         PrimType.MATERIAL: {
             # Materials

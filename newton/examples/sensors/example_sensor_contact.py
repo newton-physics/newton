@@ -53,7 +53,6 @@ class Example:
             self.viewer.register_ui_callback(self.plot_window.render, "free")
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         builder.add_usd(newton.examples.get_asset("sensor_contact_scene.usda"))
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
