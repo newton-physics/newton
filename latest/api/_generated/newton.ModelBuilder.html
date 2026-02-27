@@ -3734,8 +3734,16 @@ the world will use the builder’s default gravity (computed from
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ModelBuilder.collapse_fixed_joints">
-<span class="sig-name descname"><span class="pre">collapse_fixed_joints</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">wp.config.verbose</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.collapse_fixed_joints" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">collapse_fixed_joints</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">wp.config.verbose</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joints_to_keep</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.collapse_fixed_joints" title="Link to this definition">#</a></dt>
 <dd><p>Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>verbose</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, print additional information about the collapsed joints. Defaults to the value of <cite>wp.config.verbose</cite>.</p></li>
+<li><p><strong>joints_to_keep</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>] </em><em>| </em><em>None</em>) – An optional list of joint labels to be excluded from the collapse process.</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
