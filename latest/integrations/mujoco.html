@@ -420,6 +420,10 @@
   
 
   
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
 </div>
 
     </header>
@@ -801,6 +805,31 @@
                   
   <section id="mujoco-integration">
 <h1>MuJoCo Integration<a class="headerlink" href="#mujoco-integration" title="Link to this heading">#</a></h1>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> translates a Newton <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>
+into a <a class="reference external" href="https://github.com/google-deepmind/mujoco">MuJoCo</a> model and steps it
+with <a class="reference external" href="https://github.com/google-deepmind/mujoco_warp">mujoco_warp</a>.
+Because MuJoCo has its own modelling conventions, some Newton properties are
+mapped differently or not at all.</p>
+<section id="caveats">
+<h2>Caveats<a class="headerlink" href="#caveats" title="Link to this heading">#</a></h2>
+<dl class="simple">
+<dt><strong>geom_gap is always zero.</strong></dt><dd><p>MuJoCo’s <code class="docutils literal notranslate"><span class="pre">gap</span></code> parameter controls <em>inactive</em> contact generation — contacts
+that are detected but do not produce constraint forces until penetration
+exceeds the gap threshold.  Newton does not use this concept: when the MuJoCo
+collision pipeline is active it runs every step, so there is no benefit to
+keeping inactive contacts around.  Setting <code class="docutils literal notranslate"><span class="pre">geom_gap</span> <span class="pre">&gt;</span> <span class="pre">0</span></code> would inflate
+<code class="docutils literal notranslate"><span class="pre">geom_margin</span></code>, which disables MuJoCo’s multicontact and degrades contact
+quality.  Therefore <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> always sets
+<code class="docutils literal notranslate"><span class="pre">geom_gap</span> <span class="pre">=</span> <span class="pre">0</span></code> regardless of the Newton <code class="xref py py-attr docutils literal notranslate"><span class="pre">gap</span></code>
+value.  MJCF/USD <code class="docutils literal notranslate"><span class="pre">gap</span></code> values are still imported into
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">gap</span></code> in the Newton model, but they are
+not forwarded to the MuJoCo solver.</p>
+</dd>
+<dt><strong>shape_collision_radius is ignored.</strong></dt><dd><p>MuJoCo computes bounding-sphere radii (<code class="docutils literal notranslate"><span class="pre">geom_rbound</span></code>) internally from the
+geometry definition.  Newton’s <code class="docutils literal notranslate"><span class="pre">shape_collision_radius</span></code> is not forwarded.</p>
+</dd>
+</dl>
+</section>
 </section>
 
 
@@ -813,6 +842,24 @@
             </div>
             
             
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#caveats">Caveats</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
               
             
           </div>
