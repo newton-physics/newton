@@ -367,6 +367,88 @@ def evaluate_angular_constraint_force_hessian_isotropic(
 
 
 @wp.func
+def evaluate_angular_constraint_force_hessian_revolute(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    q_wp_rest: wp.quat,
+    q_wc_rest: wp.quat,
+    q_wp_prev: wp.quat,
+    q_wc_prev: wp.quat,
+    is_parent: bool,
+    k_eff: float,
+    joint_axis_local: wp.vec3,  # Free rotation axis in parent joint frame
+    damping: float,  # Rayleigh damping coefficient
+    dt: float,
+):
+    """
+    Revolute angular constraint: penalizes rotation perpendicular to the joint axis.
+
+    Same framework as isotropic but projects kappa onto the plane perpendicular to
+    the joint axis before computing forces and Hessians.  The component of kappa
+    along ``joint_axis_local`` (the free rotation DOF) is left unconstrained.
+
+    Frames:
+      - ``joint_axis_local`` is defined in the parent joint frame (same frame as kappa).
+      - All outputs (tau_world, H_aa) are in world frame.
+    """
+    inv_dt = 1.0 / dt
+
+    kappa_now_vec = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+
+    # Project kappa perpendicular to the free axis
+    a = wp.normalize(joint_axis_local)
+    kappa_along = wp.dot(kappa_now_vec, a) * a
+    kappa_perp = kappa_now_vec - kappa_along
+
+    # Right-trivialized mechanics: reuse full Jr_inv (computed from full kappa)
+    Jr_inv = compute_right_jacobian_inverse(kappa_now_vec)
+    R_wp = wp.quat_to_matrix(q_wp)
+
+    # Build R_align (same as isotropic)
+    R_wc = wp.quat_to_matrix(q_wc)
+    R_wp_r = wp.quat_to_matrix(q_wp_rest)
+    R_wc_r = wp.quat_to_matrix(q_wc_rest)
+    R_rel = wp.transpose(R_wp) * R_wc
+    R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
+    R_align = R_rel * wp.transpose(R_rel_rest)
+
+    J_world = R_wp * (R_align * wp.transpose(Jr_inv))
+
+    # Elastic force on perpendicular components only
+    f_local = k_eff * kappa_perp
+
+    # Projector P = I - a*a^T removes the free-axis direction
+    P = wp.identity(3, float) - wp.outer(a, a)
+
+    # Base Hessian in kappa-space: k_eff * P (isotropic in the perpendicular plane)
+    H_local = k_eff * P
+
+    # Optional Rayleigh damping
+    if damping > 0.0:
+        omega_p_world = quat_velocity(q_wp, q_wp_prev, dt)
+        omega_c_world = quat_velocity(q_wc, q_wc_prev, dt)
+
+        dkappa_dt_vec = compute_kappa_dot_analytic(
+            q_wp, q_wc, q_wp_rest, q_wc_rest, omega_p_world, omega_c_world, kappa_now_vec
+        )
+        # Project damping rate perpendicular to the free axis
+        dkappa_perp = dkappa_dt_vec - wp.dot(dkappa_dt_vec, a) * a
+        f_damp_local = (damping * k_eff) * dkappa_perp
+        f_local = f_local + f_damp_local
+
+        k_damp = (damping * inv_dt) * k_eff
+        H_local = H_local + k_damp * P
+
+    H_aa = J_world * (H_local * wp.transpose(J_world))
+
+    tau_world = J_world * f_local
+    if not is_parent:
+        tau_world = -tau_world
+
+    return tau_world, H_aa
+
+
+@wp.func
 def evaluate_linear_constraint_force_hessian_isotropic(
     X_wp: wp.transform,
     X_wc: wp.transform,
@@ -460,6 +542,103 @@ def evaluate_linear_constraint_force_hessian_isotropic(
         H_aa_damp = damp_scale * H_aa
 
         # Accumulate damping contributions
+        H_ll = H_ll + H_ll_damp
+        H_al = H_al + H_al_damp
+        H_aa = H_aa + H_aa_damp
+
+    force = f_attachment if is_parent else -f_attachment
+    torque = wp.cross(r, force)
+
+    return force, torque, H_ll, H_al, H_aa
+
+
+@wp.func
+def evaluate_linear_constraint_force_hessian_prismatic(
+    X_wp: wp.transform,
+    X_wc: wp.transform,
+    X_wp_prev: wp.transform,
+    X_wc_prev: wp.transform,
+    parent_pose: wp.transform,
+    child_pose: wp.transform,
+    parent_com: wp.vec3,
+    child_com: wp.vec3,
+    is_parent: bool,
+    penalty_k: float,
+    joint_axis_local: wp.vec3,  # Free translation axis in parent joint frame
+    damping: float,
+    dt: float,
+):
+    """
+    Prismatic linear constraint: penalizes translation perpendicular to the joint axis.
+
+    Same framework as the isotropic version but projects the position error onto the
+    plane perpendicular to the joint axis in world space.  The component of the
+    position difference along ``joint_axis_local`` (the free sliding DOF) is
+    left unconstrained.
+
+    Args:
+      - joint_axis_local: Free-translation axis in the parent joint frame (local).
+        Rotated to world via the parent joint frame rotation.
+      - All other args match :func:`evaluate_linear_constraint_force_hessian_isotropic`.
+
+    Frames:
+      - All outputs are in world frame.
+    """
+    # Extract attachment points in world space
+    x_p = wp.transform_get_translation(X_wp)
+    x_c = wp.transform_get_translation(X_wc)
+
+    # Compute moment arm from body COM to attachment point
+    if is_parent:
+        com_w = wp.transform_point(parent_pose, parent_com)
+        r = x_p - com_w
+    else:
+        com_w = wp.transform_point(child_pose, child_com)
+        r = x_c - com_w
+
+    # Constraint violation: C = x_c - x_p
+    C_vec = x_c - x_p
+
+    # Express joint axis in world space via parent joint frame rotation
+    q_wp = wp.transform_get_rotation(X_wp)
+    axis_w = wp.normalize(wp.quat_rotate(q_wp, joint_axis_local))
+
+    # Project out the free-axis component: C_perp = C - (C . a_w) * a_w
+    C_perp = C_vec - wp.dot(C_vec, axis_w) * axis_w
+
+    # Force at attachment point (elastic, perpendicular only)
+    f_attachment = penalty_k * C_perp
+
+    # Projector P = I - a_w * a_w^T
+    P = wp.identity(3, float) - wp.outer(axis_w, axis_w)
+
+    # Gauss-Newton Hessian with projector
+    rx = wp.skew(r)
+    K_point = penalty_k * P
+
+    H_ll = K_point
+    H_al = rx * K_point
+    H_aa = wp.transpose(rx) * K_point * rx
+
+    # Rayleigh damping
+    if damping > 0.0:
+        x_p_prev = wp.transform_get_translation(X_wp_prev)
+        x_c_prev = wp.transform_get_translation(X_wc_prev)
+        C_vec_prev = x_c_prev - x_p_prev
+        inv_dt = 1.0 / dt
+        dC_dt = (C_vec - C_vec_prev) * inv_dt
+        # Project damping rate perpendicular to the free axis
+        dC_dt_perp = dC_dt - wp.dot(dC_dt, axis_w) * axis_w
+
+        damping_coeff = damping * penalty_k
+        f_damping = damping_coeff * dC_dt_perp
+        f_attachment = f_attachment + f_damping
+
+        damp_scale = damping * inv_dt
+        H_ll_damp = damp_scale * H_ll
+        H_al_damp = damp_scale * H_al
+        H_aa_damp = damp_scale * H_aa
+
         H_ll = H_ll + H_ll_damp
         H_al = H_al + H_al_damp
         H_aa = H_aa + H_aa_damp
@@ -856,6 +1035,8 @@ def evaluate_joint_force_hessian(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
+    joint_axis: wp.array(dtype=wp.vec3),
+    joint_qd_start: wp.array(dtype=int),
     joint_constraint_start: wp.array(dtype=int),
     joint_penalty_k: wp.array(dtype=float),
     joint_penalty_kd: wp.array(dtype=float),
@@ -863,7 +1044,9 @@ def evaluate_joint_force_hessian(
     joint_C_fric: wp.array(dtype=wp.vec3),
     dt: float,
 ):
-    """Compute AVBD joint force and Hessian contributions for one body (CABLE/BALL/FIXED).
+    """Compute AVBD joint force and Hessian contributions for one body.
+
+    Supported joint types: CABLE, BALL, FIXED, REVOLUTE, PRISMATIC.
 
     Indexing:
         ``joint_constraint_start[j]`` is a solver-owned start offset into the per-constraint arrays
@@ -871,6 +1054,8 @@ def evaluate_joint_force_hessian(
           - ``JointType.CABLE``: 2 scalars -> [stretch (linear), bend (angular)]
           - ``JointType.BALL``: 1 scalar  -> [linear]
           - ``JointType.FIXED``: 2 scalars -> [linear, angular]
+          - ``JointType.REVOLUTE``: 2 scalars -> [linear (isotropic), angular (2-DOF perpendicular)]
+          - ``JointType.PRISMATIC``: 2 scalars -> [linear (2-DOF perpendicular), angular (isotropic)]
 
     Damping:
         ``joint_penalty_kd`` stores a dimensionless Rayleigh-style coefficient used to build a
@@ -880,7 +1065,13 @@ def evaluate_joint_force_hessian(
     (force, torque, H_ll, H_al, H_aa) in world frame.
     """
     jt = joint_type[joint_index]
-    if jt != JointType.CABLE and jt != JointType.BALL and jt != JointType.FIXED:
+    if (
+        jt != JointType.CABLE
+        and jt != JointType.BALL
+        and jt != JointType.FIXED
+        and jt != JointType.REVOLUTE
+        and jt != JointType.PRISMATIC
+    ):
         return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
 
     parent_index = joint_parent[joint_index]
@@ -1035,6 +1226,112 @@ def evaluate_joint_force_hessian(
                 q_wc_prev,
                 is_parent_body,
                 # Note: FIXED uses k_ang directly as an effective stiffness.
+                k_ang,
+                sigma0,
+                C_fric,
+                kd_ang,
+                dt,
+            )
+        else:
+            t_ang = wp.vec3(0.0)
+            Haa_ang = wp.mat33(0.0)
+
+        return f_lin, t_lin + t_ang, Hll_lin, Hal_lin, Haa_lin + Haa_ang
+
+    elif jt == JointType.REVOLUTE:
+        # REVOLUTE: isotropic linear anchor-coincidence + 2-DOF angular (perpendicular to joint axis).
+        axis_local = joint_axis[joint_qd_start[joint_index]]
+
+        # Linear part (isotropic, same as BALL)
+        k_lin = joint_penalty_k[c_start + 0]
+        kd_lin = joint_penalty_kd[c_start + 0]
+        f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_isotropic(
+            X_wp,
+            X_wc,
+            X_wp_prev,
+            X_wc_prev,
+            parent_pose,
+            child_pose,
+            parent_com,
+            child_com,
+            is_parent_body,
+            k_lin,
+            kd_lin,
+            dt,
+        )
+
+        # Angular part (constrain 2 DOFs perpendicular to the joint axis)
+        k_ang = joint_penalty_k[c_start + 1]
+        kd_ang = joint_penalty_kd[c_start + 1]
+        if k_ang > 0.0:
+            q_wp = wp.transform_get_rotation(X_wp)
+            q_wc = wp.transform_get_rotation(X_wc)
+            q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+            q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+            q_wp_prev = wp.transform_get_rotation(X_wp_prev)
+            q_wc_prev = wp.transform_get_rotation(X_wc_prev)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian_revolute(
+                q_wp,
+                q_wc,
+                q_wp_rest,
+                q_wc_rest,
+                q_wp_prev,
+                q_wc_prev,
+                is_parent_body,
+                k_ang,
+                axis_local,
+                kd_ang,
+                dt,
+            )
+        else:
+            t_ang = wp.vec3(0.0)
+            Haa_ang = wp.mat33(0.0)
+
+        return f_lin, t_lin + t_ang, Hll_lin, Hal_lin, Haa_lin + Haa_ang
+
+    elif jt == JointType.PRISMATIC:
+        # PRISMATIC: 2-DOF linear (perpendicular to joint axis) + isotropic angular constraint.
+        axis_local = joint_axis[joint_qd_start[joint_index]]
+
+        # Linear part (constrain 2 DOFs perpendicular to the joint axis)
+        k_lin = joint_penalty_k[c_start + 0]
+        kd_lin = joint_penalty_kd[c_start + 0]
+        f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_prismatic(
+            X_wp,
+            X_wc,
+            X_wp_prev,
+            X_wc_prev,
+            parent_pose,
+            child_pose,
+            parent_com,
+            child_com,
+            is_parent_body,
+            k_lin,
+            axis_local,
+            kd_lin,
+            dt,
+        )
+
+        # Angular part (isotropic, same as FIXED)
+        k_ang = joint_penalty_k[c_start + 1]
+        kd_ang = joint_penalty_kd[c_start + 1]
+        if k_ang > 0.0:
+            q_wp = wp.transform_get_rotation(X_wp)
+            q_wc = wp.transform_get_rotation(X_wc)
+            q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+            q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+            q_wp_prev = wp.transform_get_rotation(X_wp_prev)
+            q_wc_prev = wp.transform_get_rotation(X_wc_prev)
+            sigma0 = wp.vec3(0.0)
+            C_fric = wp.vec3(0.0)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian_isotropic(
+                q_wp,
+                q_wc,
+                q_wp_rest,
+                q_wc_rest,
+                q_wp_prev,
+                q_wc_prev,
+                is_parent_body,
                 k_ang,
                 sigma0,
                 C_fric,
@@ -1935,6 +2232,8 @@ def solve_rigid_body(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
+    joint_axis: wp.array(dtype=wp.vec3),
+    joint_qd_start: wp.array(dtype=int),
     joint_constraint_start: wp.array(dtype=int),
     # AVBD per-constraint penalty state (scalar constraints indexed via joint_constraint_start)
     joint_penalty_k: wp.array(dtype=float),
@@ -2091,6 +2390,8 @@ def solve_rigid_body(
             joint_child,
             joint_X_p,
             joint_X_c,
+            joint_axis,
+            joint_qd_start,
             joint_constraint_start,
             joint_penalty_k,
             joint_penalty_kd,
@@ -2201,6 +2502,8 @@ def update_duals_joint(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
+    joint_axis: wp.array(dtype=wp.vec3),
+    joint_qd_start: wp.array(dtype=int),
     joint_constraint_start: wp.array(dtype=int),
     joint_penalty_k_max: wp.array(dtype=float),
     body_q: wp.array(dtype=wp.transform),
@@ -2225,6 +2528,8 @@ def update_duals_joint(
         joint_child: Child body indices
         joint_X_p: Parent joint frames (local)
         joint_X_c: Child joint frames (local)
+        joint_axis: Joint axis directions (per-DOF, used by REVOLUTE/PRISMATIC)
+        joint_qd_start: Joint DOF start indices (used to index into joint_axis)
         joint_constraint_start: Start index per joint in the solver constraint layout
         joint_penalty_k_max: Per-constraint stiffness cap (used for penalty clamping)
         body_q: Current body transforms (world)
@@ -2241,7 +2546,13 @@ def update_duals_joint(
         return
 
     jt = joint_type[j]
-    if jt != JointType.CABLE and jt != JointType.BALL and jt != JointType.FIXED:
+    if (
+        jt != JointType.CABLE
+        and jt != JointType.BALL
+        and jt != JointType.FIXED
+        and jt != JointType.REVOLUTE
+        and jt != JointType.PRISMATIC
+    ):
         return
 
     # Read solver constraint start index
@@ -2313,6 +2624,59 @@ def update_duals_joint(
 
         # Angular violation magnitude from kappa
         q_wp = wp.transform_get_rotation(X_wp)
+        q_wc = wp.transform_get_rotation(X_wc)
+        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        C_ang = wp.length(kappa)
+        k_ang = joint_penalty_k[i_ang]
+        joint_penalty_k[i_ang] = wp.min(k_ang + beta * C_ang, joint_penalty_k_max[i_ang])
+        return
+
+    # REVOLUTE joint: isotropic linear + perpendicular angular penalties (2 scalars).
+    if jt == JointType.REVOLUTE:
+        i_lin = c_start + 0
+        i_ang = c_start + 1
+        axis_local = joint_axis[joint_qd_start[j]]
+
+        # Linear violation magnitude (full, same as BALL)
+        x_p = wp.transform_get_translation(X_wp)
+        x_c = wp.transform_get_translation(X_wc)
+        C_lin = wp.length(x_c - x_p)
+        k_lin = joint_penalty_k[i_lin]
+        joint_penalty_k[i_lin] = wp.min(k_lin + beta * C_lin, joint_penalty_k_max[i_lin])
+
+        # Angular violation: only perpendicular components of kappa
+        q_wp = wp.transform_get_rotation(X_wp)
+        q_wc = wp.transform_get_rotation(X_wc)
+        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        a = wp.normalize(axis_local)
+        kappa_perp = kappa - wp.dot(kappa, a) * a
+        C_ang = wp.length(kappa_perp)
+        k_ang = joint_penalty_k[i_ang]
+        joint_penalty_k[i_ang] = wp.min(k_ang + beta * C_ang, joint_penalty_k_max[i_ang])
+        return
+
+    # PRISMATIC joint: perpendicular linear + isotropic angular penalties (2 scalars).
+    if jt == JointType.PRISMATIC:
+        i_lin = c_start + 0
+        i_ang = c_start + 1
+        axis_local = joint_axis[joint_qd_start[j]]
+
+        # Linear violation: only perpendicular components
+        x_p = wp.transform_get_translation(X_wp)
+        x_c = wp.transform_get_translation(X_wc)
+        C_vec = x_c - x_p
+        q_wp = wp.transform_get_rotation(X_wp)
+        axis_w = wp.normalize(wp.quat_rotate(q_wp, axis_local))
+        C_perp = C_vec - wp.dot(C_vec, axis_w) * axis_w
+        C_lin = wp.length(C_perp)
+        k_lin = joint_penalty_k[i_lin]
+        joint_penalty_k[i_lin] = wp.min(k_lin + beta * C_lin, joint_penalty_k_max[i_lin])
+
+        # Angular violation: full kappa (same as FIXED)
         q_wc = wp.transform_get_rotation(X_wc)
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)

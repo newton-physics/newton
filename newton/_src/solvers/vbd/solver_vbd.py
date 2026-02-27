@@ -582,12 +582,16 @@ class SolverVBD(SolverBase):
           - ``JointType.CABLE``: 2 scalars (stretch/linear, bend/angular)
           - ``JointType.BALL``: 1 scalar (isotropic linear anchor-coincidence)
           - ``JointType.FIXED``: 2 scalars (isotropic linear anchor-coincidence + isotropic angular)
+          - ``JointType.REVOLUTE``: 2 scalars (isotropic linear + 2-DOF perpendicular angular)
+          - ``JointType.PRISMATIC``: 2 scalars (2-DOF perpendicular linear + isotropic angular)
           - ``JointType.FREE``: 0 scalars (not a constraint)
 
         Ordering (must match kernel indexing via ``joint_constraint_start``):
           - ``JointType.CABLE``: [stretch (linear), bend (angular)]
           - ``JointType.BALL``: [linear]
           - ``JointType.FIXED``: [linear, angular]
+          - ``JointType.REVOLUTE``: [linear, angular]
+          - ``JointType.PRISMATIC``: [linear, angular]
 
         Any other joint type will raise ``NotImplementedError``.
         """
@@ -604,11 +608,15 @@ class SolverVBD(SolverBase):
                     dim_np[j] = 1
                 elif jt[j] == JointType.FIXED:
                     dim_np[j] = 2
+                elif jt[j] == JointType.REVOLUTE:
+                    dim_np[j] = 2  # [linear (isotropic), angular (2-DOF perpendicular)]
+                elif jt[j] == JointType.PRISMATIC:
+                    dim_np[j] = 2  # [linear (2-DOF perpendicular), angular (isotropic)]
                 else:
                     if jt[j] != JointType.FREE:
                         raise NotImplementedError(
                             f"SolverVBD rigid joints: JointType.{JointType(jt[j]).name} is not implemented yet "
-                            "(only CABLE, BALL, and FIXED are supported)."
+                            "(only CABLE, BALL, FIXED, REVOLUTE, and PRISMATIC are supported)."
                         )
                     dim_np[j] = 0
 
@@ -746,6 +754,36 @@ class SolverVBD(SolverBase):
                     joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
 
                     # Angular cap + floor (isotropic)
+                    joint_k_max_np[c0 + 1] = self.rigid_joint_angular_ke
+                    k_ang_floor = min(bend_k, self.rigid_joint_angular_ke)
+                    joint_k_min_np[c0 + 1] = k_ang_floor
+                    joint_k0_np[c0 + 1] = k_ang_floor
+                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+                elif jt[j] == JointType.REVOLUTE:
+                    # REVOLUTE joints: isotropic linear + 2-DOF perpendicular angular
+                    c0 = int(jc_start[j])
+
+                    joint_k_max_np[c0 + 0] = self.rigid_joint_linear_ke
+                    k_lin_floor = min(stretch_k, self.rigid_joint_linear_ke)
+                    joint_k_min_np[c0 + 0] = k_lin_floor
+                    joint_k0_np[c0 + 0] = k_lin_floor
+                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+
+                    joint_k_max_np[c0 + 1] = self.rigid_joint_angular_ke
+                    k_ang_floor = min(bend_k, self.rigid_joint_angular_ke)
+                    joint_k_min_np[c0 + 1] = k_ang_floor
+                    joint_k0_np[c0 + 1] = k_ang_floor
+                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+                elif jt[j] == JointType.PRISMATIC:
+                    # PRISMATIC joints: 2-DOF perpendicular linear + isotropic angular
+                    c0 = int(jc_start[j])
+
+                    joint_k_max_np[c0 + 0] = self.rigid_joint_linear_ke
+                    k_lin_floor = min(stretch_k, self.rigid_joint_linear_ke)
+                    joint_k_min_np[c0 + 0] = k_lin_floor
+                    joint_k0_np[c0 + 0] = k_lin_floor
+                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+
                     joint_k_max_np[c0 + 1] = self.rigid_joint_angular_ke
                     k_ang_floor = min(bend_k, self.rigid_joint_angular_ke)
                     joint_k_min_np[c0 + 1] = k_ang_floor
@@ -1831,6 +1869,8 @@ class SolverVBD(SolverBase):
                     model.joint_child,
                     model.joint_X_p,
                     model.joint_X_c,
+                    model.joint_axis,
+                    model.joint_qd_start,
                     self.joint_constraint_start,
                     self.joint_penalty_k,
                     self.joint_penalty_kd,
@@ -1917,6 +1957,8 @@ class SolverVBD(SolverBase):
                 model.joint_child,
                 model.joint_X_p,
                 model.joint_X_c,
+                model.joint_axis,
+                model.joint_qd_start,
                 self.joint_constraint_start,
                 self.joint_penalty_k_max,
                 state_out.body_q,
