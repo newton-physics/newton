@@ -94,7 +94,6 @@ class TestHeightfield(unittest.TestCase):
     def test_add_shape_heightfield(self):
         """Test adding a heightfield shape via ModelBuilder."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
 
         nrow, ncol = 8, 8
         elevation_data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32)
@@ -127,7 +126,6 @@ class TestHeightfield(unittest.TestCase):
         """
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         builder.add_mjcf(mjcf, parse_meshes=True)
 
         hfield_shapes = [i for i in range(builder.shape_count) if builder.shape_type[i] == newton.GeoType.HFIELD]
@@ -174,7 +172,6 @@ class TestHeightfield(unittest.TestCase):
 
         try:
             builder = newton.ModelBuilder()
-            builder.default_shape_cfg.gap = 0.0
             builder.add_mjcf(mjcf, parse_meshes=True, path_resolver=resolver)
 
             hfield_shapes = [i for i in range(builder.shape_count) if builder.shape_type[i] == newton.GeoType.HFIELD]
@@ -207,7 +204,6 @@ class TestHeightfield(unittest.TestCase):
         """
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         builder.add_mjcf(mjcf, parse_meshes=True)
 
         hfield_shapes = [i for i in range(builder.shape_count) if builder.shape_type[i] == newton.GeoType.HFIELD]
@@ -230,7 +226,6 @@ class TestHeightfield(unittest.TestCase):
             self.skipTest("MuJoCo not installed")
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
 
         nrow, ncol = 5, 5
         elevation_data = np.zeros((nrow, ncol), dtype=np.float32)
@@ -256,7 +251,6 @@ class TestHeightfield(unittest.TestCase):
             self.skipTest("MuJoCo not installed")
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
 
         nrow, ncol = 10, 10
         elevation = np.zeros((nrow, ncol), dtype=np.float32)
@@ -351,7 +345,6 @@ class TestHeightfield(unittest.TestCase):
     def test_heightfield_native_collision_flat(self):
         """Test native CollisionPipeline detects contact between sphere and flat heightfield."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
 
         # Flat heightfield at z=0
         nrow, ncol = 10, 10
@@ -377,7 +370,6 @@ class TestHeightfield(unittest.TestCase):
     def test_heightfield_native_collision_no_contact(self):
         """Test that no contacts are generated when sphere is far above heightfield."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
 
         nrow, ncol = 10, 10
         elevation = np.zeros((nrow, ncol), dtype=np.float32)

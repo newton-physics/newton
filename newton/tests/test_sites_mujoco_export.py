@@ -31,7 +31,6 @@ class TestMuJoCoSiteExport(unittest.TestCase):
     def test_export_single_site(self):
         """Test that a site is exported to both MuJoCo Warp and regular MuJoCo models."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_site(
             body, type=GeoType.SPHERE, label="test_site", xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity())
@@ -55,7 +54,6 @@ class TestMuJoCoSiteExport(unittest.TestCase):
     def test_export_multiple_sites(self):
         """Test exporting multiple sites."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         builder.add_site(body, type=GeoType.SPHERE, label="site_1")
@@ -72,7 +70,6 @@ class TestMuJoCoSiteExport(unittest.TestCase):
     def test_site_not_exported_as_geom(self):
         """Test that sites are NOT exported as collision geoms."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         # Add site
@@ -92,7 +89,6 @@ class TestMuJoCoSiteExport(unittest.TestCase):
     def test_export_site_transforms(self):
         """Test that site transforms are correctly exported."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         site_xform = wp.transform(wp.vec3(0.5, 0.3, 0.1), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 1.57))
@@ -111,7 +107,6 @@ class TestMuJoCoSiteExport(unittest.TestCase):
     def test_export_site_types(self):
         """Test that site types are exported correctly."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         builder.add_site(body, type=GeoType.SPHERE, scale=(0.05, 0.05, 0.05), label="sphere")
@@ -135,7 +130,6 @@ class TestMuJoCoSiteExport(unittest.TestCase):
     def test_include_sites_parameter(self):
         """Test that the include_sites parameter controls site export."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         builder.add_site(body, type=GeoType.SPHERE, label="my_site")
@@ -173,7 +167,6 @@ class TestMuJoCoSiteExport(unittest.TestCase):
 
         # Import to Newton
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 

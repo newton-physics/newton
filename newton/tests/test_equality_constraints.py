@@ -29,7 +29,6 @@ class TestEqualityConstraints(unittest.TestCase):
         self.sim_dt = self.frame_dt / 10
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
 
         builder.add_mjcf(
             os.path.join(os.path.dirname(__file__), "assets", "constraints.xml"),
@@ -99,7 +98,6 @@ class TestEqualityConstraints(unittest.TestCase):
         """Test that equality constraints are not duplicated for each world when using separate_worlds=True"""
         # Create a simple robot builder with equality constraints
         robot = newton.ModelBuilder()
-        robot.default_shape_cfg.gap = 0.0
 
         # Add bodies with shapes
         base = robot.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, label="base")
@@ -152,7 +150,6 @@ class TestEqualityConstraints(unittest.TestCase):
 
         # Build main model with multiple worlds
         main_builder = newton.ModelBuilder()
-        main_builder.default_shape_cfg.gap = 0.0
 
         # Add ground plane (global, world -1)
         main_builder.add_ground_plane()
@@ -229,7 +226,6 @@ class TestEqualityConstraints(unittest.TestCase):
         """Test that equality constraints are properly remapped after collapse_fixed_joints,
         including correct transformation of anchor points and relpose."""
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
 
         # Create chain: world -> base (fixed) -> link1 (revolute) -> link2 (fixed) -> link3
         base = builder.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, label="base")

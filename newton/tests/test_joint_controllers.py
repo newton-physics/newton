@@ -43,7 +43,6 @@ def test_revolute_controller(
     target_kd,
 ):
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
-    builder.default_shape_cfg.gap = 0.0
     box_mass = 1.0
     box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
     # easy case: identity transform, zero center of mass
@@ -114,7 +113,6 @@ def test_ball_controller(
 ):
     """Test ball joint controller with position and velocity targets."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
-    builder.default_shape_cfg.gap = 0.0
     box_mass = 1.0
     box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
     # easy case: identity transform, zero center of mass
@@ -200,7 +198,6 @@ def test_effort_limit_clamping(
 ):
     """Test that MuJoCo solver correctly clamps actuator forces based on effort_limit."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
-    builder.default_shape_cfg.gap = 0.0
 
     box_mass = 1.0
     inertia_value = 0.1
@@ -288,7 +285,6 @@ def test_qfrc_actuator(
 ):
     """Test that mujoco.qfrc_actuator extended state attribute is populated correctly by MuJoCo solver."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
-    builder.default_shape_cfg.gap = 0.0
 
     box_mass = 1.0
     inertia_value = 0.1
@@ -360,7 +356,6 @@ def test_qfrc_actuator(
 
     # Verify that qfrc_actuator is NOT allocated when not requested
     builder2 = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
-    builder2.default_shape_cfg.gap = 0.0
     b2 = builder2.add_link(armature=0.0, inertia=box_inertia, mass=box_mass)
     builder2.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
     j2 = builder2.add_joint_revolute(
@@ -414,7 +409,6 @@ def test_free_joint_qfrc_actuator_frame(
     </mujoco>
     """
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=0.0)
-    builder.default_shape_cfg.gap = 0.0
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     parse_mjcf(builder, mjcf, ctrl_direct=True, ignore_inertial_definitions=False)
     builder.request_state_attributes("mujoco:qfrc_actuator")

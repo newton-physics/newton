@@ -58,7 +58,6 @@ class Example:
         self.viewer = viewer
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
 
         # add ground plane
         builder.add_ground_plane()
@@ -101,11 +100,7 @@ class Example:
                 cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0),
             )
             builder.add_shape_box(
-                body,
-                hx=scale,
-                hy=scale,
-                hz=scale,
-                cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200, gap=0.0),
+                body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200)
             )
             imu_site = builder.add_site(body, label=f"imu_site_{cube_idx}")
 

@@ -44,7 +44,6 @@ def _setup_pendulum(
         parent_xform = wp.transform_identity()
 
     builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
-    builder.default_shape_cfg.gap = 0.0
     builder.request_state_attributes("body_parent_f")
 
     link = builder.add_link()
@@ -138,7 +137,6 @@ def test_apply_body_f(test, device, solver_fn):
     """
     dt = 5e-3
     builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
-    builder.default_shape_cfg.gap = 0.0
     builder.request_state_attributes("body_parent_f")
 
     link0 = builder.add_link()

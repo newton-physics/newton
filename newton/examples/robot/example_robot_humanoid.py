@@ -43,7 +43,6 @@ class Example:
         self.viewer = viewer
 
         humanoid = newton.ModelBuilder()
-        humanoid.default_shape_cfg.gap = 0.0
         humanoid.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         humanoid.default_shape_cfg.ke = 5.0e4
         humanoid.default_shape_cfg.kd = 5.0e2
@@ -65,7 +64,6 @@ class Example:
             humanoid.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         builder.replicate(humanoid, self.world_count)
 
         builder.add_ground_plane()

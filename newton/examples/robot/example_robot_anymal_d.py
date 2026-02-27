@@ -47,7 +47,6 @@ class Example:
 
         articulation_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
-        articulation_builder.default_shape_cfg.gap = 0.0
         articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
         )
@@ -75,7 +74,6 @@ class Example:
             articulation_builder.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.default_shape_cfg.gap = 0.0
         for _ in range(self.world_count):
             builder.add_world(articulation_builder)
 

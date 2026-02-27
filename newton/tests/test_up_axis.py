@@ -28,7 +28,6 @@ class TestControlForce(unittest.TestCase):
 
 def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis):
     builder = newton.ModelBuilder(up_axis=up_axis, gravity=-9.81)
-    builder.default_shape_cfg.gap = 0.0
 
     b = builder.add_body()
     # Apply axis rotation to transform

@@ -76,7 +76,6 @@ class Example:
 
         ur10 = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(ur10)
-        ur10.default_shape_cfg.gap = 0.0
 
         asset_path = newton.utils.download_asset("universal_robots_ur10")
         asset_file = str(asset_path / "usd" / "ur10_instanceable.usda")
@@ -97,7 +96,6 @@ class Example:
             ur10.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.gap = 0.0
         builder.replicate(ur10, self.world_count, spacing=(2, 2, 0))
 
         # set random joint configurations

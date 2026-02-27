@@ -30,7 +30,6 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
 
         # Parse and build model
         builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
-        builder.default_shape_cfg.gap = 0.0
         builder.add_usd(usd_path, only_load_enabled_rigid_bodies=False)
         model = builder.finalize()
 

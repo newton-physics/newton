@@ -83,7 +83,6 @@ def test_angular_velocity_com_stationary(
         tolerance: Maximum allowed CoM drift
     """
     builder = newton.ModelBuilder(gravity=0.0)
-    builder.default_shape_cfg.gap = 0.0
 
     # Create a body with the specified CoM offset
     initial_pos = wp.vec3(1.0, 2.0, 3.0)
@@ -173,7 +172,6 @@ def test_linear_velocity_com_moves(
         tolerance: Maximum allowed displacement error
     """
     builder = newton.ModelBuilder(gravity=0.0)
-    builder.default_shape_cfg.gap = 0.0
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
@@ -248,7 +246,6 @@ def test_combined_velocity(
         tolerance: Maximum allowed displacement error
     """
     builder = newton.ModelBuilder(gravity=0.0)
-    builder.default_shape_cfg.gap = 0.0
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
