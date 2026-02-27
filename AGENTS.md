@@ -135,6 +135,14 @@ uvx --with virtualenv asv run --launch-method spawn main^!
 uvx --with virtualenv asv run --launch-method spawn main^^!
 ```
 
+## Changelog
+
+- **Update `CHANGELOG.md` for every user-facing change** targeting the `[Unreleased]` section.
+- Use **imperative present tense**: "Add X", not "Added X" or "This adds X".
+- Place entries under the correct category: `Added`, `Changed`, `Deprecated`, `Removed`, or `Fixed`.
+- Avoid internal implementation details users wouldn't understand.
+- Changes targeting a cherry-pick to 1.0.0 do not need a changelog entry.
+
 ## Commit and Pull Request Guidelines
 
 Follow conventional commit message practices.
