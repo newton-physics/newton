@@ -1579,10 +1579,11 @@ def parse_usd(
                             )
                             articulation_joint_indices.append(base_joint_id)
                             continue  # Skip parsing the USD's root joint
-                        # Compute incoming_xform from the actual body0 world transform
-                        # (the body that maps to -1/world). This may differ from the
-                        # articulation root's transform when a fixed joint connects a
-                        # non-body prim above the articulation root to the root body.
+                        # Compute incoming_xform from the world-side (body0/body1 that
+                        # maps to -1) prim's world transform. This handles fixed joints
+                        # where a non-body prim above the articulation root connects to
+                        # the root body. When body0 is unset (pure world attachment),
+                        # fall back to the articulation root's transform.
                         root_joint_desc = joint_descriptions[joint_names[i]]
                         b0 = str(root_joint_desc.body0)
                         b1 = str(root_joint_desc.body1)
@@ -1591,7 +1592,7 @@ def parse_usd(
                         if world_body_prim is not None and world_body_prim.IsValid():
                             world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
                         else:
-                            world_body_xform = wp.transform_identity()
+                            world_body_xform = articulation_root_xform
                         root_incoming_xform = (
                             incoming_world_xform if override_root_xform else incoming_world_xform * world_body_xform
                         )
