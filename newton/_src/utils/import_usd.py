@@ -363,18 +363,23 @@ def parse_usd(
             material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
         return material_props_cache[prim_path]
 
-    def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False) -> Mesh:
+    def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
         """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""
         prim_path = str(prim.GetPath())
-        key = (prim_path, load_uvs)
+        key = (prim_path, load_uvs, load_normals)
         if key in mesh_cache:
             return mesh_cache[key]
 
-        # A mesh loaded with UVs is a superset of the no-UV representation.
-        if not load_uvs and (prim_path, True) in mesh_cache:
-            return mesh_cache[(prim_path, True)]
+        # A mesh loaded with more data is a superset of simpler representations.
+        for cached_key in [
+            (prim_path, True, True),
+            (prim_path, load_uvs, True),
+            (prim_path, True, load_normals),
+        ]:
+            if cached_key != key and cached_key in mesh_cache:
+                return mesh_cache[cached_key]
 
-        mesh = usd.get_mesh(prim, load_uvs=load_uvs)
+        mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
         mesh_cache[key] = mesh
         return mesh
 
