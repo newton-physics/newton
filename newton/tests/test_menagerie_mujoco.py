@@ -516,9 +516,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_",
     "pair_geom",  # geom indices depend on geom ordering
     "nxn_",  # broadphase pairs depend on geom ordering
-    # Sparse mass matrix structure (M_colind, M_rowind, M_rowadr, M_rownnz, etc.);
-    # can differ with inertia re-diagonalization and dof representation.
-    "M_",
     # Compilation-dependent fields: validated at 1e-3 by compare_compiled_model_fields()
     # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     "body_invweight0",
@@ -1954,6 +1951,13 @@ class TestMenagerieBase(unittest.TestCase):
         Override in subclasses where DOF ordering may differ.
         """
 
+    def _compare_mass_matrix_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse mass matrix structure (M_colind, M_rowadr, M_rownnz).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
+
     def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare compilation-dependent fields at relaxed tolerance.
 
@@ -2127,6 +2131,7 @@ class TestMenagerieBase(unittest.TestCase):
         # Compare physics-relevant body/DOF/actuator fields (mapped comparison for reordered pipelines)
         self._compare_body_physics(newton_solver.mjw_model, native_mjw_model)
         self._compare_dof_physics(newton_solver.mjw_model, native_mjw_model)
+        self._compare_mass_matrix_structure(newton_solver.mjw_model, native_mjw_model)
         self._compare_actuator_physics(newton_solver.mjw_model, native_mjw_model)
 
         # Validate compilation-dependent fields at relaxed tolerance (1e-3).

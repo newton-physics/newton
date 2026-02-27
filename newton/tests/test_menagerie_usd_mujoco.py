@@ -797,6 +797,61 @@ def compare_dof_physics_mapped(
         )
 
 
+def compare_mass_matrix_structure_mapped(
+    newton_mjw: Any,
+    native_mjw: Any,
+    dof_map: dict[int, int],
+) -> None:
+    """Compare sparse mass matrix sparsity pattern under DOF reordering.
+
+    The mass matrix M is nv x nv in CSR-like format (M_rowadr, M_rownnz,
+    M_colind). When DOF ordering differs, the sparsity pattern is permuted
+    but structurally equivalent. This function verifies that equivalence
+    by remapping row/column indices through dof_map.
+
+    Args:
+        dof_map: native_dof_idx -> newton_dof_idx.
+    """
+    nv = native_mjw.nv
+    assert newton_mjw.nv == nv, f"nv mismatch: newton={newton_mjw.nv} vs native={nv}"
+
+    newton_rowadr = newton_mjw.M_rowadr.numpy().flatten()
+    newton_rownnz = newton_mjw.M_rownnz.numpy().flatten()
+    newton_colind = newton_mjw.M_colind.numpy().flatten()
+    native_rowadr = native_mjw.M_rowadr.numpy().flatten()
+    native_rownnz = native_mjw.M_rownnz.numpy().flatten()
+    native_colind = native_mjw.M_colind.numpy().flatten()
+
+    inv_dof_map = {v: k for k, v in dof_map.items()}
+
+    mismatches = []
+    for native_dof in range(nv):
+        newton_dof = dof_map.get(native_dof)
+        if newton_dof is None:
+            mismatches.append(f"native DOF {native_dof} has no mapping")
+            continue
+
+        nat_start = int(native_rowadr[native_dof])
+        nat_nnz = int(native_rownnz[native_dof])
+        native_cols = {int(native_colind[nat_start + k]) for k in range(nat_nnz)}
+
+        nw_start = int(newton_rowadr[newton_dof])
+        nw_nnz = int(newton_rownnz[newton_dof])
+        newton_cols_raw = [int(newton_colind[nw_start + k]) for k in range(nw_nnz)]
+        newton_cols = {inv_dof_map.get(c, -1) for c in newton_cols_raw}
+
+        if native_cols != newton_cols:
+            mismatches.append(
+                f"DOF {native_dof} (newton DOF {newton_dof}): "
+                f"native cols={sorted(native_cols)}, "
+                f"newton cols (remapped)={sorted(newton_cols)}"
+            )
+
+    assert not mismatches, f"Mass matrix sparsity mismatch for {len(mismatches)}/{nv} DOFs:\n" + "\n".join(
+        mismatches[:10]
+    )
+
+
 ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_plugin",
     "actuator_user",
@@ -924,9 +979,14 @@ class TestMenagerieUSD(TestMenagerieBase):
         "dof_",
         # Joint ordering may differ -> compared via _compare_jnt_range
         "jnt_",
-        # Sparse mass matrix structure and Cholesky: derived from body/DOF tree ordering
+        # Sparse mass matrix structure: DOF-indexed, compared via _compare_mass_matrix_structure
+        "M_",
+        # Cholesky permutation: derived from body/DOF tree ordering
         "mapM2M",
         "qLD_updates",
+        # Derived from mass matrix and tendon geometry by set_const; differs due to
+        # inertia re-diagonalization during USD import.
+        "tendon_invweight0",
         # stat.meaninertia is derived from body mass/inertia (which may differ for some USD models)
         "stat",
         # Broadphase collision data depends on geom ordering
@@ -1019,6 +1079,10 @@ class TestMenagerieUSD(TestMenagerieBase):
     def _compare_dof_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare physics-relevant DOF fields using name-based index mapping."""
         compare_dof_physics_mapped(newton_mjw, native_mjw, self._dof_map)
+
+    def _compare_mass_matrix_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse mass matrix structure using DOF index mapping."""
+        compare_mass_matrix_structure_mapped(newton_mjw, native_mjw, self._dof_map)
 
     def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare actuator fields using name-based index mapping."""
