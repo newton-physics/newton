@@ -4274,12 +4274,14 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(self, verbose=wp.config.verbose, joints_to_keep=None):
+    def collapse_fixed_joints(
+        self, verbose: bool = wp.config.verbose, joints_to_keep: list[str] | None = None
+    ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
-            verbose (bool): If True, print additional information about the collapsed joints. Defaults to the value of `wp.config.verbose`.
-            joints_to_keep (List[str]): A list of exact joint labels to be excluded from the collapse process.
+            verbose: If True, print additional information about the collapsed joints. Defaults to the value of `wp.config.verbose`.
+            joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
         """
 
         body_data = {}
