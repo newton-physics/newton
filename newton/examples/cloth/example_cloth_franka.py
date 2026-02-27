@@ -437,7 +437,7 @@ class Example:
         )
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
-        clamp_close_activation_val = 0.06
+        clamp_close_activation_val = 0.1
         clamp_open_activation_val = 0.8
 
         self.robot_key_poses = np.array(
@@ -471,10 +471,10 @@ class Example:
                 [3, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [2, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # bottom
-                [2, 0.0, -22.0, 30.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.0, -22.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.0, -22.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 0.0, -22.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.0, -28.0, 30.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -28.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -28.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.0, -28.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1.5, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1.5, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
