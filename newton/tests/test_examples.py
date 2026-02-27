@@ -81,9 +81,9 @@ def add_example_test(
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
 
-    # verify the module exists
-    file_exists = os.path.exists(f"newton/examples/{name.replace('.', '/')}.py")
-    if not file_exists:
+    # verify the module exists (use package-relative path so this works from any CWD)
+    _examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
+    if not os.path.exists(os.path.join(_examples_dir, f"{name.replace('.', '/')}.py")):
         raise ValueError(f"Example {name} does not exist")
 
     if test_options is None:
