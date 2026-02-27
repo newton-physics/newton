@@ -57,7 +57,6 @@ from .kernels import (
     create_inverse_shape_mapping_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
-    sync_compiled_actuator_params_kernel,
     sync_qpos0_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
@@ -1376,18 +1375,6 @@ class SolverMuJoCo(SolverBase):
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="actuator_dampratio",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.float32,
-                default=0.0,
-                namespace="mujoco",
-                mjcf_attribute_name="dampratio",
-            )
-        )
-
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
                 name="actuator_world",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
@@ -1489,6 +1476,17 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="gear",
                 usd_attribute_name="mjc:gear",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_cranklength",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="cranklength",
             )
         )
 
@@ -2560,8 +2558,6 @@ class SolverMuJoCo(SolverBase):
         actlimited_arr = (
             mujoco_attrs.actuator_actlimited.numpy() if hasattr(mujoco_attrs, "actuator_actlimited") else None
         )
-        dampratio_arr = mujoco_attrs.actuator_dampratio.numpy() if hasattr(mujoco_attrs, "actuator_dampratio") else None
-
         for mujoco_act_idx in range(mujoco_actuator_count):
             # Skip JOINT_TARGET actuators - they're already added via joint_target_mode path
             if ctrl_source_arr is not None:
@@ -2663,6 +2659,9 @@ class SolverMuJoCo(SolverBase):
             if hasattr(mujoco_attrs, "actuator_gear"):
                 gear_arr = mujoco_attrs.actuator_gear.numpy()[mujoco_act_idx]
                 general_args["gear"] = list(gear_arr)
+            if hasattr(mujoco_attrs, "actuator_cranklength"):
+                cranklength = float(mujoco_attrs.actuator_cranklength.numpy()[mujoco_act_idx])
+                general_args["cranklength"] = cranklength
             # Only pass range to MuJoCo when explicitly set in MJCF (has_*range flags),
             # so MuJoCo can correctly resolve auto-limited flags via spec.compiler.autolimits.
             if has_ctrlrange_arr is not None and has_ctrlrange_arr[mujoco_act_idx]:
@@ -2698,7 +2697,6 @@ class SolverMuJoCo(SolverBase):
             # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
             shortcut = None  # "position" or "velocity" if detected
             shortcut_args: dict[str, float] = {}
-            dampratio = float(dampratio_arr[mujoco_act_idx]) if dampratio_arr is not None else 0.0
             if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
@@ -2707,13 +2705,10 @@ class SolverMuJoCo(SolverBase):
                 if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
                     shortcut = "position"
                     shortcut_args["kp"] = kp
-                    if bp[2] > 0 and dampratio == 0.0:
-                        dampratio = bp[2]
-                    kv = -bp[2] if bp[2] < 0 else 0.0
-                    if kv > 0:
-                        shortcut_args["kv"] = kv
-                    if dampratio > 0:
-                        shortcut_args["dampratio"] = dampratio
+                    if bp[2] < 0.0:
+                        shortcut_args["kv"] = -bp[2]
+                    elif bp[2] > 0.0:
+                        shortcut_args["dampratio"] = bp[2]
                     for key in ("biasprm", "biastype", "gainprm", "gaintype"):
                         general_args.pop(key, None)
                 # Velocity shortcut: biasprm = [0, 0, -kv] where kv = gainprm[0]
@@ -2740,13 +2735,6 @@ class SolverMuJoCo(SolverBase):
                 act.set_to_position(**shortcut_args)
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
-            elif dampratio > 0:
-                if wp.config.verbose:
-                    print(
-                        f"Warning: actuator {mujoco_act_idx} has dampratio={dampratio} "
-                        f"but does not match position/velocity shortcut pattern. "
-                        f"dampratio will be ignored."
-                    )
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
@@ -3047,12 +3035,20 @@ class SolverMuJoCo(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
+        need_const_fixed = False
+        need_const_0 = False
+        need_length_range = False
+
         if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
+            need_const_fixed = True
+            need_const_0 = True
         if flags & SolverNotifyFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
         if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
             self._update_joint_dof_properties()
+            need_const_0 = True
+            need_length_range = True
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
             self._update_pair_properties()
@@ -3063,8 +3059,19 @@ class SolverMuJoCo(SolverBase):
             self._update_mimic_eq_properties()
         if flags & SolverNotifyFlags.TENDON_PROPERTIES:
             self._update_tendon_properties()
+            need_const_0 = True
+            need_length_range = True
         if flags & SolverNotifyFlags.ACTUATOR_PROPERTIES:
             self._update_actuator_properties()
+            need_const_0 = True
+            need_length_range = True
+
+        if need_length_range:
+            self._mujoco_warp.set_length_range(self.mjw_model, self.mjw_data)
+        if need_const_fixed:
+            self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
+        if need_const_0:
+            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
 
     def _create_inverse_shape_mapping(self):
         """
@@ -4759,12 +4766,6 @@ class SolverMuJoCo(SolverBase):
             # create the MuJoCo Warp model
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
-            # Sync compiler-resolved actuator params back to Newton custom
-            # attributes. MuJoCo's compiler resolves dampratio into biasprm[2]
-            # during compilation; without this sync, _update_actuator_properties
-            # would overwrite the resolved values with the unresolved originals.
-            self._sync_compiled_actuator_params()
-
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
                 self.mjw_model.mesh_pos = wp.array(self.mj_model.mesh_pos, dtype=wp.vec3)
@@ -5077,10 +5078,13 @@ class SolverMuJoCo(SolverBase):
             # "actuator_dynprm",
             "actuator_gainprm",
             "actuator_biasprm",
-            # "actuator_ctrlrange",
-            # "actuator_forcerange",  # No longer used - force clamping via jnt_actfrcrange
-            # "actuator_actrange",
-            # "actuator_gear",
+            "actuator_dynprm",
+            "actuator_ctrlrange",
+            "actuator_forcerange",
+            "actuator_actrange",
+            "actuator_gear",
+            "actuator_cranklength",
+            "actuator_acc0",
             "pair_solref",
             "pair_solreffriction",
             "pair_solimp",
@@ -5268,13 +5272,6 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-        # Recompute derived quantities after mass/inertia changes.
-        # set_const computes:
-        # - body_subtreemass: mass of body and all descendants (depends on body_mass)
-        # - dof_invweight0, body_invweight0, tendon_invweight0: inverse inertias
-        # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
-        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
-
     def _update_joint_dof_properties(self):
         """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, passive stiffness and damping, and joint limit ranges in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
@@ -5392,13 +5389,6 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
-
-        # Recompute derived quantities after dof_armature changes.
-        # set_const computes:
-        # - dof_invweight0, body_invweight0, tendon_invweight0: inverse inertias
-        # - body_subtreemass: mass of body and all descendants
-        # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
-        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
 
     def _update_joint_properties(self):
         """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
@@ -5756,7 +5746,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def _update_actuator_properties(self):
-        """Update CTRL_DIRECT actuator properties (gainprm, biasprm) in the MuJoCo model.
+        """Update CTRL_DIRECT actuator properties in the MuJoCo model.
 
         Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
         updated via _update_joint_dof_properties() using joint_target_ke/kd.
@@ -5774,7 +5764,22 @@ class SolverMuJoCo(SolverBase):
 
         actuator_gainprm = getattr(mujoco_attrs, "actuator_gainprm", None)
         actuator_biasprm = getattr(mujoco_attrs, "actuator_biasprm", None)
-        if actuator_gainprm is None or actuator_biasprm is None:
+        actuator_dynprm = getattr(mujoco_attrs, "actuator_dynprm", None)
+        actuator_ctrlrange = getattr(mujoco_attrs, "actuator_ctrlrange", None)
+        actuator_forcerange = getattr(mujoco_attrs, "actuator_forcerange", None)
+        actuator_actrange = getattr(mujoco_attrs, "actuator_actrange", None)
+        actuator_gear = getattr(mujoco_attrs, "actuator_gear", None)
+        actuator_cranklength = getattr(mujoco_attrs, "actuator_cranklength", None)
+        if (
+            actuator_gainprm is None
+            or actuator_biasprm is None
+            or actuator_dynprm is None
+            or actuator_ctrlrange is None
+            or actuator_forcerange is None
+            or actuator_actrange is None
+            or actuator_gear is None
+            or actuator_cranklength is None
+        ):
             return
 
         nworld = self.mjw_model.actuator_biasprm.shape[0]
@@ -5788,50 +5793,23 @@ class SolverMuJoCo(SolverBase):
                 self.mjc_actuator_to_newton_idx,
                 actuator_gainprm,
                 actuator_biasprm,
+                actuator_dynprm,
+                actuator_ctrlrange,
+                actuator_forcerange,
+                actuator_actrange,
+                actuator_gear,
+                actuator_cranklength,
                 actuators_per_world,
             ],
             outputs=[
                 self.mjw_model.actuator_gainprm,
                 self.mjw_model.actuator_biasprm,
-            ],
-            device=self.model.device,
-        )
-
-    def _sync_compiled_actuator_params(self):
-        """Sync compiler-resolved actuator biasprm/gainprm back to Newton custom attributes.
-
-        MuJoCo's compiler resolves dampratio into biasprm[2] during model compilation.
-        This launches a kernel to copy the compiled values from mjw_model into Newton's
-        custom attributes so that _update_actuator_properties writes the correct values.
-        """
-        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
-            return
-
-        mujoco_attrs = getattr(self.model, "mujoco", None)
-        if mujoco_attrs is None:
-            return
-
-        newton_biasprm = getattr(mujoco_attrs, "actuator_biasprm", None)
-        newton_gainprm = getattr(mujoco_attrs, "actuator_gainprm", None)
-        if newton_biasprm is None or newton_gainprm is None:
-            return
-
-        nu = self.mjc_actuator_ctrl_source.shape[0]
-        if nu == 0:
-            return
-
-        wp.launch(
-            sync_compiled_actuator_params_kernel,
-            dim=nu,
-            inputs=[
-                self.mjc_actuator_ctrl_source,
-                self.mjc_actuator_to_newton_idx,
-                self.mjw_model.actuator_gainprm,
-                self.mjw_model.actuator_biasprm,
-            ],
-            outputs=[
-                newton_gainprm,
-                newton_biasprm,
+                self.mjw_model.actuator_dynprm,
+                self.mjw_model.actuator_ctrlrange,
+                self.mjw_model.actuator_forcerange,
+                self.mjw_model.actuator_actrange,
+                self.mjw_model.actuator_gear,
+                self.mjw_model.actuator_cranklength,
             ],
             device=self.model.device,
         )
