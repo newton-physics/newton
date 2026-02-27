@@ -6852,7 +6852,7 @@ class TestOverrideRootXform(unittest.TestCase):
         root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
         UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
 
-        ground = UsdGeom.Xform.Define(stage, "/World/env/Robot/Ground")
+        ground = UsdGeom.Xform.Define(stage, "/World/env/Ground")
         ground.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.5))
 
         base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
@@ -6860,7 +6860,7 @@ class TestOverrideRootXform(unittest.TestCase):
         UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
 
         fixed = UsdPhysics.FixedJoint.Define(stage, "/World/env/Robot/WorldJoint")
-        fixed.CreateBody0Rel().SetTargets(["/World/env/Robot/Ground"])
+        fixed.CreateBody0Rel().SetTargets(["/World/env/Ground"])
         fixed.CreateBody1Rel().SetTargets(["/World/env/Robot/Base"])
         fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
         fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
@@ -6889,7 +6889,9 @@ class TestOverrideRootXform(unittest.TestCase):
         stage = self._make_stage_with_world_joint()
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()), floating=False)
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
 
         model = builder.finalize()
         state = model.state()
@@ -6897,8 +6899,8 @@ class TestOverrideRootXform(unittest.TestCase):
 
         body_q = state.body_q.numpy()
         base_idx = builder.body_label.index("/World/env/Robot/Base")
-        # xform (5,0,0) composed with ancestor (100,200,0) => (105, 200, 0)
-        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.0], atol=1e-4)
+        # xform (5,0,0) composed with Ground world xform (100,200,0.5) => (105, 200, 0.5)
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_override_root_xform(self):
@@ -6909,9 +6911,10 @@ class TestOverrideRootXform(unittest.TestCase):
         builder.add_usd(
             stage,
             xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
-            floating=False,
             override_root_xform=True,
         )
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
 
         model = builder.finalize()
         state = model.state()
@@ -6919,7 +6922,8 @@ class TestOverrideRootXform(unittest.TestCase):
 
         body_q = state.body_q.numpy()
         base_idx = builder.body_label.index("/World/env/Robot/Base")
-        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        # override rebases at xform; Ground z=0.5 offset from articulation root is preserved
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.5], atol=1e-4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_override_with_rotation(self):
@@ -6932,9 +6936,10 @@ class TestOverrideRootXform(unittest.TestCase):
         builder.add_usd(
             stage,
             xform=wp.transform((5.0, 0.0, 0.0), quat),
-            floating=False,
             override_root_xform=True,
         )
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
 
         model = builder.finalize()
         state = model.state()
@@ -6942,11 +6947,12 @@ class TestOverrideRootXform(unittest.TestCase):
 
         body_q = state.body_q.numpy()
         base_idx = builder.body_label.index("/World/env/Robot/Base")
-        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        # override rebases at xform; Ground z=0.5 offset preserved
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.5], atol=1e-4)
 
         link_idx = builder.body_label.index("/World/env/Robot/Link")
         # Link at Z+1 from Base; 90° Z-rotation doesn't affect Z offset
-        np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.5], atol=1e-4)
 
 
 if __name__ == "__main__":

@@ -1574,10 +1574,10 @@ def parse_usd(
                             )
                             articulation_joint_indices.append(base_joint_id)
                             continue  # Skip parsing the USD's root joint
-                        # Compute incoming_xform from the actual body0 world transform
-                        # (the body that maps to -1/world). This may differ from the
-                        # articulation root's transform when a fixed joint connects a
-                        # non-body prim above the articulation root to the root body.
+                        # When body0 maps to world the physics API may resolve
+                        # localPose0 into world space (baking the non-body prim's
+                        # transform). JointDesc.body0 returns "" for non-rigid
+                        # targets, so we attempt to look up the prim directly.
                         root_joint_desc = joint_descriptions[joint_names[i]]
                         b0 = str(root_joint_desc.body0)
                         b1 = str(root_joint_desc.body1)
@@ -1587,9 +1587,12 @@ def parse_usd(
                             world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
                         else:
                             world_body_xform = wp.transform_identity()
-                        root_incoming_xform = (
-                            incoming_world_xform if override_root_xform else incoming_world_xform * world_body_xform
+                        root_frame_xform = (
+                            wp.transform_inverse(articulation_root_xform)
+                            if override_root_xform
+                            else wp.transform_identity()
                         )
+                        root_incoming_xform = incoming_world_xform * root_frame_xform * world_body_xform
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             incoming_xform=root_incoming_xform,
