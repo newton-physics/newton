@@ -207,10 +207,15 @@ class ViewerViser(ViewerBase):
     def _is_client_camera_ready(client: Any) -> bool:
         """Return True if the client has reported an initial camera state."""
         try:
-            _ = client.camera.position
+            update_timestamp = float(client.camera.update_timestamp)
         except Exception:
-            return False
-        return True
+            # Older viser versions may not expose update_timestamp.
+            try:
+                _ = client.camera.position
+            except Exception:
+                return False
+            return True
+        return update_timestamp > 0.0
 
     def _handle_client_connect(self, client: Any):
         """Apply cached camera settings to newly connected clients."""
@@ -308,10 +313,16 @@ class ViewerViser(ViewerBase):
         self._pending_camera_clients.discard(client_id)
         position, look_at, up_direction = self._camera_request
 
-        # Apply position first; then force orientation with look_at/up_direction.
-        client.camera.position = tuple(position.tolist())
-        client.camera.look_at = tuple(look_at.tolist())
-        client.camera.up_direction = tuple(up_direction.tolist())
+        # Keep camera updates synchronized to avoid transient jitter.
+        if hasattr(client, "atomic"):
+            with client.atomic():
+                client.camera.position = tuple(position.tolist())
+                client.camera.look_at = tuple(look_at.tolist())
+                client.camera.up_direction = tuple(up_direction.tolist())
+        else:
+            client.camera.position = tuple(position.tolist())
+            client.camera.look_at = tuple(look_at.tolist())
+            client.camera.up_direction = tuple(up_direction.tolist())
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
@@ -330,8 +341,34 @@ class ViewerViser(ViewerBase):
         look_at = position + front
         self._camera_request = (position, look_at, up_direction)
 
+        if hasattr(self._server, "initial_camera"):
+            self._server.initial_camera.position = tuple(position.tolist())
+            self._server.initial_camera.look_at = tuple(look_at.tolist())
+            if hasattr(self._server.initial_camera, "up"):
+                self._server.initial_camera.up = tuple(up_direction.tolist())
+            elif hasattr(self._server.initial_camera, "up_direction"):
+                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
+
         for client in self._server.get_clients().values():
             self._apply_camera_to_client(client)
+
+    @staticmethod
+    def _camera_query_from_request(camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None) -> str:
+        """Build URL query parameters for playback initial camera overrides."""
+        if camera_request is None:
+            return ""
+
+        position, look_at, up_direction = camera_request
+
+        def _format_vec3(values: np.ndarray) -> str:
+            values = np.asarray(values, dtype=np.float64).reshape(3)
+            return ",".join(f"{float(v):.9g}" for v in values)
+
+        return (
+            f"&initialCameraPosition={_format_vec3(position)}"
+            f"&initialCameraLookAt={_format_vec3(look_at)}"
+            f"&initialCameraUp={_format_vec3(up_direction)}"
+        )
 
     @override
     def log_mesh(
@@ -951,10 +988,12 @@ class ViewerViser(ViewerBase):
                 # Remove the "_static/" prefix and prepend "../"
                 playback_path = "../" + static_relative[len("_static/") :]
 
+            camera_query = self._camera_query_from_request(self._camera_request)
+
             embed_html = f"""
 <div class="viser-player-container" style="margin: 20px 0;">
 <iframe
-    src="../_static/viser/index.html?playbackPath={playback_path}"
+    src="../_static/viser/index.html?playbackPath={playback_path}{camera_query}"
     width="{width}"
     height="{height}"
     frameborder="0"
@@ -965,7 +1004,10 @@ class ViewerViser(ViewerBase):
             return display(HTML(embed_html))
         else:
             # Regular Jupyter - use local HTTP server with viser client
-            player_url = self._serve_viser_recording(self._record_to_viser)
+            player_url = self._serve_viser_recording(
+                self._record_to_viser,
+                camera_request=self._camera_request,
+            )
             return display(IFrame(src=player_url, width=width, height=height))
 
     def _ipython_display_(self):
@@ -975,13 +1017,17 @@ class ViewerViser(ViewerBase):
         self.show_notebook()
 
     @staticmethod
-    def _serve_viser_recording(recording_path: str) -> str:
+    def _serve_viser_recording(
+        recording_path: str, camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ) -> str:
         """
         Hosts a simple HTTP server to serve the viser recording file with the viser client
         and returns the URL of the player.
 
         Args:
             recording_path: Path to the .viser recording file.
+            camera_request: Optional `(position, look_at, up_direction)` triple used
+                to append initial camera URL overrides for playback.
 
         Returns:
             URL of the player.
@@ -1116,4 +1162,4 @@ class ViewerViser(ViewerBase):
                     jupyter_base_url = ""
                 player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
 
-        return player_url
+        return player_url + ViewerViser._camera_query_from_request(camera_request)
