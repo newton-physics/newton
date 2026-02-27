@@ -370,10 +370,14 @@ def parse_usd(
         if key in mesh_cache:
             return mesh_cache[key]
 
-        # A mesh loaded with UVs+normals is a superset of simpler representations.
-        full_key = (prim_path, True, True)
-        if key != full_key and full_key in mesh_cache:
-            return mesh_cache[full_key]
+        # A mesh loaded with more data is a superset of simpler representations.
+        for cached_key in [
+            (prim_path, True, True),
+            (prim_path, load_uvs, True),
+            (prim_path, True, load_normals),
+        ]:
+            if cached_key != key and cached_key in mesh_cache:
+                return mesh_cache[cached_key]
 
         mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
         mesh_cache[key] = mesh
