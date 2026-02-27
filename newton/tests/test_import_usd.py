@@ -6889,7 +6889,7 @@ class TestOverrideRootXform(unittest.TestCase):
         stage = self._make_stage_with_world_joint()
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()), floating=False)
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()))
 
         model = builder.finalize()
         state = model.state()
