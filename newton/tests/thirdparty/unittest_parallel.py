@@ -225,12 +225,13 @@ def main(argv=None):
         "anybotics_anymal_c",
         "anybotics_anymal_d",
         "franka_emika_panda",
-        "manipulation_objects/cup",
-        "manipulation_objects/pad",
+        "manipulation_objects/cup",  # Used in robot.example_robot_panda_hydro
+        "manipulation_objects/pad",  # Used in robot.example_robot_panda_hydro
         "unitree_go2",
         "unitree_g1",
         "unitree_h1",
         "style3d",
+        "universal_robots_ur10",
         "universal_robots_ur5e",
         "wonik_allegro",
         "shadow_hand",
@@ -245,8 +246,7 @@ def main(argv=None):
         args.maxjobs,
     )
 
-    # Pre-download mujoco_menagerie folders used by test_menagerie_* and test_robot_composer.
-    # These come from a different repo so they still need individual downloads.
+    # Pre-download mujoco_menagerie folders used by test_robot_composer
     from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
     menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
@@ -257,6 +257,7 @@ def main(argv=None):
         "wonik_allegro",
         "robotiq_2f85",
     ]
+    # Passing args.maxjobs to respect CLI cap for parallelism.
     _parallel_download(
         menagerie_folders,
         lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),

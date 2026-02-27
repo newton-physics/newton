@@ -1587,7 +1587,9 @@ def parse_usd(
                             world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
                         else:
                             world_body_xform = wp.transform_identity()
-                        root_incoming_xform = incoming_world_xform * world_body_xform
+                        root_incoming_xform = (
+                            incoming_world_xform if override_root_xform else incoming_world_xform * world_body_xform
+                        )
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             incoming_xform=root_incoming_xform,

@@ -383,10 +383,15 @@ def download_newton_assets_repo(cache_dir: str | None = None) -> Path:
     lock_path = cache_path / ".newton-assets-full.lock"
     ttl_seconds = 3600
 
-    lock_fd = open(lock_path, "w")
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        import fcntl  # noqa: PLC0415
 
+        lock_fd = open(lock_path, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except ImportError:
+        lock_fd = None
+
+    try:
         if (clone_dir / ".git").exists():
             if _stamp_fresh(stamp_file, ttl_seconds):
                 _newton_assets_cache["root"] = clone_dir
@@ -407,5 +412,8 @@ def download_newton_assets_repo(cache_dir: str | None = None) -> Path:
         _newton_assets_cache["root"] = clone_dir
         return clone_dir
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
+        if lock_fd is not None:
+            import fcntl  # noqa: PLC0415
+
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
