@@ -63,10 +63,12 @@ class RobotComposerSim:
 
         # Build the scene
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         self._build_scene(builder)
 
         # Replicate for parallel simulation
         scene = newton.ModelBuilder()
+        scene.default_shape_cfg.gap = 0.0
         scene.replicate(builder, self.world_count)
         scene.add_ground_plane()
 
@@ -186,6 +188,7 @@ class RobotComposerSim:
 
     def _build_ur5e_mjcf_with_base_joint_and_robotiq_gripper_mjcf(self, builder, pos):
         ur5e_with_robotiq_gripper = newton.ModelBuilder()
+        ur5e_with_robotiq_gripper.default_shape_cfg.gap = 0.0
 
         # Load UR5e with fixed base
         ur5e_quat_base = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi)
@@ -255,6 +258,7 @@ class RobotComposerSim:
 
     def _build_ur5e_mjcf_with_base_joint_and_leap_hand_mjcf(self, builder, pos):
         ur5e_with_hand = newton.ModelBuilder()
+        ur5e_with_hand.default_shape_cfg.gap = 0.0
 
         # Load UR5e with fixed base
         ur5e_quat_base = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi)
@@ -309,6 +313,7 @@ class RobotComposerSim:
 
     def _build_franka_urdf_with_base_joint_and_allegro_hand_mjcf(self, builder, pos):
         franka_with_hand = newton.ModelBuilder()
+        franka_with_hand.default_shape_cfg.gap = 0.0
 
         # Load Franka arm with base joint
         franka_with_hand.add_urdf(
@@ -375,6 +380,7 @@ class RobotComposerSim:
 
     def _build_ur10_usd_with_base_joint(self, builder, pos):
         ur10_builder = newton.ModelBuilder()
+        ur10_builder.default_shape_cfg.gap = 0.0
 
         # Load UR10 from USD with planar base joint (like UR5e)
         ur10_builder.add_usd(
