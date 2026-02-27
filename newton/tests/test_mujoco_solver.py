@@ -2585,6 +2585,22 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         self.assertGreater(tested_count, 0, "Should have tested at least one shape")
 
+        # Runtime update: geom_gap must remain zero after shape_gap changes
+        model.shape_gap.assign(wp.array(non_zero_gap * 2.0, dtype=wp.float32, device=model.device))
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        geom_gap_updated = solver.mjw_model.geom_gap.numpy()
+        for world_idx in range(model.world_count):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+                self.assertAlmostEqual(
+                    float(geom_gap_updated[world_idx, geom_idx]),
+                    0.0,
+                    places=5,
+                    msg=f"geom_gap should remain 0 after runtime update for shape {shape_idx}",
+                )
+
     def test_geom_margin_from_shape_margin(self):
         """Verify shape_margin to geom_margin conversion and runtime updates.
 
