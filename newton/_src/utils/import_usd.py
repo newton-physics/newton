@@ -536,9 +536,8 @@ def parse_usd(
                 # Resolve material properties first (cached) to determine if we need UVs
                 material_props = _get_material_props_cached(prim)
                 texture = material_props.get("texture")
-                # Only load UVs if we have a texture to avoid expensive faceVarying expansion.
-                # Always load normals so authored shading is preserved.
-                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None), load_normals=True)
+                # Only load UVs if we have a texture to avoid expensive faceVarying expansion
+                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None))
                 if texture:
                     mesh.texture = texture
                 if mesh.texture is not None and mesh.uvs is None:

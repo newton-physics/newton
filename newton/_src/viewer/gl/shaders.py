@@ -350,7 +350,7 @@ void main()
     diffuse *= 1.0 - metallic;
     vec3 color = ambient + (1.0 - shadow) * spotlightAttenuation * (diffuse + spec);
 
-    // Fresnel effect: increase reflectance at glancing angles, especially for metals
+    // Fresnel darkening: reduce brightness at glancing angles for metals
     color *= mix(1.0, pow(NdotV, 2.0), metallic);
 
     // environment reflection for metallic look (fade with roughness)
