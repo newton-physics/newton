@@ -306,9 +306,16 @@ def clear_git_cache(cache_dir: str | None = None) -> None:
         print("Git cache directory does not exist")
 
 
+_NEWTON_ASSETS_GIT_URL = "https://github.com/newton-physics/newton-assets.git"
+
+
 def download_asset(asset_folder: str, cache_dir: str | None = None, force_refresh: bool = False) -> Path:
     """
     Downloads a specific folder from the newton-assets GitHub repository into a local cache.
+
+    If a full-repo clone exists (created by :func:`download_newton_assets_repo`),
+    the folder is served from there without any network access. Otherwise falls
+    back to cloning just the requested folder.
 
     Args:
         asset_folder: The folder within the repository to download (e.g., "assets/models")
@@ -321,9 +328,84 @@ def download_asset(asset_folder: str, cache_dir: str | None = None, force_refres
     Returns:
         Path to the downloaded folder in the local cache
     """
+    if not force_refresh and "root" in _newton_assets_cache:
+        candidate = _newton_assets_cache["root"] / asset_folder
+        if candidate.exists():
+            return candidate
+
+    if not force_refresh:
+        resolved_cache = cache_dir if cache_dir is not None else _get_newton_cache_dir()
+        full_clone = Path(resolved_cache) / "newton-assets_full"
+        candidate = full_clone / asset_folder
+        if candidate.exists() and (full_clone / ".git").exists():
+            return candidate
+
     return download_git_folder(
-        "https://github.com/newton-physics/newton-assets.git",
+        _NEWTON_ASSETS_GIT_URL,
         asset_folder,
         cache_dir=cache_dir,
         force_refresh=force_refresh,
     )
+
+
+_newton_assets_cache: dict[str, Path] = {}
+
+
+def download_newton_assets_repo(cache_dir: str | None = None) -> Path:
+    """Clone the full newton-assets repo once and return the root path.
+
+    All subsequent calls return the cached path without network access
+    (within a 1-hour TTL window). A file lock serialises concurrent
+    processes so that only the first caller performs the clone.
+
+    Args:
+        cache_dir: Override for the cache directory. Defaults to the
+            standard Newton cache location.
+
+    Returns:
+        Root path of the cloned newton-assets repository.
+    """
+    if "root" in _newton_assets_cache:
+        return _newton_assets_cache["root"]
+
+    try:
+        import git
+    except ImportError as e:
+        raise ImportError("GitPython is required for downloading newton-assets") from e
+
+    if cache_dir is None:
+        cache_dir = _get_newton_cache_dir()
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+
+    clone_dir = cache_path / "newton-assets_full"
+    stamp_file = clone_dir / ".newton_last_check"
+    lock_path = cache_path / ".newton-assets-full.lock"
+    ttl_seconds = 3600
+
+    lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        if (clone_dir / ".git").exists():
+            if _stamp_fresh(stamp_file, ttl_seconds):
+                _newton_assets_cache["root"] = clone_dir
+                return clone_dir
+            current = _read_cached_commit(clone_dir)
+            latest = _get_latest_commit_via_git(_NEWTON_ASSETS_GIT_URL, "main")
+            if latest is None or (current and latest == current):
+                _touch(stamp_file)
+                _newton_assets_cache["root"] = clone_dir
+                return clone_dir
+            _safe_rmtree(clone_dir)
+
+        print("Cloning full newton-assets repository...")
+        repo = git.Repo.clone_from(_NEWTON_ASSETS_GIT_URL, clone_dir, branch="main", depth=1)
+        repo.close()
+        _touch(stamp_file)
+        print(f"Downloaded newton-assets to: {clone_dir}")
+        _newton_assets_cache["root"] = clone_dir
+        return clone_dir
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()

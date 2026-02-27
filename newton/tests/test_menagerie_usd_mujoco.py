@@ -110,9 +110,9 @@ def create_newton_model_from_usd(
 # =============================================================================
 
 # Menagerie USD asset registry: maps robot name to newton-assets folder + scene file.
-# Assets are downloaded from the newton-assets GitHub repo via download_asset().
-# Download at the robot root level so _find_parent_cache can serve subfolder
-# requests (e.g. "unitree_h1/usd" from test_import_usd) from the same clone.
+# Assets live in the newton-assets GitHub repo. The full repo is cloned once
+# via _download_all_newton_assets() so that parallel test processes share a
+# single git clone instead of each downloading individual folders.
 MENAGERIE_USD_ASSETS = {
     "h1": {"asset_folder": "unitree_h1", "scene_file": "usd_structured/h1.usda"},
     "g1_with_hands": {"asset_folder": "unitree_g1", "scene_file": "usd_structured/g1_29dof_with_hand_rev_1_0.usda"},
@@ -121,11 +121,15 @@ MENAGERIE_USD_ASSETS = {
     "apptronik_apollo": {"asset_folder": "apptronik_apollo", "scene_file": "usd_structured/apptronik_apollo.usda"},
     "booster_t1": {"asset_folder": "booster_t1", "scene_file": "usd_structured/T1.usda"},
     "wonik_allegro": {"asset_folder": "wonik_allegro", "scene_file": "usd_structured/allegro_left.usda"},
+    "ur5e": {"asset_folder": "universal_robots_ur5e", "scene_file": "usd_structured/ur5e.usda"},
 }
 
 
 def download_usd_asset(robot_name: str) -> Path:
-    """Download a menagerie USD asset from newton-assets and return the scene file path.
+    """Return the scene file path for a menagerie USD asset.
+
+    Uses the full-repo clone from :func:`download_newton_assets_repo` when
+    available, falling back to per-folder download via :func:`download_asset`.
 
     Args:
         robot_name: Key in MENAGERIE_USD_ASSETS.
@@ -222,6 +226,13 @@ class TestMenagerieUsdImport(unittest.TestCase):
         self.assertEqual(builder.joint_count, 21)
         self.assertEqual(builder.shape_count, 42)
         self._assert_no_nan(model, "wonik_allegro")
+
+    def test_import_ur5e(self):
+        builder, model = self._load_robot("ur5e")
+        self.assertEqual(builder.body_count, 7)
+        self.assertEqual(builder.joint_count, 7)
+        self.assertEqual(builder.shape_count, 30)
+        self._assert_no_nan(model, "ur5e")
 
     def test_import_h1_joint_types(self):
         """Verify H1 has a free joint (floating base) and revolute joints."""
@@ -1049,6 +1060,105 @@ class TestMenagerieUSD(TestMenagerieBase):
             ignore_paths=self.usd_ignore_paths or None,
         )
 
+    def test_fk_initial_xforms(self):
+        """Verify initial body transforms are consistent with forward kinematics.
+
+        Performs two comparisons:
+
+        1. **Self-consistency** -- ``model.body_q`` (set during USD import) vs
+           ``eval_fk(model.joint_q)`` output.  Uses quaternion-sign-aware
+           comparison since q and -q represent the same rotation.
+        2. **Cross-validation** -- ``model.body_q`` from the USD path vs native
+           MuJoCo body transforms (``mj_data.xpos`` / ``mj_data.xquat``) obtained
+           by loading the original MJCF and running ``mj_forward``.
+        """
+        model = self._create_newton_model()
+        initial_body_q = model.body_q.numpy().copy()
+
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        fk_body_q = state.body_q.numpy()
+
+        # -- Self-consistency: USD initial vs FK --
+        pos_tol = 1e-5
+        quat_tol = 1e-5
+        mismatches = []
+        for i in range(model.body_count):
+            init_pos = initial_body_q[i, :3]
+            fk_pos = fk_body_q[i, :3]
+            pos_err = np.max(np.abs(init_pos - fk_pos))
+
+            init_quat = initial_body_q[i, 3:]
+            fk_quat = fk_body_q[i, 3:]
+            quat_err = min(
+                np.max(np.abs(init_quat - fk_quat)),
+                np.max(np.abs(init_quat + fk_quat)),
+            )
+
+            if pos_err > pos_tol or quat_err > quat_tol:
+                mismatches.append(
+                    f"  body {i}: pos_err={pos_err:.2e}, quat_err={quat_err:.2e}\n"
+                    f"    initial: pos={init_pos}, quat={init_quat}\n"
+                    f"    fk:      pos={fk_pos}, quat={fk_quat}"
+                )
+
+        self.assertEqual(
+            len(mismatches),
+            0,
+            f"FK at initial joint_q produced different body transforms "
+            f"for {len(mismatches)}/{model.body_count} bodies:\n" + "\n".join(mismatches),
+        )
+
+        # -- Cross-validation: USD initial vs native MJCF FK --
+        mj_model, mj_data, _, _ = self._create_native_mujoco_warp()
+
+        native_nbody = mj_model.nbody
+        native_names = [mj_model.body(i).name for i in range(native_nbody)]
+        native_xpos = np.array(mj_data.xpos).reshape(native_nbody, 3)
+        native_xquat = np.array(mj_data.xquat).reshape(native_nbody, 4)
+
+        body_worlds = model.body_world.numpy()
+        world0_indices = np.where(body_worlds == 0)[0]
+
+        cross_tol = 1e-3
+        cross_mismatches = []
+        matched = 0
+        for nw_i in world0_indices:
+            nw_label = model.body_label[nw_i]
+            for nat_i in range(1, native_nbody):
+                if not _suffix_match(nw_label, native_names[nat_i]):
+                    continue
+                matched += 1
+
+                nw_pos = initial_body_q[nw_i, :3]
+                nat_pos = native_xpos[nat_i]
+                pos_err = np.max(np.abs(nw_pos - nat_pos))
+
+                nw_quat = initial_body_q[nw_i, 3:]  # xyzw
+                nat_wxyz = native_xquat[nat_i]
+                nat_xyzw = np.array([nat_wxyz[1], nat_wxyz[2], nat_wxyz[3], nat_wxyz[0]])
+                quat_err = min(
+                    np.max(np.abs(nw_quat - nat_xyzw)),
+                    np.max(np.abs(nw_quat + nat_xyzw)),
+                )
+
+                if pos_err > cross_tol or quat_err > cross_tol:
+                    cross_mismatches.append(
+                        f"  {nw_label} (newton #{nw_i}) vs {native_names[nat_i]} (native #{nat_i}):\n"
+                        f"    pos_err={pos_err:.2e}, quat_err={quat_err:.2e}\n"
+                        f"    usd:    pos={nw_pos}, quat_xyzw={nw_quat}\n"
+                        f"    native: pos={nat_pos}, quat_xyzw={nat_xyzw}"
+                    )
+                break
+
+        self.assertGreater(matched, 0, "No bodies matched between USD and native MJCF by name")
+        self.assertEqual(
+            len(cross_mismatches),
+            0,
+            f"USD initial body_q differs from native MJCF body transforms "
+            f"for {len(cross_mismatches)}/{matched} matched bodies:\n" + "\n".join(cross_mismatches),
+        )
+
 
 # =============================================================================
 # Simulation Equivalence Tests (pre-converted USD assets)
@@ -1174,6 +1284,20 @@ class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
         # The original MJCF has armature=0 which the converter omits from USD.
         # Newton's builder default (0.01) then applies, causing a known mismatch.
         pass
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestMenagerieUSD_UR5e(TestMenagerieUSD):
+    """Universal Robots UR5e arm: USD vs native MuJoCo simulation equivalence."""
+
+    robot_folder = "universal_robots_ur5e"
+    robot_xml = "ur5e.xml"
+    usd_asset_folder = "universal_robots_ur5e"
+    usd_scene_file = "usd_structured/ur5e.usda"
+
+    num_worlds = 2
+    num_steps = 100
+    control_strategy = StructuredControlStrategy(seed=42)
 
 
 # =============================================================================
