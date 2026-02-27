@@ -530,6 +530,7 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "body_quat",
     "body_subtreemass",
     "actuator_acc0",
+    "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
 }
 
@@ -1461,6 +1462,9 @@ MJWARP_MODEL_BATCHED_FIELDS: list[str] = [
     "actuator_forcerange",
     "actuator_actrange",
     "actuator_gear",
+    "actuator_cranklength",
+    "actuator_acc0",
+    "actuator_lengthrange",
 ]
 
 
