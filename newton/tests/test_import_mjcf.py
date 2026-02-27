@@ -6610,6 +6610,45 @@ class TestActuatorShortcutTypeDefaults(unittest.TestCase):
         np.testing.assert_array_equal(compiled, [1, 1, 0, 1])
 
 
+class TestMjcfPositionDampratioParsing(unittest.TestCase):
+    """Verify MJCF position actuator dampratio encoding in biasprm[2]."""
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="base">
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="pos_dampratio" joint="j1" kp="100" dampratio="0.7"/>
+            <position name="pos_kv_wins" joint="j1" kp="50" kv="3.0" dampratio="0.9"/>
+        </actuator>
+    </mujoco>
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        cls.model = builder.finalize()
+
+    def test_dampratio_encoded_in_biasprm(self):
+        """dampratio should be stored as unresolved biasprm[2] > 0."""
+        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        self.assertAlmostEqual(float(biasprm[0, 2]), 0.7, places=6)
+
+    def test_kv_wins_over_dampratio(self):
+        """kv should override dampratio and set biasprm[2] negative."""
+        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        self.assertAlmostEqual(float(biasprm[1, 2]), -3.0, places=6)
+
+
 class TestActuatorDefaultKpKv(unittest.TestCase):
     """Regression: position/velocity actuators must default kp=1/kv=1.
 
