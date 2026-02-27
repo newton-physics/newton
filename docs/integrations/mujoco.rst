@@ -19,10 +19,9 @@ Caveats
   ``geom_margin``, which disables MuJoCo's multicontact and degrades contact
   quality.  Therefore :class:`~newton.solvers.SolverMuJoCo` always sets
   ``geom_gap = 0`` regardless of the Newton :attr:`~newton.ModelBuilder.ShapeConfig.gap`
-  value, and MJCF/USD ``gap`` attributes are not imported.
-
-  If you need to inspect inactive contacts for reporting purposes, use Newton's
-  own collision pipeline instead.
+  value.  MJCF/USD ``gap`` values are still imported into
+  :attr:`~newton.ModelBuilder.ShapeConfig.gap` in the Newton model, but they are
+  not forwarded to the MuJoCo solver.
 
 **shape_collision_radius is ignored.**
   MuJoCo computes bounding-sphere radii (``geom_rbound``) internally from the

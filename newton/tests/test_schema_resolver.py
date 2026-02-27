@@ -1395,12 +1395,11 @@ class TestSchemaResolver(unittest.TestCase):
         gap = resolver.get_value(collider_c, PrimType.SHAPE, "gap")
         self.assertEqual(gap, float("-inf"))
 
-        # --- Mjc does not map gap (inactive contacts not useful in Newton) ---
+        # --- Mjc ---
         resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
         collider_a.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Float).Set(0.05)
         gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
-        # mjc:gap is not resolved; Newton contactGap (0.07) is still the winner
-        self.assertAlmostEqual(gap, 0.07)
+        self.assertAlmostEqual(gap, 0.05)
 
     def test_contact_gap(self):
         """
@@ -1429,11 +1428,10 @@ class TestSchemaResolver(unittest.TestCase):
         gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
         self.assertAlmostEqual(gap, 0.02)
 
-        # Mjc does not map gap; Newton contactGap (0.02) still wins
         resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
         collider.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Float).Set(0.01)
         gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
-        self.assertAlmostEqual(gap, 0.02)
+        self.assertAlmostEqual(gap, 0.01)
 
     def test_self_collision_enabled(self):
         """
