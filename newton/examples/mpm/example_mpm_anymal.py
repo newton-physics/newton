@@ -57,6 +57,7 @@ class Example:
 
         # import the robot model
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.default_shape_cfg.gap = 0.0
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e3,

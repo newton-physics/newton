@@ -138,6 +138,7 @@ def create_newton_model_from_mjcf(
     """
     # Create articulation builder for the robot
     robot_builder = newton.ModelBuilder()
+    robot_builder.default_shape_cfg.gap = 0.0
     SolverMuJoCo.register_custom_attributes(robot_builder)
 
     # floating defaults to None, which honors the MJCF's explicit joint definitions.
@@ -150,6 +151,7 @@ def create_newton_model_from_mjcf(
 
     # Create main builder and replicate
     builder = newton.ModelBuilder()
+    builder.default_shape_cfg.gap = 0.0
     SolverMuJoCo.register_custom_attributes(builder)
 
     if add_ground:

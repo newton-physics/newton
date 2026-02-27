@@ -45,6 +45,7 @@ class Example:
 
         g1 = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(g1)
+        g1.default_shape_cfg.gap = 0.0
         g1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         g1.default_shape_cfg.ke = 2.0e3
         g1.default_shape_cfg.kd = 1.0e2
@@ -71,6 +72,7 @@ class Example:
         g1.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         builder.replicate(g1, self.world_count)
 
         builder.default_shape_cfg.ke = 1.0e3

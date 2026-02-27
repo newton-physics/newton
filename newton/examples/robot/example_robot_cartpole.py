@@ -43,6 +43,7 @@ class Example:
 
         cartpole = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(cartpole)
+        cartpole.default_shape_cfg.gap = 0.0
         cartpole.default_shape_cfg.density = 100.0
         cartpole.default_joint_cfg.armature = 0.1
         cartpole.default_body_armature = 0.1
@@ -56,6 +57,7 @@ class Example:
         cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         builder.replicate(cartpole, self.world_count, spacing=(1.0, 2.0, 0.0))
 
         # finalize model

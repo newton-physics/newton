@@ -112,6 +112,7 @@ def build_stacked_cubes_scene(
         )
 
     builder = newton.ModelBuilder()
+    builder.default_shape_cfg.gap = 0.0
     if shape_type == ShapeType.PRIMITIVE:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
             margin=1e-5,
@@ -277,6 +278,7 @@ def test_buffer_fraction_no_crash(test, device):
     num_cubes = 3
 
     builder = newton.ModelBuilder()
+    builder.default_shape_cfg.gap = 0.0
     builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
         sdf_max_resolution=32,
         is_hydroelastic=True,
@@ -533,6 +535,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     I_m_lower = wp.mat33(inertia_lower, 0.0, 0.0, 0.0, inertia_lower, 0.0, 0.0, 0.0, inertia_lower)
 
     builder = newton.ModelBuilder(gravity=-gravity)
+    builder.default_shape_cfg.gap = 0.0
 
     lower_body_indices = []
     upper_body_indices = []

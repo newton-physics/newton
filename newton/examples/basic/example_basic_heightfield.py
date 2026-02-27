@@ -43,6 +43,7 @@ class Example:
         self.solver_type = args.solver if hasattr(args, "solver") and args.solver else "xpbd"
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
 
         # Create a wave-like heightfield terrain
         nrow, ncol = 50, 50

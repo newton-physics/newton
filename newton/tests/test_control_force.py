@@ -32,6 +32,7 @@ class TestControlForce(unittest.TestCase):
 
 def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=True):
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder.default_shape_cfg.gap = 0.0
 
     # easy case: identity transform, zero center of mass
     b = builder.add_body()
@@ -74,6 +75,7 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
     # test mechanism with 3 orthogonally aligned prismatic joints
     # which allows to test all 3 dimensions of the control force independently
     builder = newton.ModelBuilder(gravity=0.0)
+    builder.default_shape_cfg.gap = 0.0
     builder.default_shape_cfg.density = 100.0
 
     b = builder.add_link()
@@ -131,6 +133,7 @@ def test_child_xform_moment_arm(test: TestControlForce, device, solver_fn):
     """
     offset_y = 2.0
     builder = newton.ModelBuilder(gravity=0.0)
+    builder.default_shape_cfg.gap = 0.0
     builder.default_shape_cfg.density = 100.0
 
     b = builder.add_link()

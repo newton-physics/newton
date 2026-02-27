@@ -56,6 +56,7 @@ class Example:
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
 
         articulation_builder = newton.ModelBuilder()
+        articulation_builder.default_shape_cfg.gap = 0.0
         articulation_builder.add_mjcf(
             mjcf_filename,
             ignore_names=["floor", "ground"],
@@ -69,6 +70,7 @@ class Example:
         sqn = int(wp.ceil(wp.sqrt(float(self.world_count))))
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         for i in range(self.world_count):
             pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0.0)
             articulation_builder.joint_q[7:] = self.rng.uniform(

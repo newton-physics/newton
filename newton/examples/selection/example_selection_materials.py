@@ -78,6 +78,7 @@ class Example:
         self.world_count = world_count
 
         world_template = newton.ModelBuilder()
+        world_template.default_shape_cfg.gap = 0.0
         world_template.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
@@ -85,6 +86,7 @@ class Example:
         )
 
         scene = newton.ModelBuilder()
+        scene.default_shape_cfg.gap = 0.0
 
         scene.add_ground_plane()
         scene.replicate(world_template, world_count=self.world_count)

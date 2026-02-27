@@ -67,6 +67,7 @@ class Example:
         self.world_count = world_count
 
         world = newton.ModelBuilder()
+        world.default_shape_cfg.gap = 0.0
         world.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
@@ -74,6 +75,7 @@ class Example:
         )
 
         scene = newton.ModelBuilder()
+        scene.default_shape_cfg.gap = 0.0
         scene.replicate(world, world_count=self.world_count)
 
         # finalize model

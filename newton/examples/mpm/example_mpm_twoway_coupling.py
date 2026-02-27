@@ -110,6 +110,7 @@ class Example:
 
         # setup rigid-body model builder
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         builder.default_shape_cfg.mu = 0.5
         self._emit_rigid_bodies(builder)
 

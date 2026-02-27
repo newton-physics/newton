@@ -48,6 +48,7 @@ class Example:
 
         h1 = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(h1)
+        h1.default_shape_cfg.gap = 0.0
         h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         h1.default_shape_cfg.ke = 2.0e3
         h1.default_shape_cfg.kd = 1.0e2
@@ -70,6 +71,7 @@ class Example:
             h1.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         builder.replicate(h1, self.world_count)
 
         builder.default_shape_cfg.ke = 1.0e3

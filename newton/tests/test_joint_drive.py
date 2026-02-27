@@ -92,6 +92,7 @@ class TestJointDrive(unittest.TestCase):
         joint_drive_dampings = [10.0, 20.0]
 
         main_builder = newton.ModelBuilder(gravity=g, up_axis=world_up_axis)
+        main_builder.default_shape_cfg.gap = 0.0
         for i in range(0, nb_worlds):
             body_mass = body_masses[i]
             body_com = body_coms[i]
@@ -106,6 +107,7 @@ class TestJointDrive(unittest.TestCase):
             # Create a single body jointed to the world with a prismatic joint
             # Make sure that we use the mass properties specified here by setting shape density to 0.0
             world_builder = newton.ModelBuilder(gravity=g, up_axis=world_up_axis)
+            world_builder.default_shape_cfg.gap = 0.0
             bodyIndex = world_builder.add_link(mass=body_mass, inertia=body_inertia, armature=0.0, com=body_com)
             world_builder.add_shape_sphere(
                 radius=1.0, body=bodyIndex, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False)

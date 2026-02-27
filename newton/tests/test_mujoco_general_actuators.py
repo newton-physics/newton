@@ -92,6 +92,7 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_parsing_ctrl_direct_false(self):
         """Test parsing with ctrl_direct=False."""
         builder = ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=False)
 
         self.assertEqual(len(builder.joint_target_mode), 11)
@@ -219,6 +220,7 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_parsing_ctrl_direct_true(self):
         """Test parsing with ctrl_direct=True."""
         builder = ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=True)
 
         self.assertEqual(builder.joint_target_mode[get_qd_start(builder, "joint_motor")], int(JointTargetMode.NONE))
@@ -274,9 +276,11 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_multiworld_ctrl_direct_false(self):
         """Test multiworld with ctrl_direct=False."""
         robot_builder = ModelBuilder()
+        robot_builder.default_shape_cfg.gap = 0.0
         robot_builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=False)
 
         main_builder = ModelBuilder()
+        main_builder.default_shape_cfg.gap = 0.0
         main_builder.add_world(robot_builder)
         main_builder.add_world(robot_builder)
         model = main_builder.finalize()
@@ -327,9 +331,11 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_multiworld_ctrl_direct_true(self):
         """Test multiworld with ctrl_direct=True."""
         robot_builder = ModelBuilder()
+        robot_builder.default_shape_cfg.gap = 0.0
         robot_builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=True)
 
         main_builder = ModelBuilder()
+        main_builder.default_shape_cfg.gap = 0.0
         main_builder.add_world(robot_builder)
         main_builder.add_world(robot_builder)
         model = main_builder.finalize()
@@ -390,6 +396,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         native_model = mujoco.MjModel.from_xml_string(MJCF_ACTUATORS)
 
         builder = ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=True)
         model = builder.finalize()
 
@@ -417,9 +424,11 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_multiworld_joint_target_gains_update(self):
         """Test that JOINT_TARGET gains update correctly in multiworld setup."""
         robot_builder = ModelBuilder()
+        robot_builder.default_shape_cfg.gap = 0.0
         robot_builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=False)
 
         main_builder = ModelBuilder()
+        main_builder.default_shape_cfg.gap = 0.0
         main_builder.add_world(robot_builder)
         main_builder.add_world(robot_builder)
         model = main_builder.finalize()
@@ -479,9 +488,11 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_multiworld_ctrl_direct_gains_update(self):
         """Test that CTRL_DIRECT actuator gains update correctly in multiworld setup."""
         robot_builder = ModelBuilder()
+        robot_builder.default_shape_cfg.gap = 0.0
         robot_builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=False)
 
         main_builder = ModelBuilder()
+        main_builder.default_shape_cfg.gap = 0.0
         main_builder.add_world(robot_builder)
         main_builder.add_world(robot_builder)
         model = main_builder.finalize()
@@ -568,6 +579,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         """
 
         builder = ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_combined_joints, ctrl_direct=False)
 
@@ -607,6 +619,7 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_usd_actuator_cartpole(self):
         """Test basic actuator parsing from the MjcActuator schema"""
         builder = ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_usd(get_asset("cartpole_mjc.usda"))

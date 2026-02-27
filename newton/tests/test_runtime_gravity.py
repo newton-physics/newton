@@ -30,6 +30,7 @@ class TestRuntimeGravity(unittest.TestCase):
 def test_runtime_gravity_particles(test, device, solver_fn):
     """Test that particles respond correctly to runtime gravity changes"""
     builder = newton.ModelBuilder(gravity=-9.81)
+    builder.default_shape_cfg.gap = 0.0
 
     # Add a particle
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
@@ -82,6 +83,7 @@ def test_runtime_gravity_particles(test, device, solver_fn):
 def test_runtime_gravity_bodies(test, device, solver_fn):
     """Test that rigid bodies respond correctly to runtime gravity changes"""
     builder = newton.ModelBuilder(gravity=-9.81)
+    builder.default_shape_cfg.gap = 0.0
 
     # Set default shape density
     builder.default_shape_cfg.density = 1000.0
@@ -124,6 +126,7 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
 def test_gravity_fallback(test, device):
     """Test that solvers fall back to model gravity when state gravity is not set"""
     builder = newton.ModelBuilder(gravity=-9.81)
+    builder.default_shape_cfg.gap = 0.0
 
     # Add a particle
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
@@ -156,6 +159,7 @@ def test_runtime_gravity_with_cuda_graph(test, device):
         test.skipTest("CUDA graph capture only available on CUDA devices")
 
     builder = newton.ModelBuilder(gravity=-9.81)
+    builder.default_shape_cfg.gap = 0.0
 
     # Add a few particles
     for i in range(5):
@@ -225,12 +229,14 @@ def test_per_world_gravity_bodies(test, device, solver_fn):
     """Test that different worlds can have different gravity values"""
     # Create a world template with a single body
     world_builder = newton.ModelBuilder(gravity=-9.81)
+    world_builder.default_shape_cfg.gap = 0.0
     world_builder.default_shape_cfg.density = 1000.0
     b = world_builder.add_body()
     world_builder.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
 
     # Create main builder with 3 worlds
     main_builder = newton.ModelBuilder(gravity=-9.81)
+    main_builder.default_shape_cfg.gap = 0.0
     world_count = 3
     main_builder.replicate(world_builder, world_count)
 
@@ -279,11 +285,13 @@ def test_per_world_gravity_bodies(test, device, solver_fn):
 def test_per_world_gravity_bodies_mujoco_warp(test, device):
     """Test per-world gravity with MuJoCo Warp solver (CUDA only)"""
     world_builder = newton.ModelBuilder(gravity=-9.81)
+    world_builder.default_shape_cfg.gap = 0.0
     world_builder.default_shape_cfg.density = 1000.0
     b = world_builder.add_body()
     world_builder.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
 
     main_builder = newton.ModelBuilder(gravity=-9.81)
+    main_builder.default_shape_cfg.gap = 0.0
     main_builder.replicate(world_builder, 3)
 
     model = main_builder.finalize(device=device)
@@ -331,6 +339,7 @@ def test_per_world_gravity_bodies_mujoco_warp(test, device):
 def test_set_gravity_per_world(test, device):
     """Test setting gravity for individual worlds"""
     builder = newton.ModelBuilder(gravity=-9.81)
+    builder.default_shape_cfg.gap = 0.0
 
     # Create 2 worlds with particles
     for world_idx in range(2):
@@ -381,6 +390,7 @@ def test_set_gravity_per_world(test, device):
 def test_set_gravity_array(test, device):
     """Test setting per-world gravity using an array"""
     builder = newton.ModelBuilder(gravity=-9.81)
+    builder.default_shape_cfg.gap = 0.0
 
     # Create 4 worlds with particles (curriculum learning scenario)
     world_count = 4
@@ -426,6 +436,7 @@ def test_set_gravity_array(test, device):
 def test_set_gravity_invalid_world(test, device):
     """Test that set_gravity raises IndexError for invalid world index"""
     builder = newton.ModelBuilder(gravity=-9.81)
+    builder.default_shape_cfg.gap = 0.0
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
     model = builder.finalize(device=device)
 
@@ -440,6 +451,7 @@ def test_set_gravity_invalid_world(test, device):
 def test_set_gravity_invalid_array_size(test, device):
     """Test that set_gravity raises ValueError for mismatched array size"""
     builder = newton.ModelBuilder(gravity=-9.81)
+    builder.default_shape_cfg.gap = 0.0
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
     model = builder.finalize(device=device)
 
@@ -456,11 +468,13 @@ def test_replicate_gravity(test, device):
     """Test that replicate() copies gravity from source builder to all worlds"""
     # Create a robot builder with zero gravity
     robot = newton.ModelBuilder(gravity=0)
+    robot.default_shape_cfg.gap = 0.0
     robot.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     # Replicate into a main builder (which has default gravity -9.81)
     world_count = 3
     worlds = newton.ModelBuilder()
+    worlds.default_shape_cfg.gap = 0.0
     worlds.replicate(robot, world_count)
 
     model = worlds.finalize(device=device)
@@ -476,11 +490,13 @@ def test_replicate_gravity_nonzero(test, device):
     """Test that replicate() copies non-zero gravity from source builder"""
     # Create a robot builder with custom gravity
     robot = newton.ModelBuilder(gravity=-4.905)  # Half gravity
+    robot.default_shape_cfg.gap = 0.0
     robot.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     # Replicate into a main builder
     world_count = 2
     worlds = newton.ModelBuilder()
+    worlds.default_shape_cfg.gap = 0.0
     worlds.replicate(robot, world_count)
 
     model = worlds.finalize(device=device)
@@ -496,12 +512,14 @@ def test_replicate_gravity_simulation(test, device):
     """Test that replicated gravity actually affects simulation behavior"""
     # Create a robot builder with zero gravity
     robot = newton.ModelBuilder(gravity=0)
+    robot.default_shape_cfg.gap = 0.0
     robot.default_shape_cfg.density = 1000.0
     b = robot.add_body()
     robot.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
 
     # Replicate into a main builder
     worlds = newton.ModelBuilder()
+    worlds.default_shape_cfg.gap = 0.0
     worlds.replicate(robot, 2)
 
     model = worlds.finalize(device=device)
@@ -526,12 +544,15 @@ def test_replicate_gravity_simulation(test, device):
 def test_add_world_copies_gravity(test, device):
     """Test that add_world() copies gravity from source builder to world_gravity"""
     builder1 = newton.ModelBuilder(gravity=-5.0)
+    builder1.default_shape_cfg.gap = 0.0
     builder1.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     builder2 = newton.ModelBuilder(gravity=-2.0)
+    builder2.default_shape_cfg.gap = 0.0
     builder2.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     builder = newton.ModelBuilder()
+    builder.default_shape_cfg.gap = 0.0
     builder.add_world(builder1)
     builder.add_world(builder2)
 
@@ -550,6 +571,7 @@ def test_add_world_copies_gravity(test, device):
 def test_begin_world_gravity_parameter(test, device):
     """Test that begin_world() gravity parameter sets per-world gravity correctly"""
     builder = newton.ModelBuilder()
+    builder.default_shape_cfg.gap = 0.0
     builder.default_shape_cfg.density = 1000.0
 
     # Create world 0 with zero gravity
