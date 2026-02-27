@@ -206,16 +206,44 @@ def main(argv=None):
         wp.clear_kernel_cache()
         print("Cleared Warp kernel cache")
 
-    # Pre-download newton-assets as a single full-repo clone.
-    # Individual download_asset() calls from test modules will find their
-    # folders inside this clone instead of spawning separate git clones.
+    # Pre-download newton-assets: try a single full-repo clone first so that
+    # the per-folder download_asset() calls below become instant cache hits.
     from newton._src.utils.download_assets import download_newton_assets_repo  # noqa: PLC0415
 
     try:
         download_newton_assets_repo()
-        print("Downloaded assets")
+        print("Downloaded newton-assets (full clone)")
     except Exception as e:
-        print(f"newton-assets pre-download failed (tests needing assets will skip): {e}", file=sys.stderr)
+        print(f"Full newton-assets clone failed, per-folder fallback will run: {e}", file=sys.stderr)
+
+    # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
+    # For now this avoids races and conflicting downloads in parallel test runs.
+    # When the full clone above succeeds, these calls are no-ops (disk cache hit).
+    import newton.utils  # noqa: PLC0415
+
+    assets_to_download = [
+        "anybotics_anymal_c",
+        "anybotics_anymal_d",
+        "franka_emika_panda",
+        "manipulation_objects/cup",
+        "manipulation_objects/pad",
+        "unitree_go2",
+        "unitree_g1",
+        "unitree_h1",
+        "style3d",
+        "universal_robots_ur5e",
+        "wonik_allegro",
+        "shadow_hand",
+        "robotiq_2f85_v4",
+        "apptronik_apollo",
+        "booster_t1",
+    ]
+    _parallel_download(
+        assets_to_download,
+        newton.utils.download_asset,
+        "assets",
+        args.maxjobs,
+    )
 
     # Pre-download mujoco_menagerie folders used by test_menagerie_* and test_robot_composer.
     # These come from a different repo so they still need individual downloads.
