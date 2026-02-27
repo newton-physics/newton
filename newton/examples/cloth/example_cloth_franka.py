@@ -171,7 +171,7 @@ class Example:
         self.particle_self_contact_margin = 0.2
 
         self.soft_contact_ke = 1e4
-        self.soft_contact_kd = 5e-3
+        self.soft_contact_kd = 1e-2
 
         self.robot_contact_ke = 5e4
         self.robot_contact_kd = 1e-3
