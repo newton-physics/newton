@@ -12,7 +12,6 @@
 ## Breaking API changes
 
 - **Breaking changes require a deprecation first.** Do not remove or rename public API symbols without deprecating them in a prior release.
-- Changes targeting a cherry-pick to 1.0.0 are exempt from this policy.
 
 ## API design rules (naming + structure)
 
@@ -146,7 +145,8 @@ uvx --with virtualenv asv run --launch-method spawn main^^!
 - Use **imperative present tense**: "Add X", not "Added X" or "This adds X".
 - Place entries under the correct category: `Added`, `Changed`, `Deprecated`, `Removed`, or `Fixed`.
 - Avoid internal implementation details users wouldn't understand.
-- Changes targeting a cherry-pick to 1.0.0 do not need a changelog entry.
+- **For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance.** Tell users what replaces the old behavior so they can update their code.
+  - Example: "Deprecate `Model.geo_meshes` in favor of `Model.shapes`" or "Remove `build_model()` — use `ModelBuilder.finalize()` instead".
 
 ## Commit and Pull Request Guidelines
 

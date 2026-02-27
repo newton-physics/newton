@@ -21,7 +21,8 @@ reviews:
         CHANGELOG.md under the [Unreleased] section. Entries should use
         imperative present tense ("Add X", not "Added X") and be placed under
         the correct category (Added, Changed, Deprecated, Removed, or Fixed).
-        Changes targeting a cherry-pick to 1.0.0 are exempt.
+        For Deprecated, Changed, and Removed entries, verify the entry includes
+        migration guidance telling users what replaces the old behavior.
 chat:
   auto_reply: true
 issue_enrichment:
