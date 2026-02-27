@@ -16,7 +16,7 @@
   "build_command": ["python -m build --wheel -o {build_cache_dir} {build_dir}"],
   "install_command": [
     "python -m pip install -U numpy",
-    "python -m pip install -U --pre warp-lang==1.12.0rc1 --index-url=https://pypi.nvidia.com/",
+    "python -m pip install -U --pre warp-lang==1.12.0rc2 --index-url=https://pypi.nvidia.com/",
     "python -m pip install -U mujoco==3.5.0",
     "python -m pip install -U mujoco-warp==3.5.0.2",
     "python -m pip install -U torch==2.10.0+cu130 --index-url https://download.pytorch.org/whl/cu130",

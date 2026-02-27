@@ -5790,17 +5790,17 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.12.0rc1"
+version = "1.12.0rc2"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:c4497f686d7622db3b75a18db45e917c0b9fe3a22f40cd8ffb1d4d5592270588" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc1-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:ed17847be41ea74d44e0934d0d323071cd8d3a6cb859afd8ec00755ab83a0a6f" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc1-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:e9913e808968791b46595db53e340b5fbbff8c76a099a00ff1887bafe45d8fa4" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc1-py3-none-win_amd64.whl", hash = "sha256:6a809a546b4cbfbbb5139e1ae515c8f7bd82f9b8567278053fab57e1dddd834b" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc2-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9974c01ee9cf32bf1e9b0db2641e0e102bed89f09b4e32ccc36ede286719b7b7" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:42555f41bc1e39ff34c13ab13ebd1d13032d2e9359d687bec6928ed4b5ee4eba" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc2-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:b098986f0d14900d6410baba72d9af085531a45a06558f598a2b4870776d461b" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc2-py3-none-win_amd64.whl", hash = "sha256:1ff17cd177ffec372f1c7801dcc47fe8591493a48ea2f722e2303802a74ffe42" },
 ]
 
 [[package]]
