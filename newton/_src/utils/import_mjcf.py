@@ -669,10 +669,8 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin and gap for collision
-            # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap
-            # Gap is stored in the Newton model but the MuJoCo solver does not
-            # forward it (geom_gap is always 0).
+            # Parse MJCF margin and gap for collision.
+            # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap.
             # When gap is absent, mj_gap defaults to 0 for the margin conversion.
             # When margin is absent but gap is present, shape_cfg.margin keeps its
             # default (matching MuJoCo's default margin=0 minus gap would produce a

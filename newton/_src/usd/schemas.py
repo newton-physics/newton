@@ -323,8 +323,6 @@ class SchemaResolverMjc(SchemaResolver):
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
             # Collisions: MuJoCo -> Newton conversion applied via getter.
             # newton_margin = mjc_margin - mjc_gap (see _mjc_margin_from_prim).
-            # Gap is stored in the Newton model but the MuJoCo solver does not
-            # forward it (geom_gap is always 0).
             "margin": SchemaAttribute(
                 "mjc:margin",
                 0.0,
