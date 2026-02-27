@@ -343,7 +343,7 @@ add_example_test(
 )
 add_example_test(
     TestClothExamples,
-    name="cloth.example_rolling_cloth",
+    name="cloth.example_cloth_rollers",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
@@ -717,14 +717,14 @@ class TestMultiphysicsExamples(unittest.TestCase):
 
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_falling_gift",
+    name="multiphysics.example_softbody_gift",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_poker_cards_stacking",
+    name="cloth.example_cloth_poker_cards",
     devices=cuda_test_devices,
     test_options={"num-frames": 30},
     use_viewer=True,
