@@ -2559,11 +2559,15 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
+        # Seed non-zero shape_gap to verify it does not leak into geom_gap
+        non_zero_gap = np.array([0.03 + i * 0.01 for i in range(model.shape_count)], dtype=np.float32)
+        model.shape_gap.assign(wp.array(non_zero_gap, dtype=wp.float32, device=model.device))
+
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         to_newton_shape_index = solver.mjc_geom_to_newton_shape.numpy()
         num_geoms = solver.mj_model.ngeom
 
-        # Verify geom_gap is 0 for all geoms
+        # Verify geom_gap is 0 for all geoms despite non-zero shape_gap
         geom_gap = solver.mjw_model.geom_gap.numpy()
         tested_count = 0
         for world_idx in range(model.world_count):
@@ -2606,11 +2610,15 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         builder.replicate(template_builder, num_worlds)
         model = builder.finalize()
 
+        # Seed non-zero shape_gap to verify it does not affect geom_margin
+        non_zero_gap = np.array([0.03 + i * 0.01 for i in range(model.shape_count)], dtype=np.float32)
+        model.shape_gap.assign(wp.array(non_zero_gap, dtype=wp.float32, device=model.device))
+
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         to_newton = solver.mjc_geom_to_newton_shape.numpy()
         num_geoms = solver.mj_model.ngeom
 
-        # Verify initial conversion: geom_margin should match shape_margin
+        # Verify initial conversion: geom_margin should match shape_margin (not margin + gap)
         shape_margin = model.shape_margin.numpy()
         geom_margin = solver.mjw_model.geom_margin.numpy()
         tested_count = 0
@@ -2628,9 +2636,10 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
         self.assertGreater(tested_count, 0)
 
-        # Update margin values at runtime
+        # Update margin values at runtime (keep non-zero shape_gap)
         new_margin = np.array([0.02 + i * 0.005 for i in range(model.shape_count)], dtype=np.float32)
         model.shape_margin.assign(wp.array(new_margin, dtype=wp.float32, device=model.device))
+        model.shape_gap.assign(wp.array(non_zero_gap * 2.0, dtype=wp.float32, device=model.device))
         solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
 
         # Verify runtime update

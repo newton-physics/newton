@@ -2033,6 +2033,7 @@ def PhysicsRevoluteJoint "Joint2"
         model = builder.finalize()
 
         shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
 
         # Body 1: mjc_margin=0.5 maps directly (gap is ignored)
         found_margin_0_5 = any(abs(float(shape_margin[i]) - 0.5) < 1e-4 for i in range(model.shape_count))
@@ -2041,6 +2042,16 @@ def PhysicsRevoluteJoint "Joint2"
         # Body 2: mjc_margin=0.4 maps directly
         found_margin_0_4 = any(abs(float(shape_margin[i]) - 0.4) < 1e-4 for i in range(model.shape_count))
         self.assertTrue(found_margin_0_4, "Expected margin=0.4 from direct mapping")
+
+        # Verify mjc:gap is NOT mapped to shape_gap (all should remain at builder default)
+        builder_default_gap = 0.1  # newton.ModelBuilder.rigid_gap default
+        for i in range(model.shape_count):
+            self.assertAlmostEqual(
+                float(shape_gap[i]),
+                builder_default_gap,
+                places=5,
+                msg=f"shape_gap[{i}] should be builder default (mjc:gap must not be mapped)",
+            )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_actuator_mode_inference_from_drive(self):
