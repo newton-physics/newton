@@ -1,3 +1,17 @@
 # Changelog
 
-We are not maintaining a changelog during the alpha development phase.
+## [Unreleased]
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+## [1.0.0] - YYYY-MM-DD
+
+Initial public release.
