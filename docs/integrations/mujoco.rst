@@ -7,8 +7,8 @@ with `mujoco_warp <https://github.com/google-deepmind/mujoco_warp>`_.
 Because MuJoCo has its own modelling conventions, some Newton properties are
 mapped differently or not at all.
 
-Sharp bits
-----------
+Caveats
+-------
 
 **geom_gap is always zero.**
   MuJoCo's ``gap`` parameter controls *inactive* contact generation — contacts
