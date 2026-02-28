@@ -1551,9 +1551,8 @@ def parse_usd(
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
                     if joint_id == 0 and first_joint_parent == -1:
-                        # the articulation root joint receives the articulation transform as parent transform
-                        # except if we already inserted a floating-base joint
-                        # If base_joint or floating is specified, override the USD's root joint
+                        # The root joint connects to the world (parent_id=-1).
+                        # If base_joint or floating is specified, override the USD's root joint.
                         if base_joint is not None or floating is not None:
                             # Get the child body of the root joint
                             root_joint_child = joint_edges[sorted_joints[0]][1]
@@ -1580,9 +1579,31 @@ def parse_usd(
                             )
                             articulation_joint_indices.append(base_joint_id)
                             continue  # Skip parsing the USD's root joint
+                        # When body0 maps to world the physics API may resolve
+                        # localPose0 into world space (baking the non-body prim's
+                        # transform). JointDesc.body0 returns "" for non-rigid
+                        # targets, so we attempt to look up the prim directly.
+                        root_joint_desc = joint_descriptions[joint_names[i]]
+                        b0 = str(root_joint_desc.body0)
+                        b1 = str(root_joint_desc.body1)
+                        world_body_path = b0 if body_ids.get(b0, -1) == -1 else b1
+                        world_body_prim = stage.GetPrimAtPath(world_body_path) if world_body_path else None
+                        if world_body_prim is not None and world_body_prim.IsValid():
+                            world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
+                        if world_body_prim is not None and world_body_prim.IsValid():
+                            world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
+                        else:
+                            # world-side path can be empty (body0 == ""); localPose0 already carries world-side pose
+                            world_body_xform = wp.transform_identity()
+                        root_frame_xform = (
+                            wp.transform_inverse(articulation_root_xform)
+                            if override_root_xform
+                            else wp.transform_identity()
+                        )
+                        root_incoming_xform = incoming_world_xform * root_frame_xform * world_body_xform
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            incoming_xform=root_joint_xform,
+                            incoming_xform=root_incoming_xform,
                         )
                     else:
                         joint = parse_joint(

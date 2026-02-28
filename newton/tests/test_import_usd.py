@@ -6833,6 +6833,127 @@ class TestOverrideRootXform(unittest.TestCase):
         loop_idx = builder.joint_label.index("/World/env/Robot/LoopJoint")
         self.assertEqual(builder.joint_articulation[loop_idx], -1)
 
+    @staticmethod
+    def _make_stage_with_world_joint():
+        """Create a USD stage where a fixed joint connects a non-body prim to the root body.
+
+        This exercises the root-joint code path (first_joint_parent == -1) where
+        ``world_body_xform`` is derived from the non-body side of the joint.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        ground = UsdGeom.Xform.Define(stage, "/World/env/Ground")
+        ground.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.5))
+
+        base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/env/Robot/WorldJoint")
+        fixed.CreateBody0Rel().SetTargets(["/World/env/Ground"])
+        fixed.CreateBody1Rel().SetTargets(["/World/env/Robot/Base"])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        rev = UsdPhysics.RevoluteJoint.Define(stage, "/World/env/Robot/RevJoint")
+        rev.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        rev.CreateBody1Rel().SetTargets(["/World/env/Robot/Link"])
+        rev.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        rev.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        rev.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateAxisAttr().Set("Z")
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_default_xform(self):
+        """Root joint from non-body prim: default xform composes with ancestor transforms."""
+        stage = self._make_stage_with_world_joint()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        # xform (5,0,0) composed with Ground world xform (100,200,0.5) => (105, 200, 0.5)
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_override_root_xform(self):
+        """Root joint from non-body prim: override_root_xform places root at xform."""
+        stage = self._make_stage_with_world_joint()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            override_root_xform=True,
+        )
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        # override rebases at xform; Ground z=0.5 offset from articulation root is preserved
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.5], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_override_with_rotation(self):
+        """Root joint from non-body prim: override with rotation rebases correctly."""
+        stage = self._make_stage_with_world_joint()
+        angle = np.pi / 2
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), quat),
+            override_root_xform=True,
+        )
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        # override rebases at xform; Ground z=0.5 offset preserved
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.5], atol=1e-4)
+
+        link_idx = builder.body_label.index("/World/env/Robot/Link")
+        # Link at Z+1 from Base; 90° Z-rotation doesn't affect Z offset
+        np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.5], atol=1e-4)
+
 
 class TestImportUsdMeshNormals(unittest.TestCase):
     """Tests for loading mesh normals from USD files."""

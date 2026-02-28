@@ -70,7 +70,7 @@ def Xform "env" (
 
     def PhysicsFixedJoint "AnchorJoint" {
         rel physics:body1 = </env/Anchor>
-        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos0 = (0, 0, 0.01)
         point3f physics:localPos1 = (0, 0, 0)
     }
 
