@@ -35,6 +35,7 @@ import numpy as np
 import warp as wp
 from warp.tests.unittest_utils import StdOutCapture
 
+import newton
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.narrow_phase import NarrowPhase
 from newton._src.geometry.sdf_utils import SDFData
@@ -1423,6 +1424,98 @@ class TestNarrowPhase(unittest.TestCase):
         )
         wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
+
+    def test_mesh_mesh_scaled_separated_positive_penetration(self):
+        """Scaled mesh-mesh contacts should stay positive when truly separated."""
+        box_mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False)
+        mesh_id = box_mesh.finalize()
+        scale = 0.75
+        expected_gap = 0.02
+        center_separation = 2.0 * scale + expected_gap
+
+        geom_list = [
+            {
+                "type": GeoType.MESH,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([scale, scale, scale], 0.0),
+                "source": mesh_id,
+                "cutoff": 0.1,
+            },
+            {
+                "type": GeoType.MESH,
+                "transform": ([center_separation, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([scale, scale, scale], 0.0),
+                "source": mesh_id,
+                "cutoff": 0.1,
+            },
+        ]
+
+        (
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_gap,
+            geom_collision_radius,
+            sdf_data,
+            shape_sdf_index,
+            shape_flags,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
+            shape_voxel_resolution,
+        ) = self._create_geometry_arrays(geom_list)
+
+        candidate_pair = wp.array(np.array([(0, 1)], dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
+        candidate_pair_count = wp.array([1], dtype=wp.int32)
+
+        max_contacts = 64
+        contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+        contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_penetration = wp.zeros(max_contacts, dtype=float)
+        contact_tangent = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_count = wp.zeros(1, dtype=int)
+
+        self.narrow_phase.launch(
+            candidate_pair=candidate_pair,
+            candidate_pair_count=candidate_pair_count,
+            shape_types=geom_types,
+            shape_data=geom_data,
+            shape_transform=geom_transform,
+            shape_source=geom_source,
+            sdf_data=sdf_data,
+            shape_sdf_index=shape_sdf_index,
+            shape_gap=shape_gap,
+            shape_collision_radius=geom_collision_radius,
+            shape_flags=shape_flags,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
+            shape_voxel_resolution=shape_voxel_resolution,
+            contact_pair=contact_pair,
+            contact_position=contact_position,
+            contact_normal=contact_normal,
+            contact_penetration=contact_penetration,
+            contact_count=contact_count,
+            contact_tangent=contact_tangent,
+        )
+        wp.synchronize()
+
+        count = int(contact_count.numpy()[0])
+        penetrations = contact_penetration.numpy()[:count]
+
+        self.assertGreater(count, 0, "Separated scaled meshes should still generate speculative contacts")
+        min_penetration = float(np.min(penetrations))
+        self.assertGreater(
+            min_penetration,
+            0.0,
+            f"Separated scaled meshes should report positive separation, got {penetrations}",
+        )
+        self.assertAlmostEqual(
+            min_penetration,
+            expected_gap,
+            delta=0.01,
+            msg=f"Expected separation near {expected_gap}, got min penetration {min_penetration}",
+        )
 
     # ================================================================================
     # Ellipsoid collision tests
