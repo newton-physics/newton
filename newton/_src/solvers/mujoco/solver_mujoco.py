@@ -3804,7 +3804,6 @@ class SolverMuJoCo(SolverBase):
         shape_mu_torsional = model.shape_material_mu_torsional.numpy()
         shape_mu_rolling = model.shape_material_mu_rolling.numpy()
         shape_margin = model.shape_margin.numpy()
-        shape_gap = model.shape_gap.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -4161,8 +4160,8 @@ class SolverMuJoCo(SolverBase):
                     geom_params["solimp"] = shape_geom_solimp[shape]
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
-                geom_params["gap"] = float(shape_gap[shape])
-                geom_params["margin"] = float(shape_margin[shape]) + float(shape_gap[shape])
+                geom_params["gap"] = 0.0
+                geom_params["margin"] = float(shape_margin[shape])
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -5476,7 +5475,6 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_material_mu_rolling,
                 shape_geom_solimp,
                 shape_geom_solmix,
-                self.model.shape_gap,
                 self.model.shape_margin,
             ],
             outputs=[

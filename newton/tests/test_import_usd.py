@@ -6834,5 +6834,112 @@ class TestOverrideRootXform(unittest.TestCase):
         self.assertEqual(builder.joint_articulation[loop_idx], -1)
 
 
+class TestImportUsdMeshNormals(unittest.TestCase):
+    """Tests for loading mesh normals from USD files."""
+
+    # A simple quad (two triangles) with faceVarying normals that should be
+    # smoothed across shared positions after vertex splitting.
+    QUAD_WITH_FACEVARYING_NORMALS = """#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Mesh "quad"
+{
+    int[] faceVertexCounts = [3, 3]
+    int[] faceVertexIndices = [0, 1, 2, 2, 1, 3]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)]
+    normal3f[] primvars:normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+        interpolation = "faceVarying"
+    )
+}
+"""
+
+    # A cube with faceVarying normals — each face has its own flat normal,
+    # but vertices at the same position should be clustered by the vertex
+    # splitting algorithm where normals are within the angle threshold.
+    CUBE_WITH_FACEVARYING_NORMALS = """#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Mesh "cube"
+{
+    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+    int[] faceVertexIndices = [0,1,3,2, 4,6,7,5, 0,4,5,1, 2,3,7,6, 0,2,6,4, 1,5,7,3]
+    point3f[] points = [
+        (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5),
+        (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5),
+        (-0.5, -0.5, 0.5), (0.5, -0.5, 0.5),
+        (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
+    ]
+    normal3f[] primvars:normals = [
+        (0,0,-1),(0,0,-1),(0,0,-1),(0,0,-1),
+        (0,0,1),(0,0,1),(0,0,1),(0,0,1),
+        (0,-1,0),(0,-1,0),(0,-1,0),(0,-1,0),
+        (0,1,0),(0,1,0),(0,1,0),(0,1,0),
+        (-1,0,0),(-1,0,0),(-1,0,0),(-1,0,0),
+        (1,0,0),(1,0,0),(1,0,0),(1,0,0)
+    ] (
+        interpolation = "faceVarying"
+    )
+}
+"""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_loads_normals_when_requested(self):
+        """get_mesh with load_normals=True produces a Mesh with non-None normals."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(self.QUAD_WITH_FACEVARYING_NORMALS)
+        prim = stage.GetPrimAtPath("/quad")
+
+        mesh_with = usd.get_mesh(prim, load_normals=True)
+        self.assertIsNotNone(mesh_with.normals, "Normals should be loaded when load_normals=True")
+
+        mesh_without = usd.get_mesh(prim, load_normals=False)
+        self.assertIsNone(mesh_without.normals, "Normals should be None when load_normals=False")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_facevarying_normals_produce_correct_directions(self):
+        """faceVarying normals on a flat quad should all point in +Z."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(self.QUAD_WITH_FACEVARYING_NORMALS)
+        prim = stage.GetPrimAtPath("/quad")
+
+        mesh = usd.get_mesh(prim, load_normals=True)
+        normals = np.asarray(mesh.normals)
+        expected_z = np.array([0.0, 0.0, 1.0])
+        for i, n in enumerate(normals):
+            np.testing.assert_allclose(
+                n,
+                expected_z,
+                atol=1e-5,
+                err_msg=f"Normal {i} should point in +Z for a flat quad",
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_cube_facevarying_normals_vertex_splitting(self):
+        """Cube with 90-degree face angles should be split (hard edges)."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(self.CUBE_WITH_FACEVARYING_NORMALS)
+        prim = stage.GetPrimAtPath("/cube")
+
+        mesh = usd.get_mesh(prim, load_normals=True)
+        # The default 25-degree threshold should split all cube edges (90 degrees).
+        # Each of the 6 faces has 4 corners, triangulated to 6 indices.
+        # With all edges split, we expect 6*4=24 unique vertices.
+        self.assertEqual(len(mesh.vertices), 24)
+        # Each normal should be unit-length and axis-aligned
+        normals = np.asarray(mesh.normals)
+        lengths = np.linalg.norm(normals, axis=1)
+        np.testing.assert_allclose(lengths, 1.0, atol=1e-5)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)

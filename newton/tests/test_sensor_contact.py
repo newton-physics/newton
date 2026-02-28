@@ -249,9 +249,6 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
-        # gap=0 keeps geom_margin=0 so MuJoCo CCD generates full multi-contact
-        # patches (multi-contact is disabled when margin > 0).
-        builder.default_shape_cfg.gap = 0.0
 
         builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, label="base")
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), label="a")
@@ -315,9 +312,6 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
-        # gap=0 keeps geom_margin=0 so MuJoCo CCD generates full multi-contact
-        # patches (multi-contact is disabled when margin > 0).
-        builder.default_shape_cfg.gap = 0.0
 
         builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, label="base")
         body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), label="a")

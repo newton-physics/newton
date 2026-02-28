@@ -152,7 +152,7 @@ class Example:
         #   simulation (centimeter scale)
         self.add_cloth = True
         self.add_robot = True
-        self.sim_substeps = 15
+        self.sim_substeps = 10
         self.iterations = 5
         self.fps = 60
         self.frame_dt = 1 / self.fps
@@ -164,14 +164,18 @@ class Example:
 
         #   contact (cm scale)
         #       body-cloth contact
-        self.cloth_particle_radius = 0.6
-        self.cloth_body_contact_margin = 1.0
+        self.cloth_particle_radius = 0.8
+        self.cloth_body_contact_margin = 0.8
         #       self-contact
         self.particle_self_contact_radius = 0.2
-        self.particle_self_contact_margin = 0.3
+        self.particle_self_contact_margin = 0.2
 
-        self.soft_contact_ke = 2e4
-        self.soft_contact_kd = 2e-3
+        self.soft_contact_ke = 1e4
+        self.soft_contact_kd = 1e-2
+
+        self.robot_contact_ke = 5e4
+        self.robot_contact_kd = 1e-3
+        self.robot_contact_mu = 1.5
 
         self.self_contact_friction = 0.25
 
@@ -180,8 +184,8 @@ class Example:
         self.tri_ka = 1e4
         self.tri_kd = 1.5e-6
 
-        self.bending_ke = 1e1
-        self.bending_kd = 1e-3
+        self.bending_ke = 5
+        self.bending_kd = 1e-2
 
         self.scene = ModelBuilder(gravity=-981.0)
 
@@ -281,9 +285,9 @@ class Example:
         shape_kd = self.model.shape_material_kd.numpy()
         shape_mu = self.model.shape_material_mu.numpy()
 
-        shape_ke[...] = self.soft_contact_ke
-        shape_kd[...] = self.soft_contact_kd
-        shape_mu[...] = 1.0
+        shape_ke[...] = self.robot_contact_ke
+        shape_kd[...] = self.robot_contact_kd
+        shape_mu[...] = self.robot_contact_mu
 
         self.model.shape_material_ke = wp.array(
             shape_ke, dtype=self.model.shape_material_ke.dtype, device=self.model.shape_material_ke.device
@@ -323,9 +327,11 @@ class Example:
                 integrate_with_external_rigid_solver=True,
                 particle_self_contact_radius=self.particle_self_contact_radius,
                 particle_self_contact_margin=self.particle_self_contact_margin,
+                particle_topological_contact_filter_threshold=1,
+                particle_rest_shape_contact_exclusion_radius=0.5,
                 particle_enable_self_contact=True,
-                particle_vertex_contact_buffer_size=32,
-                particle_edge_contact_buffer_size=64,
+                particle_vertex_contact_buffer_size=16,
+                particle_edge_contact_buffer_size=20,
                 particle_collision_detection_interval=-1,
                 rigid_contact_k_start=self.soft_contact_ke,
             )
@@ -431,7 +437,7 @@ class Example:
         )
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
-        clamp_close_activation_val = 0.06
+        clamp_close_activation_val = 0.1
         clamp_open_activation_val = 0.8
 
         self.robot_key_poses = np.array(
@@ -465,10 +471,10 @@ class Example:
                 [3, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [2, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # bottom
-                [2, 0.0, -21.0, 30.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.0, -21.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.0, -21.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 0.0, -21.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.0, -20.0, 30.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -20.0, 19.5, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -20.0, 19.5, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.0, -20.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1.5, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1.5, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],

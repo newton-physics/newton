@@ -1635,7 +1635,6 @@ def update_geom_properties_kernel(
     shape_mu_rolling: wp.array(dtype=float),
     shape_geom_solimp: wp.array(dtype=vec5),
     shape_geom_solmix: wp.array(dtype=float),
-    shape_gap: wp.array(dtype=float),
     shape_margin: wp.array(dtype=float),
     # outputs
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1657,8 +1656,10 @@ def update_geom_properties_kernel(
     this internally based on the geometry, and Newton's shape_collision_radius
     is not compatible with MuJoCo's bounding sphere calculation.
 
-    Note: geom_margin and geom_gap are always updated (unconditionally,
-    unlike the optional solimp/solmix fields).
+    Note: geom_margin is always updated from shape_margin (unconditionally,
+    unlike the optional solimp/solmix fields).  geom_gap is always set to 0
+    because Newton does not use MuJoCo's gap concept (inactive contacts have
+    no benefit when the collision pipeline runs every step).
     """
     world, geom_idx = wp.tid()
 
@@ -1685,12 +1686,9 @@ def update_geom_properties_kernel(
     if shape_geom_solmix:
         geom_solmix[world, geom_idx] = shape_geom_solmix[shape_idx]
 
-    # update geom_gap and geom_margin with Newton->MuJoCo conversion
-    # MuJoCo margin = Newton margin + Newton gap
-    # MuJoCo gap = Newton gap
-    gap = shape_gap[shape_idx]
-    geom_gap[world, geom_idx] = gap
-    geom_margin[world, geom_idx] = shape_margin[shape_idx] + gap
+    # update geom_margin from shape_margin, geom_gap always 0
+    geom_gap[world, geom_idx] = 0.0
+    geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]
