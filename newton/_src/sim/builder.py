@@ -4274,8 +4274,15 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(self, verbose=wp.config.verbose):
-        """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation."""
+    def collapse_fixed_joints(
+        self, verbose: bool = wp.config.verbose, joints_to_keep: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
+
+        Args:
+            verbose: If True, print additional information about the collapsed joints. Defaults to the value of `wp.config.verbose`.
+            joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
+        """
 
         body_data = {}
         body_children = {-1: []}
@@ -4384,11 +4391,17 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
+            nonlocal joints_to_keep
 
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
             # and would be merged into world (last_dynamic_body == -1)
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+
+            # Don't merge fixed joints listed in joints_to_keep list
+            if joints_to_keep is None:
+                joints_to_keep = []
+            joint_in_keep_list = joint["label"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
@@ -4400,7 +4413,25 @@ class ModelBuilder:
                         f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
                     )
 
-            if joint["type"] == JointType.FIXED and not should_skip_merge:
+            if joint_in_keep_list and joint["type"] == JointType.FIXED:
+                # Skip merging this joint if it is listed in the joints_to_keep list
+                parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
+                child_lbl = self.body_label[child_body]
+                if verbose:
+                    print(
+                        f"Skipping collapse of joint {joint['label']} between {parent_lbl} and {child_lbl}: "
+                        f"{child_lbl} is listed in joints_to_keep and this fixed joint will be preserved"
+                    )
+                # Warn if the child_body of skipped joint has zero or negative mass
+                if body_data[child_body]["mass"] <= 0:
+                    warnings.warn(
+                        f"Skipped joint {joint['label']} has a child {child_lbl} with zero or negative mass ({body_data[child_body]['mass']}). "
+                        f"This may cause unexpected behavior.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+
+            if joint["type"] == JointType.FIXED and not should_skip_merge and not joint_in_keep_list:
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"

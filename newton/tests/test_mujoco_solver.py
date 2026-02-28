@@ -7481,11 +7481,21 @@ class TestActuatorDampratio(unittest.TestCase):
         )
 
     def test_dampratio_custom_attribute_parsed(self):
-        """dampratio should be stored as a custom attribute."""
-        dr = self.model.mujoco.actuator_dampratio.numpy()
-        self.assertAlmostEqual(float(dr[0]), 1.0, places=5, msg="dampratio=1 should be parsed")
-        self.assertAlmostEqual(float(dr[1]), 0.0, places=5, msg="no dampratio -> default 0")
-        self.assertAlmostEqual(float(dr[2]), 0.0, places=5, msg="motor has no dampratio")
+        """dampratio should be encoded as unresolved biasprm[2] > 0."""
+        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        self.assertAlmostEqual(float(biasprm[0, 2]), 1.0, places=5, msg="dampratio=1 should be stored in biasprm[2]")
+        self.assertAlmostEqual(float(biasprm[1, 2]), -5.0, places=5, msg="kv should store negative damping")
+        self.assertAlmostEqual(float(biasprm[2, 2]), 0.0, places=5, msg="motor has zero biasprm[2]")
+
+    def test_runtime_dampratio_update(self):
+        """Updating biasprm[2] with unresolved dampratio should re-resolve via set_const_0."""
+        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        biasprm[0, 2] = 0.5
+        self.model.mujoco.actuator_biasprm.assign(biasprm)
+        self.solver.notify_model_changed(SolverNotifyFlags.ACTUATOR_PROPERTIES)
+
+        resolved = self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
+        self.assertLess(resolved, 0.0, "resolved biasprm[2] should be negative damping")
 
 
 class TestActuatorDampratioMultiWorld(unittest.TestCase):
@@ -7520,6 +7530,101 @@ class TestActuatorDampratioMultiWorld(unittest.TestCase):
                 atol=1e-6,
                 err_msg=f"World {w} biasprm[2] should match world 0",
             )
+
+
+class TestActuatorLengthRangeRuntime(unittest.TestCase):
+    """Verify actuator lengthrange updates after runtime gear changes."""
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body>
+                <joint name="j1" type="hinge" axis="0 0 1" limited="true" range="-90 90"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <motor name="motor1" joint="j1" gear="2"/>
+        </actuator>
+    </mujoco>
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        cls.model = builder.finalize()
+        cls.solver = SolverMuJoCo(cls.model)
+
+    def test_lengthrange_updates_with_gear(self):
+        lr0 = self.solver.mjw_model.actuator_lengthrange.numpy()[0, 0]
+        jnt_range = self.solver.mjw_model.jnt_range.numpy()[0, 0]
+        np.testing.assert_allclose(lr0, jnt_range * 2.0, atol=1e-5)
+
+        gear = self.model.mujoco.actuator_gear.numpy()
+        gear[0, 0] = 3.0
+        self.model.mujoco.actuator_gear.assign(gear)
+        self.solver.notify_model_changed(SolverNotifyFlags.ACTUATOR_PROPERTIES)
+
+        lr1 = self.solver.mjw_model.actuator_lengthrange.numpy()[0, 0]
+        np.testing.assert_allclose(lr1, jnt_range * 3.0, atol=1e-5)
+
+
+class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
+    """Verify per-world dampratio resolution and actuator_acc0 after mass randomization."""
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="base">
+                <joint name="j1" type="hinge" axis="0 0 1"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="pos_dampratio" joint="j1" kp="100" dampratio="1.0"/>
+        </actuator>
+    </mujoco>
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        robot_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(robot_builder, 2)
+        cls.model = builder.finalize()
+        cls.solver = SolverMuJoCo(cls.model)
+
+    def test_per_world_acc0_and_dampratio(self):
+        masses = self.model.body_mass.numpy()
+        inertias = self.model.body_inertia.numpy()
+        bodies_per_world = self.model.body_count // self.model.world_count
+
+        for world in range(self.model.world_count):
+            scale = 1.0 + world
+            start = world * bodies_per_world
+            end = start + bodies_per_world
+            masses[start:end] *= scale
+            inertias[start:end] *= scale
+
+        self.model.body_mass.assign(masses)
+        self.model.body_inertia.assign(inertias)
+
+        self.solver.notify_model_changed(
+            SolverNotifyFlags.BODY_INERTIAL_PROPERTIES | SolverNotifyFlags.ACTUATOR_PROPERTIES
+        )
+
+        acc0 = self.solver.mjw_model.actuator_acc0.numpy()
+        biasprm = self.solver.mjw_model.actuator_biasprm.numpy()
+
+        self.assertNotAlmostEqual(float(acc0[0, 0]), float(acc0[1, 0]), places=6)
+        self.assertLess(float(biasprm[0, 0, 2]), 0.0)
+        self.assertLess(float(biasprm[1, 0, 2]), 0.0)
+        self.assertNotAlmostEqual(float(biasprm[0, 0, 2]), float(biasprm[1, 0, 2]), places=6)
 
 
 class TestActuatorInheritrange(unittest.TestCase):
