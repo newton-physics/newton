@@ -35,6 +35,7 @@ __all__ = [
 # ==================================================================================
 from ._src.geometry import (
     SDF,
+    Gaussian,
     GeoType,
     Heightfield,
     Mesh,
@@ -44,6 +45,7 @@ from ._src.geometry import (
 
 __all__ += [
     "SDF",
+    "Gaussian",
     "GeoType",
     "Heightfield",
     "Mesh",

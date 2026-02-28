@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override
+from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override, MAXVAL
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -85,6 +85,9 @@ class GeoType(enum.IntEnum):
 
     NONE = 11
     """No geometry (placeholder)."""
+
+    GAUSSIAN = 12
+    """Gaussian splat."""
 
 
 class Mesh:
@@ -1024,3 +1027,354 @@ class Heightfield:
                 )
             )
         return self._cached_hash
+
+
+class Gaussian:
+    """Represents a Gaussian splat asset for rendering and rigid body attachment.
+
+    A Gaussian splat is a collection of oriented, scaled 3D Gaussians with
+    appearance data (color via spherical harmonics or flat RGB). Gaussian
+    objects can be attached to rigid bodies as a shape type (``GeoType.GAUSSIAN``)
+    for rendering, with collision handled by an optional proxy geometry.
+
+    Example:
+        Load a Gaussian splat from a ``.ply`` file and inspect it:
+
+        .. code-block:: python
+
+            import newton
+
+            gaussian = newton.Gaussian.create_from_ply("object.ply")
+            print(gaussian.count, gaussian.sh_degree)
+    """
+
+    @wp.struct
+    class Data:
+        transforms: wp.array(dtype=wp.transformf)
+        scales: wp.array(dtype=wp.vec3f)
+        opacities: wp.array(dtype=wp.float32)
+        sh_coeffs: wp.array(dtype=wp.float32, ndim=2)
+        bvh_id: wp.uint64
+
+
+    def __init__(
+        self,
+        positions: nparray,
+        rotations: nparray | None = None,
+        scales: nparray | None = None,
+        opacities: nparray | None = None,
+        sh_coeffs: nparray | None = None,
+    ):
+        """Construct a Gaussian splat asset from arrays.
+
+        Args:
+            positions: Gaussian centers in local space [m], shape ``(N, 3)``, float.
+            rotations: Quaternion orientations ``(w, x, y, z)``, shape ``(N, 4)``, float.
+                If ``None``, defaults to identity quaternions.
+            scales: Per-axis scales (linear), shape ``(N, 3)``, float.
+                If ``None``, defaults to ones.
+            opacities: Opacity values ``[0, 1]``, shape ``(N,)``, float.
+                If ``None``, defaults to ones (fully opaque).
+            sh_coeffs: Spherical harmonic coefficients, shape ``(N, C)``, float.
+                The number of coefficients *C* determines the SH degree
+                (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.).
+        """
+
+        self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+        n = self._positions.shape[0]
+
+        if rotations is not None:
+            self._rotations = np.ascontiguousarray(np.asarray(rotations, dtype=np.float32).reshape(n, 4))
+        else:
+            self._rotations = np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (n, 1))
+
+        if scales is not None:
+            self._scales = np.ascontiguousarray(np.asarray(scales, dtype=np.float32).reshape(n, 3))
+        else:
+            self._scales = np.ones((n, 3), dtype=np.float32)
+
+        if opacities is not None:
+            self._opacities = np.ascontiguousarray(np.asarray(opacities, dtype=np.float32).reshape(n))
+        else:
+            self._opacities = np.ones(n, dtype=np.float32)
+
+        self._sh_coeffs = (
+            np.ascontiguousarray(np.asarray(sh_coeffs, dtype=np.float32).reshape(n, -1))
+            if sh_coeffs is not None
+            else None
+        )
+
+        self._cached_hash = None
+
+        # GPU arrays populated by finalize()
+        self.warp_bvh: wp.Bvh = None
+        self.warp_data: Gaussian.Data = None
+
+        # Inertia: Gaussians are render-only so they contribute no mass
+        self.has_inertia = False
+        self.mass = 0.0
+        self.com = wp.vec3()
+        self.I = wp.mat33()
+        self.is_solid = False
+
+    # ---- Properties ----------------------------------------------------------
+
+    @property
+    def count(self) -> int:
+        """Number of Gaussians in this asset."""
+        return self._positions.shape[0]
+
+    @property
+    def positions(self) -> nparray:
+        """Gaussian centers in local space [m], shape ``(N, 3)``, float."""
+        return self._positions
+
+    @property
+    def rotations(self) -> nparray:
+        """Quaternion orientations ``(w, x, y, z)``, shape ``(N, 4)``, float."""
+        return self._rotations
+
+    @property
+    def scales(self) -> nparray:
+        """Per-axis linear scales, shape ``(N, 3)``, float."""
+        return self._scales
+
+    @property
+    def opacities(self) -> nparray:
+        """Opacity values ``[0, 1]``, shape ``(N,)``, float."""
+        return self._opacities
+
+    @property
+    def sh_coeffs(self) -> nparray | None:
+        """Spherical harmonic coefficients, shape ``(N, C)``, float, or ``None``."""
+        return self._sh_coeffs
+
+    @property
+    def sh_degree(self) -> int:
+        """Spherical harmonics degree (0--3), inferred from *sh_coeffs* shape.
+
+        Returns 0 when only flat *colors* are available.
+        """
+        if self._sh_coeffs is None:
+            return 0
+        c = self._sh_coeffs.shape[1]
+        # SH bands: degree 0 -> 1*3=3, degree 1 -> 4*3=12,
+        #           degree 2 -> 9*3=27, degree 3 -> 16*3=48
+        for deg, num in ((3, 48), (2, 27), (1, 12), (0, 3)):
+            if c >= num:
+                return deg
+        return 0
+
+    # ---- Finalize (GPU upload) -----------------------------------------------
+
+    def finalize(self, device: Devicelike = None) -> Data:
+        """Upload Gaussian data to the GPU as Warp arrays.
+
+        Args:
+            device: Device on which to allocate buffers.
+
+        Returns:
+            Gaussian.Data struct containing the Warp arrays.
+        """
+        with wp.ScopedDevice(device):
+            self.warp_data = Gaussian.Data()
+            self.warp_data.transforms = wp.array(np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf)
+            self.warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
+            self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
+            if self._sh_coeffs is not None:
+                self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+
+            lowers = wp.zeros(self.count, dtype=wp.vec3f)
+            uppers = wp.zeros(self.count, dtype=wp.vec3f)
+
+            wp.launch(
+                kernel=Gaussian.__compute_gaussian_bvh_bounds,
+                dim=self.count,
+                inputs=[self.warp_data.transforms, self.warp_data.scales, lowers, uppers],
+            )
+
+            self.warp_bvh = wp.Bvh(lowers, uppers)
+            self.warp_data.bvh_id = self.warp_bvh.id
+        return self.warp_data
+
+    # ---- Factory methods -----------------------------------------------------
+
+    @staticmethod
+    def create_from_ply(filename: str) -> "Gaussian":
+        """Load Gaussian splat data from a ``.ply`` file (standard 3DGS format).
+
+        Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
+        (``scale_0..2``, stored as log-scale), opacities (logit-space),
+        and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
+        and logit-opacity to linear values.
+
+        Args:
+            filename: Path to a ``.ply`` file in standard 3DGS format.
+
+        Returns:
+            A new :class:`Gaussian` instance.
+        """
+        from plyfile import PlyData  # noqa: PLC0415
+
+        plydata = PlyData.read(filename)
+        vertex = plydata["vertex"]
+
+        positions = np.stack([vertex["x"], vertex["y"], vertex["z"]], axis=1).astype(np.float32)
+
+        # Rotations (quaternion w,x,y,z)
+        if "rot_0" in vertex:
+            rotations = np.stack([vertex["rot_1"], vertex["rot_2"], vertex["rot_3"], vertex["rot_0"]], axis=1).astype(np.float32)
+            rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
+        else:
+            rotations = None
+
+        # Scales (stored as log-scale in standard 3DGS)
+        if "scale_0" in vertex:
+            log_scales = np.stack([vertex["scale_0"], vertex["scale_1"], vertex["scale_2"]], axis=1).astype(np.float32)
+            scales = np.exp(log_scales)
+        else:
+            scales = None
+
+        # Opacities (stored in logit-space in standard 3DGS)
+        if "opacity" in vertex:
+            logit_opacities = np.array(vertex["opacity"], dtype=np.float32)
+            opacities = 1.0 / (1.0 + np.exp(-logit_opacities))
+        else:
+            opacities = None
+
+        # Spherical harmonic coefficients
+        sh_dc_names = [f"f_dc_{i}" for i in range(3)]
+        has_sh_dc = all(name in vertex for name in sh_dc_names)
+
+        sh_coeffs = None
+        if has_sh_dc:
+            sh_dc = np.stack([vertex[name] for name in sh_dc_names], axis=1).astype(np.float32)
+
+            rest_names = []
+            i = 0
+            while f"f_rest_{i}" in vertex:
+                rest_names.append(f"f_rest_{i}")
+                i += 1
+
+            if rest_names:
+                sh_rest = np.stack([vertex[name] for name in rest_names], axis=1).astype(np.float32)
+                sh_coeffs = np.concatenate([sh_dc, sh_rest], axis=1)
+            else:
+                sh_coeffs = sh_dc
+
+        return Gaussian(
+            positions=positions,
+            rotations=rotations,
+            scales=scales,
+            opacities=opacities,
+            sh_coeffs=sh_coeffs,
+        )
+
+    @staticmethod
+    def create_from_usd(prim) -> "Gaussian":
+        """Load Gaussian splat data from a USD prim.
+
+        Reads positions from ``UsdGeom.PointBased`` points, plus custom attributes:
+        ``gaussian:rotations``, ``gaussian:scales``, ``gaussian:opacities``,
+        ``gaussian:shCoeffs``.
+
+        Args:
+            prim: A USD prim containing Gaussian splat data.
+
+        Returns:
+            A new :class:`Gaussian` instance.
+        """
+        from pxr import UsdGeom
+
+        def _get_attr(name):
+            attr = prim.GetAttribute(name)
+            if attr and attr.HasValue():
+                return np.array(attr.Get(), dtype=np.float32)
+            return None
+
+        return Gaussian(
+            positions=_get_attr("positionsh"),
+            rotations=_get_attr("orientationsh"),
+            scales=_get_attr("scalesh"),
+            opacities=_get_attr("opacitiesh"),
+            sh_coeffs=_get_attr("radiance:sphericalHarmonicsCoefficientsh")
+        )
+
+    # ---- Utility -------------------------------------------------------------
+
+    def compute_aabb(self) -> tuple[nparray, nparray]:
+        """Compute axis-aligned bounding box of Gaussian centers.
+
+        Returns:
+            Tuple of ``(lower, upper)`` as ``(3,)`` arrays [m].
+        """
+        lower = self._positions.min(axis=0)
+        upper = self._positions.max(axis=0)
+        return lower, upper
+
+    def compute_proxy_mesh(self, method: str = "convex_hull") -> "Mesh":
+        """Generate a proxy collision :class:`Mesh` from Gaussian positions.
+
+        Args:
+            method: ``"convex_hull"`` (default) or ``"alpha_shape"``.
+
+        Returns:
+            A :class:`Mesh` for use as collision proxy.
+        """
+        from .utils import remesh_convex_hull  # noqa: PLC0415
+
+        if method == "convex_hull":
+            hull_verts, hull_faces = remesh_convex_hull(self._positions)
+            return Mesh(hull_verts, hull_faces, compute_inertia=True)
+        raise ValueError(f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull'.")
+
+    @override
+    def __hash__(self) -> int:
+        if self._cached_hash is None:
+            self._cached_hash = hash(
+                (
+                    self._positions.data.tobytes(),
+                    self._rotations.data.tobytes(),
+                    self._scales.data.tobytes(),
+                    self._opacities.data.tobytes(),
+                )
+            )
+        return self._cached_hash
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Gaussian):
+            return NotImplemented
+        return hash(self) == hash(other)
+
+    @wp.kernel
+    def __compute_gaussian_bvh_bounds(
+        gaussian_transforms: wp.array(dtype=wp.transformf),
+        gaussian_scales: wp.array(dtype=wp.vec3f),
+        lowers: wp.array(dtype=wp.vec3f),
+        uppers: wp.array(dtype=wp.vec3f),
+    ):
+        tid = wp.tid()
+
+        transform = gaussian_transforms[tid]
+        scale = gaussian_scales[tid]
+
+        extent = wp.vec3f(wp.abs(scale[0]), wp.abs(scale[1]), wp.abs(scale[2]))
+
+        min_bound = wp.vec3f(MAXVAL)
+        max_bound = wp.vec3f(-MAXVAL)
+
+        for x in range(2):
+            for y in range(2):
+                for z in range(2):
+                    local_corner = wp.vec3f(
+                        extent[0] * (2.0 * wp.float32(x) - 1.0),
+                        extent[1] * (2.0 * wp.float32(y) - 1.0),
+                        extent[2] * (2.0 * wp.float32(z) - 1.0),
+                    )
+                    world_corner = wp.transform_point(transform, local_corner)
+                    min_bound = wp.min(min_bound, world_corner)
+                    max_bound = wp.max(max_bound, world_corner)
+
+        lowers[tid] = min_bound
+        uppers[tid] = max_bound

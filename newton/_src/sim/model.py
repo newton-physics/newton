@@ -271,6 +271,9 @@ class Model:
             `num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]`.
         """
 
+        # Gaussians
+        self.gaussians_data = None
+
         # Heightfield collision data
         self.shape_heightfield_data = None
         """Array of HeightfieldData structs, shape [shape_count]. Contains grid metadata for collision kernels."""

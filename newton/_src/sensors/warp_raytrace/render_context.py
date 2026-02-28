@@ -27,6 +27,7 @@ from .bvh import (
 from .render import render_megakernel
 from .types import RenderOrder
 from .utils import Utils
+from ...geometry import Gaussian
 
 
 @dataclass
@@ -54,6 +55,8 @@ class RenderContext:
         tile_width: int = 16
         tile_height: int = 8
         max_distance: float = 1000.0
+        gaussians_mode: int = 0
+        gaussians_min_transmittance: float = 0.49
 
     def __init__(self, world_count: int = 1, config: Config | None = None, device: str | None = None):
         self.device = device
@@ -68,12 +71,10 @@ class RenderContext:
         self.shape_count_enabled = 0
         self.shape_count_total = 0
 
-        self.mesh_bounds: wp.array2d(dtype=wp.vec3f) = None
         self.mesh_texcoord: wp.array(dtype=wp.vec2f) = None
         self.mesh_texcoord_offsets: wp.array(dtype=wp.int32) = None
         self.mesh_face_offsets: wp.array(dtype=wp.int32) = None
         self.mesh_face_vertices: wp.array(dtype=wp.vec3i) = None
-        self.mesh_ids: wp.array(dtype=wp.uint64) = None
 
         self.__triangle_points: wp.array(dtype=wp.vec3f) = None
         self.__triangle_indices: wp.array(dtype=wp.int32) = None
@@ -82,14 +83,18 @@ class RenderContext:
         self.__particles_radius: wp.array(dtype=wp.float32) = None
         self.__particles_world_index: wp.array(dtype=wp.int32) = None
 
+        self.gaussians_data: wp.array(dtype=Gaussian.Data) = None
+
         self.shape_enabled: wp.array(dtype=wp.uint32) = None
         self.shape_types: wp.array(dtype=wp.int32) = None
-        self.shape_mesh_indices: wp.array(dtype=wp.int32) = None
+        self.shape_indices: wp.array(dtype=wp.int32) = None
         self.shape_sizes: wp.array(dtype=wp.vec3f) = None
         self.shape_transforms: wp.array(dtype=wp.transformf) = None
         self.shape_materials: wp.array(dtype=wp.int32) = None
         self.shape_colors: wp.array(dtype=wp.vec4f) = None
         self.shape_world_index: wp.array(dtype=wp.int32) = None
+        self.shape_source_ptr: wp.array(dtype=wp.uint64) = None
+        self.shape_bounds: wp.array2d(dtype=wp.vec3f) = None
 
         self.texture_offsets: wp.array(dtype=wp.int32) = None
         self.texture_data: wp.array(dtype=wp.uint32) = None
@@ -115,7 +120,7 @@ class RenderContext:
         self.bvh_particles_groups: wp.array(dtype=wp.int32) = None
         self.bvh_particles_group_roots: wp.array(dtype=wp.int32) = None
 
-    def __init_shape_outputs(self):
+    def __init_shape_bvh_arrays(self):
         if self.bvh_shapes_lowers is None:
             self.bvh_shapes_lowers = wp.zeros(self.shape_count_enabled, dtype=wp.vec3f, device=self.device)
         if self.bvh_shapes_uppers is None:
@@ -125,7 +130,7 @@ class RenderContext:
         if self.bvh_shapes_group_roots is None:
             self.bvh_shapes_group_roots = wp.zeros((self.world_count_total), dtype=wp.int32, device=self.device)
 
-    def __init_particle_outputs(self):
+    def __init_particle_bvh_arrays(self):
         if self.bvh_particles_lowers is None:
             self.bvh_particles_lowers = wp.zeros(self.particle_count_total, dtype=wp.vec3f, device=self.device)
         if self.bvh_particles_uppers is None:
@@ -162,7 +167,7 @@ class RenderContext:
 
     def refit_bvh(self):
         if self.shape_count_enabled:
-            self.__init_shape_outputs()
+            self.__init_shape_bvh_arrays()
             self.__compute_bvh_shape_bounds()
             if self.bvh_shapes is None:
                 self.bvh_shapes = wp.Bvh(self.bvh_shapes_lowers, self.bvh_shapes_uppers, groups=self.bvh_shapes_groups)
@@ -176,7 +181,7 @@ class RenderContext:
                 self.bvh_shapes.refit()
 
         if self.particle_count_total:
-            self.__init_particle_outputs()
+            self.__init_particle_bvh_arrays()
             self.__compute_bvh_particle_bounds()
             if self.bvh_particles is None:
                 self.bvh_particles = wp.Bvh(
@@ -211,7 +216,7 @@ class RenderContext:
         refit_bvh: bool = True,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):
-        if self.has_shapes or self.has_particles or self.has_triangle_mesh:
+        if self.has_shapes or self.has_particles or self.has_triangle_mesh or self.has_gaussians:
             if refit_bvh:
                 self.refit_bvh()
             width = camera_rays.shape[2]
@@ -297,6 +302,8 @@ class RenderContext:
                     self.config.enable_backface_culling,
                     self.config.enable_global_world,
                     self.config.max_distance,
+                    self.config.gaussians_mode,
+                    self.config.gaussians_min_transmittance,
                     # Camera
                     camera_rays,
                     camera_transforms,
@@ -307,13 +314,13 @@ class RenderContext:
                     # Shapes
                     self.shape_enabled,
                     self.shape_types,
-                    self.shape_mesh_indices,
+                    self.shape_indices,
                     self.shape_materials,
                     self.shape_sizes,
                     self.shape_colors,
                     self.shape_transforms,
                     # Meshes
-                    self.mesh_ids,
+                    self.shape_source_ptr,
                     self.mesh_face_offsets,
                     self.mesh_face_vertices,
                     self.mesh_texcoord,
@@ -327,6 +334,8 @@ class RenderContext:
                     self.particles_radius,
                     # Triangle Mesh
                     self.triangle_mesh.id if self.triangle_mesh is not None else 0,
+                    # Gaussians
+                    self.gaussians_data,
                     # Textures
                     self.material_texture_ids,
                     self.material_texture_repeat,
@@ -366,10 +375,10 @@ class RenderContext:
                 self.shape_world_index,
                 self.shape_enabled,
                 self.shape_types,
-                self.shape_mesh_indices,
+                self.shape_indices,
                 self.shape_sizes,
                 self.shape_transforms,
-                self.mesh_bounds,
+                self.shape_bounds,
                 self.bvh_shapes_lowers,
                 self.bvh_shapes_uppers,
                 self.bvh_shapes_groups,
@@ -413,6 +422,12 @@ class RenderContext:
         return 0
 
     @property
+    def gaussians_count_total(self) -> int:
+        if self.gaussians_data is not None:
+            return self.gaussians_data.shape[0]
+        return 0
+
+    @property
     def has_shapes(self) -> bool:
         return self.shape_count_enabled > 0
 
@@ -423,6 +438,10 @@ class RenderContext:
     @property
     def has_triangle_mesh(self) -> bool:
         return self.triangle_points is not None
+
+    @property
+    def has_gaussians(self) -> bool:
+        return self.gaussians_data is not None
 
     @property
     def triangle_points(self) -> wp.array(dtype=wp.vec3f):

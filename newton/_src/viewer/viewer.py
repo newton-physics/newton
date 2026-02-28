@@ -678,6 +678,28 @@ class ViewerBase(ABC):
             hidden: Whether the created mesh should be hidden.
         """
 
+        # Gaussian splats are rendered via a dedicated splat renderer, not as meshes.
+        # Create a placeholder bounding-box mesh so the standard geometry/instancing
+        # pipeline has something to reference (avoids raising on unknown geo_type).
+        if geo_type == newton.GeoType.GAUSSIAN:
+            if geo_src is None:
+                raise ValueError(f"log_geo requires geo_src for GAUSSIAN (name={name})")
+            lower, upper = geo_src.compute_aabb()
+            center = (lower + upper) / 2.0
+            half_extents = (upper - lower) / 2.0
+            half_extents = np.maximum(half_extents, 1e-3)
+            mesh = newton.Mesh.create_box(
+                half_extents[0],
+                half_extents[1],
+                half_extents[2],
+                duplicate_vertices=True,
+                compute_inertia=False,
+            )
+            points = wp.array(mesh.vertices + center, dtype=wp.vec3, device=self.device)
+            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
+            self.log_mesh(name, points, indices, hidden=hidden)
+            return
+
         # Heightfield: convert to mesh for rendering
         if geo_type == newton.GeoType.HFIELD:
             if geo_src is None:
@@ -1147,6 +1169,7 @@ class ViewerBase(ABC):
             newton.GeoType.MESH: "mesh",
             newton.GeoType.CONVEX_MESH: "convex_hull",
             newton.GeoType.HFIELD: "heightfield",
+            newton.GeoType.GAUSSIAN: "gaussian",
         }.get(geo_type)
 
         if base_name is None:
@@ -1160,7 +1183,8 @@ class ViewerBase(ABC):
             float(thickness),
             bool(is_solid),
             geo_src=geo_src
-            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+            if geo_type
+            in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD, newton.GeoType.GAUSSIAN)
             else None,
             hidden=True,
         )
@@ -1211,7 +1235,13 @@ class ViewerBase(ABC):
                     float(geo_thickness),
                     bool(geo_is_solid),
                     geo_src=geo_src
-                    if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+                    if geo_type
+                    in (
+                        newton.GeoType.MESH,
+                        newton.GeoType.CONVEX_MESH,
+                        newton.GeoType.HFIELD,
+                        newton.GeoType.GAUSSIAN,
+                    )
                     else None,
                 )
             else:

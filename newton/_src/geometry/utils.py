@@ -114,6 +114,12 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
             return np.sqrt(half_x**2 + half_y**2 + half_z**2)
         else:
             return np.linalg.norm(scale)
+    elif geo_type == GeoType.GAUSSIAN:
+        if src is not None:
+            lower, upper = src.compute_aabb()
+            half_extents = (upper - lower) / 2.0 * np.array(scale[:3])
+            return float(np.linalg.norm(half_extents))
+        return 10.0
     else:
         return 10.0
 

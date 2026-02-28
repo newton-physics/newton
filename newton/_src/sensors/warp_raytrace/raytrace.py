@@ -15,14 +15,13 @@
 
 import warp as wp
 
-from ...geometry import GeoType, raycast
-from . import ray_intersect
+from ...geometry import GeoType, Gaussian, raycast
+from . import ray_intersect, gaussians
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
 MAX_SHAPE_ID = wp.uint32(0xFFFFFFF0)
 TRIANGLE_MESH_SHAPE_ID = wp.uint32(0xFFFFFFFD)
 PARTICLES_SHAPE_ID = wp.uint32(0xFFFFFFFE)
-
 
 @wp.struct
 class ClosestHit:
@@ -33,6 +32,7 @@ class ClosestHit:
     bary_v: wp.float32
     face_idx: wp.int32
     shape_mesh_index: wp.int32
+    color: wp.vec3f
 
 
 @wp.func
@@ -54,10 +54,13 @@ def closest_hit_shape(
     enable_global_world: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
-    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
-    mesh_ids: wp.array(dtype=wp.uint64),
+    shape_source_ptr: wp.array(dtype=wp.uint64),
+    gaussians_data: wp.array(dtype=Gaussian.Data),
+    gaussians_mode: wp.int32,
+    gaussians_min_transmittance: wp.float32,
     enable_backface_culling: wp.bool,
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
@@ -68,6 +71,7 @@ def closest_hit_shape(
             if group_root < 0:
                 continue
 
+            hit_gaussians = wp.bool(False)
             query = wp.bvh_query_ray(bvh_shapes_id, ray_origin_world, ray_dir_world, group_root)
             shape_index = wp.int32(0)
 
@@ -75,19 +79,21 @@ def closest_hit_shape(
                 si = shape_enabled[shape_index]
 
                 geom_hit = ray_intersect.GeomHit()
+                geom_hit.hit = False
                 hit_u = wp.float32(0.0)
                 hit_v = wp.float32(0.0)
                 hit_face_id = wp.int32(-1)
                 hit_mesh_id = wp.int32(-1)
+                hit_color = wp.vec3f(0.0)
 
                 if shape_types[si] == GeoType.MESH:
-                    hit_mesh_id = shape_mesh_indices[si]
+                    hit_mesh_id = shape_indices[si]
                     geom_hit, hit_u, hit_v, hit_face_id = ray_intersect.ray_intersect_mesh(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
-                        mesh_ids[hit_mesh_id],
+                        shape_source_ptr[hit_mesh_id],
                         enable_backface_culling,
                         closest_hit.distance,
                     )
@@ -141,6 +147,19 @@ def closest_hit_shape(
                         ray_origin_world,
                         ray_dir_world,
                     )
+                elif shape_types[si] == GeoType.GAUSSIAN:
+                    hit_gaussians = True
+                    # gaussian_id = shape_source_ptr[shape_indices[si]]
+                    # geom_hit, hit_color = gaussians.shade(
+                    #     shape_transforms[si],
+                    #     shape_sizes[si],
+                    #     ray_origin_world, 
+                    #     ray_dir_world, 
+                    #     gaussians_data[gaussian_id], 
+                    #     gaussians_mode,
+                    #     gaussians_min_transmittance,
+                    #     closest_hit.distance
+                    # )
 
                 if geom_hit.hit and geom_hit.distance < closest_hit.distance:
                     closest_hit.distance = geom_hit.distance
@@ -150,6 +169,37 @@ def closest_hit_shape(
                     closest_hit.bary_v = hit_v
                     closest_hit.face_idx = hit_face_id
                     closest_hit.shape_mesh_index = hit_mesh_id
+                    closest_hit.color = hit_color
+
+            # Temporary workaround. Warp BVH queries share some stack data,
+            # which breaks nested wp.bvh_query_ray calls.
+            # Once it is fixed in Warp, remove this code block and put
+            # the commented out block above back in.
+            if hit_gaussians:
+                for i in range(shape_indices.shape[0]):
+                    si = wp.uint32(i)
+                    if shape_types[si] == GeoType.GAUSSIAN:
+                        gaussian_id = shape_source_ptr[shape_indices[si]]
+                        geom_hit, hit_color = gaussians.shade(
+                            shape_transforms[si],
+                            shape_sizes[si],
+                            ray_origin_world, 
+                            ray_dir_world, 
+                            gaussians_data[gaussian_id], 
+                            gaussians_mode,
+                            gaussians_min_transmittance,
+                            closest_hit.distance
+                        )
+
+                        if geom_hit.hit and geom_hit.distance < closest_hit.distance:
+                            closest_hit.distance = geom_hit.distance
+                            closest_hit.normal = geom_hit.normal
+                            closest_hit.shape_index = si
+                            closest_hit.bary_u = hit_u
+                            closest_hit.bary_v = hit_v
+                            closest_hit.face_idx = hit_face_id
+                            closest_hit.shape_mesh_index = hit_mesh_id
+                            closest_hit.color = hit_color
 
     return closest_hit
 
@@ -232,13 +282,16 @@ def closest_hit(
     max_distance: wp.float32,
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
-    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
-    mesh_ids: wp.array(dtype=wp.uint64),
+    shape_source_ptr: wp.array(dtype=wp.uint64),
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     triangle_mesh_id: wp.uint64,
+    gaussians_data: wp.array(dtype=Gaussian.Data),
+    gaussians_mode: wp.int32,
+    gaussians_min_transmittance: wp.float32,
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
@@ -250,6 +303,7 @@ def closest_hit(
     closest_hit.bary_v = wp.float32(0.0)
     closest_hit.face_idx = wp.int32(-1)
     closest_hit.shape_mesh_index = wp.int32(-1)
+    closest_hit.color = wp.vec3f(0.0)
 
     closest_hit = closest_hit_triangle_mesh(
         closest_hit, triangle_mesh_id, enable_backface_culling, ray_origin_world, ray_dir_world
@@ -264,10 +318,13 @@ def closest_hit(
         enable_global_world,
         shape_enabled,
         shape_types,
-        shape_mesh_indices,
+        shape_indices,
         shape_sizes,
         shape_transforms,
-        mesh_ids,
+        shape_source_ptr,
+        gaussians_data,
+        gaussians_mode,
+        gaussians_min_transmittance,
         enable_backface_culling,
         ray_origin_world,
         ray_dir_world,
@@ -299,10 +356,10 @@ def first_hit_shape(
     enable_global_world: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
-    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
-    mesh_ids: wp.array(dtype=wp.uint64),
+    shape_source_ptr: wp.array(dtype=wp.uint64),
     enable_backface_culling: wp.bool,
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
@@ -328,7 +385,7 @@ def first_hit_shape(
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
-                        mesh_ids[shape_mesh_indices[si]],
+                        shape_source_ptr[shape_indices[si]],
                         enable_backface_culling,
                         max_dist,
                     )
@@ -438,10 +495,10 @@ def first_hit(
     enable_backface_culling: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
-    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
-    mesh_ids: wp.array(dtype=wp.uint64),
+    shape_source_ptr: wp.array(dtype=wp.uint64),
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     triangle_mesh_id: wp.uint64,
@@ -460,10 +517,10 @@ def first_hit(
         enable_global_world,
         shape_enabled,
         shape_types,
-        shape_mesh_indices,
+        shape_indices,
         shape_sizes,
         shape_transforms,
-        mesh_ids,
+        shape_source_ptr,
         enable_backface_culling,
         ray_origin_world,
         ray_dir_world,

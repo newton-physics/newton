@@ -65,6 +65,8 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
         return True
     if shape_type == GeoType.MESH:
         return True
+    if shape_type == GeoType.GAUSSIAN:
+        return True
     wp.printf("Unsupported shape geom type: %d\n", shape_type)
     return False
 
@@ -131,11 +133,11 @@ class SensorTiledCamera:
             ),
             device=self.model.device,
         )
-        self.render_context.mesh_ids = model.shape_source_ptr
-        self.render_context.shape_mesh_indices = wp.empty(
+        self.render_context.shape_source_ptr = model.shape_source_ptr
+        self.render_context.shape_indices = wp.empty(
             self.model.shape_count, dtype=wp.int32, device=self.render_context.device
         )
-        self.render_context.mesh_bounds = wp.empty(
+        self.render_context.shape_bounds = wp.empty(
             (self.model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.render_context.device
         )
 
@@ -169,6 +171,7 @@ class SensorTiledCamera:
             device=self.render_context.device,
         )
         self.render_context.shape_world_index = self.model.shape_world
+        self.render_context.gaussians_data = self.model.gaussians_data
 
         num_enabled_shapes = wp.zeros(1, dtype=wp.int32, device=self.render_context.device)
         wp.launch(
@@ -178,7 +181,7 @@ class SensorTiledCamera:
                 model.shape_type,
                 model.shape_flags,
                 self.render_context.shape_enabled,
-                self.render_context.shape_mesh_indices,
+                self.render_context.shape_indices,
                 num_enabled_shapes,
             ],
             device=self.render_context.device,
@@ -186,7 +189,7 @@ class SensorTiledCamera:
         self.render_context.shape_count_total = self.model.shape_count
         self.render_context.shape_count_enabled = int(num_enabled_shapes.numpy()[0])
 
-        self.render_context.utils.compute_mesh_bounds()
+        self.render_context.utils.compute_shape_bounds()
 
         if config is not None:
             self.render_context.config.enable_backface_culling = config.backface_culling

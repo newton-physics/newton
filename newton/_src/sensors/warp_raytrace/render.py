@@ -15,8 +15,9 @@
 
 import warp as wp
 
-from . import lighting, raytrace, textures
+from . import gaussians, lighting, raytrace, textures
 from .types import RenderOrder
+from ...geometry import Gaussian, GeoType
 
 
 @wp.func
@@ -111,6 +112,8 @@ def render_megakernel(
     enable_backface_culling: wp.bool,
     enable_global_world: wp.bool,
     max_distance: wp.float32,
+    gaussians_mode: wp.int32,
+    gaussians_min_transmittance: wp.float32,
     # Camera
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
     camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
@@ -121,13 +124,13 @@ def render_megakernel(
     # Shapes
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
-    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_indices: wp.array(dtype=wp.int32),
     shape_materials: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_colors: wp.array(dtype=wp.vec4f),
     shape_transforms: wp.array(dtype=wp.transformf),
+    shape_source_ptr: wp.array(dtype=wp.uint64),
     # Meshes
-    mesh_ids: wp.array(dtype=wp.uint64),
     mesh_face_offsets: wp.array(dtype=wp.int32),
     mesh_face_vertices: wp.array(dtype=wp.vec3i),
     mesh_texcoord: wp.array(dtype=wp.vec2f),
@@ -141,6 +144,8 @@ def render_megakernel(
     particles_radius: wp.array(dtype=wp.float32),
     # Triangle Mesh:
     triangle_mesh_id: wp.uint64,
+    # Gaussians
+    gaussians_data: wp.array(dtype=Gaussian.Data),
     # Materials
     material_texture_ids: wp.array(dtype=wp.int32),
     material_texture_repeat: wp.array(dtype=wp.vec2f),
@@ -210,19 +215,24 @@ def render_megakernel(
         max_distance,
         shape_enabled,
         shape_types,
-        shape_mesh_indices,
+        shape_indices,
         shape_sizes,
         shape_transforms,
-        mesh_ids,
+        shape_source_ptr,
         particles_position,
         particles_radius,
         triangle_mesh_id,
+        gaussians_data,
+        gaussians_mode,
+        gaussians_min_transmittance,
         ray_origin_world,
         ray_dir_world,
     )
 
     if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
         return
+    
+    out_color = closest_hit.color
 
     if render_depth:
         out_depth[out_index] = closest_hit.distance
@@ -236,104 +246,108 @@ def render_megakernel(
     if not render_color and not render_albedo:
         return
 
-    # Shade the pixel
-    hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
-
-    color = wp.vec4f(1.0)
+    is_gaussian = wp.bool(False)
     if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-        color = shape_colors[closest_hit.shape_index]
-        if shape_materials[closest_hit.shape_index] > -1:
-            color = wp.cw_mul(color, material_rgba[shape_materials[closest_hit.shape_index]])
+        if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
+            is_gaussian = wp.bool(True)
 
-    base_color = wp.vec3f(color[0], color[1], color[2])
-    out_color = wp.vec3f(0.0)
+    if not is_gaussian:
+        hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
-    if enable_textures and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-        material_index = shape_materials[closest_hit.shape_index]
-        if material_index > -1:
-            texture_index = material_texture_ids[material_index]
-            if texture_index > -1:
-                tex_color = textures.sample_texture(
-                    shape_types[closest_hit.shape_index],
-                    shape_transforms[closest_hit.shape_index],
-                    material_index,
-                    texture_index,
-                    material_texture_repeat[material_index],
-                    texture_offsets[texture_index],
-                    texture_data,
-                    texture_height[texture_index],
-                    texture_width[texture_index],
-                    mesh_face_offsets,
-                    mesh_face_vertices,
-                    mesh_texcoord,
-                    mesh_texcoord_offsets,
+        color = wp.vec4f(1.0)
+        if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
+            color = shape_colors[closest_hit.shape_index]
+            if shape_materials[closest_hit.shape_index] > -1:
+                color = wp.cw_mul(color, material_rgba[shape_materials[closest_hit.shape_index]])
+
+        base_color = wp.vec3f(color[0], color[1], color[2])
+
+        if enable_textures and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
+            material_index = shape_materials[closest_hit.shape_index]
+            if material_index > -1:
+                texture_index = material_texture_ids[material_index]
+                if texture_index > -1:
+                    tex_color = textures.sample_texture(
+                        shape_types[closest_hit.shape_index],
+                        shape_transforms[closest_hit.shape_index],
+                        material_index,
+                        texture_index,
+                        material_texture_repeat[material_index],
+                        texture_offsets[texture_index],
+                        texture_data,
+                        texture_height[texture_index],
+                        texture_width[texture_index],
+                        mesh_face_offsets,
+                        mesh_face_vertices,
+                        mesh_texcoord,
+                        mesh_texcoord_offsets,
+                        hit_point,
+                        closest_hit.bary_u,
+                        closest_hit.bary_v,
+                        closest_hit.face_idx,
+                        closest_hit.shape_mesh_index,
+                    )
+
+                    base_color = wp.vec3f(
+                        base_color[0] * tex_color[0],
+                        base_color[1] * tex_color[1],
+                        base_color[2] * tex_color[2],
+                    )
+
+        if render_albedo:
+            out_albedo[out_index] = pack_rgba_to_uint32(base_color, 1.0)
+
+        if not render_color:
+            return
+
+        if enable_ambient_lighting:
+            up = wp.vec3f(0.0, 0.0, 1.0)
+            len_n = wp.length(closest_hit.normal)
+            n = closest_hit.normal if len_n > 0.0 else up
+            n = wp.normalize(n)
+            hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
+            sky = wp.vec3f(0.4, 0.4, 0.45)
+            ground = wp.vec3f(0.1, 0.1, 0.12)
+            ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
+            ambient_intensity = 0.5
+            out_color = wp.vec3f(
+                base_color[0] * (ambient_color[0] * ambient_intensity),
+                base_color[1] * (ambient_color[1] * ambient_intensity),
+                base_color[2] * (ambient_color[2] * ambient_intensity),
+            )
+
+            # Apply lighting and shadows
+            for light_index in range(light_count):
+                light_contribution = lighting.compute_lighting(
+                    enable_shadows,
+                    enable_particles,
+                    enable_backface_culling,
+                    world_index,
+                    enable_global_world,
+                    bvh_shapes_size,
+                    bvh_shapes_id,
+                    bvh_shapes_group_roots,
+                    bvh_particles_size,
+                    bvh_particles_id,
+                    bvh_particles_group_roots,
+                    shape_enabled,
+                    shape_types,
+                    shape_indices,
+                    shape_sizes,
+                    shape_transforms,
+                    shape_source_ptr,
+                    light_active[light_index],
+                    light_type[light_index],
+                    light_cast_shadow[light_index],
+                    light_positions[light_index],
+                    light_orientations[light_index],
+                    particles_position,
+                    particles_radius,
+                    triangle_mesh_id,
+                    closest_hit.normal,
                     hit_point,
-                    closest_hit.bary_u,
-                    closest_hit.bary_v,
-                    closest_hit.face_idx,
-                    closest_hit.shape_mesh_index,
                 )
-
-                base_color = wp.vec3f(
-                    base_color[0] * tex_color[0],
-                    base_color[1] * tex_color[1],
-                    base_color[2] * tex_color[2],
-                )
-
-    if render_albedo:
-        out_albedo[out_index] = pack_rgba_to_uint32(base_color, 1.0)
-
-    if not render_color:
-        return
-
-    if enable_ambient_lighting:
-        up = wp.vec3f(0.0, 0.0, 1.0)
-        len_n = wp.length(closest_hit.normal)
-        n = closest_hit.normal if len_n > 0.0 else up
-        n = wp.normalize(n)
-        hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-        sky = wp.vec3f(0.4, 0.4, 0.45)
-        ground = wp.vec3f(0.1, 0.1, 0.12)
-        ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-        ambient_intensity = 0.5
-        out_color = wp.vec3f(
-            base_color[0] * (ambient_color[0] * ambient_intensity),
-            base_color[1] * (ambient_color[1] * ambient_intensity),
-            base_color[2] * (ambient_color[2] * ambient_intensity),
-        )
-
-    # Apply lighting and shadows
-    for light_index in range(light_count):
-        light_contribution = lighting.compute_lighting(
-            enable_shadows,
-            enable_particles,
-            enable_backface_culling,
-            world_index,
-            enable_global_world,
-            bvh_shapes_size,
-            bvh_shapes_id,
-            bvh_shapes_group_roots,
-            bvh_particles_size,
-            bvh_particles_id,
-            bvh_particles_group_roots,
-            shape_enabled,
-            shape_types,
-            shape_mesh_indices,
-            shape_sizes,
-            shape_transforms,
-            mesh_ids,
-            light_active[light_index],
-            light_type[light_index],
-            light_cast_shadow[light_index],
-            light_positions[light_index],
-            light_orientations[light_index],
-            particles_position,
-            particles_radius,
-            triangle_mesh_id,
-            closest_hit.normal,
-            hit_point,
-        )
-        out_color = out_color + base_color * light_contribution
+                out_color = out_color + base_color * light_contribution
 
     out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
     out_pixels[out_index] = pack_rgba_to_uint32(out_color, 1.0)

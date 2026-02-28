@@ -44,6 +44,7 @@ SEMANTIC_COLOR_CAPSULE = 0xFF00FFFF
 SEMANTIC_COLOR_BOX = 0xFF0000FF
 SEMANTIC_COLOR_MESH = 0xFF00FF00
 SEMANTIC_COLOR_ROBOT = 0xFFFF00FF
+SEMANTIC_COLOR_GAUSSIAN = 0xFFFF9900
 SEMANTIC_COLOR_GROUND_PLANE = 0xFF444444
 
 
@@ -100,7 +101,7 @@ def shape_index_to_random_rgb(
 
 
 class Example:
-    def __init__(self, viewer: ViewerGL):
+    def __init__(self, viewer: ViewerGL, args):
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
@@ -120,6 +121,11 @@ class Example:
         robot_asset = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf"
         robot_builder = newton.ModelBuilder()
         robot_builder.add_urdf(robot_asset, floating=False)
+
+
+        gaussian = None
+        if args.ply:
+            gaussian = newton.Gaussian.create_from_ply(args.ply)
 
         builder = newton.ModelBuilder()
 
@@ -162,7 +168,15 @@ class Example:
                     scale=(0.5, 0.5, 0.5),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_MESH)
-            builder.add_builder(robot_builder)
+
+            if gaussian is not None:
+                builder.add_shape_gaussian(
+                    body=builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.4), q=wp.quat_identity())),
+                    gaussian=gaussian,
+                )
+                semantic_colors.append(SEMANTIC_COLOR_GAUSSIAN)
+
+            builder.add_builder(robot_builder, xform=wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity()))
             semantic_colors.extend([SEMANTIC_COLOR_ROBOT] * robot_builder.shape_count)
             builder.end_world()
 
@@ -409,6 +423,16 @@ class Example:
         if ui.radio_button("Show Shape Index Output", self.image_output == 5):
             self.image_output = 5
 
+        ui.separator()
+        if ui.radio_button("Gaussians: Fast", self.tiled_camera_sensor.render_context.config.gaussians_mode == 0):
+            self.tiled_camera_sensor.render_context.config.gaussians_mode = 0
+        if ui.radio_button("Gaussians: Quality", self.tiled_camera_sensor.render_context.config.gaussians_mode == 1):
+            self.tiled_camera_sensor.render_context.config.gaussians_mode = 1
+
+        changed, value = ui.slider_float("Min Transmittance", self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance, 0.0, 1.0, "%.2f")
+        if changed:
+            self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance = value
+
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
 
@@ -453,10 +477,16 @@ class Example:
 
 
 if __name__ == "__main__":
+    parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--ply",
+        help="Gaussian Filename",
+    )
+
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)
