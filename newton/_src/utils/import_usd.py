@@ -1590,8 +1590,6 @@ def parse_usd(
                         world_body_prim = stage.GetPrimAtPath(world_body_path) if world_body_path else None
                         if world_body_prim is not None and world_body_prim.IsValid():
                             world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
-                        if world_body_prim is not None and world_body_prim.IsValid():
-                            world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
                         else:
                             # world-side path can be empty (body0 == ""); localPose0 already carries world-side pose
                             world_body_xform = wp.transform_identity()
