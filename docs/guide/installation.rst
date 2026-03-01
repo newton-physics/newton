@@ -29,26 +29,10 @@ X11 development libraries to build ``imgui_bundle`` from source:
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
 
-1. Clone the repository
------------------------
-
-.. code-block:: console
-
-    git clone git@github.com:newton-physics/newton.git
-    cd newton
-
-2. Python Environment Setup
----------------------------
-
-We recommend using the `uv <https://docs.astral.sh/uv/>`_ Python package and project manager. It will automatically setup a version-locked Python environment based on the `uv.lock <https://github.com/newton-physics/newton/blob/main/uv.lock>`_ file that the Newton team maintains.
-
-.. note::
-    During the alpha development phase, we recommend using uv. When Newton is stabilized and regularly publishing to PyPI we will update this guide to make the pip install approach the recommended method.
-
 Extra Dependencies
-^^^^^^^^^^^^^^^^^^
+------------------
 
-Newton's only mandatory dependency is `NVIDIA Warp <https://github.com/NVIDIA/warp>`_. We define additional dependency sets in the `pyproject.toml <https://github.com/newton-physics/newton/blob/main/pyproject.toml>`_ file. The sets are:
+Newton's only mandatory dependency is `NVIDIA Warp <https://github.com/NVIDIA/warp>`_. Additional dependency sets are defined in the `pyproject.toml <https://github.com/newton-physics/newton/blob/main/pyproject.toml>`_ file:
 
 .. list-table::
    :widths: 20 80
@@ -60,14 +44,168 @@ Newton's only mandatory dependency is `NVIDIA Warp <https://github.com/NVIDIA/wa
      - Simulation dependencies, including MuJoCo
    * - ``importers``
      - Asset import and mesh processing dependencies
+   * - ``remesh``
+     - Remeshing dependencies (Open3D, pyfqmr) for :class:`~newton.SurfaceReconstructor`
    * - ``examples``
-     - Dependencies for running examples, including visualization
+     - Dependencies for running examples, including visualization (includes ``sim`` + ``importers``)
    * - ``torch-cu12``
-     - PyTorch dependency needed *in addition* to ``examples`` dependencies to run examples that inference RL-trained control policies
+     - PyTorch (CUDA 12) needed *in addition* to ``examples`` to run RL policy examples
+   * - ``torch-cu13``
+     - PyTorch (CUDA 13) needed *in addition* to ``examples`` to run RL policy examples
+   * - ``notebook``
+     - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
-     - Dependencies for development and testing
+     - Dependencies for development and testing (includes ``examples``)
    * - ``docs``
      - Dependencies for building the documentation
+
+Some extras transitively include others. For example, ``examples`` pulls in both
+``sim`` and ``importers``, and ``dev`` pulls in ``examples``. You only need to
+install the most specific set for your use case.
+
+Installing from PyPI (Recommended)
+----------------------------------
+
+Basic installation:
+
+.. code-block:: console
+
+    pip install newton
+
+Install with extras for running examples (includes simulation and visualization dependencies):
+
+.. code-block:: console
+
+    pip install "newton[examples]"
+
+Install only simulation dependencies (without visualization):
+
+.. code-block:: console
+
+    pip install "newton[sim]"
+
+We recommend installing Newton inside a virtual environment to avoid conflicts
+with other packages:
+
+.. tab-set::
+    :sync-group: os
+
+    .. tab-item:: macOS / Linux
+        :sync: linux
+
+        .. code-block:: console
+
+            python -m venv .venv
+            source .venv/bin/activate
+            pip install "newton[examples]"
+
+    .. tab-item:: Windows (console)
+        :sync: windows
+
+        .. code-block:: console
+
+            python -m venv .venv
+            .venv\Scripts\activate.bat
+            pip install "newton[examples]"
+
+    .. tab-item:: Windows (PowerShell)
+        :sync: windows-ps
+
+        .. code-block:: console
+
+            python -m venv .venv
+            .venv\Scripts\Activate.ps1
+            pip install "newton[examples]"
+
+Running Examples
+^^^^^^^^^^^^^^^^
+
+After installing Newton with the ``examples`` extra, run an example with:
+
+.. code-block:: console
+
+    python -m newton.examples basic_pendulum
+
+Run an example that inferences an RL policy (requires ``torch-cu12`` or ``torch-cu13``):
+
+.. code-block:: console
+
+    pip install "newton[torch-cu12]"
+    python -m newton.examples robot_anymal_c_walk
+
+See a list of all available examples:
+
+.. code-block:: console
+
+    python -m newton.examples
+
+Quick Start
+^^^^^^^^^^^
+
+After installing Newton, you can build models, create solvers, and run
+simulations directly from Python. A typical workflow looks like this:
+
+.. code-block:: python
+
+    import warp as wp
+    import newton
+
+    # Build a model
+    builder = newton.ModelBuilder()
+    builder.add_mjcf("robot.xml")        # or add_urdf() / add_usd()
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    # Create a solver and allocate state
+    solver = newton.solvers.SolverMuJoCo(model)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    # Step the simulation
+    for step in range(1000):
+        state_0.clear_forces()
+        model.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0 / 4.0)
+        state_0, state_1 = state_1, state_0
+
+For robot-learning workflows with parallel environments (as used by
+`Isaac Lab <https://isaac-sim.github.io/IsaacLab/>`_), you can replicate a
+robot template across many worlds and step them all simultaneously on the GPU:
+
+.. code-block:: python
+
+    # Build a single robot template
+    template = newton.ModelBuilder()
+    template.add_mjcf("humanoid.xml")
+
+    # Replicate into parallel worlds
+    builder = newton.ModelBuilder()
+    builder.replicate(template, world_count=1024)
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    # The solver steps all 1024 worlds in parallel
+    solver = newton.solvers.SolverMuJoCo(model)
+
+See the :doc:`/guide/key-concepts` guide and :doc:`/integrations/isaac-lab`
+for more details.
+
+Installing from Source
+----------------------
+
+Install from source if you want access to the full repository, tests, and the ``uv.lock`` lockfile for reproducible environments. This is recommended for developers and contributors.
+
+Clone the Repository
+^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: console
+
+    git clone git@github.com:newton-physics/newton.git
+    cd newton
 
 Method 1: Using uv (Recommended)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -209,5 +347,5 @@ Test the installation by running an example:
 Next Steps
 ----------
 
-- Explore more examples in the ``newton/examples/`` directory and checkout the :doc:`visualization` guide to learn how to interact with the examples simulation.
+- Run ``python -m newton.examples`` to see all available examples and check out the :doc:`visualization` guide to learn how to interact with the example simulations.
 - Check out the :doc:`development` guide to learn how to contribute to Newton.
