@@ -282,7 +282,7 @@ def _estimate_rigid_contact_max(model: Model) -> int:
     MESH_CPP = 40
     MAX_NEIGHBORS_PER_SHAPE = 20
 
-    mesh_mask = shape_types == int(GeoType.MESH)
+    mesh_mask = (shape_types == int(GeoType.MESH)) | (shape_types == int(GeoType.HFIELD))
     plane_mask = shape_types == int(GeoType.PLANE)
     non_plane_mask = ~plane_mask
     num_meshes = int(np.count_nonzero(mesh_mask))
@@ -555,13 +555,14 @@ class CollisionPipeline:
                 writer_func=write_contact,
             )
 
-            # Detect if any mesh or heightfield shapes are present to optimize kernel launches
+            # Detect if any mesh-like or heightfield shapes are present to optimize kernel launches.
+            # Heightfields are treated as mesh-like for the SDF collision kernel path.
             has_meshes = False
             has_heightfields = False
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
-                has_meshes = bool((shape_types == int(GeoType.MESH)).any())
                 has_heightfields = bool((shape_types == int(GeoType.HFIELD)).any())
+                has_meshes = bool((shape_types == int(GeoType.MESH)).any()) or has_heightfields
 
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
@@ -832,6 +833,8 @@ class CollisionPipeline:
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,
+                    model.shape_heightfield_data,
+                    model.heightfield_elevation_data,
                 ],
                 outputs=[
                     contacts.soft_contact_count,

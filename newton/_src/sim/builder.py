@@ -9134,7 +9134,14 @@ class ModelBuilder:
 
             # ---------------------
             # heightfield collision data
-            has_heightfields = any(t == GeoType.HFIELD for t in self.shape_type)
+            hfield_count = sum(1 for t in self.shape_type if t == GeoType.HFIELD)
+            has_heightfields = hfield_count > 0
+            if hfield_count > 1:
+                warnings.warn(
+                    "Heightfield-vs-heightfield collision is not supported; "
+                    "contacts between heightfield pairs will be skipped.",
+                    stacklevel=2,
+                )
             if has_heightfields:
                 from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 

@@ -941,6 +941,8 @@ class Heightfield:
             max_z: World-space Z value corresponding to data maximum. Must be provided
                 together with ``min_z``, or both omitted to auto-derive from data.
         """
+        if nrow < 2 or ncol < 2:
+            raise ValueError(f"Heightfield requires nrow >= 2 and ncol >= 2, got nrow={nrow}, ncol={ncol}")
         if (min_z is None) != (max_z is None):
             raise ValueError("min_z and max_z must both be provided or both omitted")
 
