@@ -1427,6 +1427,9 @@ class TestNarrowPhase(unittest.TestCase):
 
     def test_mesh_mesh_scaled_separated_positive_penetration(self):
         """Scaled mesh-mesh contacts should stay positive when truly separated."""
+        if self.narrow_phase.mesh_mesh_contacts_kernel is None:
+            self.skipTest("Mesh-mesh NarrowPhase SDF contacts require CUDA")
+
         box_mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False)
         mesh_id = box_mesh.finalize()
         scale = 0.75
