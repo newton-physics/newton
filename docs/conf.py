@@ -41,7 +41,7 @@ github_version = os.environ.get("GITHUB_REF_NAME") or os.environ.get("CI_COMMIT_
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "Newton Physics"
-copyright = f"{datetime.date.today().year}, The Newton Developers"
+copyright = f"{datetime.date.today().year}, The Newton Developers. Documentation licensed under CC-BY-4.0"
 author = "The Newton Developers"
 
 # Read version from _version.py
@@ -232,6 +232,10 @@ html_theme_options["switcher"] = {
 
 # Add version switcher to navbar
 html_theme_options["navbar_end"] = ["theme-switcher", "version-switcher", "navbar-icon-links"]
+
+# Footer configuration — show copyright (includes CC-BY-4.0 notice)
+html_theme_options["footer_start"] = ["copyright"]
+html_theme_options["footer_end"] = ["theme-version"]
 
 # Disable switcher JSON validation during local builds (file not accessible locally)
 if not _is_ci:

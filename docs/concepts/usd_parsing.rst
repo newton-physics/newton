@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 .. _usd_parsing:
 
 USD Parsing and Schema Resolver System

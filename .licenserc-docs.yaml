@@ -1,0 +1,27 @@
+header:
+  license:
+    spdx-id: CC-BY-4.0
+    copyright-owner: The Newton Developers
+
+    content: |
+      SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+      SPDX-License-Identifier: CC-BY-4.0
+
+    pattern: |
+      spdx-filecopyrighttext: copyright \(c\) \d{4} the newton developers
+      spdx-license-identifier: cc-by-4\.0
+
+  paths:
+    - "**/*.rst"
+
+  paths-ignore:
+    - "docs/api/_generated/**"
+    - "docs/_templates/**"
+
+  language:
+    reStructuredText:
+      extensions:
+        - ".rst"
+      comment_style_id: DoubleDot
+
+  comment: on-failure
