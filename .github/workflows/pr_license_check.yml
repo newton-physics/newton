@@ -22,5 +22,19 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-      - name: Check License Header
+      - name: Check code license headers (Apache-2.0)
         uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1  # v0.8.0
+      - name: Check docs license headers (CC-BY-4.0)
+        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1  # v0.8.0
+        with:
+          config: .licenserc-docs.yaml
+      - name: Check notebook license headers (CC-BY-4.0)
+        run: |
+          status=0
+          for nb in $(find docs -name '*.ipynb' -not -path '*/.*' -not -path '*/_build/*'); do
+            if ! grep -q 'SPDX-License-Identifier: CC-BY-4.0' "$nb"; then
+              echo "ERROR: $nb missing CC-BY-4.0 SPDX header"
+              status=1
+            fi
+          done
+          exit $status
