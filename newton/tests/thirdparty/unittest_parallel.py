@@ -206,8 +206,19 @@ def main(argv=None):
         wp.clear_kernel_cache()
         print("Cleared Warp kernel cache")
 
+    # Pre-download newton-assets: try a single full-repo clone first so that
+    # the per-folder download_asset() calls below become instant cache hits.
+    from newton._src.utils.download_assets import download_newton_assets_repo  # noqa: PLC0415
+
+    try:
+        download_newton_assets_repo()
+        print("Downloaded newton-assets (full clone)")
+    except Exception as e:
+        print(f"Full newton-assets clone failed, per-folder fallback will run: {e}", file=sys.stderr)
+
     # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
     # For now this avoids races and conflicting downloads in parallel test runs.
+    # When the full clone above succeeds, these calls are no-ops (disk cache hit).
     import newton.utils  # noqa: PLC0415
 
     assets_to_download = [
@@ -221,9 +232,13 @@ def main(argv=None):
         "unitree_h1",
         "style3d",
         "universal_robots_ur10",
+        "universal_robots_ur5e",
         "wonik_allegro",
+        "shadow_hand",
+        "robotiq_2f85_v4",
+        "apptronik_apollo",
+        "booster_t1",
     ]
-    # Passing args.maxjobs to respect CLI cap for parallelism.
     _parallel_download(
         assets_to_download,
         newton.utils.download_asset,

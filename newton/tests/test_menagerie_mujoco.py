@@ -29,7 +29,7 @@ Architecture::
 
 Each test:
     1. Downloads the robot from menagerie (cached).
-    2. Creates a Newton model (via MJCF or USD) and a native mujoco_warp model.
+    2. Creates a Newton model (via MJCF) and a native mujoco_warp model.
     3. Compares model fields with physics-equivalence checks for inertia, solref, etc.
     4. Runs N steps with randomized controls across 34 parallel worlds.
     5. Compares per-step dynamics fields within tolerance.
@@ -56,6 +56,7 @@ Per-robot configuration (override in subclass):
 
 from __future__ import annotations
 
+import os
 import time
 import unittest
 from abc import abstractmethod
@@ -87,6 +88,10 @@ except ImportError:
 
 MENAGERIE_GIT_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 
+# If set, use this path as the root of an already-cloned mujoco_menagerie repo
+# instead of downloading. Example: export NEWTON_MENAGERIE_PATH=/path/to/mujoco_menagerie
+NEWTON_MENAGERIE_PATH_ENV = "NEWTON_MENAGERIE_PATH"
+
 
 def download_menagerie_asset(
     robot_folder: str,
@@ -96,6 +101,9 @@ def download_menagerie_asset(
     """
     Download a robot folder from the MuJoCo Menagerie repository.
 
+    If the environment variable NEWTON_MENAGERIE_PATH is set to the root of an
+    already-cloned mujoco_menagerie repo, that path is used and no download occurs.
+
     Args:
         robot_folder: The folder name in the menagerie repo (e.g., "unitree_go2")
         cache_dir: Optional cache directory override
@@ -104,6 +112,12 @@ def download_menagerie_asset(
     Returns:
         Path to the downloaded robot folder
     """
+    local_root = os.environ.get(NEWTON_MENAGERIE_PATH_ENV)
+    if local_root and not force_refresh:
+        path = Path(local_root) / robot_folder
+        if path.exists():
+            return path
+
     return download_git_folder(
         MENAGERIE_GIT_URL,
         robot_folder,
@@ -161,30 +175,6 @@ def create_newton_model_from_mjcf(
         builder.add_world(robot_builder)
 
     return builder.finalize()
-
-
-def create_newton_model_from_usd(
-    mjcf_path: Path,
-    *,
-    num_worlds: int = 1,
-    add_ground: bool = True,
-) -> newton.Model:
-    """
-    Create a Newton model by converting MJCF to USD first.
-
-    NOTE: This is a placeholder for future USD converter integration.
-
-    Args:
-        mjcf_path: Path to the MJCF XML file
-        num_worlds: Number of world instances to create
-        add_ground: Whether to add a ground plane
-
-    Returns:
-        Finalized Newton Model
-    """
-    raise NotImplementedError(
-        "USD conversion path not yet implemented. Waiting for MuJoCo USD converter to be finalized."
-    )
 
 
 # =============================================================================
@@ -510,6 +500,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_fields_unordered() which understands type-specific semantics
     "geom_size",
+    # Site size: Only a subset of the 3 elements is meaningful per type (sphere=1,
+    # capsule/cylinder=2, box=3). Compared via _compare_sites() instead.
+    "site_size",
     # Range: Compared via compare_jnt_range() which only checks limited joints
     # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
     "jnt_range",
@@ -524,11 +517,16 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "pair_geom",  # geom indices depend on geom ordering
     "nxn_",  # broadphase pairs depend on geom ordering
     # Compilation-dependent fields: validated at 1e-3 by compare_compiled_model_fields()
+    # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     "body_invweight0",
+    # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
+    # Derived from inertia and dof_armature by set_const_0. Backfilled.
     "dof_invweight0",
     "body_pos",
     "body_quat",
     "body_subtreemass",
+    # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
+    # re-diagonalization. Backfilled instead.
     "actuator_acc0",
     "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
@@ -595,14 +593,24 @@ def compare_models(
     """Run all model comparison checks between Newton and native MuJoCo models.
 
     Consolidates the full suite of structural, physical, and compiled-field
-    comparisons into a single entry point.
+    comparisons into a single entry point. Checks that involve per-index body,
+    geom, joint, or DOF comparison are skipped when the corresponding field
+    prefix is in skip_fields (as used by USD tests with reordered indices).
+
+    Args:
+        skip_fields: Substrings to skip in field-level comparison.
+        backfill_fields: Fields to validate at relaxed tolerance via
+            :func:`compare_compiled_model_fields`.
     """
     if skip_fields is None:
         skip_fields = set()
 
+    def _skipped(prefix: str) -> bool:
+        return any(s in prefix for s in skip_fields)
+
     compare_mjw_models(newton_mjw, native_mjw, skip_fields=skip_fields)
 
-    if not any("compare_inertia" in s for s in skip_fields):
+    if not _skipped("body_inertia"):
         compare_inertia_tensors(newton_mjw, native_mjw)
 
     for solref_field in [
@@ -624,12 +632,17 @@ def compare_models(
                 if hasattr(newton_arr, "shape") and newton_arr.shape == native_arr.shape and newton_arr.shape[0] > 0:
                     compare_solref_physics(newton_mjw, native_mjw, solref_field)
 
-    if newton_mjw.ngeom == native_mjw.ngeom:
+    if not _skipped("geom_") and newton_mjw.ngeom == native_mjw.ngeom:
         compare_geom_fields_unordered(newton_mjw, native_mjw, skip_fields=skip_fields)
 
-    compare_jnt_range(newton_mjw, native_mjw)
+    if not _skipped("jnt_"):
+        compare_jnt_range(newton_mjw, native_mjw)
 
-    compare_compiled_model_fields(newton_mjw, native_mjw, backfill_fields)
+    if not _skipped("body_invweight0"):
+        compare_compiled_model_fields(newton_mjw, native_mjw, backfill_fields)
+
+    if not _skipped("site_"):
+        compare_site_sizes(newton_mjw, native_mjw)
 
 
 def compare_inertia_tensors(
@@ -872,7 +885,7 @@ def compare_geom_fields_unordered(
                     err_msg=f"{field_name}[geom={g}]",
                 )
 
-    # Compare geom_size with type-specific semantics (reusing compare_geom_sizes logic)
+    # Compare geom_size with type-specific semantics
     if not any("geom_size" in s for s in skip_fields):
         newton_size = newton_mjw.geom_size.numpy()
         native_size = native_mjw.geom_size.numpy()
@@ -907,6 +920,68 @@ def compare_geom_fields_unordered(
                         rtol=0,
                         err_msg=f"geom_size[{w},{g}] (type={gtype})",
                     )
+
+
+def compare_site_sizes(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 1e-6,
+) -> None:
+    """Compare site_size with type-specific semantics.
+
+    MuJoCo stores 3 floats per site in site_size, but only a subset is
+    meaningful depending on the site type:
+        - Sphere (2): only radius (size[0]).
+        - Capsule (3), Cylinder (5): radius and half-length (size[:2]).
+        - Box (6): all 3 half-extents.
+    """
+    nsite = newton_mjw.nsite
+    if nsite == 0:
+        return
+    assert nsite == native_mjw.nsite, f"nsite mismatch: newton={nsite} vs native={native_mjw.nsite}"
+
+    newton_type = newton_mjw.site_type.numpy()
+    newton_size = newton_mjw.site_size.numpy()
+    native_size = native_mjw.site_size.numpy()
+
+    # Flatten type to 1D: may be (nsite,) or (nworld, nsite)
+    if newton_type.ndim == 2:
+        newton_type = newton_type[0]
+
+    # Normalize size to 3D (nworld, nsite, 3): may be (nsite, 3) or (nworld, nsite, 3)
+    if newton_size.ndim == 2:
+        newton_size = newton_size[np.newaxis]
+        native_size = native_size[np.newaxis]
+
+    for w in range(newton_size.shape[0]):
+        for s in range(nsite):
+            stype = newton_type[s]
+            n_sz = newton_size[w, s]
+            nat_sz = native_size[w, s]
+            if stype == 2:  # SPHERE
+                np.testing.assert_allclose(
+                    n_sz[0],
+                    nat_sz[0],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"site_size[{w},{s}] (SPHERE) radius",
+                )
+            elif stype in (3, 5):  # CAPSULE, CYLINDER
+                np.testing.assert_allclose(
+                    n_sz[:2],
+                    nat_sz[:2],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"site_size[{w},{s}] (CAPSULE/CYLINDER)",
+                )
+            else:
+                np.testing.assert_allclose(
+                    n_sz,
+                    nat_sz,
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"site_size[{w},{s}] (type={stype})",
+                )
 
 
 def compare_jnt_range(
@@ -1794,6 +1869,8 @@ class TestMenagerieBase(unittest.TestCase):
     split_pipeline_tol: float = 1e-5  # Tolerance for contact/constraint matching in split pipeline
     njmax: int | None = None  # Max constraint rows per world (None = auto from MuJoCo)
     nconmax: int | None = None  # Max contacts per world (None = auto from MuJoCo)
+    # Override integrator for SolverMuJoCo
+    solver_integrator: str | int | None = None
     # CUDA graph capture with split pipeline injection produces incorrect results.
     # Disabled by default; re-enable per robot once the interaction is understood.
     use_cuda_graph: bool = False
@@ -1835,6 +1912,77 @@ class TestMenagerieBase(unittest.TestCase):
         See _create_native_mujoco_warp() which is shared by all subclasses.
         """
         ...
+
+    def _align_models(self, newton_solver: SolverMuJoCo, native_mjw_model: Any, mj_model: Any) -> None:
+        """Hook for subclass-specific model alignment before comparison.
+
+        Called after both models are built and expanded but before
+        compare_mjw_models. Override in subclasses to fix up known
+        discrepancies between the model sources.
+        """
+
+    def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare inertia tensors between Newton and native models.
+
+        Default: no-op (covered by compare_models for same-order pipelines).
+        Override in subclasses where body ordering may differ.
+        """
+
+    def _init_control(self, native_mjw_data: Any, newton_control: Any) -> None:
+        """Initialize control strategy with the ctrl arrays from both sides.
+
+        Override in subclasses where actuator counts may differ.
+        """
+        self.control_strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)  # type: ignore[union-attr]
+
+    def _compare_geoms(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare geom fields between Newton and native models.
+
+        Default: no-op (covered by compare_models for same-order pipelines).
+        Override in subclasses where geom ordering may differ.
+        """
+
+    def _compare_jnt_range(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare joint ranges between Newton and native models.
+
+        Default: no-op (covered by compare_models for same-order pipelines).
+        Override in subclasses where joint ordering may differ.
+        """
+
+    def _compare_body_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare physics-relevant body fields (mass, pos, quat, etc.).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where body ordering may differ.
+        """
+
+    def _compare_dof_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare physics-relevant DOF fields (armature, damping, etc.).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
+
+    def _compare_mass_matrix_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse mass matrix structure (M_colind, M_rowadr, M_rownnz).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
+
+    def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare compilation-dependent fields at relaxed tolerance.
+
+        Default: no-op (covered by compare_models for same-order pipelines).
+        Override in subclasses to skip or adjust.
+        """
+
+    def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare actuator fields (gainprm, biasprm, acc0, gear, etc.).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where actuator ordering may differ.
+        """
 
     def _load_assets(self) -> dict[str, bytes]:
         """Load mesh/texture assets from the MJCF directory for from_xml_string."""
@@ -1924,12 +2072,15 @@ class TestMenagerieBase(unittest.TestCase):
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-        newton_solver = SolverMuJoCo(
-            newton_model,
-            skip_visual_only_geoms=not self.parse_visuals,
-            njmax=self.njmax,
-            nconmax=self.nconmax,
-        )
+        solver_kwargs = {
+            "skip_visual_only_geoms": not self.parse_visuals,
+            "njmax": self.njmax,
+            "nconmax": self.nconmax,
+        }
+        if self.solver_integrator is not None:
+            solver_kwargs["integrator"] = self.solver_integrator
+
+        newton_solver = SolverMuJoCo(newton_model, **solver_kwargs)
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
@@ -1941,6 +2092,16 @@ class TestMenagerieBase(unittest.TestCase):
         # TODO: Remove this workaround once Newton's MJCF parser supports timestep extraction
         dt = float(mj_model.opt.timestep)
 
+        # Hook for subclass-specific model alignment (USD fixups, etc.)
+        self._align_models(newton_solver, native_mjw_model, mj_model)
+
+        # Disable sensor_rne_postconstraint on native — Newton doesn't support
+        # sensors, so rne_postconstraint would compute cacc/cfrc_int on native
+        # but not on Newton, causing spurious diffs.
+        native_mjw_model.sensor_rne_postconstraint = False
+
+        # Run all standard model comparisons (strict field match, inertia tensors,
+        # solref physics equivalence, geom/joint checks, compiled field validation).
         compare_models(
             newton_solver.mjw_model,
             native_mjw_model,
@@ -1948,10 +2109,17 @@ class TestMenagerieBase(unittest.TestCase):
             backfill_fields=self.backfill_fields,
         )
 
-        # Disable sensor_rne_postconstraint on native — Newton doesn't support
-        # sensors, so rne_postconstraint would compute cacc/cfrc_int on native
-        # but not on Newton, causing spurious diffs.
-        native_mjw_model.sensor_rne_postconstraint = False
+        # Subclass hooks for pipelines with reordered bodies/DOFs/actuators (USD).
+        # Default implementations are no-ops; compare_models already covers the
+        # same-order case.
+        self._compare_inertia(newton_solver.mjw_model, native_mjw_model)
+        self._compare_geoms(newton_solver.mjw_model, native_mjw_model)
+        self._compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
+        self._compare_body_physics(newton_solver.mjw_model, native_mjw_model)
+        self._compare_dof_physics(newton_solver.mjw_model, native_mjw_model)
+        self._compare_mass_matrix_structure(newton_solver.mjw_model, native_mjw_model)
+        self._compare_actuator_physics(newton_solver.mjw_model, native_mjw_model)
+        self._compare_compiled_fields(newton_solver.mjw_model, native_mjw_model)
 
         # Optional: backfill computed fields from native to Newton to eliminate
         # numerical differences from model compilation (enables tighter tolerances for dynamics)
@@ -1971,7 +2139,7 @@ class TestMenagerieBase(unittest.TestCase):
             mjw_smooth.rne(newton_solver.mjw_model, newton_solver.mjw_data)
 
         # Initialize control strategy with the ctrl arrays it will fill
-        self.control_strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)  # type: ignore[union-attr]
+        self._init_control(native_mjw_data, newton_control)
 
         # Setup viewer if in debug mode
         viewer = None
@@ -2140,25 +2308,6 @@ class TestMenagerieMJCF(TestMenagerieBase):
         )
 
 
-class TestMenagerieUSD(TestMenagerieBase):
-    """Base class for USD-based tests: Newton loads MJCF converted to USD.
-
-    The MJCF file is converted to USD using mujoco_usd_converter, then
-    Newton loads the USD file. Native MuJoCo still loads the original MJCF.
-    """
-
-    # All USD tests are skipped until the converter is ready
-    skip_reason: str | None = "USD converter not yet implemented"
-
-    def _create_newton_model(self) -> newton.Model:
-        """Create Newton model by converting MJCF to USD first."""
-        return create_newton_model_from_usd(
-            self.mjcf_path,
-            num_worlds=self.num_worlds,
-            add_ground=False,  # scene.xml includes ground plane
-        )
-
-
 # =============================================================================
 # Robot Test Classes
 # =============================================================================
@@ -2180,24 +2329,12 @@ class TestMenagerie_AgilexPiper(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_AgilexPiper_USD(TestMenagerieUSD):
-    """AgileX PIPER bimanual arm. (USD)."""
-
-    robot_folder = "agilex_piper"
-
-
 class TestMenagerie_ArxL5(TestMenagerieMJCF):
     """ARX L5 arm."""
 
     robot_folder = "arx_l5"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_ArxL5_USD(TestMenagerieUSD):
-    """ARX L5 arm. (USD)."""
-
-    robot_folder = "arx_l5"
 
 
 class TestMenagerie_Dynamixel2r(TestMenagerieMJCF):
@@ -2208,24 +2345,12 @@ class TestMenagerie_Dynamixel2r(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_Dynamixel2r_USD(TestMenagerieUSD):
-    """Dynamixel 2R simple arm. (USD)."""
-
-    robot_folder = "dynamixel_2r"
-
-
 class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_FrankaEmikaPanda_USD(TestMenagerieUSD):
-    """Franka Emika Panda arm. (USD)."""
-
-    robot_folder = "franka_emika_panda"
 
 
 class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
@@ -2236,24 +2361,12 @@ class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_FrankaFr3_USD(TestMenagerieUSD):
-    """Franka FR3 arm. (USD)."""
-
-    robot_folder = "franka_fr3"
-
-
 class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_FrankaFr3V2_USD(TestMenagerieUSD):
-    """Franka FR3 v2 arm. (USD)."""
-
-    robot_folder = "franka_fr3_v2"
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
@@ -2264,24 +2377,12 @@ class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_KinovaGen3_USD(TestMenagerieUSD):
-    """Kinova Gen3 arm. (USD)."""
-
-    robot_folder = "kinova_gen3"
-
-
 class TestMenagerie_KukaIiwa14(TestMenagerieMJCF):
     """KUKA iiwa 14 arm."""
 
     robot_folder = "kuka_iiwa_14"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_KukaIiwa14_USD(TestMenagerieUSD):
-    """KUKA iiwa 14 arm. (USD)."""
-
-    robot_folder = "kuka_iiwa_14"
 
 
 class TestMenagerie_LowCostRobotArm(TestMenagerieMJCF):
@@ -2292,24 +2393,12 @@ class TestMenagerie_LowCostRobotArm(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_LowCostRobotArm_USD(TestMenagerieUSD):
-    """Low-cost robot arm. (USD)."""
-
-    robot_folder = "low_cost_robot_arm"
-
-
 class TestMenagerie_RethinkSawyer(TestMenagerieMJCF):
     """Rethink Robotics Sawyer arm."""
 
     robot_folder = "rethink_robotics_sawyer"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_RethinkSawyer_USD(TestMenagerieUSD):
-    """Rethink Robotics Sawyer arm. (USD)."""
-
-    robot_folder = "rethink_robotics_sawyer"
 
 
 class TestMenagerie_TrossenVx300s(TestMenagerieMJCF):
@@ -2320,24 +2409,12 @@ class TestMenagerie_TrossenVx300s(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_TrossenVx300s_USD(TestMenagerieUSD):
-    """Trossen Robotics ViperX 300 S arm. (USD)."""
-
-    robot_folder = "trossen_vx300s"
-
-
 class TestMenagerie_TrossenWx250s(TestMenagerieMJCF):
     """Trossen Robotics WidowX 250 S arm."""
 
     robot_folder = "trossen_wx250s"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_TrossenWx250s_USD(TestMenagerieUSD):
-    """Trossen Robotics WidowX 250 S arm. (USD)."""
-
-    robot_folder = "trossen_wx250s"
 
 
 class TestMenagerie_TrossenWxai(TestMenagerieMJCF):
@@ -2348,24 +2425,12 @@ class TestMenagerie_TrossenWxai(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_TrossenWxai_USD(TestMenagerieUSD):
-    """Trossen Robotics WidowX AI arm. (USD)."""
-
-    robot_folder = "trossen_wxai"
-
-
 class TestMenagerie_TrsSoArm100(TestMenagerieMJCF):
     """TRS SO-ARM100 arm."""
 
     robot_folder = "trs_so_arm100"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_TrsSoArm100_USD(TestMenagerieUSD):
-    """TRS SO-ARM100 arm. (USD)."""
-
-    robot_folder = "trs_so_arm100"
 
 
 class TestMenagerie_UfactoryLite6(TestMenagerieMJCF):
@@ -2376,24 +2441,12 @@ class TestMenagerie_UfactoryLite6(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UfactoryLite6_USD(TestMenagerieUSD):
-    """UFACTORY Lite 6 arm. (USD)."""
-
-    robot_folder = "ufactory_lite6"
-
-
 class TestMenagerie_UfactoryXarm7(TestMenagerieMJCF):
     """UFACTORY xArm 7 arm."""
 
     robot_folder = "ufactory_xarm7"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_UfactoryXarm7_USD(TestMenagerieUSD):
-    """UFACTORY xArm 7 arm. (USD)."""
-
-    robot_folder = "ufactory_xarm7"
 
 
 class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
@@ -2414,24 +2467,12 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     use_split_pipeline = True
 
 
-class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
-    """Universal Robots UR5e arm (USD)."""
-
-    robot_folder = "universal_robots_ur5e"
-
-
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_UniversalRobotsUr10e_USD(TestMenagerieUSD):
-    """Universal Robots UR10e arm. (USD)."""
-
-    robot_folder = "universal_robots_ur10e"
 
 
 # -----------------------------------------------------------------------------
@@ -2447,24 +2488,12 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_LeapHand_USD(TestMenagerieUSD):
-    """LEAP Hand. (USD)."""
-
-    robot_folder = "leap_hand"
-
-
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper."""
 
     robot_folder = "robotiq_2f85"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_Robotiq2f85_USD(TestMenagerieUSD):
-    """Robotiq 2F-85 gripper. (USD)."""
-
-    robot_folder = "robotiq_2f85"
 
 
 class TestMenagerie_Robotiq2f85V4(TestMenagerieMJCF):
@@ -2475,24 +2504,12 @@ class TestMenagerie_Robotiq2f85V4(TestMenagerieMJCF):
     skip_reason = "Not yet verified"
 
 
-class TestMenagerie_Robotiq2f85V4_USD(TestMenagerieUSD):
-    """Robotiq 2F-85 gripper v4. (USD)."""
-
-    robot_folder = "robotiq_2f85_v4"
-
-
 class TestMenagerie_ShadowDexee(TestMenagerieMJCF):
     """Shadow DEX-EE hand."""
 
     robot_folder = "shadow_dexee"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_ShadowDexee_USD(TestMenagerieUSD):
-    """Shadow DEX-EE hand. (USD)."""
-
-    robot_folder = "shadow_dexee"
 
 
 class TestMenagerie_ShadowHand(TestMenagerieMJCF):
@@ -2503,24 +2520,12 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     skip_reason = "Not yet verified"
 
 
-class TestMenagerie_ShadowHand_USD(TestMenagerieUSD):
-    """Shadow Hand. (USD)."""
-
-    robot_folder = "shadow_hand"
-
-
 class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieMJCF):
     """Tetheria Aero Hand (open)."""
 
     robot_folder = "tetheria_aero_hand_open"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_TetheriaAeroHandOpen_USD(TestMenagerieUSD):
-    """Tetheria Aero Hand (open). (USD)."""
-
-    robot_folder = "tetheria_aero_hand_open"
 
 
 class TestMenagerie_UmiGripper(TestMenagerieMJCF):
@@ -2531,12 +2536,6 @@ class TestMenagerie_UmiGripper(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UmiGripper_USD(TestMenagerieUSD):
-    """UMI Gripper. (USD)."""
-
-    robot_folder = "umi_gripper"
-
-
 class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     """Wonik Allegro Hand."""
 
@@ -2545,24 +2544,12 @@ class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     skip_reason = "Not yet verified"
 
 
-class TestMenagerie_WonikAllegro_USD(TestMenagerieUSD):
-    """Wonik Allegro Hand. (USD)."""
-
-    robot_folder = "wonik_allegro"
-
-
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
     """IIT Softfoot biomechanical gripper."""
 
     robot_folder = "iit_softfoot"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_IitSoftfoot_USD(TestMenagerieUSD):
-    """IIT Softfoot biomechanical gripper. (USD)."""
-
-    robot_folder = "iit_softfoot"
 
 
 # -----------------------------------------------------------------------------
@@ -2578,24 +2565,12 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_Aloha_USD(TestMenagerieUSD):
-    """ALOHA bimanual system. (USD)."""
-
-    robot_folder = "aloha"
-
-
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
     """Google Robot (bimanual)."""
 
     robot_folder = "google_robot"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_GoogleRobot_USD(TestMenagerieUSD):
-    """Google Robot (bimanual). (USD)."""
-
-    robot_folder = "google_robot"
 
 
 # -----------------------------------------------------------------------------
@@ -2611,24 +2586,12 @@ class TestMenagerie_HelloRobotStretch(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_HelloRobotStretch_USD(TestMenagerieUSD):
-    """Hello Robot Stretch. (USD)."""
-
-    robot_folder = "hello_robot_stretch"
-
-
 class TestMenagerie_HelloRobotStretch3(TestMenagerieMJCF):
     """Hello Robot Stretch 3."""
 
     robot_folder = "hello_robot_stretch_3"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_HelloRobotStretch3_USD(TestMenagerieUSD):
-    """Hello Robot Stretch 3. (USD)."""
-
-    robot_folder = "hello_robot_stretch_3"
 
 
 class TestMenagerie_PalTiago(TestMenagerieMJCF):
@@ -2639,12 +2602,6 @@ class TestMenagerie_PalTiago(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_PalTiago_USD(TestMenagerieUSD):
-    """PAL Robotics TIAGo. (USD)."""
-
-    robot_folder = "pal_tiago"
-
-
 class TestMenagerie_PalTiagoDual(TestMenagerieMJCF):
     """PAL Robotics TIAGo Dual."""
 
@@ -2653,24 +2610,12 @@ class TestMenagerie_PalTiagoDual(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_PalTiagoDual_USD(TestMenagerieUSD):
-    """PAL Robotics TIAGo Dual. (USD)."""
-
-    robot_folder = "pal_tiago_dual"
-
-
 class TestMenagerie_StanfordTidybot(TestMenagerieMJCF):
     """Stanford Tidybot mobile manipulator."""
 
     robot_folder = "stanford_tidybot"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_StanfordTidybot_USD(TestMenagerieUSD):
-    """Stanford Tidybot mobile manipulator. (USD)."""
-
-    robot_folder = "stanford_tidybot"
 
 
 # -----------------------------------------------------------------------------
@@ -2737,24 +2682,12 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     }
 
 
-class TestMenagerie_ApptronikApollo_USD(TestMenagerieUSD):
-    """Apptronik Apollo humanoid. (USD)."""
-
-    robot_folder = "apptronik_apollo"
-
-
 class TestMenagerie_BerkeleyHumanoid(TestMenagerieMJCF):
     """Berkeley Humanoid."""
 
     robot_folder = "berkeley_humanoid"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_BerkeleyHumanoid_USD(TestMenagerieUSD):
-    """Berkeley Humanoid. (USD)."""
-
-    robot_folder = "berkeley_humanoid"
 
 
 class TestMenagerie_BoosterT1(TestMenagerieMJCF):
@@ -2765,24 +2698,12 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     skip_reason = "Not yet verified"
 
 
-class TestMenagerie_BoosterT1_USD(TestMenagerieUSD):
-    """Booster Robotics T1 humanoid. (USD)."""
-
-    robot_folder = "booster_t1"
-
-
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
     """Fourier N1 humanoid."""
 
     robot_folder = "fourier_n1"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_FourierN1_USD(TestMenagerieUSD):
-    """Fourier N1 humanoid. (USD)."""
-
-    robot_folder = "fourier_n1"
 
 
 class TestMenagerie_PalTalos(TestMenagerieMJCF):
@@ -2793,24 +2714,12 @@ class TestMenagerie_PalTalos(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_PalTalos_USD(TestMenagerieUSD):
-    """PAL Robotics TALOS humanoid. (USD)."""
-
-    robot_folder = "pal_talos"
-
-
 class TestMenagerie_PndboticsAdamLite(TestMenagerieMJCF):
     """PNDbotics Adam Lite humanoid."""
 
     robot_folder = "pndbotics_adam_lite"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_PndboticsAdamLite_USD(TestMenagerieUSD):
-    """PNDbotics Adam Lite humanoid. (USD)."""
-
-    robot_folder = "pndbotics_adam_lite"
 
 
 class TestMenagerie_RobotisOp3(TestMenagerieMJCF):
@@ -2821,24 +2730,12 @@ class TestMenagerie_RobotisOp3(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_RobotisOp3_USD(TestMenagerieUSD):
-    """Robotis OP3 humanoid. (USD)."""
-
-    robot_folder = "robotis_op3"
-
-
 class TestMenagerie_ToddlerBot2xc(TestMenagerieMJCF):
     """ToddlerBot 2XC humanoid."""
 
     robot_folder = "toddlerbot_2xc"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_ToddlerBot2xc_USD(TestMenagerieUSD):
-    """ToddlerBot 2XC humanoid. (USD)."""
-
-    robot_folder = "toddlerbot_2xc"
 
 
 class TestMenagerie_ToddlerBot2xm(TestMenagerieMJCF):
@@ -2849,12 +2746,6 @@ class TestMenagerie_ToddlerBot2xm(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_ToddlerBot2xm_USD(TestMenagerieUSD):
-    """ToddlerBot 2XM humanoid. (USD)."""
-
-    robot_folder = "toddlerbot_2xm"
-
-
 class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
@@ -2863,24 +2754,12 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     skip_reason = "Not yet verified"
 
 
-class TestMenagerie_UnitreeG1_USD(TestMenagerieUSD):
-    """Unitree G1 humanoid. (USD)."""
-
-    robot_folder = "unitree_g1"
-
-
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
 
     skip_reason = "Not yet verified"
-
-
-class TestMenagerie_UnitreeH1_USD(TestMenagerieUSD):
-    """Unitree H1 humanoid. (USD)."""
-
-    robot_folder = "unitree_h1"
 
 
 # -----------------------------------------------------------------------------
@@ -2896,12 +2775,6 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_AgilityCassie_USD(TestMenagerieUSD):
-    """Agility Robotics Cassie biped. (USD)."""
-
-    robot_folder = "agility_cassie"
-
-
 # -----------------------------------------------------------------------------
 # Quadrupeds (8 robots)
 # -----------------------------------------------------------------------------
@@ -2915,24 +2788,12 @@ class TestMenagerie_AnyboticsAnymalB(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_AnyboticsAnymalB_USD(TestMenagerieUSD):
-    """ANYbotics ANYmal B quadruped. (USD)."""
-
-    robot_folder = "anybotics_anymal_b"
-
-
 class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_AnyboticsAnymalC_USD(TestMenagerieUSD):
-    """ANYbotics ANYmal C quadruped. (USD)."""
-
-    robot_folder = "anybotics_anymal_c"
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
@@ -2943,24 +2804,12 @@ class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_BostonDynamicsSpot_USD(TestMenagerieUSD):
-    """Boston Dynamics Spot quadruped. (USD)."""
-
-    robot_folder = "boston_dynamics_spot"
-
-
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
     """Google Barkour v0 quadruped."""
 
     robot_folder = "google_barkour_v0"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_GoogleBarkourV0_USD(TestMenagerieUSD):
-    """Google Barkour v0 quadruped. (USD)."""
-
-    robot_folder = "google_barkour_v0"
 
 
 class TestMenagerie_GoogleBarkourVb(TestMenagerieMJCF):
@@ -2971,24 +2820,12 @@ class TestMenagerie_GoogleBarkourVb(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_GoogleBarkourVb_USD(TestMenagerieUSD):
-    """Google Barkour vB quadruped. (USD)."""
-
-    robot_folder = "google_barkour_vb"
-
-
 class TestMenagerie_UnitreeA1(TestMenagerieMJCF):
     """Unitree A1 quadruped."""
 
     robot_folder = "unitree_a1"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_UnitreeA1_USD(TestMenagerieUSD):
-    """Unitree A1 quadruped. (USD)."""
-
-    robot_folder = "unitree_a1"
 
 
 class TestMenagerie_UnitreeGo1(TestMenagerieMJCF):
@@ -2999,24 +2836,12 @@ class TestMenagerie_UnitreeGo1(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UnitreeGo1_USD(TestMenagerieUSD):
-    """Unitree Go1 quadruped. (USD)."""
-
-    robot_folder = "unitree_go1"
-
-
 class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_UnitreeGo2_USD(TestMenagerieUSD):
-    """Unitree Go2 quadruped. (USD)."""
-
-    robot_folder = "unitree_go2"
 
 
 # -----------------------------------------------------------------------------
@@ -3032,12 +2857,6 @@ class TestMenagerie_UnitreeZ1(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UnitreeZ1_USD(TestMenagerieUSD):
-    """Unitree Z1 arm. (USD)."""
-
-    robot_folder = "unitree_z1"
-
-
 # -----------------------------------------------------------------------------
 # Drones (2 robots)
 # -----------------------------------------------------------------------------
@@ -3051,24 +2870,12 @@ class TestMenagerie_BitcrazeCrazyflie2(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_BitcrazeCrazyflie2_USD(TestMenagerieUSD):
-    """Bitcraze Crazyflie 2 quadrotor. (USD)."""
-
-    robot_folder = "bitcraze_crazyflie_2"
-
-
 class TestMenagerie_SkydioX2(TestMenagerieMJCF):
     """Skydio X2 drone."""
 
     robot_folder = "skydio_x2"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_SkydioX2_USD(TestMenagerieUSD):
-    """Skydio X2 drone. (USD)."""
-
-    robot_folder = "skydio_x2"
 
 
 # -----------------------------------------------------------------------------
@@ -3084,24 +2891,12 @@ class TestMenagerie_RobotSoccerKit(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_RobotSoccerKit_USD(TestMenagerieUSD):
-    """Robot Soccer Kit omniwheel base. (USD)."""
-
-    robot_folder = "robot_soccer_kit"
-
-
 class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_RobotstudioSo101_USD(TestMenagerieUSD):
-    """RobotStudio SO-101. (USD)."""
-
-    robot_folder = "robotstudio_so101"
 
 
 # -----------------------------------------------------------------------------
@@ -3117,12 +2912,6 @@ class TestMenagerie_Flybody(TestMenagerieMJCF):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_Flybody_USD(TestMenagerieUSD):
-    """Flybody fruit fly model. (USD)."""
-
-    robot_folder = "flybody"
-
-
 # -----------------------------------------------------------------------------
 # Other (1 robot)
 # -----------------------------------------------------------------------------
@@ -3134,12 +2923,6 @@ class TestMenagerie_I2rtYam(TestMenagerieMJCF):
     robot_folder = "i2rt_yam"
 
     skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_I2rtYam_USD(TestMenagerieUSD):
-    """i2rt YAM (Yet Another Manipulator). (USD)."""
-
-    robot_folder = "i2rt_yam"
 
 
 # =============================================================================
