@@ -15,6 +15,7 @@
 
 import enum
 import os
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
+    from ..sim.model import Model
     from .sdf_utils import SDF
 
 
@@ -864,6 +866,517 @@ class Mesh:
                     self._metallic,
                 )
             )
+        return self._cached_hash
+
+    # ---- Factory methods ---------------------------------------------------
+
+    @staticmethod
+    def create_from_usd(prim, **kwargs) -> "Mesh":
+        """Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.
+
+        This is a convenience wrapper around :func:`newton.usd.get_mesh`.
+        See that function for full documentation.
+
+        Args:
+            prim: The USD prim to load the mesh from.
+            **kwargs: Additional arguments passed to :func:`newton.usd.get_mesh`
+                (e.g. ``load_normals``, ``load_uvs``).
+
+        Returns:
+            Mesh: A new Mesh instance.
+        """
+        from ..usd.utils import get_mesh  # noqa: PLC0415
+
+        result = get_mesh(prim, **kwargs)
+        if isinstance(result, tuple):
+            return result[0]
+        return result
+
+    @staticmethod
+    def create_from_file(filename: str, method: str | None = None, **kwargs) -> "Mesh":
+        """Load a Mesh from a 3D model file.
+
+        Supports common surface mesh formats including OBJ, PLY, STL, and
+        other formats supported by trimesh, meshio, openmesh, or pcu.
+
+        Args:
+            filename: Path to the mesh file.
+            method: Loading backend to use (``"trimesh"``, ``"meshio"``,
+                ``"pcu"``, ``"openmesh"``). If ``None``, each backend is
+                tried in order until one succeeds.
+            **kwargs: Additional arguments passed to the :class:`Mesh`
+                constructor (e.g. ``compute_inertia``, ``is_solid``).
+
+        Returns:
+            Mesh: A new Mesh instance.
+        """
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"File not found: {filename}")
+
+        from .utils import load_mesh  # noqa: PLC0415
+
+        mesh_points, mesh_indices = load_mesh(filename, method=method)
+        return Mesh(vertices=mesh_points, indices=mesh_indices, **kwargs)
+
+
+def compute_surface_triangles(tet_indices: nparray) -> np.ndarray:
+    """Extract boundary triangles from tetrahedral element indices.
+
+    Finds faces that belong to exactly one tetrahedron (boundary faces)
+    using a vectorized approach.
+
+    Args:
+        tet_indices: Flattened tetrahedral element indices (4 per tet).
+
+    Returns:
+        Flattened boundary triangle indices, 3 per triangle, int32.
+    """
+    tet_indices = np.asarray(tet_indices, dtype=np.int32).flatten()
+    tets = tet_indices.reshape(-1, 4)
+    n = len(tets)
+    if n == 0:
+        return np.array([], dtype=np.int32)
+
+    # Each tet contributes 4 faces with specific winding order:
+    #   face 0: (v0, v2, v1)
+    #   face 1: (v1, v2, v3)
+    #   face 2: (v0, v1, v3)
+    #   face 3: (v0, v3, v2)
+    # fmt: off
+    face_idx = np.array([
+        [0, 2, 1],
+        [1, 2, 3],
+        [0, 1, 3],
+        [0, 3, 2],
+    ])
+    # fmt: on
+
+    # Build all faces: shape (4*n, 3) with original winding
+    all_faces = tets[:, face_idx].reshape(-1, 3)
+
+    # Sort vertex indices per face to create canonical keys
+    sorted_faces = np.sort(all_faces, axis=1)
+
+    # Find unique sorted faces and their counts
+    _, inverse, counts = np.unique(sorted_faces, axis=0, return_inverse=True, return_counts=True)
+
+    # Boundary faces appear exactly once
+    boundary_mask = counts[inverse] == 1
+
+    return all_faces[boundary_mask].astype(np.int32).flatten()
+
+
+class TetMesh:
+    """Represents a tetrahedral mesh for volumetric deformable simulation.
+
+    Stores vertex positions (surface + interior nodes), tetrahedral element
+    connectivity, and an optional surface triangle mesh. If no surface mesh
+    is provided, it is automatically computed from the open (unshared) faces
+    of the tetrahedra.
+
+    Optionally carries per-element material arrays and a density value loaded
+    from file. These are used as defaults by builder methods and can be
+    overridden at instantiation time.
+
+    Example:
+        Create a TetMesh from raw arrays:
+
+        .. code-block:: python
+
+            import numpy as np
+            import newton
+
+            vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+            tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+            tet_mesh = newton.TetMesh(vertices, tet_indices)
+    """
+
+    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"})
+
+    def __init__(
+        self,
+        vertices: Sequence[Vec3] | nparray,
+        tet_indices: Sequence[int] | nparray,
+        k_mu: nparray | float | None = None,
+        k_lambda: nparray | float | None = None,
+        k_damp: nparray | float | None = None,
+        density: float | None = None,
+        custom_attributes: ("dict[str, nparray] | dict[str, tuple[nparray, Model.AttributeFrequency]] | None") = None,
+    ):
+        """Construct a TetMesh from vertex positions and tet connectivity.
+
+        Args:
+            vertices: Vertex positions [m], shape (N, 3).
+            tet_indices: Tetrahedral element indices, flattened (4 per tet).
+            k_mu: First elastic Lame parameter [Pa]. Scalar (uniform) or
+                per-element array of shape (tet_count,).
+            k_lambda: Second elastic Lame parameter [Pa]. Scalar (uniform) or
+                per-element array of shape (tet_count,).
+            k_damp: Rayleigh damping coefficient [-] (dimensionless). Scalar
+                (uniform) or per-element array of shape (tet_count,).
+            density: Uniform density [kg/m^3] for mass computation.
+            custom_attributes: Dictionary of named custom arrays with their
+                :class:`~newton.Model.AttributeFrequency`. Each value can be
+                either a bare array (frequency auto-inferred from length) or a
+                ``(array, frequency)`` tuple.
+        """
+        self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        self._tet_indices = np.array(tet_indices, dtype=np.int32).flatten()
+        if len(self._tet_indices) % 4 != 0:
+            raise ValueError(f"tet_indices length must be a multiple of 4, got {len(self._tet_indices)}.")
+
+        vertex_count = len(self._vertices)
+        if len(self._tet_indices) > 0:
+            idx_min = int(self._tet_indices.min())
+            idx_max = int(self._tet_indices.max())
+            if idx_min < 0:
+                raise ValueError(f"tet_indices contains negative index {idx_min}.")
+            if idx_max >= vertex_count:
+                raise ValueError(f"tet_indices contains index {idx_max} which exceeds vertex count {vertex_count}.")
+
+        tet_count = len(self._tet_indices) // 4
+
+        self._k_mu = self._broadcast_material(k_mu, tet_count, "k_mu")
+        self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
+        self._k_damp = self._broadcast_material(k_damp, tet_count, "k_damp")
+        self._density = density
+        self.custom_attributes: dict[str, tuple[np.ndarray, int]] = {}
+        for k, v in (custom_attributes or {}).items():
+            if k in self._RESERVED_ATTR_KEYS:
+                raise ValueError(
+                    f"Custom attribute name '{k}' is reserved. Reserved names: {sorted(self._RESERVED_ATTR_KEYS)}"
+                )
+            if isinstance(v, tuple):
+                arr, freq = v
+                self.custom_attributes[k] = (np.asarray(arr), freq)
+            else:
+                arr = np.asarray(v)
+                freq = self._infer_frequency(arr, vertex_count, tet_count, k)
+                self.custom_attributes[k] = (arr, freq)
+
+        # Compute surface triangles from boundary faces
+        self._surface_tri_indices = self._compute_surface_triangles()
+
+        self._cached_hash: int | None = None
+
+    @staticmethod
+    def _broadcast_material(value: nparray | float | None, tet_count: int, name: str) -> np.ndarray | None:
+        if value is None:
+            return None
+        arr = np.asarray(value, dtype=np.float32)
+        if arr.ndim == 0:
+            return np.full(tet_count, arr.item(), dtype=np.float32)
+        arr = arr.flatten()
+        if len(arr) == 1:
+            return np.full(tet_count, arr[0], dtype=np.float32)
+        if len(arr) != tet_count:
+            raise ValueError(f"{name} array length ({len(arr)}) does not match tet count ({tet_count}).")
+        return arr
+
+    @staticmethod
+    def _infer_frequency(arr: np.ndarray, vertex_count: int, tet_count: int, name: str) -> "Model.AttributeFrequency":
+        """Infer :class:`~newton.Model.AttributeFrequency` from array length.
+
+        Args:
+            arr: The attribute array.
+            vertex_count: Number of vertices in the mesh.
+            tet_count: Number of tetrahedra in the mesh.
+            name: Attribute name (for error messages).
+
+        Returns:
+            The inferred frequency.
+
+        Raises:
+            ValueError: If the array length matches neither vertex_count nor
+                tet_count, or if both counts are equal and the mapping is
+                ambiguous.
+        """
+        from ..sim.model import Model  # noqa: PLC0415
+
+        first_dim = arr.shape[0] if arr.ndim >= 1 else 1
+        if first_dim == vertex_count and first_dim == tet_count:
+            raise ValueError(
+                f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches both "
+                f"vertex_count and tet_count. Pass an explicit (array, frequency) tuple instead."
+            )
+        if first_dim == vertex_count:
+            return Model.AttributeFrequency.PARTICLE
+        if first_dim == tet_count:
+            return Model.AttributeFrequency.TETRAHEDRON
+        raise ValueError(
+            f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches neither "
+            f"vertex_count ({vertex_count}) nor tet_count ({tet_count}). "
+            f"Pass an explicit (array, frequency) tuple instead."
+        )
+
+    def _compute_surface_triangles(self) -> np.ndarray:
+        return compute_surface_triangles(self._tet_indices)
+
+    # ---- Properties --------------------------------------------------------
+
+    @property
+    def vertices(self) -> nparray:
+        """Vertex positions [m], shape (N, 3), float32."""
+        return self._vertices
+
+    @property
+    def tet_indices(self) -> nparray:
+        """Tetrahedral element indices, flattened, 4 per tet."""
+        return self._tet_indices
+
+    @property
+    def tet_count(self) -> int:
+        """Number of tetrahedral elements."""
+        return len(self._tet_indices) // 4
+
+    @property
+    def vertex_count(self) -> int:
+        """Number of vertices."""
+        return len(self._vertices)
+
+    @property
+    def surface_tri_indices(self) -> nparray:
+        """Surface triangle indices (open faces), flattened, 3 per tri.
+
+        Automatically computed from tet connectivity at construction time
+        by extracting boundary faces (faces belonging to exactly one tet).
+        """
+        return self._surface_tri_indices
+
+    @property
+    def k_mu(self) -> nparray | None:
+        """Per-element first Lame parameter [Pa], shape (tet_count,) or None."""
+        return self._k_mu
+
+    @property
+    def k_lambda(self) -> nparray | None:
+        """Per-element second Lame parameter [Pa], shape (tet_count,) or None."""
+        return self._k_lambda
+
+    @property
+    def k_damp(self) -> nparray | None:
+        """Per-element Rayleigh damping coefficient [-], shape (tet_count,) or None."""
+        return self._k_damp
+
+    @property
+    def density(self) -> float | None:
+        """Uniform density [kg/m^3] or None."""
+        return self._density
+
+    # ---- Factory methods ---------------------------------------------------
+
+    @staticmethod
+    def create_from_usd(prim) -> "TetMesh":
+        """Load a TetMesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
+
+        This is a convenience wrapper around :func:`newton.usd.get_tetmesh`.
+        See that function for full documentation.
+
+        Args:
+            prim: The USD prim to load the tet mesh from.
+
+        Returns:
+            TetMesh: A new TetMesh instance.
+        """
+        from ..usd.utils import get_tetmesh  # noqa: PLC0415
+
+        return get_tetmesh(prim)
+
+    @staticmethod
+    def create_from_file(filename: str) -> "TetMesh":
+        """Load a TetMesh from a volumetric mesh file.
+
+        Supports ``.vtk``, ``.msh``, ``.vtu``, and other formats with
+        tetrahedral cells via meshio. Also supports ``.npz`` files saved
+        by :meth:`TetMesh.save` (numpy only, no extra dependencies).
+
+        Args:
+            filename: Path to the volumetric mesh file.
+
+        Returns:
+            TetMesh: A new TetMesh instance.
+        """
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"File not found: {filename}")
+
+        ext = os.path.splitext(filename)[1].lower()
+
+        if ext == ".npz":
+            data = np.load(filename)
+            kwargs = {}
+            for key in ("k_mu", "k_lambda", "k_damp"):
+                if key in data:
+                    kwargs[key] = data[key]
+            if "density" in data:
+                kwargs["density"] = float(data["density"])
+            known_keys = {
+                "vertices",
+                "tet_indices",
+                "k_mu",
+                "k_lambda",
+                "k_damp",
+                "density",
+                "__custom_names__",
+                "__custom_freqs__",
+            }
+            freq_map: dict[str, int] = {}
+            if "__custom_names__" in data and "__custom_freqs__" in data:
+                from ..sim.model import Model as _Model  # noqa: PLC0415
+
+                names = data["__custom_names__"]
+                freqs = data["__custom_freqs__"]
+                for n, f in zip(names, freqs, strict=True):
+                    freq_map[str(n)] = int(f)
+            custom: dict[str, np.ndarray | tuple] = {}
+            for k in data.files:
+                if k not in known_keys:
+                    arr = np.asarray(data[k])
+                    if k in freq_map:
+                        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+                        custom[k] = (arr, _Model.AttributeFrequency(freq_map[k]))
+                    else:
+                        custom[k] = arr
+            if custom:
+                kwargs["custom_attributes"] = custom
+            return TetMesh(
+                vertices=data["vertices"],
+                tet_indices=data["tet_indices"],
+                **kwargs,
+            )
+
+        import meshio
+
+        m = meshio.read(filename)
+
+        # Find tetrahedral cells
+        tet_indices = None
+        tet_cell_idx = None
+        for i, cell_block in enumerate(m.cells):
+            if cell_block.type == "tetra":
+                tet_indices = np.array(cell_block.data, dtype=np.int32).flatten()
+                tet_cell_idx = i
+                break
+
+        if tet_indices is None:
+            raise ValueError(f"No tetrahedral cells found in '{filename}'.")
+
+        vertices = np.array(m.points, dtype=np.float32)
+
+        # Read material arrays from cell data
+        kwargs: dict = {}
+        material_keys = {"k_mu", "k_lambda", "k_damp", "density"}
+        if m.cell_data and tet_cell_idx is not None:
+            for key in material_keys:
+                if key in m.cell_data:
+                    arr = np.asarray(m.cell_data[key][tet_cell_idx], dtype=np.float32)
+                    if key == "density":
+                        if arr.size > 1 and not np.allclose(arr, arr[0]):
+                            raise ValueError(
+                                f"Non-uniform per-element density found in '{filename}'. "
+                                f"TetMesh only supports a single uniform density value."
+                            )
+                        kwargs["density"] = float(arr[0])
+                    else:
+                        kwargs[key] = arr
+
+        # Read custom attributes from cell data and point data
+        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+        custom: dict[str, tuple[np.ndarray, _Model.AttributeFrequency]] = {}
+        if m.cell_data and tet_cell_idx is not None:
+            for key, arrays in m.cell_data.items():
+                if key not in material_keys:
+                    custom[key] = (np.asarray(arrays[tet_cell_idx]), _Model.AttributeFrequency.TETRAHEDRON)
+        if m.point_data:
+            for key, arr in m.point_data.items():
+                custom[key] = (np.asarray(arr), _Model.AttributeFrequency.PARTICLE)
+        if custom:
+            kwargs["custom_attributes"] = custom
+
+        return TetMesh(vertices=vertices, tet_indices=tet_indices, **kwargs)
+
+    def save(self, filename: str):
+        """Save the TetMesh to a file.
+
+        For ``.npz``, saves all arrays via :func:`numpy.savez` (no extra
+        dependencies). For other formats (``.vtk``, ``.msh``, ``.vtu``,
+        etc.), uses meshio.
+
+        Args:
+            filename: Path to write the file to.
+        """
+        ext = os.path.splitext(filename)[1].lower()
+
+        if ext == ".npz":
+            save_dict = {
+                "vertices": self._vertices,
+                "tet_indices": self._tet_indices,
+            }
+            if self._k_mu is not None:
+                save_dict["k_mu"] = self._k_mu
+            if self._k_lambda is not None:
+                save_dict["k_lambda"] = self._k_lambda
+            if self._k_damp is not None:
+                save_dict["k_damp"] = self._k_damp
+            if self._density is not None:
+                save_dict["density"] = np.array(self._density)
+            custom_names = []
+            custom_freqs = []
+            for k, (arr, freq) in self.custom_attributes.items():
+                save_dict[k] = arr
+                custom_names.append(k)
+                custom_freqs.append(int(freq))
+            if custom_names:
+                save_dict["__custom_names__"] = np.array(custom_names)
+                save_dict["__custom_freqs__"] = np.array(custom_freqs, dtype=np.int32)
+            np.savez(filename, **save_dict)
+            return
+
+        import meshio
+
+        cells = [("tetra", self._tet_indices.reshape(-1, 4))]
+        cell_data: dict[str, list[np.ndarray]] = {}
+        point_data: dict[str, np.ndarray] = {}
+
+        # Save material arrays as cell data
+        for name, arr in [("k_mu", self._k_mu), ("k_lambda", self._k_lambda), ("k_damp", self._k_damp)]:
+            if arr is not None:
+                cell_data[name] = [arr]
+        if self._density is not None:
+            cell_data["density"] = [np.full(self.tet_count, self._density, dtype=np.float32)]
+
+        # Save custom attributes as point or cell data based on frequency
+        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+        for name, (arr, freq) in self.custom_attributes.items():
+            if freq == _Model.AttributeFrequency.TETRAHEDRON:
+                cell_data[name] = [arr]
+            elif freq == _Model.AttributeFrequency.PARTICLE:
+                point_data[name] = arr
+            else:
+                warnings.warn(
+                    f"Custom attribute '{name}' with frequency {freq} cannot be saved to meshio format "
+                    f"(only PARTICLE and TETRAHEDRON are supported). Skipping.",
+                    stacklevel=2,
+                )
+
+        mesh = meshio.Mesh(
+            points=self._vertices,
+            cells=cells,
+            cell_data=cell_data if cell_data else {},
+            point_data=point_data if point_data else {},
+        )
+        mesh.write(filename)
+
+    def __eq__(self, other):
+        if not isinstance(other, TetMesh):
+            return NotImplemented
+        return np.array_equal(self._vertices, other._vertices) and np.array_equal(self._tet_indices, other._tet_indices)
+
+    def __hash__(self):
+        if self._cached_hash is None:
+            self._cached_hash = hash((self._vertices.tobytes(), self._tet_indices.tobytes()))
         return self._cached_hash
 
 
