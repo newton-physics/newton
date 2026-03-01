@@ -761,11 +761,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 X_tri_ws = shape_transform[tri_shape]
                 X_sdf_ws = shape_transform[sdf_shape]
 
-                # Determine the SDF query scale.
-                # For BVH fallback (mesh_query_point_sign_normal), queries are performed on the
-                # unscaled source mesh, so we must map points from scaled shape space to unscaled
-                # mesh space via mesh_scale_sdf. For precomputed SDF volumes, apply scale only
-                # when the SDF was not baked with scale.
+                # Determine sdf_scale for the SDF query.
+                # When using BVH fallback (mesh_query_point_sign_normal), the mesh stores
+                # unscaled vertices, so sdf_scale must equal the shape scale. Downstream code
+                # uses its inverse to transform points into unscaled mesh space.
+                # For precomputed SDF volumes, override to identity when scale is already
+                # baked into the SDF data.
                 sdf_data = SDFData()
                 sdf_scale = mesh_scale_sdf
                 if not use_bvh_for_sdf:
@@ -983,11 +984,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 aabb_upper_tri = shape_collision_aabb_upper[tri_shape]
                 voxel_res_tri = shape_voxel_resolution[tri_shape]
 
-                # Determine the SDF query scale.
-                # For BVH fallback (mesh_query_point_sign_normal), queries are performed on the
-                # unscaled source mesh, so we must map points from scaled shape space to unscaled
-                # mesh space via mesh_scale_sdf. For precomputed SDF volumes, apply scale only
-                # when the SDF was not baked with scale.
+                # Determine sdf_scale for the SDF query.
+                # When using BVH fallback (mesh_query_point_sign_normal), the mesh stores
+                # unscaled vertices, so sdf_scale must equal the shape scale. Downstream code
+                # uses its inverse to transform points into unscaled mesh space.
+                # For precomputed SDF volumes, override to identity when scale is already
+                # baked into the SDF data.
                 sdf_data = SDFData()
                 sdf_scale = mesh_scale_sdf
                 if not use_bvh_for_sdf:

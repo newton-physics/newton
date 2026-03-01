@@ -1425,100 +1425,117 @@ class TestNarrowPhase(unittest.TestCase):
         wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
 
-    def test_mesh_mesh_scaled_separated_positive_penetration(self):
-        """Scaled mesh-mesh contacts should stay positive when truly separated."""
-        if self.narrow_phase.mesh_mesh_contacts_kernel is None:
+    def _assert_mesh_mesh_scaled_separated_positive_penetration(self, narrow_phase: NarrowPhase):
+        """Run the scaled mesh-mesh separation scenario and verify positive contact distance."""
+        if narrow_phase.mesh_mesh_contacts_kernel is None:
             self.skipTest("Mesh-mesh NarrowPhase SDF contacts require CUDA")
 
-        box_mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False)
-        mesh_id = box_mesh.finalize()
-        scale = 0.75
-        expected_gap = 0.02
-        center_separation = 2.0 * scale + expected_gap
+        device = narrow_phase.device if narrow_phase.device is not None else wp.get_device()
+        with wp.ScopedDevice(device):
+            box_mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False)
+            mesh_id = box_mesh.finalize()
+            scale = 0.75
+            expected_gap = 0.02
+            center_separation = 2.0 * scale + expected_gap
 
-        geom_list = [
-            {
-                "type": GeoType.MESH,
-                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
-                "data": ([scale, scale, scale], 0.0),
-                "source": mesh_id,
-                "cutoff": 0.1,
-            },
-            {
-                "type": GeoType.MESH,
-                "transform": ([center_separation, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
-                "data": ([scale, scale, scale], 0.0),
-                "source": mesh_id,
-                "cutoff": 0.1,
-            },
-        ]
+            geom_list = [
+                {
+                    "type": GeoType.MESH,
+                    "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                    "data": ([scale, scale, scale], 0.0),
+                    "source": mesh_id,
+                    "cutoff": 0.1,
+                },
+                {
+                    "type": GeoType.MESH,
+                    "transform": ([center_separation, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                    "data": ([scale, scale, scale], 0.0),
+                    "source": mesh_id,
+                    "cutoff": 0.1,
+                },
+            ]
 
-        (
-            geom_types,
-            geom_data,
-            geom_transform,
-            geom_source,
-            shape_gap,
-            geom_collision_radius,
-            sdf_data,
-            shape_sdf_index,
-            shape_flags,
-            shape_collision_aabb_lower,
-            shape_collision_aabb_upper,
-            shape_voxel_resolution,
-        ) = self._create_geometry_arrays(geom_list)
+            (
+                geom_types,
+                geom_data,
+                geom_transform,
+                geom_source,
+                shape_gap,
+                geom_collision_radius,
+                sdf_data,
+                shape_sdf_index,
+                shape_flags,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                shape_voxel_resolution,
+            ) = self._create_geometry_arrays(geom_list)
 
-        candidate_pair = wp.array(np.array([(0, 1)], dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
-        candidate_pair_count = wp.array([1], dtype=wp.int32)
+            candidate_pair = wp.array(np.array([(0, 1)], dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
+            candidate_pair_count = wp.array([1], dtype=wp.int32)
 
-        max_contacts = 64
-        contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
-        contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
-        contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
-        contact_penetration = wp.zeros(max_contacts, dtype=float)
-        contact_tangent = wp.zeros(max_contacts, dtype=wp.vec3)
-        contact_count = wp.zeros(1, dtype=int)
+            max_contacts = 64
+            contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+            contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_penetration = wp.zeros(max_contacts, dtype=float)
+            contact_tangent = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_count = wp.zeros(1, dtype=int)
 
-        self.narrow_phase.launch(
-            candidate_pair=candidate_pair,
-            candidate_pair_count=candidate_pair_count,
-            shape_types=geom_types,
-            shape_data=geom_data,
-            shape_transform=geom_transform,
-            shape_source=geom_source,
-            sdf_data=sdf_data,
-            shape_sdf_index=shape_sdf_index,
-            shape_gap=shape_gap,
-            shape_collision_radius=geom_collision_radius,
-            shape_flags=shape_flags,
-            shape_collision_aabb_lower=shape_collision_aabb_lower,
-            shape_collision_aabb_upper=shape_collision_aabb_upper,
-            shape_voxel_resolution=shape_voxel_resolution,
-            contact_pair=contact_pair,
-            contact_position=contact_position,
-            contact_normal=contact_normal,
-            contact_penetration=contact_penetration,
-            contact_count=contact_count,
-            contact_tangent=contact_tangent,
+            narrow_phase.launch(
+                candidate_pair=candidate_pair,
+                candidate_pair_count=candidate_pair_count,
+                shape_types=geom_types,
+                shape_data=geom_data,
+                shape_transform=geom_transform,
+                shape_source=geom_source,
+                sdf_data=sdf_data,
+                shape_sdf_index=shape_sdf_index,
+                shape_gap=shape_gap,
+                shape_collision_radius=geom_collision_radius,
+                shape_flags=shape_flags,
+                shape_collision_aabb_lower=shape_collision_aabb_lower,
+                shape_collision_aabb_upper=shape_collision_aabb_upper,
+                shape_voxel_resolution=shape_voxel_resolution,
+                contact_pair=contact_pair,
+                contact_position=contact_position,
+                contact_normal=contact_normal,
+                contact_penetration=contact_penetration,
+                contact_count=contact_count,
+                contact_tangent=contact_tangent,
+            )
+            wp.synchronize()
+
+            count = int(contact_count.numpy()[0])
+            penetrations = contact_penetration.numpy()[:count]
+
+            self.assertGreater(count, 0, "Separated scaled meshes should still generate speculative contacts")
+            min_penetration = float(np.min(penetrations))
+            self.assertGreater(
+                min_penetration,
+                0.0,
+                f"Separated scaled meshes should report positive separation, got {penetrations}",
+            )
+            self.assertAlmostEqual(
+                min_penetration,
+                expected_gap,
+                delta=0.01,
+                msg=f"Expected separation near {expected_gap}, got min penetration {min_penetration}",
+            )
+
+    def test_mesh_mesh_scaled_separated_positive_penetration(self):
+        """Scaled mesh-mesh contacts should stay positive when truly separated."""
+        self._assert_mesh_mesh_scaled_separated_positive_penetration(self.narrow_phase)
+
+    def test_mesh_mesh_scaled_separated_positive_penetration_no_reduction(self):
+        """Scaled mesh-mesh separation should stay positive when reduction is disabled."""
+        device = self.narrow_phase.device if self.narrow_phase.device is not None else wp.get_device()
+        narrow_phase_no_reduction = NarrowPhase(
+            max_candidate_pairs=10000,
+            max_triangle_pairs=100000,
+            reduce_contacts=False,
+            device=device,
         )
-        wp.synchronize()
-
-        count = int(contact_count.numpy()[0])
-        penetrations = contact_penetration.numpy()[:count]
-
-        self.assertGreater(count, 0, "Separated scaled meshes should still generate speculative contacts")
-        min_penetration = float(np.min(penetrations))
-        self.assertGreater(
-            min_penetration,
-            0.0,
-            f"Separated scaled meshes should report positive separation, got {penetrations}",
-        )
-        self.assertAlmostEqual(
-            min_penetration,
-            expected_gap,
-            delta=0.01,
-            msg=f"Expected separation near {expected_gap}, got min penetration {min_penetration}",
-        )
+        self._assert_mesh_mesh_scaled_separated_positive_penetration(narrow_phase_no_reduction)
 
     # ================================================================================
     # Ellipsoid collision tests
