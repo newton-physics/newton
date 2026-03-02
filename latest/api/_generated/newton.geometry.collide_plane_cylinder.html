@@ -811,23 +811,31 @@
 <h1>newton.geometry.collide_plane_cylinder<a class="headerlink" href="#newton-geometry-collide-plane-cylinder" title="Link to this heading">#</a></h1>
 <dl class="py function">
 <dt class="sig sig-object py" id="newton.geometry.collide_plane_cylinder">
-<span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">collide_plane_cylinder</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">plane_normal</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">plane_pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cylinder_center</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cylinder_axis</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cylinder_radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cylinder_half_height</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/collision_primitive.py#L521"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.collide_plane_cylinder" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">collide_plane_cylinder</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">plane_normal</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">plane_pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cylinder_center</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cylinder_axis</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cylinder_radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cylinder_half_height</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/collision_primitive.py#L528"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.collide_plane_cylinder" title="Link to this definition">#</a></dt>
 <dd><p>Core contact geometry calculation for plane-cylinder collision.</p>
+<p>Uses two contact modes:</p>
+<ul class="simple">
+<li><p>Flat-surface mode (near upright): fixed-orientation stable tripod on
+the near cap plus one deepest rim point.</p></li>
+<li><p>Rolling mode: 1 deepest rim point + 2 side-generator contacts + 1
+near-cap rim contact (one generator typically merges with the deepest
+point, leaving 3 contacts).</p></li>
+</ul>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>plane_normal</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Normal vector of the plane</p></li>
-<li><p><strong>plane_pos</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Position point on the plane</p></li>
-<li><p><strong>cylinder_center</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Center position of the cylinder</p></li>
-<li><p><strong>cylinder_axis</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Axis direction of the cylinder</p></li>
-<li><p><strong>cylinder_radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Radius of the cylinder</p></li>
-<li><p><strong>cylinder_half_height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Half height of the cylinder</p></li>
+<li><p><strong>plane_normal</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Normal vector of the plane.</p></li>
+<li><p><strong>plane_pos</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Position point on the plane.</p></li>
+<li><p><strong>cylinder_center</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Center position of the cylinder.</p></li>
+<li><p><strong>cylinder_axis</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Axis direction of the cylinder.</p></li>
+<li><p><strong>cylinder_radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Radius of the cylinder.</p></li>
+<li><p><strong>cylinder_half_height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Half height of the cylinder.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>contact_dist: Vector of contact distances
-contact_pos: Matrix of contact positions (one per row)
-contact_normals: Matrix of contact normal vectors (one per row)</p>
+<dd class="field-even"><p>contact_dist: Vector of contact distances (MAXVAL for unpopulated).
+contact_pos: Matrix of contact positions (one per row).
+contact_normal: Contact normal (plane normal).</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>Tuple containing</p>
