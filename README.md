@@ -12,7 +12,7 @@ Newton is a GPU-accelerated physics simulation engine built upon [NVIDIA Warp](h
 Newton extends and generalizes Warp's ([deprecated](https://github.com/NVIDIA/warp/discussions/735)) `warp.sim` module, and integrates
 [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) as its primary backend. Newton emphasizes GPU-based computation, [OpenUSD](https://openusd.org/) support, differentiability, and user-defined extensibility, facilitating rapid iteration and scalable robotics simulation.
 
-Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. It is permissively licensed under the [Apache-2.0 license](https://github.com/newton-physics/newton/blob/main/LICENSE.md).
+Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. Code is licensed under [Apache-2.0](https://github.com/newton-physics/newton/blob/main/LICENSE.md). Documentation is licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
 
 Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/), and [NVIDIA](https://www.nvidia.com/).
 
