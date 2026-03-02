@@ -15,13 +15,14 @@
 
 import warp as wp
 
-from ...geometry import GeoType, Gaussian, raycast
-from . import ray_intersect, gaussians
+from ...geometry import Gaussian, GeoType, raycast
+from . import gaussians, ray_intersect
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
 MAX_SHAPE_ID = wp.uint32(0xFFFFFFF0)
 TRIANGLE_MESH_SHAPE_ID = wp.uint32(0xFFFFFFFD)
 PARTICLES_SHAPE_ID = wp.uint32(0xFFFFFFFE)
+
 
 @wp.struct
 class ClosestHit:
@@ -153,9 +154,9 @@ def closest_hit_shape(
                     # geom_hit, hit_color = gaussians.shade(
                     #     shape_transforms[si],
                     #     shape_sizes[si],
-                    #     ray_origin_world, 
-                    #     ray_dir_world, 
-                    #     gaussians_data[gaussian_id], 
+                    #     ray_origin_world,
+                    #     ray_dir_world,
+                    #     gaussians_data[gaussian_id],
                     #     gaussians_mode,
                     #     gaussians_min_transmittance,
                     #     closest_hit.distance
@@ -175,20 +176,23 @@ def closest_hit_shape(
             # which breaks nested wp.bvh_query_ray calls.
             # Once it is fixed in Warp, remove this code block and put
             # the commented out block above back in.
+            # Although, this workaround may actually be a performance improvement
+            # since it only renders gaussians if they are not blocked by other
+            # objects.
             if hit_gaussians:
-                for i in range(shape_indices.shape[0]):
-                    si = wp.uint32(i)
+                for _si in range(shape_indices.shape[0]):
+                    si = wp.uint32(_si)
                     if shape_types[si] == GeoType.GAUSSIAN:
                         gaussian_id = shape_source_ptr[shape_indices[si]]
                         geom_hit, hit_color = gaussians.shade(
                             shape_transforms[si],
                             shape_sizes[si],
-                            ray_origin_world, 
-                            ray_dir_world, 
-                            gaussians_data[gaussian_id], 
+                            ray_origin_world,
+                            ray_dir_world,
+                            gaussians_data[gaussian_id],
                             gaussians_mode,
                             gaussians_min_transmittance,
-                            closest_hit.distance
+                            closest_hit.distance,
                         )
 
                         if geom_hit.hit and geom_hit.distance < closest_hit.distance:

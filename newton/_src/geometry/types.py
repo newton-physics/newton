@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override, MAXVAL
+from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -1057,7 +1057,6 @@ class Gaussian:
         bvh_id: wp.uint64
         min_response: wp.float32
 
-
     def __init__(
         self,
         positions: nparray,
@@ -1065,7 +1064,7 @@ class Gaussian:
         scales: nparray | None = None,
         opacities: nparray | None = None,
         sh_coeffs: nparray | None = None,
-        min_response: float = 0.1
+        min_response: float = 0.1,
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -1186,11 +1185,13 @@ class Gaussian:
             Gaussian.Data struct containing the Warp arrays.
         """
 
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds
+        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         with wp.ScopedDevice(device):
             self.warp_data = Gaussian.Data()
-            self.warp_data.transforms = wp.array(np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf)
+            self.warp_data.transforms = wp.array(
+                np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf
+            )
             self.warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
             self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             if self._sh_coeffs is not None:
@@ -1237,7 +1238,9 @@ class Gaussian:
 
         # Rotations (quaternion w,x,y,z)
         if "rot_0" in vertex:
-            rotations = np.stack([vertex["rot_1"], vertex["rot_2"], vertex["rot_3"], vertex["rot_0"]], axis=1).astype(np.float32)
+            rotations = np.stack([vertex["rot_1"], vertex["rot_2"], vertex["rot_3"], vertex["rot_0"]], axis=1).astype(
+                np.float32
+            )
             rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
         else:
             rotations = None
@@ -1282,7 +1285,7 @@ class Gaussian:
             scales=scales,
             opacities=opacities,
             sh_coeffs=sh_coeffs,
-            min_response=min_response
+            min_response=min_response,
         )
 
     @staticmethod
@@ -1316,7 +1319,7 @@ class Gaussian:
             scales=_get_attr("scales"),
             opacities=_get_attr("opacities"),
             sh_coeffs=_get_attr("radiance:sphericalHarmonicsCoefficients"),
-            min_response=min_response
+            min_response=min_response,
         )
 
     # ---- Utility -------------------------------------------------------------

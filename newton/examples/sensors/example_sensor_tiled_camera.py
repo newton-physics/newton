@@ -122,7 +122,6 @@ class Example:
         robot_builder = newton.ModelBuilder()
         robot_builder.add_urdf(robot_asset, floating=False)
 
-
         gaussian = None
         if args.ply:
             gaussian = newton.Gaussian.create_from_ply(args.ply, 0.1)
@@ -429,7 +428,13 @@ class Example:
         if ui.radio_button("Gaussians: Quality", self.tiled_camera_sensor.render_context.config.gaussians_mode == 1):
             self.tiled_camera_sensor.render_context.config.gaussians_mode = 1
 
-        changed, value = ui.slider_float("Min Transmittance", self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance, 0.0, 1.0, "%.2f")
+        changed, value = ui.slider_float(
+            "Min Transmittance",
+            self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance,
+            0.0,
+            1.0,
+            "%.2f",
+        )
         if changed:
             self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance = value
 

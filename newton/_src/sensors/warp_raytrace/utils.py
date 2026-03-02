@@ -22,16 +22,21 @@ import numpy as np
 import warp as wp
 
 from ...core import MAXVAL
-from ...geometry import GeoType, Gaussian
-from .types import RenderLightType
+from ...geometry import Gaussian, GeoType
 from . import bvh
+from .types import RenderLightType
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
 @wp.kernel(enable_backward=False)
-def compute_shape_bounds(in_shape_type: wp.array(dtype=wp.int32), in_shape_ptr: wp.array(dtype=wp.uint64), in_gaussians: wp.array(dtype=Gaussian.Data), out_bounds: wp.array2d(dtype=wp.vec3f)):
+def compute_shape_bounds(
+    in_shape_type: wp.array(dtype=wp.int32),
+    in_shape_ptr: wp.array(dtype=wp.uint64),
+    in_gaussians: wp.array(dtype=Gaussian.Data),
+    out_bounds: wp.array2d(dtype=wp.vec3f),
+):
     tid = wp.tid()
 
     min_point = wp.vec3(MAXVAL)
@@ -174,7 +179,12 @@ class Utils:
         wp.launch(
             kernel=compute_shape_bounds,
             dim=self.__render_context.shape_source_ptr.size,
-            inputs=[self.__render_context.shape_types, self.__render_context.shape_source_ptr, self.__render_context.gaussians_data, self.__render_context.shape_bounds],
+            inputs=[
+                self.__render_context.shape_types,
+                self.__render_context.shape_source_ptr,
+                self.__render_context.gaussians_data,
+                self.__render_context.shape_bounds,
+            ],
             device=self.__render_context.device,
         )
 

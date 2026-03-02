@@ -14,12 +14,13 @@
 # limitations under the License.
 
 from __future__ import annotations
-from typing import Callable
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import warp as wp
 
+from ...geometry import Gaussian
 from .bvh import (
     compute_bvh_group_roots,
     compute_particle_bvh_bounds,
@@ -28,7 +29,6 @@ from .bvh import (
 from .render import render_megakernel
 from .types import RenderOrder
 from .utils import Utils
-from ...geometry import Gaussian
 
 
 @dataclass
@@ -142,8 +142,15 @@ class RenderContext:
         return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.uint32, device=self.device)
 
     def refit_bvh(self):
-        self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(self.bvh_shapes, self.bvh_shapes_group_roots, self.shape_count_enabled, self.__compute_bvh_bounds_shapes)
-        self.bvh_particles, self.bvh_particles_group_roots = self.__update_bvh(self.bvh_particles, self.bvh_particles_group_roots, self.particle_count_total, self.__compute_bvh_bounds_particles)
+        self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(
+            self.bvh_shapes, self.bvh_shapes_group_roots, self.shape_count_enabled, self.__compute_bvh_bounds_shapes
+        )
+        self.bvh_particles, self.bvh_particles_group_roots = self.__update_bvh(
+            self.bvh_particles,
+            self.bvh_particles_group_roots,
+            self.particle_count_total,
+            self.__compute_bvh_bounds_particles,
+        )
 
         if self.has_triangle_mesh:
             if self.triangle_mesh is None:
@@ -402,7 +409,13 @@ class RenderContext:
             self.bvh_particles = None
         self.__particles_world_index = particles_world_index
 
-    def __update_bvh(self, bvh: wp.Bvh, group_roots: wp.array(dtype=wp.int32), size: int, bounds_callback: Callable[[wp.array(dtype=wp.vec3f), wp.array(dtype=wp.vec3f), wp.array(dtype=wp.int32)], None]):
+    def __update_bvh(
+        self,
+        bvh: wp.Bvh,
+        group_roots: wp.array(dtype=wp.int32),
+        size: int,
+        bounds_callback: Callable[[wp.array(dtype=wp.vec3f), wp.array(dtype=wp.vec3f), wp.array(dtype=wp.int32)], None],
+    ):
         if size:
             lowers = bvh.lowers if bvh is not None else wp.zeros(size, dtype=wp.vec3f, device=self.device)
             uppers = bvh.uppers if bvh is not None else wp.zeros(size, dtype=wp.vec3f, device=self.device)
@@ -425,7 +438,9 @@ class RenderContext:
 
         return bvh, group_roots
 
-    def __compute_bvh_bounds_shapes(self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)):
+    def __compute_bvh_bounds_shapes(
+        self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)
+    ):
         wp.launch(
             kernel=compute_shape_bvh_bounds,
             dim=self.shape_count_enabled,
@@ -446,7 +461,9 @@ class RenderContext:
             device=self.device,
         )
 
-    def __compute_bvh_bounds_particles(self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)):
+    def __compute_bvh_bounds_particles(
+        self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)
+    ):
         wp.launch(
             kernel=compute_particle_bvh_bounds,
             dim=self.particle_count_total,

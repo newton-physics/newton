@@ -15,9 +15,9 @@
 
 import warp as wp
 
-from . import gaussians, lighting, raytrace, textures
-from .types import RenderOrder
 from ...geometry import Gaussian, GeoType
+from . import lighting, raytrace, textures
+from .types import RenderOrder
 
 
 @wp.func
@@ -231,7 +231,7 @@ def render_megakernel(
 
     if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
         return
-    
+
     out_color = closest_hit.color
 
     if render_depth:

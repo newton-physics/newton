@@ -1,10 +1,9 @@
 import warp as wp
 
 from ...geometry import Gaussian
-from ...core import MAXVAL
 from ...math import safe_div
-from .ray_intersect import GeomHit, map_ray_to_local_scaled
 from . import bvh
+from .ray_intersect import GeomHit, map_ray_to_local_scaled
 
 SH_C0 = wp.float32(0.28209479177387814)
 MAX_NUM_HITS = 20
@@ -27,7 +26,7 @@ def compute_gaussian_bvh_bounds(
     scale = wp.vec3f(scale[0] * ks, scale[1] * ks, scale[2] * ks)
 
     lower, upper = bvh.compute_ellipsoid_bounds(transform, scale)
-    
+
     lowers[tid] = lower
     uppers[tid] = upper
 
@@ -59,7 +58,9 @@ def ray_gsplat_hit_response(
     ray_direction_world: wp.vec3f,
     max_distance: wp.float32,
 ) -> tuple[wp.float32, wp.float32]:
-    ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local_scaled(
+        transform, scale, ray_origin_world, ray_direction_world
+    )
 
     hit_distance = canonical_ray_hit_distance(ray_origin_local, ray_direction_local)
 
@@ -83,7 +84,6 @@ def shade(
     gaussians_min_transmittance: wp.float32,
     max_distance: wp.float32,
 ) -> tuple[GeomHit, wp.vec3f]:
-
     result_hit = GeomHit()
     result_hit.hit = False
     result_hit.normal = wp.vec3f(0.0)
@@ -106,7 +106,9 @@ def shade(
         for i in range(MAX_NUM_HITS):
             hit_distances[i] = max_distance - min_distance
 
-        query = wp.bvh_query_ray(gaussian_data.bvh_id, ray_origin_local + ray_direction_local * min_distance, ray_direction_local)
+        query = wp.bvh_query_ray(
+            gaussian_data.bvh_id, ray_origin_local + ray_direction_local * min_distance, ray_direction_local
+        )
 
         while wp.bvh_query_next(query, hit_index, hit_distances[-1]):
             hit_alpha, hit_distance = ray_gsplat_hit_response(
@@ -150,7 +152,7 @@ def shade(
 
             opacity = hit_alphas[hit]
             result_color += color * opacity * ray_transmittance
-            ray_transmittance *= (1.0 - opacity)
+            ray_transmittance *= 1.0 - opacity
 
         min_distance = hit_distances[-1] + wp.float32(1e-06)
 
@@ -159,6 +161,6 @@ def shade(
 
     if ray_transmittance < gaussians_min_transmittance:
         result_hit.hit = True
-        result_color /= (1.0 - ray_transmittance)
+        result_color /= 1.0 - ray_transmittance
 
     return result_hit, result_color
