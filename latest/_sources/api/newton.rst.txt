@@ -15,6 +15,7 @@ newton
    newton_selection
    newton_sensors
    newton_solvers
+   newton_usd
    newton_utils
    newton_viewer
 
@@ -26,6 +27,7 @@ newton
 - :doc:`newton.selection <newton_selection>`
 - :doc:`newton.sensors <newton_sensors>`
 - :doc:`newton.solvers <newton_solvers>`
+- :doc:`newton.usd <newton_usd>`
 - :doc:`newton.utils <newton_utils>`
 - :doc:`newton.viewer <newton_viewer>`
 
