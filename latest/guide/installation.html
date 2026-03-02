@@ -830,23 +830,9 @@ X11 development libraries to build <code class="docutils literal notranslate"><s
 </div>
 </section>
 </section>
-<section id="clone-the-repository">
-<h2>1. Clone the repository<a class="headerlink" href="#clone-the-repository" title="Link to this heading">#</a></h2>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">git clone git@github.com:newton-physics/newton.git</span>
-<span class="go">cd newton</span>
-</pre></div>
-</div>
-</section>
-<section id="python-environment-setup">
-<h2>2. Python Environment Setup<a class="headerlink" href="#python-environment-setup" title="Link to this heading">#</a></h2>
-<p>We recommend using the <a class="reference external" href="https://docs.astral.sh/uv/">uv</a> Python package and project manager. It will automatically setup a version-locked Python environment based on the <a class="reference external" href="https://github.com/newton-physics/newton/blob/main/uv.lock">uv.lock</a> file that the Newton team maintains.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>During the alpha development phase, we recommend using uv. When Newton is stabilized and regularly publishing to PyPI we will update this guide to make the pip install approach the recommended method.</p>
-</div>
 <section id="extra-dependencies">
-<h3>Extra Dependencies<a class="headerlink" href="#extra-dependencies" title="Link to this heading">#</a></h3>
-<p>Newton’s only mandatory dependency is <a class="reference external" href="https://github.com/NVIDIA/warp">NVIDIA Warp</a>. We define additional dependency sets in the <a class="reference external" href="https://github.com/newton-physics/newton/blob/main/pyproject.toml">pyproject.toml</a> file. The sets are:</p>
+<h2>Extra Dependencies<a class="headerlink" href="#extra-dependencies" title="Link to this heading">#</a></h2>
+<p>Newton’s only mandatory dependency is <a class="reference external" href="https://github.com/NVIDIA/warp">NVIDIA Warp</a>. Additional dependency sets are defined in the <a class="reference external" href="https://github.com/newton-physics/newton/blob/main/pyproject.toml">pyproject.toml</a> file:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 20.0%" />
@@ -864,35 +850,170 @@ X11 development libraries to build <code class="docutils literal notranslate"><s
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">importers</span></code></p></td>
 <td><p>Asset import and mesh processing dependencies</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">examples</span></code></p></td>
-<td><p>Dependencies for running examples, including visualization</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">remesh</span></code></p></td>
+<td><p>Remeshing dependencies (Open3D, pyfqmr) for <code class="xref py py-class docutils literal notranslate"><span class="pre">SurfaceReconstructor</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">torch-cu12</span></code></p></td>
-<td><p>PyTorch dependency needed <em>in addition</em> to <code class="docutils literal notranslate"><span class="pre">examples</span></code> dependencies to run examples that inference RL-trained control policies</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">examples</span></code></p></td>
+<td><p>Dependencies for running examples, including visualization (includes <code class="docutils literal notranslate"><span class="pre">sim</span></code> + <code class="docutils literal notranslate"><span class="pre">importers</span></code>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dev</span></code></p></td>
-<td><p>Dependencies for development and testing</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">torch-cu12</span></code></p></td>
+<td><p>PyTorch (CUDA 12) needed <em>in addition</em> to <code class="docutils literal notranslate"><span class="pre">examples</span></code> to run RL policy examples</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">docs</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">torch-cu13</span></code></p></td>
+<td><p>PyTorch (CUDA 13) needed <em>in addition</em> to <code class="docutils literal notranslate"><span class="pre">examples</span></code> to run RL policy examples</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">notebook</span></code></p></td>
+<td><p>Jupyter notebook support with Rerun visualization (includes <code class="docutils literal notranslate"><span class="pre">examples</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dev</span></code></p></td>
+<td><p>Dependencies for development and testing (includes <code class="docutils literal notranslate"><span class="pre">examples</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">docs</span></code></p></td>
 <td><p>Dependencies for building the documentation</p></td>
 </tr>
 </tbody>
 </table>
+</div>
+<p>Some extras transitively include others. For example, <code class="docutils literal notranslate"><span class="pre">examples</span></code> pulls in both
+<code class="docutils literal notranslate"><span class="pre">sim</span></code> and <code class="docutils literal notranslate"><span class="pre">importers</span></code>, and <code class="docutils literal notranslate"><span class="pre">dev</span></code> pulls in <code class="docutils literal notranslate"><span class="pre">examples</span></code>. You only need to
+install the most specific set for your use case.</p>
+</section>
+<section id="installing-from-pypi-recommended">
+<h2>Installing from PyPI (Recommended)<a class="headerlink" href="#installing-from-pypi-recommended" title="Link to this heading">#</a></h2>
+<p>Basic installation:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pip install newton</span>
+</pre></div>
+</div>
+<p>Install with extras for running examples (includes simulation and visualization dependencies):</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pip install &quot;newton[examples]&quot;</span>
+</pre></div>
+</div>
+<p>Install only simulation dependencies (without visualization):</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pip install &quot;newton[sim]&quot;</span>
+</pre></div>
+</div>
+<p>We recommend installing Newton inside a virtual environment to avoid conflicts
+with other packages:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-0" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-0">
+macOS / Linux</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
+<span class="go">source .venv/bin/activate</span>
+<span class="go">pip install &quot;newton[examples]&quot;</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-1" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-1">
+Windows (console)</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
+<span class="go">.venv\Scripts\activate.bat</span>
+<span class="go">pip install &quot;newton[examples]&quot;</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-2" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows-ps" for="sd-tab-item-2">
+Windows (PowerShell)</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
+<span class="go">.venv\Scripts\Activate.ps1</span>
+<span class="go">pip install &quot;newton[examples]&quot;</span>
+</pre></div>
+</div>
+</div>
+</div>
+<section id="running-examples">
+<h3>Running Examples<a class="headerlink" href="#running-examples" title="Link to this heading">#</a></h3>
+<p>After installing Newton with the <code class="docutils literal notranslate"><span class="pre">examples</span></code> extra, run an example with:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m newton.examples basic_pendulum</span>
+</pre></div>
+</div>
+<p>Run an example that runs RL policy inference (requires <code class="docutils literal notranslate"><span class="pre">torch-cu12</span></code> or <code class="docutils literal notranslate"><span class="pre">torch-cu13</span></code>):</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pip install &quot;newton[torch-cu12]&quot;</span>
+<span class="go">python -m newton.examples robot_anymal_c_walk</span>
+</pre></div>
+</div>
+<p>See a list of all available examples:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m newton.examples</span>
+</pre></div>
+</div>
+</section>
+<section id="quick-start">
+<h3>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">#</a></h3>
+<p>After installing Newton with the <code class="docutils literal notranslate"><span class="pre">examples</span></code> or <code class="docutils literal notranslate"><span class="pre">sim</span></code> extra, you can build
+models, create solvers, and run simulations directly from Python. A typical
+workflow looks like this:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="c1"># Build a model</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_mjcf</span><span class="p">(</span><span class="s2">&quot;robot.xml&quot;</span><span class="p">)</span>        <span class="c1"># or add_urdf() / add_usd()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="c1"># Create a solver and allocate state</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">state_0</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">state_1</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+
+<span class="n">newton</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">,</span> <span class="n">state_0</span><span class="p">)</span>
+
+<span class="c1"># Step the simulation</span>
+<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1000</span><span class="p">):</span>
+    <span class="n">state_0</span><span class="o">.</span><span class="n">clear_forces</span><span class="p">()</span>
+    <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span> <span class="o">/</span> <span class="mf">4.0</span><span class="p">)</span>
+    <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
+</pre></div>
+</div>
+<p>For robot-learning workflows with parallel environments (as used by
+<a class="reference external" href="https://isaac-sim.github.io/IsaacLab/">Isaac Lab</a>), you can replicate a
+robot template across many worlds and step them all simultaneously on the GPU:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build a single robot template</span>
+<span class="n">template</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">template</span><span class="o">.</span><span class="n">add_mjcf</span><span class="p">(</span><span class="s2">&quot;humanoid.xml&quot;</span><span class="p">)</span>
+
+<span class="c1"># Replicate into parallel worlds</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">replicate</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">world_count</span><span class="o">=</span><span class="mi">1024</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="c1"># The solver steps all 1024 worlds in parallel</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>See the <a class="reference internal" href="key-concepts.html"><span class="doc">Key Concepts</span></a> guide and <a class="reference internal" href="../integrations/isaac-lab.html"><span class="doc">Isaac Lab Integration</span></a>
+for more details.</p>
+</section>
+</section>
+<section id="installing-from-source">
+<h2>Installing from Source<a class="headerlink" href="#installing-from-source" title="Link to this heading">#</a></h2>
+<p>Install from source if you want access to the full repository, tests, and the <code class="docutils literal notranslate"><span class="pre">uv.lock</span></code> lockfile for reproducible environments. This is recommended for developers and contributors.</p>
+<section id="clone-the-repository">
+<h3>Clone the Repository<a class="headerlink" href="#clone-the-repository" title="Link to this heading">#</a></h3>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">git clone git@github.com:newton-physics/newton.git</span>
+<span class="go">cd newton</span>
+</pre></div>
 </div>
 </section>
 <section id="method-1-using-uv-recommended">
 <h3>Method 1: Using uv (Recommended)<a class="headerlink" href="#method-1-using-uv-recommended" title="Link to this heading">#</a></h3>
 <p>Install <a class="reference external" href="https://docs.astral.sh/uv/">uv</a>:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-0" name="sd-tab-set-0" type="radio">
-<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-0">
+<input checked="checked" id="sd-tab-item-3" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-3">
 macOS / Linux</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">curl -LsSf https://astral.sh/uv/install.sh | sh</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-1" name="sd-tab-set-0" type="radio">
-<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-1">
+<input id="sd-tab-item-4" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-4">
 Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">powershell -ExecutionPolicy ByPass -c &quot;irm https://astral.sh/uv/install.ps1 | iex&quot;</span>
 </pre></div>
@@ -910,7 +1031,7 @@ Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run --extra examples -m newton.examples robot_humanoid --world-count 16</span>
 </pre></div>
 </div>
-<p>Run an example that inferences an RL policy:</p>
+<p>Run an example that runs RL policy inference:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run --extra examples --extra torch-cu12 -m newton.examples robot_anymal_c_walk</span>
 </pre></div>
 </div>
@@ -929,24 +1050,24 @@ Windows</label><div class="sd-tab-content docutils">
 </div>
 <p>Then you can activate the virtual environment and run an example using the virtual environment’s Python:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-2" name="sd-tab-set-1" type="radio">
-<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-2">
+<input checked="checked" id="sd-tab-item-5" name="sd-tab-set-2" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-5">
 macOS / Linux</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">source .venv/bin/activate</span>
 <span class="go">python newton/examples/robot/example_robot_humanoid.py</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-3" name="sd-tab-set-1" type="radio">
-<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-3">
+<input id="sd-tab-item-6" name="sd-tab-set-2" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-6">
 Windows (console)</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">.venv\Scripts\activate.bat</span>
 <span class="go">python newton/examples/robot/example_robot_humanoid.py</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-4" name="sd-tab-set-1" type="radio">
-<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows-ps" for="sd-tab-item-4">
+<input id="sd-tab-item-7" name="sd-tab-set-2" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows-ps" for="sd-tab-item-7">
 Windows (PowerShell)</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">.venv\Scripts\Activate.ps1</span>
 <span class="go">python newton/examples/robot/example_robot_humanoid.py</span>
@@ -960,24 +1081,24 @@ Windows (PowerShell)</label><div class="sd-tab-content docutils">
 <p>These instructions are meant for users who wish to set up a development environment using <a class="reference external" href="https://docs.python.org/3/library/venv.html">venv</a>
 or Conda (e.g. from <a class="reference external" href="https://github.com/conda-forge/miniforge">Miniforge</a>).</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-5" name="sd-tab-set-2" type="radio">
-<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-5">
+<input checked="checked" id="sd-tab-item-8" name="sd-tab-set-3" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-8">
 macOS / Linux</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
 <span class="go">source .venv/bin/activate</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-6" name="sd-tab-set-2" type="radio">
-<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-6">
+<input id="sd-tab-item-9" name="sd-tab-set-3" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-9">
 Windows (console)</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
 <span class="go">.venv\Scripts\activate.bat</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-7" name="sd-tab-set-2" type="radio">
-<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows-ps" for="sd-tab-item-7">
+<input id="sd-tab-item-10" name="sd-tab-set-3" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows-ps" for="sd-tab-item-10">
 Windows (PowerShell)</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
 <span class="go">.venv\Scripts\Activate.ps1</span>
@@ -1001,7 +1122,7 @@ Windows (PowerShell)</label><div class="sd-tab-content docutils">
 <section id="next-steps">
 <h2>Next Steps<a class="headerlink" href="#next-steps" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Explore more examples in the <code class="docutils literal notranslate"><span class="pre">newton/examples/</span></code> directory and checkout the <a class="reference internal" href="visualization.html"><span class="doc">Visualization</span></a> guide to learn how to interact with the examples simulation.</p></li>
+<li><p>Run <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">newton.examples</span></code> to see all available examples and check out the <a class="reference internal" href="visualization.html"><span class="doc">Visualization</span></a> guide to learn how to interact with the example simulations.</p></li>
 <li><p>Check out the <a class="reference internal" href="development.html"><span class="doc">Development</span></a> guide to learn how to contribute to Newton.</p></li>
 </ul>
 </section>
@@ -1034,9 +1155,14 @@ Windows (PowerShell)</label><div class="sd-tab-content docutils">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#platform-specific-requirements">Platform-Specific Requirements</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#clone-the-repository">1. Clone the repository</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#python-environment-setup">2. Python Environment Setup</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#extra-dependencies">Extra Dependencies</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#extra-dependencies">Extra Dependencies</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installing-from-pypi-recommended">Installing from PyPI (Recommended)</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-examples">Running Examples</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-start">Quick Start</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installing-from-source">Installing from Source</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#clone-the-repository">Clone the Repository</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#method-1-using-uv-recommended">Method 1: Using uv (Recommended)</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#running-newton-with-uv">Running Newton with uv</a></li>
 </ul>
