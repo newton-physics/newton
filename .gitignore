@@ -72,3 +72,6 @@ docs/_static/viser/
 
 # Notebook checkpoints
 **/*.ipynb_checkpoints/
+
+#reference files
+integrator_base.cc
