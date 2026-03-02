@@ -125,7 +125,7 @@ class Example:
 
         gaussian = None
         if args.ply:
-            gaussian = newton.Gaussian.create_from_ply(args.ply)
+            gaussian = newton.Gaussian.create_from_ply(args.ply, 0.1)
 
         builder = newton.ModelBuilder()
 

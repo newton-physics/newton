@@ -1055,6 +1055,7 @@ class Gaussian:
         opacities: wp.array(dtype=wp.float32)
         sh_coeffs: wp.array(dtype=wp.float32, ndim=2)
         bvh_id: wp.uint64
+        min_response: wp.float32
 
 
     def __init__(
@@ -1064,6 +1065,7 @@ class Gaussian:
         scales: nparray | None = None,
         opacities: nparray | None = None,
         sh_coeffs: nparray | None = None,
+        min_response: float = 0.1
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -1103,6 +1105,8 @@ class Gaussian:
             if sh_coeffs is not None
             else None
         )
+
+        self._min_response = min_response
 
         self._cached_hash = None
 
@@ -1165,6 +1169,11 @@ class Gaussian:
                 return deg
         return 0
 
+    @property
+    def min_response(self) -> float:
+        """Min response, float."""
+        return self._min_response
+
     # ---- Finalize (GPU upload) -----------------------------------------------
 
     def finalize(self, device: Devicelike = None) -> Data:
@@ -1176,6 +1185,9 @@ class Gaussian:
         Returns:
             Gaussian.Data struct containing the Warp arrays.
         """
+
+        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds
+
         with wp.ScopedDevice(device):
             self.warp_data = Gaussian.Data()
             self.warp_data.transforms = wp.array(np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf)
@@ -1183,14 +1195,15 @@ class Gaussian:
             self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             if self._sh_coeffs is not None:
                 self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            self.warp_data.min_response = self.min_response
 
             lowers = wp.zeros(self.count, dtype=wp.vec3f)
             uppers = wp.zeros(self.count, dtype=wp.vec3f)
 
             wp.launch(
-                kernel=Gaussian.__compute_gaussian_bvh_bounds,
+                kernel=compute_gaussian_bvh_bounds,
                 dim=self.count,
-                inputs=[self.warp_data.transforms, self.warp_data.scales, lowers, uppers],
+                inputs=[self.warp_data, lowers, uppers],
             )
 
             self.warp_bvh = wp.Bvh(lowers, uppers)
@@ -1200,7 +1213,7 @@ class Gaussian:
     # ---- Factory methods -----------------------------------------------------
 
     @staticmethod
-    def create_from_ply(filename: str) -> "Gaussian":
+    def create_from_ply(filename: str, min_response: float = 0.1) -> "Gaussian":
         """Load Gaussian splat data from a ``.ply`` file (standard 3DGS format).
 
         Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
@@ -1210,6 +1223,7 @@ class Gaussian:
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
+            min_response: Min response (default = 0.1).
 
         Returns:
             A new :class:`Gaussian` instance.
@@ -1268,36 +1282,41 @@ class Gaussian:
             scales=scales,
             opacities=opacities,
             sh_coeffs=sh_coeffs,
+            min_response=min_response
         )
 
     @staticmethod
-    def create_from_usd(prim) -> "Gaussian":
+    def create_from_usd(prim, min_response: float = 0.1) -> "Gaussian":
         """Load Gaussian splat data from a USD prim.
 
-        Reads positions from ``UsdGeom.PointBased`` points, plus custom attributes:
-        ``gaussian:rotations``, ``gaussian:scales``, ``gaussian:opacities``,
-        ``gaussian:shCoeffs``.
+        Reads positions from attributes: `positions`, `rotations`, `scales`, `opacities` and `shCoeffs`.
 
         Args:
             prim: A USD prim containing Gaussian splat data.
+            min_response: Min response (default = 0.1).
 
         Returns:
             A new :class:`Gaussian` instance.
         """
-        from pxr import UsdGeom
 
         def _get_attr(name):
             attr = prim.GetAttribute(name)
             if attr and attr.HasValue():
                 return np.array(attr.Get(), dtype=np.float32)
+
+            attr = prim.GetAttribute(f"{name}h")
+            if attr and attr.HasValue():
+                return np.array(attr.Get(), dtype=np.float32)
+
             return None
 
         return Gaussian(
-            positions=_get_attr("positionsh"),
-            rotations=_get_attr("orientationsh"),
-            scales=_get_attr("scalesh"),
-            opacities=_get_attr("opacitiesh"),
-            sh_coeffs=_get_attr("radiance:sphericalHarmonicsCoefficientsh")
+            positions=_get_attr("positions"),
+            rotations=_get_attr("orientations"),
+            scales=_get_attr("scales"),
+            opacities=_get_attr("opacities"),
+            sh_coeffs=_get_attr("radiance:sphericalHarmonicsCoefficients"),
+            min_response=min_response
         )
 
     # ---- Utility -------------------------------------------------------------
@@ -1346,35 +1365,3 @@ class Gaussian:
         if not isinstance(other, Gaussian):
             return NotImplemented
         return hash(self) == hash(other)
-
-    @wp.kernel
-    def __compute_gaussian_bvh_bounds(
-        gaussian_transforms: wp.array(dtype=wp.transformf),
-        gaussian_scales: wp.array(dtype=wp.vec3f),
-        lowers: wp.array(dtype=wp.vec3f),
-        uppers: wp.array(dtype=wp.vec3f),
-    ):
-        tid = wp.tid()
-
-        transform = gaussian_transforms[tid]
-        scale = gaussian_scales[tid]
-
-        extent = wp.vec3f(wp.abs(scale[0]), wp.abs(scale[1]), wp.abs(scale[2]))
-
-        min_bound = wp.vec3f(MAXVAL)
-        max_bound = wp.vec3f(-MAXVAL)
-
-        for x in range(2):
-            for y in range(2):
-                for z in range(2):
-                    local_corner = wp.vec3f(
-                        extent[0] * (2.0 * wp.float32(x) - 1.0),
-                        extent[1] * (2.0 * wp.float32(y) - 1.0),
-                        extent[2] * (2.0 * wp.float32(z) - 1.0),
-                    )
-                    world_corner = wp.transform_point(transform, local_corner)
-                    min_bound = wp.min(min_bound, world_corner)
-                    max_bound = wp.max(max_bound, world_corner)
-
-        lowers[tid] = min_bound
-        uppers[tid] = max_bound

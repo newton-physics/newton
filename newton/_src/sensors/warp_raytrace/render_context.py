@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from __future__ import annotations
+from typing import Callable
 
 from dataclasses import dataclass, field
 
@@ -66,7 +67,11 @@ class RenderContext:
         self.world_count = world_count
 
         self.bvh_shapes: wp.Bvh = None
+        self.bvh_shapes_group_roots: wp.array(dtype=wp.int32) = None
+
         self.bvh_particles: wp.Bvh = None
+        self.bvh_particles_group_roots: wp.array(dtype=wp.int32) = None
+
         self.triangle_mesh: wp.Mesh = None
         self.shape_count_enabled = 0
         self.shape_count_total = 0
@@ -111,35 +116,6 @@ class RenderContext:
         self.lights_position: wp.array(dtype=wp.vec3f) = None
         self.lights_orientation: wp.array(dtype=wp.vec3f) = None
 
-        self.bvh_shapes_lowers: wp.array(dtype=wp.vec3f) = None
-        self.bvh_shapes_uppers: wp.array(dtype=wp.vec3f) = None
-        self.bvh_shapes_groups: wp.array(dtype=wp.int32) = None
-        self.bvh_shapes_group_roots: wp.array(dtype=wp.int32) = None
-        self.bvh_particles_lowers: wp.array(dtype=wp.vec3f) = None
-        self.bvh_particles_uppers: wp.array(dtype=wp.vec3f) = None
-        self.bvh_particles_groups: wp.array(dtype=wp.int32) = None
-        self.bvh_particles_group_roots: wp.array(dtype=wp.int32) = None
-
-    def __init_shape_bvh_arrays(self):
-        if self.bvh_shapes_lowers is None:
-            self.bvh_shapes_lowers = wp.zeros(self.shape_count_enabled, dtype=wp.vec3f, device=self.device)
-        if self.bvh_shapes_uppers is None:
-            self.bvh_shapes_uppers = wp.zeros(self.shape_count_enabled, dtype=wp.vec3f, device=self.device)
-        if self.bvh_shapes_groups is None:
-            self.bvh_shapes_groups = wp.zeros(self.shape_count_enabled, dtype=wp.int32, device=self.device)
-        if self.bvh_shapes_group_roots is None:
-            self.bvh_shapes_group_roots = wp.zeros((self.world_count_total), dtype=wp.int32, device=self.device)
-
-    def __init_particle_bvh_arrays(self):
-        if self.bvh_particles_lowers is None:
-            self.bvh_particles_lowers = wp.zeros(self.particle_count_total, dtype=wp.vec3f, device=self.device)
-        if self.bvh_particles_uppers is None:
-            self.bvh_particles_uppers = wp.zeros(self.particle_count_total, dtype=wp.vec3f, device=self.device)
-        if self.bvh_particles_groups is None:
-            self.bvh_particles_groups = wp.zeros(self.particle_count_total, dtype=wp.int32, device=self.device)
-        if self.bvh_particles_group_roots is None:
-            self.bvh_particles_group_roots = wp.zeros((self.world_count_total), dtype=wp.int32, device=self.device)
-
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
@@ -166,37 +142,8 @@ class RenderContext:
         return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.uint32, device=self.device)
 
     def refit_bvh(self):
-        if self.shape_count_enabled:
-            self.__init_shape_bvh_arrays()
-            self.__compute_bvh_shape_bounds()
-            if self.bvh_shapes is None:
-                self.bvh_shapes = wp.Bvh(self.bvh_shapes_lowers, self.bvh_shapes_uppers, groups=self.bvh_shapes_groups)
-                wp.launch(
-                    kernel=compute_bvh_group_roots,
-                    dim=self.world_count_total,
-                    inputs=[self.bvh_shapes.id, self.bvh_shapes_group_roots],
-                    device=self.device,
-                )
-            else:
-                self.bvh_shapes.refit()
-
-        if self.particle_count_total:
-            self.__init_particle_bvh_arrays()
-            self.__compute_bvh_particle_bounds()
-            if self.bvh_particles is None:
-                self.bvh_particles = wp.Bvh(
-                    self.bvh_particles_lowers,
-                    self.bvh_particles_uppers,
-                    groups=self.bvh_particles_groups,
-                )
-                wp.launch(
-                    kernel=compute_bvh_group_roots,
-                    dim=self.world_count_total,
-                    inputs=[self.bvh_particles.id, self.bvh_particles_group_roots],
-                    device=self.device,
-                )
-            else:
-                self.bvh_particles.refit()
+        self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(self.bvh_shapes, self.bvh_shapes_group_roots, self.shape_count_enabled, self.__compute_bvh_bounds_shapes)
+        self.bvh_particles, self.bvh_particles_group_roots = self.__update_bvh(self.bvh_particles, self.bvh_particles_group_roots, self.particle_count_total, self.__compute_bvh_bounds_particles)
 
         if self.has_triangle_mesh:
             if self.triangle_mesh is None:
@@ -365,44 +312,6 @@ class RenderContext:
                 device=self.device,
             )
 
-    def __compute_bvh_shape_bounds(self):
-        wp.launch(
-            kernel=compute_shape_bvh_bounds,
-            dim=self.shape_count_enabled,
-            inputs=[
-                self.shape_count_enabled,
-                self.world_count_total,
-                self.shape_world_index,
-                self.shape_enabled,
-                self.shape_types,
-                self.shape_indices,
-                self.shape_sizes,
-                self.shape_transforms,
-                self.shape_bounds,
-                self.bvh_shapes_lowers,
-                self.bvh_shapes_uppers,
-                self.bvh_shapes_groups,
-            ],
-            device=self.device,
-        )
-
-    def __compute_bvh_particle_bounds(self):
-        wp.launch(
-            kernel=compute_particle_bvh_bounds,
-            dim=self.particle_count_total,
-            inputs=[
-                self.particle_count_total,
-                self.world_count_total,
-                self.particles_world_index,
-                self.particles_position,
-                self.particles_radius,
-                self.bvh_particles_lowers,
-                self.bvh_particles_uppers,
-                self.bvh_particles_groups,
-            ],
-            device=self.device,
-        )
-
     @property
     def world_count_total(self) -> int:
         if self.config.enable_global_world:
@@ -492,3 +401,64 @@ class RenderContext:
         if self.__particles_world_index is None or self.__particles_world_index.ptr != particles_world_index.ptr:
             self.bvh_particles = None
         self.__particles_world_index = particles_world_index
+
+    def __update_bvh(self, bvh: wp.Bvh, group_roots: wp.array(dtype=wp.int32), size: int, bounds_callback: Callable[[wp.array(dtype=wp.vec3f), wp.array(dtype=wp.vec3f), wp.array(dtype=wp.int32)], None]):
+        if size:
+            lowers = bvh.lowers if bvh is not None else wp.zeros(size, dtype=wp.vec3f, device=self.device)
+            uppers = bvh.uppers if bvh is not None else wp.zeros(size, dtype=wp.vec3f, device=self.device)
+            groups = bvh.groups if bvh is not None else wp.zeros(size, dtype=wp.int32, device=self.device)
+
+            bounds_callback(lowers, uppers, groups)
+
+            if bvh is None:
+                bvh = wp.Bvh(lowers, uppers, groups=groups)
+                group_roots = wp.zeros((self.world_count_total), dtype=wp.int32, device=self.device)
+
+                wp.launch(
+                    kernel=compute_bvh_group_roots,
+                    dim=self.world_count_total,
+                    inputs=[bvh.id, group_roots],
+                    device=self.device,
+                )
+            else:
+                bvh.refit()
+
+        return bvh, group_roots
+
+    def __compute_bvh_bounds_shapes(self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)):
+        wp.launch(
+            kernel=compute_shape_bvh_bounds,
+            dim=self.shape_count_enabled,
+            inputs=[
+                self.shape_count_enabled,
+                self.world_count_total,
+                self.shape_world_index,
+                self.shape_enabled,
+                self.shape_types,
+                self.shape_indices,
+                self.shape_sizes,
+                self.shape_transforms,
+                self.shape_bounds,
+                lowers,
+                uppers,
+                groups,
+            ],
+            device=self.device,
+        )
+
+    def __compute_bvh_bounds_particles(self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)):
+        wp.launch(
+            kernel=compute_particle_bvh_bounds,
+            dim=self.particle_count_total,
+            inputs=[
+                self.particle_count_total,
+                self.world_count_total,
+                self.particles_world_index,
+                self.particles_position,
+                self.particles_radius,
+                lowers,
+                uppers,
+                groups,
+            ],
+            device=self.device,
+        )

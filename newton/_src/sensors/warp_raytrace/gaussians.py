@@ -1,40 +1,35 @@
 import warp as wp
 
-from ...geometry import Gaussian, raycast
+from ...geometry import Gaussian
+from ...core import MAXVAL
 from ...math import safe_div
 from .ray_intersect import GeomHit, map_ray_to_local_scaled
-
+from . import bvh
 
 SH_C0 = wp.float32(0.28209479177387814)
-
-# When True, scale ellipsoid bounds by opacity (tighter bounds for low-opacity splats).
-USE_ADAPTIVE_GSPLAT_BOUNDS = True
-
-# Min response for adaptive gsplat bounds (kernel_scale); fixed value.
-GSPLAT_KERNEL_MIN_RESPONSE = wp.float32(0.03333) 
-GSPLAT_KERNEL_MIN_ALPHA = wp.float32(1.0 / 255.0) 
-GSPLAT_KERNEL_MIN_TRANSMITTANCE = wp.float32(0.003)
-
 MAX_NUM_HITS = 20
 
 
-@wp.func
-def kernel_scale(opacity: wp.float32) -> wp.float32:
-    """Scale factor for opacity-dependent ellipsoid bounds (degree-2 Gaussian only).
+@wp.kernel
+def compute_gaussian_bvh_bounds(
+    gaussians_data: Gaussian.Data,
+    lowers: wp.array(dtype=wp.vec3f),
+    uppers: wp.array(dtype=wp.vec3f),
+):
+    tid = wp.tid()
 
-    effective_scale = kernel_scale(...) * scale. When use_adaptive, low opacity
-    yields smaller effective scale (tighter bounds). Iso-contour exp(-0.5*r^2)
-    = min_response => r = sqrt(-2*ln(min_response)).
-    """
+    transform = gaussians_data.transforms[tid]
+    scale = gaussians_data.scales[tid]
 
-    if wp.static(USE_ADAPTIVE_GSPLAT_BOUNDS):
-        mod = GSPLAT_KERNEL_MIN_RESPONSE / wp.max(opacity, wp.float32(1e-6))
-        min_response = wp.min(mod, wp.float32(0.97))
-    else:
-        min_response = GSPLAT_KERNEL_MIN_RESPONSE
+    mod = gaussians_data.min_response / wp.max(gaussians_data.opacities[tid], wp.float32(1e-6))
+    min_response = wp.min(mod, wp.float32(0.97))
+    ks = wp.sqrt(wp.log(min_response) / wp.float32(-0.5))
+    scale = wp.vec3f(scale[0] * ks, scale[1] * ks, scale[2] * ks)
 
-    ln_r = wp.log(min_response) / wp.float32(-0.5)  # a = -0.5 for exp(-0.5*r^2)
-    return wp.sqrt(ln_r)
+    lower, upper = bvh.compute_ellipsoid_bounds(transform, scale)
+    
+    lowers[tid] = lower
+    uppers[tid] = upper
 
 
 @wp.func
@@ -59,6 +54,7 @@ def ray_gsplat_hit_response(
     transform: wp.transformf,
     scale: wp.vec3f,
     opacity: wp.float32,
+    min_response: wp.float32,
     ray_origin_world: wp.vec3f,
     ray_direction_world: wp.vec3f,
     max_distance: wp.float32,
@@ -71,7 +67,7 @@ def ray_gsplat_hit_response(
         max_response = canonical_ray_max_kernel_response(ray_origin_local, wp.normalize(ray_direction_local))
 
         alpha = wp.min(wp.float32(1.0), max_response * opacity)
-        if max_response > GSPLAT_KERNEL_MIN_RESPONSE and alpha > GSPLAT_KERNEL_MIN_ALPHA:
+        if max_response > min_response and alpha > wp.static(1.0 / 255.0):
             return alpha, hit_distance
     return 0.0, -1.0
 
@@ -104,7 +100,7 @@ def shade(
     hit_indices = wp.vector(-1, length=MAX_NUM_HITS, dtype=wp.int32)
     hit_alphas = wp.vector(0.0, length=MAX_NUM_HITS, dtype=wp.float32)
 
-    while ray_transmittance > GSPLAT_KERNEL_MIN_TRANSMITTANCE:
+    while ray_transmittance > 0.003:
         num_hits = wp.int32(0)
 
         for i in range(MAX_NUM_HITS):
@@ -117,6 +113,7 @@ def shade(
                 gaussian_data.transforms[hit_index],
                 gaussian_data.scales[hit_index],
                 gaussian_data.opacities[hit_index],
+                gaussian_data.min_response,
                 ray_origin_local,
                 ray_direction_local,
                 hit_distances[-1],
