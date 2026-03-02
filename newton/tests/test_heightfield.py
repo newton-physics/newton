@@ -24,6 +24,8 @@ import newton
 from newton import Heightfield
 from newton.tests.unittest_utils import assert_np_equal
 
+_cuda_available = wp.is_cuda_available()
+
 
 class TestHeightfield(unittest.TestCase):
     """Test suite for heightfield support."""
@@ -389,6 +391,117 @@ class TestHeightfield(unittest.TestCase):
 
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertEqual(contact_count, 0, f"Unexpected contacts detected: {contact_count}")
+
+    @staticmethod
+    def _create_non_convex_mesh() -> newton.Mesh:
+        """Create a non-convex spike mesh from a tetrahedron base (no SDF)."""
+        base_vertices = np.array(
+            [[1.0, 1.0, 1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, -1.0, -1.0]],
+            dtype=np.float32,
+        )
+        base_vertices /= np.linalg.norm(base_vertices, axis=1, keepdims=True)
+        base_vertices *= 0.3
+
+        faces = [(0, 1, 2), (0, 3, 1), (0, 2, 3), (1, 3, 2)]
+        vertices: list[np.ndarray] = []
+        indices: list[int] = []
+        for face in faces:
+            a, b, c = (base_vertices[i] for i in face)
+            normal = np.cross(b - a, c - a)
+            normal /= np.linalg.norm(normal)
+            centroid = (a + b + c) / 3.0
+            if np.dot(normal, centroid) < 0.0:
+                b, c = c, b
+                normal = -normal
+            apex = (a + b + c) / 3.0 + normal * 0.4
+            idx = len(vertices)
+            vertices.extend([a, b, c, apex])
+            indices.extend(
+                [idx, idx + 1, idx + 2, idx, idx + 1, idx + 3, idx + 1, idx + 2, idx + 3, idx + 2, idx, idx + 3]
+            )
+        return newton.Mesh(
+            vertices=np.asarray(vertices, dtype=np.float32),
+            indices=np.asarray(indices, dtype=np.int32),
+        )
+
+    def _build_mesh_vs_heightfield(self, mesh: newton.Mesh, mesh_z: float = 0.15):
+        """Build a model with a non-convex mesh above a flat heightfield."""
+        builder = newton.ModelBuilder()
+        nrow, ncol = 10, 10
+        elevation = np.zeros((nrow, ncol), dtype=np.float32)
+        hfield = Heightfield(data=elevation, nrow=nrow, ncol=ncol, hx=5.0, hy=5.0, min_z=0.0, max_z=1.0)
+        builder.add_shape_heightfield(heightfield=hfield)
+        mesh_body = builder.add_body(xform=wp.transform((0.0, 0.0, mesh_z), wp.quat_identity()))
+        builder.add_shape_mesh(body=mesh_body, mesh=mesh)
+        return builder.finalize(), mesh_body
+
+    @unittest.skipUnless(_cuda_available, "mesh-heightfield collision requires CUDA")
+    def test_non_convex_mesh_vs_heightfield(self):
+        """Test non-convex mesh (no SDF) generates contacts against a flat heightfield."""
+        mesh = self._create_non_convex_mesh()
+        model, _mesh_body = self._build_mesh_vs_heightfield(mesh)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(contact_count, 0, "No contacts between non-convex mesh and heightfield")
+
+    @unittest.skipUnless(_cuda_available, "build_sdf requires CUDA")
+    def test_non_convex_mesh_with_sdf_vs_heightfield(self):
+        """Test non-convex mesh (with SDF) generates contacts against a flat heightfield."""
+        mesh = self._create_non_convex_mesh()
+        mesh.build_sdf(max_resolution=16)
+        model, _mesh_body = self._build_mesh_vs_heightfield(mesh)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(contact_count, 0, "No contacts between SDF mesh and heightfield")
+
+    @unittest.skipUnless(_cuda_available, "mesh-heightfield collision requires CUDA")
+    def test_non_convex_mesh_vs_heightfield_no_contact(self):
+        """Test no contacts when non-convex mesh is far above heightfield."""
+        mesh = self._create_non_convex_mesh()
+        model, _mesh_body = self._build_mesh_vs_heightfield(mesh, mesh_z=5.0)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertEqual(contact_count, 0, f"Unexpected contacts: {contact_count}")
+
+    def test_particle_heightfield_soft_contacts(self):
+        """Test that particles generate soft contacts against heightfield via on-the-fly SDF."""
+        builder = newton.ModelBuilder()
+        hfield = Heightfield(
+            data=np.zeros((8, 8), dtype=np.float32),
+            nrow=8,
+            ncol=8,
+            hx=2.0,
+            hy=2.0,
+            min_z=0.0,
+            max_z=1.0,
+        )
+        hfield_shape = builder.add_shape_heightfield(heightfield=hfield)
+        builder.add_particle(pos=(0.0, 0.0, 0.02), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
+
+        model = builder.finalize()
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        soft_count = int(contacts.soft_contact_count.numpy()[0])
+        self.assertGreater(soft_count, 0)
+        self.assertEqual(int(contacts.soft_contact_shape.numpy()[0]), hfield_shape)
 
 
 if __name__ == "__main__":
