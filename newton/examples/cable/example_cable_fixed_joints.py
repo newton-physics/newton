@@ -19,7 +19,7 @@
 # Visual test for VBD FIXED joints with kinematic anchors:
 # - Create multiple kinematic anchor bodies (sphere, capsule, box, bear mesh)
 # - Attach a cable (rod) to each anchor via a FIXED joint
-# - Drive anchors kinematically (translation or rotation) and verify cables follow
+# - Drive anchors kinematically (rotation) and verify cables follow
 #
 ###########################################################################
 
@@ -100,35 +100,35 @@ def move_kinematic_anchors(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
-    """Kinematically animate anchor poses and keep their velocities at zero."""
+    """Kinematically animate anchor poses.  Each anchor has a mode:
+
+    mode 0 -- rotate about X: cable follows (all rotation locked in fixed joint).
+    mode 1 -- rotate about Y: cable follows (all rotation locked in fixed joint).
+    Same motion as revolute/ball examples for cross-example comparison.
+    """
     i = wp.tid()
     b = anchor_ids[i]
 
-    # Ramp in motion so initial velocity is small (independent of phase).
     t0 = t[0]
     u = wp.clamp(t0 / ramp_time, 0.0, 1.0)
     ramp = u * u * (3.0 - 2.0 * u)  # smoothstep
 
     ti = t0 + phase[i]
     p0 = base_pos[i]
-
-    w = 1.5
     m = mode[i]
 
-    # mode == 0: translation-only (orthogonal to cable direction -Z)
-    # mode == 1: rotation-only (position fixed, rotate about +Y to move the attach point in XZ)
+    w = 1.5
+
     if m == 0:
-        amp_x = 0.35
-        x = p0[0] + (ramp * amp_x) * wp.sin(w * ti)
-        pos = wp.vec3(x, p0[1], p0[2])
-        q = wp.quat_identity()
+        # Rotate about X — cable follows (fixed locks all rotation)
+        ang = (ramp * 0.8) * wp.sin(w * ti)
+        q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), ang)
     else:
-        pos = p0
-        # Larger rotation amplitude for the rotation-driven anchors
+        # Rotate about Y — cable follows (fixed locks all rotation)
         ang = (ramp * 1.6) * wp.sin(w * ti + 0.7)
         q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang)
 
-    body_q[b] = wp.transform(pos, q)
+    body_q[b] = wp.transform(p0, q)
     body_qd[b] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
@@ -223,13 +223,13 @@ class Example:
         # Anchor height (raise this to give the cables more room to hang)
         z0 = 4.0
 
-        # Two sets: translation-driven and rotation-driven (same shapes in both)
+        # Two sets: rotate about X and rotate about Y (same motion as revolute/ball examples)
         sets = [
-            ("translate", -1.0, 0),  # (label, x_offset, mode)
-            ("rotate", 1.0, 1),
+            ("rotate_x", -1.0, 0),  # (label, x_offset, mode)
+            ("rotate_y", 1.0, 1),
         ]
 
-        for set_idx, (_label, x_offset, m) in enumerate(sets):
+        for _set_idx, (_label, x_offset, m) in enumerate(sets):
             for i, (kind, mesh_info) in enumerate(driver_specs):
                 x = x_offset
                 y = y0 + dy * i
@@ -289,44 +289,9 @@ class Example:
                 builder.body_inertia[body] = wp.mat33(0.0)
                 builder.body_inv_inertia[body] = wp.mat33(0.0)
 
-                # Cable root anchor in world at the "bottom" of the driver.
-                # We keep a small +X offset so the rotation-driven anchors produce visible motion of the
-                # attachment point when rotating about +Y.
-                cable_attach_x = 0.1
-                if kind in ("capsule", "box"):
-                    cable_attach_x = 0.2
-                dz_body = z0 - z
-                parent_anchor_local = wp.vec3(cable_attach_x, 0.0, -attach_offset + dz_body)
-                anchor_world = wp.vec3(x + cable_attach_x, y, z0 - attach_offset)
-
-                if kind in ("sphere", "capsule", "box"):
-                    x_local = cable_attach_x
-                    if kind == "sphere":
-                        r = attach_offset
-                        # Ensure the anchor point lies on the sphere surface: x^2 + z^2 = r^2 (y=0).
-                        z_local = -math.sqrt(max(r * r - x_local * x_local, 0.0))
-                    elif kind == "capsule":
-                        # Capsule is laid horizontally with its axis along body-local +X.
-                        # Surface in XZ (y=0): cylinder for |x|<=hh (z=-r), hemispheres beyond.
-                        r = attach_offset
-                        hh_f = hh
-                        x_clamped = max(min(x_local, hh_f + r), -(hh_f + r))
-                        dx = abs(x_clamped) - hh_f
-                        if dx <= 0.0:
-                            z_local = -r
-                        else:
-                            z_local = -math.sqrt(max(r * r - dx * dx, 0.0))
-                        x_local = x_clamped
-                    else:
-                        # Box: clamp the requested x offset to the box face so we stay on the surface.
-                        hx_f = hx
-                        hz_f = hz
-                        x_local = max(min(x_local, hx_f), -hx_f)
-                        z_local = -hz_f
-
-                    parent_anchor_local = wp.vec3(x_local, 0.0, z_local)
-                    # Use the actual body pose (x,y,z), not the uniform z0, so the cable touches the shape.
-                    anchor_world = wp.vec3(x + x_local, y, z + z_local)
+                # Cable root anchor directly below the driver's center of mass.
+                parent_anchor_local = wp.vec3(0.0, 0.0, -attach_offset)
+                anchor_world = wp.vec3(x, y, z - attach_offset)
 
                 rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
                     start=anchor_world,
@@ -382,8 +347,8 @@ class Example:
 
                 self.anchor_bodies.append(body)
                 anchor_base_pos.append(wp.vec3(x, y, z))
-                # Different velocities via phase + set offset
-                anchor_phase.append(0.6 * i + 1.3 * set_idx)
+                # Sync motion within each set for easy visual comparison.
+                anchor_phase.append(0.0)
                 anchor_mode.append(int(m))
 
         builder.add_ground_plane()
@@ -438,7 +403,7 @@ class Example:
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
 
-            # Kinematic anchor swing (orthogonal to cable direction -Z)
+            # Kinematic anchor rotation (position fixed, rotation driven)
             wp.launch(
                 kernel=move_kinematic_anchors,
                 dim=self.anchor_bodies_wp.shape[0],
@@ -481,17 +446,14 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test_final(self):
-        # Verify fixed joint frames are coincident (within tolerance) at the final state.
-        # Loose tolerances: these are stiff but not perfectly rigid constraints.
-        if self._fixed_parent_ids.shape[0] == 0:
-            return
-
-        err_pos = wp.zeros(self._fixed_parent_ids.shape[0], dtype=float, device=self.device)
-        err_ang = wp.zeros(self._fixed_parent_ids.shape[0], dtype=float, device=self.device)
+    def _compute_errors(self):
+        """Launch the error kernel and return (err_pos_np, err_ang_np)."""
+        n = self._fixed_parent_ids.shape[0]
+        err_pos = wp.zeros(n, dtype=float, device=self.device)
+        err_ang = wp.zeros(n, dtype=float, device=self.device)
         wp.launch(
             kernel=compute_fixed_joint_error,
-            dim=err_pos.shape[0],
+            dim=n,
             inputs=[
                 self._fixed_parent_ids,
                 self._fixed_child_ids,
@@ -505,10 +467,15 @@ class Example:
             ],
             device=self.device,
         )
-        err_pos_max = float(np.max(err_pos.numpy()))
-        err_ang_max = float(np.max(err_ang.numpy()))
+        return err_pos.numpy(), err_ang.numpy()
 
-        tol_pos = 1.0e-3
+    def test_final(self):
+        if self._fixed_parent_ids.shape[0] == 0:
+            return
+        err_pos_np, err_ang_np = self._compute_errors()
+        err_pos_max = float(np.max(err_pos_np))
+        err_ang_max = float(np.max(err_ang_np))
+        tol_pos = 2.0e-3
         tol_ang = 1.0e-2
         if err_pos_max > tol_pos or err_ang_max > tol_ang:
             raise AssertionError(

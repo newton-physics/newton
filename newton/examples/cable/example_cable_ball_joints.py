@@ -19,7 +19,7 @@
 # Visual test for VBD BALL joints with kinematic anchors:
 # - Create multiple kinematic anchor bodies (sphere, capsule, box, bear mesh)
 # - Attach a cable (rod) to each anchor via a BALL joint
-# - Drive anchors kinematically (translation or rotation) and verify cables follow
+# - Drive anchors kinematically (rotation) and verify cables follow
 #
 ###########################################################################
 
@@ -35,25 +35,22 @@ import newton.usd
 
 
 @wp.kernel
-def compute_ball_anchor_error(
+def compute_ball_joint_error(
     parent_ids: wp.array(dtype=wp.int32),
     child_ids: wp.array(dtype=wp.int32),
     parent_local: wp.array(dtype=wp.vec3),
     child_local: wp.array(dtype=wp.vec3),
     body_q: wp.array(dtype=wp.transform),
-    out_err: wp.array(dtype=float),
+    out_err_pos: wp.array(dtype=float),
+    out_rel_angle: wp.array(dtype=float),
 ):
-    """Test-only: compute BALL joint anchor coincidence error.
+    """Test-only: compute BALL joint error (position coincidence + relative rotation).
 
-    For each i, this computes the world-space distance between:
-      - parent anchor point:  x_p = p_parent + R_parent * parent_local[i]
-      - child anchor point:   x_c = p_child  + R_child  * child_local[i]
-
-    Notes:
-    - This is a *verification helper* used by `Example.test_final()`, not part of the solver.
-    - We record only the *translation* part of the joint frames (local anchor positions). In this
-      example, `parent_xform` / `child_xform` are created with identity rotations, so this matches
-      the joint definition.
+    For each i:
+      - Position error: world-space distance between parent and child anchor points.
+      - Relative rotation angle: angle between parent and child body orientations.
+        Expected to be nonzero because ball joints free all rotation — the cable
+        should NOT follow the parent's rotation.
     """
     i = wp.tid()
     pb = parent_ids[i]
@@ -70,7 +67,14 @@ def compute_ball_anchor_error(
     p_anchor = pp + wp.quat_rotate(qp, parent_local[i])
     c_anchor = pc + wp.quat_rotate(qc, child_local[i])
 
-    out_err[i] = wp.length(p_anchor - c_anchor)
+    out_err_pos[i] = wp.length(p_anchor - c_anchor)
+
+    # Relative rotation between parent and child bodies.
+    # Ball joint uses identity frame quaternions, so body quats are the joint frames.
+    dq = wp.mul(wp.quat_inverse(qp), qc)
+    dq = wp.normalize(dq)
+    w = wp.clamp(wp.abs(dq[3]), 0.0, 1.0)
+    out_rel_angle[i] = 2.0 * wp.acos(w)
 
 
 @wp.kernel
@@ -89,35 +93,35 @@ def move_kinematic_anchors(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
-    """Kinematically animate anchor poses and keep their velocities at zero."""
+    """Kinematically animate anchor poses.  Each anchor has a mode:
+
+    mode 0 -- rotate about X: cable ignores (all rotation free in ball joint).
+    mode 1 -- rotate about Y: cable ignores (all rotation free in ball joint).
+    Same motion as fixed/revolute examples for cross-example comparison.
+    """
     i = wp.tid()
     b = anchor_ids[i]
 
-    # Ramp in motion so initial velocity is small (independent of phase).
     t0 = t[0]
     u = wp.clamp(t0 / ramp_time, 0.0, 1.0)
     ramp = u * u * (3.0 - 2.0 * u)  # smoothstep
 
     ti = t0 + phase[i]
     p0 = base_pos[i]
-
-    w = 1.5
     m = mode[i]
 
-    # mode == 0: translation-only (orthogonal to cable direction -Z)
-    # mode == 1: rotation-only (position fixed, rotate about +Y to move the attach point in XZ)
+    w = 1.5
+
     if m == 0:
-        amp_x = 0.35
-        x = p0[0] + (ramp * amp_x) * wp.sin(w * ti)
-        pos = wp.vec3(x, p0[1], p0[2])
-        q = wp.quat_identity()
+        # Rotate about X — cable ignores (ball frees all rotation)
+        ang = (ramp * 0.8) * wp.sin(w * ti)
+        q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), ang)
     else:
-        pos = p0
-        # Larger rotation amplitude for the rotation-driven anchors
+        # Rotate about Y — cable ignores (ball frees all rotation)
         ang = (ramp * 1.6) * wp.sin(w * ti + 0.7)
         q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang)
 
-    body_q[b] = wp.transform(pos, q)
+    body_q[b] = wp.transform(p0, q)
     body_qd[b] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
@@ -210,13 +214,13 @@ class Example:
         # Anchor height (raise this to give the cables more room to hang)
         z0 = 4.0
 
-        # Two sets: translation-driven and rotation-driven (same shapes in both)
+        # Two sets: rotate about X and rotate about Y (same motion as fixed/revolute examples)
         sets = [
-            ("translate", -1.0, 0),  # (label, x_offset, mode)
-            ("rotate", 1.0, 1),
+            ("rotate_x", -1.0, 0),  # (label, x_offset, mode)
+            ("rotate_y", 1.0, 1),
         ]
 
-        for set_idx, (_label, x_offset, m) in enumerate(sets):
+        for _set_idx, (_label, x_offset, m) in enumerate(sets):
             for i, (kind, mesh_info) in enumerate(driver_specs):
                 x = x_offset
                 y = y0 + dy * i
@@ -276,44 +280,9 @@ class Example:
                 builder.body_inertia[body] = wp.mat33(0.0)
                 builder.body_inv_inertia[body] = wp.mat33(0.0)
 
-                # Cable root anchor in world at the "bottom" of the driver.
-                # Keep a small +X offset so the rotation-driven anchors produce visible attachment-point
-                # motion when rotating about +Y.
-                cable_attach_x = 0.1
-                if kind in ("capsule", "box"):
-                    cable_attach_x = 0.2
-                dz_body = z0 - z
-                parent_anchor_local = wp.vec3(cable_attach_x, 0.0, -attach_offset + dz_body)
-                anchor_world = wp.vec3(x + cable_attach_x, y, z0 - attach_offset)
-
-                if kind in ("sphere", "capsule", "box"):
-                    x_local = cable_attach_x
-                    if kind == "sphere":
-                        r = attach_offset
-                        # Ensure the anchor point lies on the sphere surface: x^2 + z^2 = r^2 (y=0).
-                        z_local = -math.sqrt(max(r * r - x_local * x_local, 0.0))
-                    elif kind == "capsule":
-                        # Capsule is laid horizontally with its axis along body-local +X.
-                        # Surface in XZ (y=0): cylinder for |x|<=hh (z=-r), hemispheres beyond.
-                        r = attach_offset
-                        hh_f = hh
-                        x_clamped = max(min(x_local, hh_f + r), -(hh_f + r))
-                        dx = abs(x_clamped) - hh_f
-                        if dx <= 0.0:
-                            z_local = -r
-                        else:
-                            z_local = -math.sqrt(max(r * r - dx * dx, 0.0))
-                        x_local = x_clamped
-                    else:
-                        # Box: clamp the requested x offset to the box face so we stay on the surface.
-                        hx_f = hx
-                        hz_f = hz
-                        x_local = max(min(x_local, hx_f), -hx_f)
-                        z_local = -hz_f
-
-                    parent_anchor_local = wp.vec3(x_local, 0.0, z_local)
-                    # Use the actual body pose (x,y,z), not the uniform z0, so the cable touches the shape.
-                    anchor_world = wp.vec3(x + x_local, y, z + z_local)
+                # Cable root anchor directly below the driver's center of mass.
+                parent_anchor_local = wp.vec3(0.0, 0.0, -attach_offset)
+                anchor_world = wp.vec3(x, y, z - attach_offset)
 
                 rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
                     start=anchor_world,
@@ -363,8 +332,8 @@ class Example:
 
                 self.anchor_bodies.append(body)
                 anchor_base_pos.append(wp.vec3(x, y, z))
-                # Different velocities via phase + set offset
-                anchor_phase.append(0.6 * i + 1.3 * set_idx)
+                # Sync motion within each set for easy visual comparison.
+                anchor_phase.append(0.0)
                 anchor_mode.append(int(m))
 
         builder.add_ground_plane()
@@ -416,7 +385,7 @@ class Example:
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
 
-            # Kinematic anchor swing (orthogonal to cable direction -Z)
+            # Kinematic anchor rotation (position fixed, rotation driven)
             wp.launch(
                 kernel=move_kinematic_anchors,
                 dim=self.anchor_bodies_wp.shape[0],
@@ -459,30 +428,49 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test_final(self):
-        # Verify ball joint anchor points are coincident (within tolerance) at the final state.
-        # Loose tolerance: these are stiff but not perfectly rigid constraints.
-        if self._ball_parent_ids.shape[0] == 0:
-            return
-
-        ball_err = wp.zeros(self._ball_parent_ids.shape[0], dtype=float, device=self.device)
+    def _compute_errors(self):
+        """Launch the error kernel and return (err_pos_np, rel_angle_np)."""
+        n = self._ball_parent_ids.shape[0]
+        err_pos = wp.zeros(n, dtype=float, device=self.device)
+        rel_angle = wp.zeros(n, dtype=float, device=self.device)
         wp.launch(
-            kernel=compute_ball_anchor_error,
-            dim=ball_err.shape[0],
+            kernel=compute_ball_joint_error,
+            dim=n,
             inputs=[
                 self._ball_parent_ids,
                 self._ball_child_ids,
                 self._ball_parent_local,
                 self._ball_child_local,
                 self.state_0.body_q,
-                ball_err,
+                err_pos,
+                rel_angle,
             ],
             device=self.device,
         )
-        err_max = float(np.max(ball_err.numpy()))
-        tol = 1.0e-3
-        if err_max > tol:
-            raise AssertionError(f"BALL joint anchor error too large: max={err_max:.6g} > tol={tol}")
+        return err_pos.numpy(), rel_angle.numpy()
+
+    def test_final(self):
+        if self._ball_parent_ids.shape[0] == 0:
+            return
+
+        err_pos_np, rel_angle_np = self._compute_errors()
+
+        # 1. Position coincidence: all joints
+        err_pos_max = float(np.max(err_pos_np))
+        tol_pos = 2.0e-3
+        if err_pos_max > tol_pos:
+            raise AssertionError(f"BALL joint anchor error too large: max={err_pos_max:.6g} > tol={tol_pos}")
+
+        # 2. Angular freedom: cable should NOT follow parent rotation (ball frees all rotation).
+        #    At least some joints should show significant relative rotation, proving the
+        #    ball joint isn't secretly constraining orientation (which would make it a fixed joint).
+        max_rel_angle = float(np.max(rel_angle_np))
+        min_rotation_tol = 0.1  # at least 0.1 rad of relative rotation
+        if max_rel_angle < min_rotation_tol:
+            raise AssertionError(
+                f"BALL joint angular freedom not exercised: "
+                f"max(relative_angle)={max_rel_angle:.6g} < {min_rotation_tol}"
+            )
 
 
 if __name__ == "__main__":

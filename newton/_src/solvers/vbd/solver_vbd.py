@@ -170,8 +170,8 @@ class SolverVBD(SolverBase):
         rigid_contact_k_start: float = 1.0e2,  # AVBD: initial stiffness for all body contacts (body-body + body-particle)
         rigid_joint_linear_k_start: float = 1.0e4,  # AVBD: initial stiffness seed for linear joint constraints
         rigid_joint_angular_k_start: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint constraints
-        rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/etc.)
-        rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/etc.)
+        rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/REVOLUTE/PRISMATIC)
+        rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/REVOLUTE/PRISMATIC)
         rigid_joint_linear_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable angular joint constraints
         rigid_body_contact_buffer_size: int = 64,
@@ -234,10 +234,11 @@ class SolverVBD(SolverBase):
             rigid_joint_angular_k_start: Initial penalty seed for angular joint constraints (e.g., cable bend, FIXED angular).
                 Used to seed the per-constraint adaptive penalties for all angular joint constraints.
             rigid_joint_linear_ke: Stiffness cap used by AVBD for **non-cable** linear joint constraint scalars
-                (e.g., BALL and the linear part of FIXED). Cable joints use the per-joint caps in
-                ``model.joint_target_ke`` instead (cable interprets ``joint_target_ke/kd`` as constraint tuning).
+                (BALL, FIXED, REVOLUTE, and the perpendicular linear part of PRISMATIC). Cable joints use the
+                per-joint caps in ``model.joint_target_ke`` instead (cable interprets ``joint_target_ke/kd`` as
+                constraint tuning).
             rigid_joint_angular_ke: Stiffness cap used by AVBD for **non-cable** angular joint constraint scalars
-                (e.g., FIXED).
+                (FIXED, PRISMATIC, and the perpendicular angular part of REVOLUTE).
             rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints (paired with
                 ``rigid_joint_linear_ke``).
             rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints (paired with
@@ -647,10 +648,11 @@ class SolverVBD(SolverBase):
         Supported rigid joint constraint types in SolverVBD:
           - ``JointType.CABLE`` (2 scalars: stretch + bend)
           - ``JointType.BALL`` (1 scalar: isotropic linear anchor-coincidence)
-          - ``JointType.FIXED`` (2 scalars: isotropic linear anchor-coincidence + isotropic angular)
+          - ``JointType.FIXED`` (2 scalars: isotropic linear + isotropic angular)
+          - ``JointType.REVOLUTE`` (2 scalars: isotropic linear + 2-DOF perpendicular angular)
+          - ``JointType.PRISMATIC`` (2 scalars: 2-DOF perpendicular linear + isotropic angular)
 
         ``JointType.FREE`` joints (created by :meth:`ModelBuilder.add_body`) are not constraints and are ignored.
-        Any other joint types will raise ``NotImplementedError``.
         """
         if (
             not hasattr(self, "joint_constraint_start")
@@ -682,7 +684,7 @@ class SolverVBD(SolverBase):
             joint_k0_np = np.zeros((constraint_count,), dtype=float)
             # Per-constraint stiffness caps used for AVBD warmstart clamping and penalty growth limiting.
             # - Cable constraints: use model.joint_target_ke (cable material/constraint tuning; still model-DOF indexed)
-            # - Ball constraints: use solver-level caps (rigid_joint_linear_ke)
+            # - Rigid constraints (BALL/FIXED/REVOLUTE/PRISMATIC): use solver-level caps (rigid_joint_linear_ke/angular_ke)
             # Start from zeros and explicitly fill per joint/constraint-slot below for clarity.
             joint_k_max_np = np.zeros((constraint_count,), dtype=float)
             joint_kd_np = np.zeros((constraint_count,), dtype=float)
