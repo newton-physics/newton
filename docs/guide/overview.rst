@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 .. note::
    Newton is in active development. APIs and features may change without notice or backwards compatibility.
 

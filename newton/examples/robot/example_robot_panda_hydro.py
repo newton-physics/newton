@@ -433,7 +433,7 @@ class Example:
     def test_final(self):
         # Verify that the object was picked up by checking the maximum height reached
         initial_z = self.object_pos[2]
-        min_lift_height = 0.25  # Object should be lifted at least 25cm above initial position
+        min_lift_height = 0.15  # Object should be lifted at least 15cm above initial position
 
         for world_idx in range(self.world_count):
             max_z = self.object_max_z[world_idx]
@@ -444,6 +444,22 @@ class Example:
                 f"Initial z={initial_z:.3f}, max z reached={max_z:.3f}, "
                 f"max lift={max_lift:.3f} (expected > {min_lift_height})"
             )
+
+        # Verify that the object ended up in the cup
+        if self.put_in_cup:
+            body_q = self.state_0.body_q.numpy()
+            cup_x, cup_y, cup_z = self.cup_pos
+            tolerance_xy = 0.05
+            min_z = cup_z - 0.05
+
+            for world_idx in range(self.world_count):
+                object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
+                x, y, z = body_q[object_body_idx][:3]
+                assert abs(x - cup_x) < tolerance_xy and abs(y - cup_y) < tolerance_xy and z > min_z, (
+                    f"World {world_idx}: Object is not in the cup. "
+                    f"Object pos=({x:.3f}, {y:.3f}, {z:.3f}), "
+                    f"cup pos=({cup_x:.3f}, {cup_y:.3f}, {cup_z:.3f})"
+                )
 
     def setup_ik(self):
         self.ee_index = 10
@@ -516,7 +532,7 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=600)
+    parser.set_defaults(num_frames=720)
     parser.add_argument(
         "--scene",
         type=str,

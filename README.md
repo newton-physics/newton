@@ -3,8 +3,6 @@
 [![codecov](https://codecov.io/gh/newton-physics/newton/graph/badge.svg?token=V6ZXNPAWVG)](https://codecov.io/gh/newton-physics/newton)
 [![Push - AWS GPU](https://github.com/newton-physics/newton/actions/workflows/push_aws_gpu.yml/badge.svg)](https://github.com/newton-physics/newton/actions/workflows/push_aws_gpu.yml)
 
-**This project is in active beta development.** This means the API is unstable, features may be added or removed, and breaking changes are likely to occur frequently and without notice as the design is refined.
-
 # Newton
 
 Newton is a GPU-accelerated physics simulation engine built upon [NVIDIA Warp](https://github.com/NVIDIA/warp), specifically targeting roboticists and simulation researchers.
@@ -12,37 +10,28 @@ Newton is a GPU-accelerated physics simulation engine built upon [NVIDIA Warp](h
 Newton extends and generalizes Warp's ([deprecated](https://github.com/NVIDIA/warp/discussions/735)) `warp.sim` module, and integrates
 [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) as its primary backend. Newton emphasizes GPU-based computation, [OpenUSD](https://openusd.org/) support, differentiability, and user-defined extensibility, facilitating rapid iteration and scalable robotics simulation.
 
-Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. It is permissively licensed under the [Apache-2.0 license](https://github.com/newton-physics/newton/blob/main/LICENSE.md).
+Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. Code is licensed under [Apache-2.0](https://github.com/newton-physics/newton/blob/main/LICENSE.md). Documentation is licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
 
 Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/), and [NVIDIA](https://www.nvidia.com/).
 
 ## Quickstart
 
-During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager. You may find uv installation instructions in the [Newton Installation Guide](https://newton-physics.github.io/newton/latest/guide/installation.html#method-1-using-uv-recommended).
-
-Once uv is installed, running Newton examples is straightforward:
-
 ```bash
-# Clone the repository
-git clone git@github.com:newton-physics/newton.git
-cd newton
-
-# set up the uv environment for running Newton examples
-uv sync --extra examples
-
-# run an example
-uv run -m newton.examples basic_pendulum
+pip install "newton[examples]"
+python -m newton.examples basic_pendulum
 ```
 
-See the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html) for detailed instructions that include steps for setting up a Python environment for use with Newton.
+To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
 
 ## Examples
 
-Before running the examples below, set up the uv environment with:
+Before running the examples below, install Newton with the examples extra:
 
 ```bash
-uv sync --extra examples
+pip install "newton[examples]"
 ```
+
+If you installed from source with uv, substitute `uv run` for `python` in the commands below.
 
 <table>
   <tr>
@@ -67,13 +56,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples basic_pendulum</code>
+      <code>python -m newton.examples basic_pendulum</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples basic_urdf</code>
+      <code>python -m newton.examples basic_urdf</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples basic_viewer</code>
+      <code>python -m newton.examples basic_viewer</code>
     </td>
   </tr>
   <tr>
@@ -92,10 +81,10 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples basic_shapes</code>
+      <code>python -m newton.examples basic_shapes</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples basic_joints</code>
+      <code>python -m newton.examples basic_joints</code>
     </td>
     <td align="center" width="33%">
     </td>
@@ -122,13 +111,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples robot_cartpole</code>
+      <code>python -m newton.examples robot_cartpole</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples robot_humanoid</code>
+      <code>python -m newton.examples robot_humanoid</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples robot_g1</code>
+      <code>python -m newton.examples robot_g1</code>
     </td>
   </tr>
   <tr>
@@ -150,13 +139,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples robot_h1</code>
+      <code>python -m newton.examples robot_h1</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples robot_anymal_d</code>
+      <code>python -m newton.examples robot_anymal_d</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run --extra torch-cu12 -m newton.examples robot_anymal_c_walk</code>
+      <code>python -m newton.examples robot_anymal_c_walk</code>
     </td>
   </tr>
   <tr>
@@ -178,13 +167,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run --extra torch-cu12 -m newton.examples robot_policy</code>
+      <code>python -m newton.examples robot_policy</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples robot_ur10</code>
+      <code>python -m newton.examples robot_ur10</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples robot_panda_hydro</code>
+      <code>python -m newton.examples robot_panda_hydro</code>
     </td>
   </tr>
   <tr>
@@ -209,13 +198,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cable_bend</code>
+      <code>python -m newton.examples cable_bend</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cable_twist</code>
+      <code>python -m newton.examples cable_twist</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cable_bundle_hysteresis</code>
+      <code>python -m newton.examples cable_bundle_hysteresis</code>
     </td>
   </tr>
   <tr>
@@ -234,10 +223,10 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cable_pile</code>
+      <code>python -m newton.examples cable_pile</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cable_y_junction</code>
+      <code>python -m newton.examples cable_y_junction</code>
     </td>
     <td align="center" width="33%">
     </td>
@@ -264,13 +253,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cloth_bending</code>
+      <code>python -m newton.examples cloth_bending</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cloth_hanging</code>
+      <code>python -m newton.examples cloth_hanging</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cloth_style3d</code>
+      <code>python -m newton.examples cloth_style3d</code>
     </td>
   </tr>
   <tr>
@@ -292,13 +281,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cloth_h1</code>
+      <code>python -m newton.examples cloth_h1</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cloth_twist</code>
+      <code>python -m newton.examples cloth_twist</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cloth_rollers</code>
+      <code>python -m newton.examples cloth_rollers</code>
     </td>
   </tr>
   <tr>
@@ -314,7 +303,7 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cloth_poker_cards</code>
+      <code>python -m newton.examples cloth_poker_cards</code>
     </td>
     <td align="center" width="33%">
     </td>
@@ -343,13 +332,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples ik_franka</code>
+      <code>python -m newton.examples ik_franka</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples ik_h1</code>
+      <code>python -m newton.examples ik_h1</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples ik_benchmark</code>
+      <code>python -m newton.examples ik_benchmark</code>
     </td>
   </tr>
   <tr>
@@ -371,13 +360,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples ik_custom</code>
+      <code>python -m newton.examples ik_custom</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples cloth_franka</code>
+      <code>python -m newton.examples cloth_franka</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples ik_cube_stacking</code>
+      <code>python -m newton.examples ik_cube_stacking</code>
     </td>
   </tr>
   <tr>
@@ -402,13 +391,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples mpm_granular</code>
+      <code>python -m newton.examples mpm_granular</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run --extra torch-cu12 -m newton.examples mpm_anymal</code>
+      <code>python -m newton.examples mpm_anymal</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples mpm_twoway_coupling</code>
+      <code>python -m newton.examples mpm_twoway_coupling</code>
     </td>
   </tr>
   <tr>
@@ -433,13 +422,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples sensor_contact</code>
+      <code>python -m newton.examples sensor_contact</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples sensor_tiled_camera</code>
+      <code>python -m newton.examples sensor_tiled_camera</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples sensor_imu</code>
+      <code>python -m newton.examples sensor_imu</code>
     </td>
   </tr>
   <tr>
@@ -464,13 +453,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples selection_cartpole</code>
+      <code>python -m newton.examples selection_cartpole</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples selection_materials</code>
+      <code>python -m newton.examples selection_materials</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples selection_articulations</code>
+      <code>python -m newton.examples selection_articulations</code>
     </td>
   </tr>
   <tr>
@@ -495,13 +484,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples diffsim_ball</code>
+      <code>python -m newton.examples diffsim_ball</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples diffsim_cloth</code>
+      <code>python -m newton.examples diffsim_cloth</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples diffsim_drone</code>
+      <code>python -m newton.examples diffsim_drone</code>
     </td>
   </tr>
   <tr>
@@ -523,13 +512,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples diffsim_spring_cage</code>
+      <code>python -m newton.examples diffsim_spring_cage</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples diffsim_soft_body</code>
+      <code>python -m newton.examples diffsim_soft_body</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples diffsim_bear</code>
+      <code>python -m newton.examples diffsim_bear</code>
     </td>
   </tr>
   <tr>
@@ -551,10 +540,10 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples softbody_gift</code>
+      <code>python -m newton.examples softbody_gift</code>
     </td>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples softbody_dropping_to_cloth</code>
+      <code>python -m newton.examples softbody_dropping_to_cloth</code>
     </td>
     <td align="center" width="33%">
     </td>
@@ -575,7 +564,7 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>uv run -m newton.examples softbody_hanging</code>
+      <code>python -m newton.examples softbody_hanging</code>
     </td>
     <td align="center" width="33%">
     </td>
@@ -601,16 +590,16 @@ Some examples may add additional arguments (see their respective source files fo
 
 ```bash
 # List available examples
-uv run -m newton.examples
+python -m newton.examples
 
 # Run with the USD viewer and save to my_output.usd
-uv run -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
+python -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
 
 # Run on a selected device
-uv run -m newton.examples basic_urdf --device cuda:0
+python -m newton.examples basic_urdf --device cuda:0
 
 # Combine options
-uv run -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
+python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 ```
 
 ## Contributing and Development

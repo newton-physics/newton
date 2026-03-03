@@ -134,7 +134,7 @@ jobs:
         run: uv lock -P warp-lang --prerelease allow
 
       - name: Run Tests
-        run: uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml rspec.xml
+        run: uv run --extra dev --extra torch-cu13 -m newton.tests --junit-report-xml rspec.xml
 
       - name: Test Summary
         if: ${{ !cancelled() }}

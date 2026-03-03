@@ -104,7 +104,6 @@ class Example:
 
         world = newton.ModelBuilder()
         world.default_shape_cfg.ke = contact_ke
-        world.default_shape_cfg.gap = 0.0
         world.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
@@ -121,7 +120,6 @@ class Example:
 
         scene = newton.ModelBuilder()
         scene.default_shape_cfg.ke = contact_ke
-        scene.default_shape_cfg.gap = 0.0
 
         scene.add_ground_plane()
         scene.replicate(world, world_count=self.world_count)

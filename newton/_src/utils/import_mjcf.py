@@ -669,8 +669,8 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin and gap for collision
-            # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap
+            # Parse MJCF margin and gap for collision.
+            # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap.
             # When gap is absent, mj_gap defaults to 0 for the margin conversion.
             # When margin is absent but gap is present, shape_cfg.margin keeps its
             # default (matching MuJoCo's default margin=0 minus gap would produce a
@@ -2435,8 +2435,19 @@ def parse_mjcf(
             if actuator_type == "position":
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
+                dampratio = parse_float(merged_attrib, "dampratio", 0.0)
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, -kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                if kv > 0.0:
+                    if dampratio > 0.0 and verbose:
+                        print(
+                            f"Warning: position actuator '{act_name}' sets both kv={kv} "
+                            f"and dampratio={dampratio}; using kv and ignoring dampratio."
+                        )
+                    biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                elif dampratio > 0.0:
+                    # Store unresolved dampratio in biasprm[2] (USD convention).
+                    biasprm = vec10(0.0, -kp, dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Resolve inheritrange: copy target joint's range to ctrlrange.
                 # Uses only the first DOF (qd_start) since inheritrange is only
                 # meaningful for single-DOF joints (hinge, slide).
