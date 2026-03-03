@@ -1087,6 +1087,9 @@ class TestMenagerieUSD(TestMenagerieBase):
         # Derived from mass matrix; differs when backfill_model=False because
         # Newton re-diagonalizes inertia. Compared indirectly via simulation equivalence.
         "actuator_acc0",
+        # Derived from joint ranges via set_length_range; Newton recomputes this
+        # during notify_model_changed but the native model does not.
+        "actuator_lengthrange",
     }
 
     # Regex patterns for USD prim paths to skip during import.
