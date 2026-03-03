@@ -19,6 +19,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import warnings
 import zlib
 
 import numpy as np
@@ -895,6 +896,61 @@ class TestImportMjcfGeometry(unittest.TestCase):
 
         # Body 6: mass="0" should also have zero inertia
         self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
+
+    def test_zero_mass_mesh_geom_no_warning(self):
+        """Regression test: mass='0' on mesh geoms must not emit a warning.
+
+        MuJoCo models commonly set mass='0' (with density='0') as a default
+        for visual mesh geoms. The MJCF importer should silently skip the
+        explicit-mass handling when the mass is zero instead of warning that
+        'explicit mass on mesh is not supported'.
+
+        See https://github.com/newton-physics/newton/issues/1836
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="zero_mass_mesh_test">
+    <asset>
+        <mesh name="box_mesh" file="box.obj"/>
+    </asset>
+    <default>
+        <geom group="3" mass="0" density="0"/>
+    </default>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+            <freejoint/>
+            <geom type="mesh" mesh="box_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            mesh_path = os.path.join(tmpdir, "box.obj")
+            with open(mesh_path, "w") as f:
+                f.write(
+                    "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+                    "v 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n"
+                    "f 1 2 3 4\nf 5 6 7 8\nf 1 2 6 5\n"
+                    "f 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n"
+                )
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.add_mjcf(mjcf_path)
+
+            mass_warnings = [
+                w for w in caught if "explicit mass" in str(w.message) and "not supported" in str(w.message)
+            ]
+            self.assertEqual(
+                len(mass_warnings),
+                0,
+                msg=f"Expected no 'explicit mass' warnings for mass=0 mesh geoms, got: "
+                f"{[str(w.message) for w in mass_warnings]}",
+            )
 
     def test_solreflimit_parsing(self):
         """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
@@ -3283,14 +3339,13 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         self.assertAlmostEqual(float(shape_margin[3]), 0.0, places=5)
         self.assertAlmostEqual(float(shape_gap[3]), builder.rigid_gap, places=5)
 
-    def test_margin_gap_mjcf_roundtrip(self):
-        """Verify MJCF margin/gap roundtrips through Newton->MuJoCo solver.
+    def test_margin_gap_mujoco_solver(self):
+        """Verify geom_margin = shape_margin and geom_gap = 0 in the MuJoCo solver.
 
-        Parses MJCF with explicit margin and gap values, builds the Newton model,
-        creates a MuJoCo solver, and checks that solver.mjw_model.geom_margin and
-        geom_gap satisfy geom_margin = shape_margin + shape_gap and
-        geom_gap = shape_gap.  When both margin and gap are explicitly set in MJCF,
-        the original values are recovered exactly.
+        MJCF margin/gap are parsed into the Newton model with the standard
+        conversion (newton_margin = mj_margin - mj_gap, newton_gap = mj_gap),
+        but the MuJoCo solver does not forward gap: geom_gap is always 0 and
+        geom_margin equals shape_margin (not shape_margin + shape_gap).
         """
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
@@ -3302,10 +3357,6 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         <body name="body2">
             <freejoint/>
             <geom name="margin_only" type="sphere" size="0.05" margin="0.3"/>
-        </body>
-        <body name="body3">
-            <freejoint/>
-            <geom name="gap_only" type="capsule" size="0.05 0.1" gap="0.15"/>
         </body>
     </worldbody>
 </mujoco>
@@ -3320,23 +3371,20 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         shape_margin = model.shape_margin.numpy()
         shape_gap = model.shape_gap.numpy()
 
-        # geom "both": margin=0.5, gap=0.2 — exact roundtrip
-        self.assertAlmostEqual(float(geom_margin[0, 0]), 0.5, places=5)
-        self.assertAlmostEqual(float(geom_gap[0, 0]), 0.2, places=5)
+        # Verify import conversion: newton_margin = mj_margin - mj_gap
+        # geom "both": margin=0.5, gap=0.2 -> newton_margin=0.3, newton_gap=0.2
+        self.assertAlmostEqual(float(shape_margin[0]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[0]), 0.2, places=5)
+        # geom "margin_only": margin=0.3 -> newton_margin=0.3, gap=default
+        self.assertAlmostEqual(float(shape_margin[1]), 0.3, places=5)
 
-        # geom "margin_only": margin=0.3, gap unset (falls back to builder default)
-        # geom_margin = shape_margin + shape_gap = 0.3 + builder.rigid_gap
-        self.assertAlmostEqual(
-            float(geom_margin[0, 1]),
-            float(shape_margin[1]) + float(shape_gap[1]),
-            places=5,
-        )
-        self.assertAlmostEqual(float(geom_gap[0, 1]), float(shape_gap[1]), places=5)
+        # geom_margin should equal shape_margin (gap is NOT added back)
+        self.assertAlmostEqual(float(geom_margin[0, 0]), float(shape_margin[0]), places=5)
+        self.assertAlmostEqual(float(geom_margin[0, 1]), float(shape_margin[1]), places=5)
 
-        # geom "gap_only": margin=0 (MuJoCo default), gap=0.15
-        # geom_margin = 0 + 0.15 = 0.15
-        self.assertAlmostEqual(float(geom_margin[0, 2]), 0.15, places=5)
-        self.assertAlmostEqual(float(geom_gap[0, 2]), 0.15, places=5)
+        # geom_gap is always 0 in the MuJoCo solver
+        self.assertAlmostEqual(float(geom_gap[0, 0]), 0.0, places=5)
+        self.assertAlmostEqual(float(geom_gap[0, 1]), 0.0, places=5)
 
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
@@ -6608,6 +6656,45 @@ class TestActuatorShortcutTypeDefaults(unittest.TestCase):
         compiled = solver.mj_model.actuator_biastype
         # position=affine(1), velocity=affine(1), motor=none(0), general=affine(1)
         np.testing.assert_array_equal(compiled, [1, 1, 0, 1])
+
+
+class TestMjcfPositionDampratioParsing(unittest.TestCase):
+    """Verify MJCF position actuator dampratio encoding in biasprm[2]."""
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="base">
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="pos_dampratio" joint="j1" kp="100" dampratio="0.7"/>
+            <position name="pos_kv_wins" joint="j1" kp="50" kv="3.0" dampratio="0.9"/>
+        </actuator>
+    </mujoco>
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        cls.model = builder.finalize()
+
+    def test_dampratio_encoded_in_biasprm(self):
+        """dampratio should be stored as unresolved biasprm[2] > 0."""
+        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        self.assertAlmostEqual(float(biasprm[0, 2]), 0.7, places=6)
+
+    def test_kv_wins_over_dampratio(self):
+        """kv should override dampratio and set biasprm[2] negative."""
+        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        self.assertAlmostEqual(float(biasprm[1, 2]), -3.0, places=6)
 
 
 class TestActuatorDefaultKpKv(unittest.TestCase):

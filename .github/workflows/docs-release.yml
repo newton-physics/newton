@@ -69,7 +69,7 @@ jobs:
 
       - name: Build Sphinx documentation
         if: steps.version.outputs.SHOULD_DEPLOY == 'true'
-        run: uv run --extra docs --extra sim sphinx-build -b html docs docs/_build/html
+        run: uv run --extra docs --extra sim sphinx-build -j auto -b html docs docs/_build/html
 
       - name: Deploy to gh-pages
         if: steps.version.outputs.SHOULD_DEPLOY == 'true'
