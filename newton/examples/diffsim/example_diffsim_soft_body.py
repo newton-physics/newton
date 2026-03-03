@@ -77,7 +77,7 @@ def enforce_constraint_kernel(lower_bound: wp.float32, upper_bound: wp.float32, 
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 60
         self.frame = 0
@@ -374,7 +374,7 @@ class Example:
             "--verbose", action="store_true", help="Print out additional status messages during execution."
         )
         parser.add_argument(
-            "--material_behavior",
+            "--material-behavior",
             default="anisotropic",
             choices=["anisotropic", "isotropic"],
             help="Set material behavior to be Anisotropic or Isotropic.",

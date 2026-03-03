@@ -22,7 +22,7 @@ from newton.solvers import SolverImplicitMPM
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 60.0
         self.frame_dt = 1.0 / self.fps

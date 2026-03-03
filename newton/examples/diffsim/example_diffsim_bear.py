@@ -96,7 +96,7 @@ def network(
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         fps = 60
         self.frame = 0

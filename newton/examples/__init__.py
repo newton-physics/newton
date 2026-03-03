@@ -179,7 +179,7 @@ def test_particle_state(
             raise ValueError(f'Test "{test_name}" failed for {len(failed_particles)} out of {len(indices)} particles')
 
 
-class ExampleBrowser:
+class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 
     def __init__(self, viewer):
@@ -187,6 +187,7 @@ class ExampleBrowser:
         self.switch_target: str | None = None
         self._reset_requested = False
         self.callback = None
+        self._tree: dict[str, list[tuple[str, str]]] = {}
 
         if not hasattr(viewer, "register_ui_callback"):
             return
@@ -217,29 +218,29 @@ class ExampleBrowser:
         viewer.register_ui_callback(_browser_ui, position="panel")
 
     def _register_ui(self, example):
-        """Re-register UI callbacks for the current example and browser."""
+        """Re-register the example's GUI callback (panel callbacks survive clear_model)."""
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
-        if self.callback is not None:
-            self.viewer.register_ui_callback(self.callback, position="panel")
 
     def switch(self, fallback_class):
         """Switch to the selected example. Returns (example, example_class) or (None, fallback_class)."""
         module_path, self.switch_target = self.switch_target, None
-        self.viewer.clear_model()
         try:
             mod = importlib.import_module(module_path)
             parser = getattr(mod.Example, "create_parser", create_parser)()
             switch_args = default_args(parser)
+            self.viewer.clear_model()
             example = mod.Example(self.viewer, switch_args)
             example_class = type(example)
         except Exception as e:
             warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
             try:
+                self.viewer.clear_model()
                 fallback_parser = getattr(fallback_class, "create_parser", create_parser)()
                 example = fallback_class(self.viewer, default_args(fallback_parser))
                 example_class = fallback_class
-            except Exception:
+            except Exception as e2:
+                warnings.warn(f"Failed to restore fallback example: {e2}", stacklevel=2)
                 return None, fallback_class
         self._register_ui(example)
         return example, example_class
@@ -250,19 +251,14 @@ class ExampleBrowser:
         self.viewer.clear_model()
         try:
             parser = getattr(example_class, "create_parser", create_parser)()
-            example = example_class(self.viewer, default_args(parser))
-        except TypeError:
-            warnings.warn(
-                "Example does not support reset (constructor expects more than viewer, args).",
-                stacklevel=2,
-            )
+            new_example = example_class(self.viewer, default_args(parser))
+        except Exception as e:
+            warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
             if hasattr(example, "model") and example.model is not None:
                 self.viewer.set_model(example.model, getattr(example, "max_worlds", None))
         else:
-            self._register_ui(example)
-            return example
-        if self.callback is not None:
-            self.viewer.register_ui_callback(self.callback, position="panel")
+            self._register_ui(new_example)
+            return new_example
         return example
 
 
@@ -274,7 +270,7 @@ def run(example, args):
     test_post_step = perform_test and hasattr(example, "test_post_step")
     test_final = perform_test and hasattr(example, "test_final")
 
-    browser = ExampleBrowser(viewer) if not perform_test else None
+    browser = _ExampleBrowser(viewer) if not perform_test else None
 
     if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
         viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")

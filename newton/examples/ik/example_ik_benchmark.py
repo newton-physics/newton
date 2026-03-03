@@ -43,7 +43,7 @@ class Example:
     Manages the setup and execution of the IK benchmark.
     """
 
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.batch_sizes = args.batch_sizes
         self.repeats = args.repeats
         self.iterations = 16

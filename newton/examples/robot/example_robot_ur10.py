@@ -60,7 +60,7 @@ def update_joint_target_trajectory_kernel(
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 

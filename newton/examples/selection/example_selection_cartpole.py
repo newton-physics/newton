@@ -56,7 +56,7 @@ def apply_forces_kernel(joint_q: wp.array3d(dtype=float), joint_f: wp.array3d(dt
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 

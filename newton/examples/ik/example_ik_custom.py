@@ -142,7 +142,7 @@ class CollisionSphereAvoidObjective(ik.IKObjective):
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps

@@ -74,7 +74,7 @@ def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravi
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.device = wp.get_device()
         self.torch_device = wp.device_to_torch(self.device)

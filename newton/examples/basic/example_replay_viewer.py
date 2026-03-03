@@ -205,7 +205,7 @@ class ReplayUI:
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         """Initialize the integrated viewer example with replay UI."""
         self.viewer = viewer
 

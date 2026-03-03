@@ -43,7 +43,7 @@ def _y_dirs_xy() -> list[wp.vec3]:
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.args = args
 

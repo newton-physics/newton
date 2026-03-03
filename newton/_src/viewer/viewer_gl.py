@@ -195,20 +195,19 @@ class ViewerGL(ViewerBase):
             vsync: Enable vertical sync.
             headless: Run in headless mode (no window).
         """
+        # Pre-initialize callback registry; clear_model() (called from
+        # super().__init__()) resets the "side" slot on each model change.
+        self._ui_callbacks = {"side": [], "stats": [], "free": [], "panel": []}
+
         super().__init__()
 
-        # map from path to any object type
-        self.objects = {}
-        self.lines = {}
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
 
-        self._paused = False
-        self._packed_vbo_xforms = None
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
-        # State caching for selection panel
-        self._last_state = None
-        self._last_control = None
+        self._paused = False
 
         # Selection panel state
         self._selection_ui_state = {
@@ -261,15 +260,9 @@ class ViewerGL(ViewerBase):
         # UI visibility toggle
         self.show_ui = True
 
-        # UI callback system - organized by position
-        # positions: "side", "stats", "free", "panel"
-        self._ui_callbacks = {"side": [], "stats": [], "free": [], "panel": []}
-
         # Initialize PBO (Pixel Buffer Object) resources used in the `get_frame` method.
         self._pbo = None
         self._wp_pbo = None
-
-        self.set_model(None)
 
     def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
         # For capsules, ignore (radius, half_height) in the geometry hash so varying-length capsules batch together.
@@ -346,20 +339,34 @@ class ViewerGL(ViewerBase):
 
     @override
     def clear_model(self):
-        """Clear GL-specific model state so set_model() can be called again (e.g. for example reset)."""
+        """Reset GL-specific model-dependent state to defaults.
+
+        Called from ``__init__`` (via ``super().__init__`` → ``clear_model``)
+        and whenever the current model is discarded.
+        """
+        # Render object and line caches (path -> GL object)
         self.objects = {}
         self.lines = {}
+
+        # Interactive picking and wind force helpers
         self.picking = None
         self.wind = None
+
+        # State caching for selection panel
         self._last_state = None
         self._last_control = None
+
+        # Packed GPU arrays for batched shape transform computation
         self._packed_groups = []
         self._capsule_keys = set()
         self._packed_write_indices = None
         self._packed_world_xforms = None
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
-        self._ui_callbacks = {"side": [], "stats": [], "free": [], "panel": []}
+
+        # Clear example-specific UI callbacks; panel/stats/free persist
+        self._ui_callbacks["side"] = []
+
         super().clear_model()
 
     @override
@@ -972,11 +979,11 @@ class ViewerGL(ViewerBase):
         Args:
             state: The current simulation state.
         """
-        if self.picking_enabled:
+        if self.picking_enabled and self.picking is not None:
             self.picking._apply_picking_force(state)
 
-        # Apply wind forces
-        self.wind._apply_wind_force(state)
+        if self.wind is not None:
+            self.wind._apply_wind_force(state)
 
     def _update(self):
         """
@@ -1681,30 +1688,27 @@ class ViewerGL(ViewerBase):
                 changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", self.renderer.sky_lower)
 
             # Wind Effects section
-            imgui.set_next_item_open(False, imgui.Cond_.once)
-            if imgui.collapsing_header("Wind"):
-                imgui.separator()
+            if self.wind is not None:
+                imgui.set_next_item_open(False, imgui.Cond_.once)
+                if imgui.collapsing_header("Wind"):
+                    imgui.separator()
 
-                # Wind amplitude slider
-                changed, amplitude = imgui.slider_float("Wind Amplitude", self.wind.amplitude, -2.0, 2.0, "%.2f")
-                if changed:
-                    self.wind.amplitude = amplitude
+                    changed, amplitude = imgui.slider_float("Wind Amplitude", self.wind.amplitude, -2.0, 2.0, "%.2f")
+                    if changed:
+                        self.wind.amplitude = amplitude
 
-                # Wind period slider
-                changed, period = imgui.slider_float("Wind Period", self.wind.period, 1.0, 30.0, "%.2f")
-                if changed:
-                    self.wind.period = period
+                    changed, period = imgui.slider_float("Wind Period", self.wind.period, 1.0, 30.0, "%.2f")
+                    if changed:
+                        self.wind.period = period
 
-                # Wind frequency slider
-                changed, frequency = imgui.slider_float("Wind Frequency", self.wind.frequency, 0.1, 5.0, "%.2f")
-                if changed:
-                    self.wind.frequency = frequency
+                    changed, frequency = imgui.slider_float("Wind Frequency", self.wind.frequency, 0.1, 5.0, "%.2f")
+                    if changed:
+                        self.wind.frequency = frequency
 
-                # Wind direction sliders
-                direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
-                changed, direction = imgui.slider_float3("Wind Direction", direction, -1.0, 1.0, "%.2f")
-                if changed:
-                    self.wind.direction = direction
+                    direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
+                    changed, direction = imgui.slider_float3("Wind Direction", direction, -1.0, 1.0, "%.2f")
+                    if changed:
+                        self.wind.direction = direction
 
             # Camera Information section
             imgui.set_next_item_open(True, imgui.Cond_.appearing)

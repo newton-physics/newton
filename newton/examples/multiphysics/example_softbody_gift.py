@@ -140,7 +140,7 @@ PYRAMID_PARTICLES = [
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.solver_type = args.solver
         self.sim_time = 0.0

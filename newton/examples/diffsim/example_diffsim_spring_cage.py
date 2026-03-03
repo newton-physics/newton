@@ -54,7 +54,7 @@ def apply_gradient_kernel(
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 30
         self.frame = 0
