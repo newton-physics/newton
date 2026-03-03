@@ -71,6 +71,7 @@ def parse_usd(
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
+    override_root_xform: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -82,6 +83,12 @@ def parse_usd(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The transform to apply to the entire scene.
+        override_root_xform (bool): If ``True``, the articulation root's world-space
+            transform is replaced by ``xform`` instead of being composed with it,
+            preserving only the internal structure (relative body positions). Useful
+            for cloning articulations at explicit positions. Not intended for sources
+            containing multiple articulations, as all roots would be placed at the
+            same ``xform``. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body (bodies not connected as
             a child to any joint).
 
@@ -175,7 +182,7 @@ def parse_usd(
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
             are authored in the USD but not strictly required to build the simulation. This is useful for
             inspection, experimentation, or custom pipelines that read these values via
-            :attr:`newton.usd.SchemaResolverManager.schema_attrs`.
+            ``result["schema_attrs"]`` returned from :func:`parse_usd`.
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
@@ -356,18 +363,23 @@ def parse_usd(
             material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
         return material_props_cache[prim_path]
 
-    def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False) -> Mesh:
+    def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
         """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""
         prim_path = str(prim.GetPath())
-        key = (prim_path, load_uvs)
+        key = (prim_path, load_uvs, load_normals)
         if key in mesh_cache:
             return mesh_cache[key]
 
-        # A mesh loaded with UVs is a superset of the no-UV representation.
-        if not load_uvs and (prim_path, True) in mesh_cache:
-            return mesh_cache[(prim_path, True)]
+        # A mesh loaded with more data is a superset of simpler representations.
+        for cached_key in [
+            (prim_path, True, True),
+            (prim_path, load_uvs, True),
+            (prim_path, True, load_normals),
+        ]:
+            if cached_key != key and cached_key in mesh_cache:
+                return mesh_cache[cached_key]
 
-        mesh = usd.get_mesh(prim, load_uvs=load_uvs)
+        mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
         mesh_cache[key] = mesh
         return mesh
 
@@ -377,6 +389,7 @@ def parse_usd(
         parent_body_id: int,
         prim: Usd.Prim,
         body_xform: wp.transform | None = None,
+        articulation_root_xform: wp.transform | None = None,
     ):
         """Load visual-only shapes (non-physics) for a prim subtree.
 
@@ -387,6 +400,9 @@ def parse_usd(
             body_xform: Rigid body transform actually used by the builder.
                 This matches any physics-authored pose, scene-level transforms,
                 and incoming transforms that were applied when the body was created.
+            articulation_root_xform: The articulation root's world-space transform,
+                passed when override_root_xform=True. Strips the root's original
+                pose from visual prim transforms to match the rebased body transforms.
         """
         if _is_enabled_collider(prim) or prim.HasAPI(UsdPhysics.RigidBodyAPI):
             return
@@ -395,6 +411,9 @@ def parse_usd(
             return
 
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
+        if articulation_root_xform is not None:
+            rebase_mat = _xform_to_mat44(wp.transform_inverse(articulation_root_xform))
+            prim_world_mat = rebase_mat @ prim_world_mat
         if incoming_world_xform is not None and (parent_body_id == -1 or body_xform is not None):
             # Apply the incoming world transform in model space (static shapes or when using body_xform).
             incoming_mat = _xform_to_mat44(incoming_world_xform)
@@ -415,7 +434,7 @@ def parse_usd(
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                _load_visual_shapes_impl(parent_body_id, inst_child, body_xform)
+                _load_visual_shapes_impl(parent_body_id, inst_child, body_xform, articulation_root_xform)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
@@ -557,9 +576,15 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            _load_visual_shapes_impl(parent_body_id, child, body_xform)
+            _load_visual_shapes_impl(parent_body_id, child, body_xform, articulation_root_xform)
 
-    def add_body(prim: Usd.Prim, xform: wp.transform, label: str, armature: float) -> int:
+    def add_body(
+        prim: Usd.Prim,
+        xform: wp.transform,
+        label: str,
+        armature: float,
+        articulation_root_xform: wp.transform | None = None,
+    ) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
         # Extract custom attributes for this body
         body_custom_attrs = usd.get_custom_attribute_values(
@@ -575,7 +600,7 @@ def parse_usd(
         path_body_map[label] = b
         if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
-                _load_visual_shapes_impl(b, child, body_xform=xform)
+                _load_visual_shapes_impl(b, child, body_xform=xform, articulation_root_xform=articulation_root_xform)
         return b
 
     def parse_body(
@@ -583,6 +608,7 @@ def parse_usd(
         prim: Usd.Prim,
         incoming_xform: wp.transform | None = None,
         add_body_to_builder: bool = True,
+        articulation_root_xform: wp.transform | None = None,
     ) -> int | dict[str, Any]:
         """Parses a rigid body description.
         If `add_body_to_builder` is True, adds it to the builder and returns the resulting body index.
@@ -604,14 +630,17 @@ def parse_usd(
         )
 
         if add_body_to_builder:
-            return add_body(prim, origin, path, body_armature)
+            return add_body(prim, origin, path, body_armature, articulation_root_xform=articulation_root_xform)
         else:
-            return {
+            result = {
                 "prim": prim,
                 "xform": origin,
                 "label": path,
                 "armature": body_armature,
             }
+            if articulation_root_xform is not None:
+                result["articulation_root_xform"] = articulation_root_xform
+            return result
 
     def resolve_joint_parent_child(
         joint_desc: UsdPhysics.JointDesc,
@@ -1087,6 +1116,9 @@ def parse_usd(
         axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, builder.up_axis))
         if verbose:
             print(f"Rotating stage to align its up axis {stage_up_axis} with builder up axis {builder.up_axis}")
+    if override_root_xform and xform is None:
+        raise ValueError("override_root_xform=True requires xform to be set")
+
     if xform is None:
         incoming_world_xform = axis_xform
     else:
@@ -1270,8 +1302,9 @@ def parse_usd(
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
             articulation_root_xform = usd.get_transform(articulation_prim, local=False, xform_cache=xform_cache)
-            # Joints are authored in the articulation-root frame, so always compose with it.
-            articulation_incoming_xform = incoming_world_xform * articulation_root_xform
+            root_joint_xform = (
+                incoming_world_xform if override_root_xform else incoming_world_xform * articulation_root_xform
+            )
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
                 R.collect_prim_attrs(articulation_prim)
@@ -1328,8 +1361,14 @@ def parse_usd(
                     body_desc = body_specs[key]
                     desc_xform = wp.transform(body_desc.position, usd.value_to_warp(body_desc.rotation))
                     body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
-                    desired_world = incoming_world_xform * body_world
+                    if override_root_xform:
+                        # Strip the articulation root's world-space pose and rebase at the user-specified xform.
+                        body_in_root_frame = wp.transform_inverse(articulation_root_xform) * body_world
+                        desired_world = incoming_world_xform * body_in_root_frame
+                    else:
+                        desired_world = incoming_world_xform * body_world
                     body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
+                    art_root_for_visuals = articulation_root_xform if override_root_xform else None
                     if bodies_follow_joint_ordering:
                         # we just parse the body information without yet adding it to the builder
                         body_data[current_body_id] = parse_body(
@@ -1337,6 +1376,7 @@ def parse_usd(
                             stage.GetPrimAtPath(p),
                             incoming_xform=body_incoming_xform,
                             add_body_to_builder=False,
+                            articulation_root_xform=art_root_for_visuals,
                         )
                     else:
                         # look up description and add body to builder
@@ -1345,6 +1385,7 @@ def parse_usd(
                             stage.GetPrimAtPath(p),
                             incoming_xform=body_incoming_xform,
                             add_body_to_builder=True,
+                            articulation_root_xform=art_root_for_visuals,
                         )
                         if bid >= 0:
                             art_bodies.append(bid)
@@ -1510,9 +1551,8 @@ def parse_usd(
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
                     if joint_id == 0 and first_joint_parent == -1:
-                        # the articulation root joint receives the articulation transform as parent transform
-                        # except if we already inserted a floating-base joint
-                        # If base_joint or floating is specified, override the USD's root joint
+                        # The root joint connects to the world (parent_id=-1).
+                        # If base_joint or floating is specified, override the USD's root joint.
                         if base_joint is not None or floating is not None:
                             # Get the child body of the root joint
                             root_joint_child = joint_edges[sorted_joints[0]][1]
@@ -1539,9 +1579,29 @@ def parse_usd(
                             )
                             articulation_joint_indices.append(base_joint_id)
                             continue  # Skip parsing the USD's root joint
+                        # When body0 maps to world the physics API may resolve
+                        # localPose0 into world space (baking the non-body prim's
+                        # transform). JointDesc.body0 returns "" for non-rigid
+                        # targets, so we attempt to look up the prim directly.
+                        root_joint_desc = joint_descriptions[joint_names[i]]
+                        b0 = str(root_joint_desc.body0)
+                        b1 = str(root_joint_desc.body1)
+                        world_body_path = b0 if body_ids.get(b0, -1) == -1 else b1
+                        world_body_prim = stage.GetPrimAtPath(world_body_path) if world_body_path else None
+                        if world_body_prim is not None and world_body_prim.IsValid():
+                            world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
+                        else:
+                            # world-side path can be empty (body0 == ""); localPose0 already carries world-side pose
+                            world_body_xform = wp.transform_identity()
+                        root_frame_xform = (
+                            wp.transform_inverse(articulation_root_xform)
+                            if override_root_xform
+                            else wp.transform_identity()
+                        )
+                        root_incoming_xform = incoming_world_xform * root_frame_xform * world_body_xform
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            incoming_xform=articulation_incoming_xform,
+                            incoming_xform=root_incoming_xform,
                         )
                     else:
                         joint = parse_joint(
@@ -1553,10 +1613,20 @@ def parse_usd(
 
                 # insert loop joints
                 for joint_path in joint_excluded:
-                    joint = parse_joint(
-                        joint_descriptions[joint_path],
-                        incoming_xform=articulation_incoming_xform,
+                    parent_id, _ = resolve_joint_parent_child(
+                        joint_descriptions[joint_path], path_body_map, get_transforms=False
                     )
+                    if parent_id == -1:
+                        joint = parse_joint(
+                            joint_descriptions[joint_path],
+                            incoming_xform=root_joint_xform,
+                        )
+                    else:
+                        # localPose0 is already in the parent body's local frame;
+                        # body positions were correctly set during body parsing above.
+                        joint = parse_joint(
+                            joint_descriptions[joint_path],
+                        )
                     if joint is not None:
                         processed_joints.add(joint_path)
 
@@ -1880,7 +1950,6 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
-                gap_cfg = gap_val
 
                 shape_params = {
                     "body": body_id,
@@ -1899,7 +1968,7 @@ def parse_usd(
                             prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
                         ),
                         margin=margin_val,
-                        gap=gap_cfg,
+                        gap=gap_val,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
                         mu_torsional=material.torsionalFriction,
@@ -2320,7 +2389,7 @@ def parse_usd(
             continue
 
         # Skip if NewtonMimicAPI is present — it takes precedence over PhysxMimicJointAPI.
-        if joint_prim.HasAPI("NewtonMimicAPI") or usd.has_applied_api_schema(joint_prim, "NewtonMimicAPI"):
+        if usd.has_applied_api_schema(joint_prim, "NewtonMimicAPI"):
             continue
 
         schemas_listop = joint_prim.GetMetadata("apiSchemas")

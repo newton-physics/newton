@@ -1649,5 +1649,113 @@ class TestMimicConstraints(unittest.TestCase):
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
 
 
+class TestOverrideRootXformURDF(unittest.TestCase):
+    """Tests that override_root_xform parameter is accepted by the URDF importer."""
+
+    SIMPLE_URDF = """
+    <robot name="test">
+        <link name="base">
+            <inertial><mass value="1.0"/><inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial>
+        </link>
+        <link name="child">
+            <inertial><mass value="0.5"/><inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial>
+        </link>
+        <joint name="j1" type="revolute">
+            <parent link="base"/><child link="child"/>
+            <origin xyz="0 0 1"/>
+            <axis xyz="1 0 0"/>
+            <limit lower="-3.14" upper="3.14"/>
+        </joint>
+    </robot>
+    """
+
+    def test_override_fixed_joint(self):
+        """override_root_xform=True with fixed base places root at xform."""
+        builder = newton.ModelBuilder()
+        builder.add_urdf(
+            self.SIMPLE_URDF,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            floating=False,
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("test/base")
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+
+    def test_override_floating_joint(self):
+        """override_root_xform=True with floating base places root at xform."""
+        builder = newton.ModelBuilder()
+        builder.add_urdf(
+            self.SIMPLE_URDF,
+            xform=wp.transform((3.0, 4.0, 0.0), wp.quat_identity()),
+            floating=True,
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("test/base")
+        np.testing.assert_allclose(body_q[base_idx, :3], [3.0, 4.0, 0.0], atol=1e-4)
+
+    def test_override_without_xform_raises(self):
+        """override_root_xform=True without providing xform should raise a ValueError."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_urdf(self.SIMPLE_URDF, override_root_xform=True)
+
+    def test_override_base_joint(self):
+        """override_root_xform=True with a custom base_joint applies xform directly
+        instead of splitting position/rotation."""
+        angle = np.pi / 4
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+        target = (2.0, 3.0, 0.0)
+
+        builder_override = newton.ModelBuilder()
+        builder_override.add_urdf(
+            self.SIMPLE_URDF,
+            xform=wp.transform(target, quat),
+            base_joint={
+                "joint_type": newton.JointType.REVOLUTE,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0, 0, 1])],
+            },
+            override_root_xform=True,
+        )
+
+        builder_default = newton.ModelBuilder()
+        builder_default.add_urdf(
+            self.SIMPLE_URDF,
+            xform=wp.transform(target, quat),
+            base_joint={
+                "joint_type": newton.JointType.REVOLUTE,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0, 0, 1])],
+            },
+            override_root_xform=False,
+        )
+
+        # With override: parent_xform = full xform, child_xform = identity
+        self.assertEqual(len(builder_override.joint_X_c), len(builder_default.joint_X_c))
+        override_child = builder_override.joint_X_c[0]
+        default_child = builder_default.joint_X_c[0]
+
+        # Default splits: child_xform gets inverse rotation
+        np.testing.assert_allclose(
+            [*override_child.p], [0, 0, 0], atol=1e-6, err_msg="override child_xform translation should be zero"
+        )
+        np.testing.assert_allclose(
+            [*override_child.q], [0, 0, 0, 1], atol=1e-6, err_msg="override child_xform rotation should be identity"
+        )
+        # Default child_xform has the inverse rotation applied
+        self.assertFalse(
+            np.allclose([*default_child.q], [0, 0, 0, 1], atol=1e-6),
+            msg="default child_xform should NOT be identity (rotation is split)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

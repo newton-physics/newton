@@ -55,13 +55,11 @@ class Example:
         h1.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("unitree_h1")
-        asset_file = str(asset_path / "usd" / "h1_minimal.usda")
+        asset_file = str(asset_path / "usd_structured" / "h1.usda")
         h1.add_usd(
             asset_file,
             ignore_paths=["/GroundPlane"],
-            collapse_fixed_joints=False,
             enable_self_collisions=False,
-            hide_collision_shapes=True,
         )
         # approximate meshes for faster collision detection
         h1.approximate_meshes("bounding_box")
@@ -84,7 +82,7 @@ class Example:
             iterations=100,
             ls_iterations=50,
             njmax=100,
-            nconmax=50,
+            nconmax=210,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
         )
 

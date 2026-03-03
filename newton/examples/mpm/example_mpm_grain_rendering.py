@@ -68,11 +68,11 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
-            self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
+            self.solver._project_outside(self.state_1, self.state_1, self.sim_dt)
 
             # update grains
-            self.solver.update_particle_frames(self.state_0, self.state_1, self.sim_dt)
-            self.solver.update_render_grains(self.state_0, self.state_1, self.grains, self.sim_dt)
+            self.solver._update_particle_frames(self.state_0, self.state_1, self.sim_dt)
+            self.solver._update_render_grains(self.state_0, self.state_1, self.grains, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0
 

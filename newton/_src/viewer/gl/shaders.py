@@ -313,9 +313,10 @@ void main()
     // Blinn-Phong terms
     float NdotL = max(dot(N, L), 0.0);
     float NdotH = max(dot(N, H), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
 
     // Derive Blinn-Phong exponent from perceptual roughness.
-    // roughness 0 → very rough, 1 → perfectly smooth
+    // roughness 0 → perfectly smooth, 1 → very rough
     float gloss = clamp(1.0 - roughness, 0.0, 1.0);
     // Map gloss to exponent range ~[2, 1024]
     float shininess = 1.0 + pow(gloss, 4.0) * 1023.0;
@@ -349,8 +350,11 @@ void main()
     diffuse *= 1.0 - metallic;
     vec3 color = ambient + (1.0 - shadow) * spotlightAttenuation * (diffuse + spec);
 
+    // Fresnel darkening: reduce brightness at glancing angles for metals
+    color *= mix(1.0, pow(NdotV, 2.0), metallic);
+
     // environment reflection for metallic look (fade with roughness)
-    float env_lod = clamp(roughness * 4.0, 0.0, 4.0);
+    float env_lod = clamp(pow(roughness, 1.0/4.0), 0.0, 1.0) * 8.0;
     vec3 R = reflect(-V, N);
     vec3 env_color = sample_env_map(R, env_lod);
     env_color = pow(env_color, vec3(2.2)); // to linear

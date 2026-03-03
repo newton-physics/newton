@@ -1484,7 +1484,7 @@ class SolverImplicitMPM(SolverBase):
         if flags & newton.SolverNotifyFlags.PARTICLE_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
 
-    def project_outside(
+    def _project_outside(
         self, state_in: newton.State, state_out: newton.State, dt: float, max_dist: float | None = None
     ):
         """Project particles outside of colliders, and adjust their velocity and velocity gradients
@@ -1534,7 +1534,7 @@ class SolverImplicitMPM(SolverBase):
             # Restore previous max query dist
             self._mpm_model.collider.query_max_dist = prev_max_dist
 
-    def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
+    def _collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
 
         Returns a tuple of 3 arrays:
@@ -1563,7 +1563,7 @@ class SolverImplicitMPM(SolverBase):
         """
         return self._mpm_model.collider.collider_body_index
 
-    def update_particle_frames(
+    def _update_particle_frames(
         self,
         state_prev: newton.State,
         state: newton.State,
@@ -1606,7 +1606,7 @@ class SolverImplicitMPM(SolverBase):
 
         return sample_render_grains(state, self._mpm_model.particle_radius, grains_per_particle)
 
-    def update_render_grains(
+    def _update_render_grains(
         self,
         state_prev: newton.State,
         state: newton.State,

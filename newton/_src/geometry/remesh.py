@@ -47,7 +47,7 @@ Example:
     Remesh a problematic mesh to get a clean, watertight version::
 
         import numpy as np
-        from newton._src.geometry.remesh import PointCloudExtractor, SurfaceReconstructor
+        from ..geometry.remesh import PointCloudExtractor, SurfaceReconstructor
 
         # Load your mesh (vertices: Nx3, indices: Mx3 or flattened)
         vertices = np.array(...)  # your mesh vertices
@@ -83,8 +83,8 @@ import warnings
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.hashtable import HashTable, hashtable_find_or_insert
-from newton._src.geometry.types import Mesh
+from ..geometry.hashtable import HashTable, hashtable_find_or_insert
+from ..geometry.types import Mesh
 
 # -----------------------------------------------------------------------------
 # Morton encoding for sparse voxel grid (21 bits per axis = 63 bits total)
@@ -1776,7 +1776,7 @@ def remesh_poisson(
 
     Example:
         >>> import numpy as np
-        >>> from newton._src.geometry.remesh import remesh_poisson
+        >>> from ..geometry.remesh import remesh_poisson
         >>> # Remesh with default settings
         >>> new_verts, new_faces = remesh_poisson(vertices, faces)
         >>> # Remesh with higher quality (more views, finer resolution)

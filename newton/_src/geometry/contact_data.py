@@ -21,6 +21,10 @@ This module defines the core contact data structures used throughout the collisi
 
 import warp as wp
 
+# Bit flag and mask used to encode heightfield shape indices in collision pair buffers.
+SHAPE_PAIR_HFIELD_BIT = wp.int32(1 << 30)
+SHAPE_PAIR_INDEX_MASK = wp.int32((1 << 30) - 1)
+
 
 @wp.struct
 class ContactData:

@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 Development
 ===========
 
@@ -236,7 +239,7 @@ To build the documentation locally, ensure you have the documentation dependenci
         .. code-block:: console
 
             rm -rf docs/_build
-            uv run --extra docs --extra sim sphinx-build -W -b html docs docs/_build/html
+            uv run --extra docs --extra sim sphinx-build -j auto -W -b html docs docs/_build/html
 
     .. tab-item:: venv
         :sync: venv
@@ -370,14 +373,14 @@ The doctests can be run with:
 
         .. code-block:: console
 
-            uv run --extra docs --extra sim sphinx-build -W -b doctest docs docs/_build/doctest
+            uv run --extra docs --extra sim sphinx-build -j auto -W -b doctest docs docs/_build/doctest
 
     .. tab-item:: venv
         :sync: venv
 
         .. code:: console
 
-            python -m sphinx -W -b doctest docs docs/_build/doctest
+            python -m sphinx -j auto -W -b doctest docs docs/_build/doctest
 
 For more information, see the `sphinx.ext.doctest <https://www.sphinx-doc.org/en/master/usage/extensions/doctest.html>`__
 documentation.

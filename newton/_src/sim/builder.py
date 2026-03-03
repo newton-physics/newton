@@ -379,7 +379,7 @@ class ModelBuilder:
             target_vel: float = 0.0,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
-            armature: float = 1e-2,
+            armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
             friction: float = 0.0,
@@ -406,7 +406,7 @@ class ModelBuilder:
             self.target_kd = target_kd
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
             self.armature = armature
-            """Artificial inertia added around the joint axis. Defaults to 1e-2."""
+            """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
             """Maximum effort (force or torque) the joint axis can exert. Defaults to 1e6."""
             self.velocity_limit = velocity_limit
@@ -1843,6 +1843,7 @@ class ModelBuilder:
         collapse_fixed_joints: bool = False,
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
+        override_root_xform: bool = False,
     ):
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -1850,6 +1851,14 @@ class ModelBuilder:
         Args:
             source (str): The filename of the URDF file to parse, or the URDF XML string content.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
+            override_root_xform (bool): If ``True``, the articulation root's world-space
+                transform is replaced by ``xform`` instead of being composed with it,
+                preserving only the internal structure (relative body positions). Useful
+                for cloning articulations at explicit positions. When a ``base_joint`` is
+                specified, ``xform`` is applied as the full parent transform (including
+                rotation) rather than splitting position/rotation. Not intended for
+                sources containing multiple articulations, as all roots would be placed
+                at the same ``xform``. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body.
 
                 - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
@@ -1954,6 +1963,7 @@ class ModelBuilder:
             collapse_fixed_joints=collapse_fixed_joints,
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
+            override_root_xform=override_root_xform,
         )
 
     def add_usd(
@@ -1984,6 +1994,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
+        override_root_xform: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -1994,6 +2005,12 @@ class ModelBuilder:
         Args:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The transform to apply to the entire scene.
+            override_root_xform (bool): If ``True``, the articulation root's world-space
+                transform is replaced by ``xform`` instead of being composed with it,
+                preserving only the internal structure (relative body positions). Useful
+                for cloning articulations at explicit positions. Not intended for sources
+                containing multiple articulations, as all roots would be placed at the
+                same ``xform``. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body (bodies not connected as
                 a child to any joint).
 
@@ -2087,7 +2104,7 @@ class ModelBuilder:
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
                 are authored in the USD but not strictly required to build the simulation. This is useful for
                 inspection, experimentation, or custom pipelines that read these values via
-                :attr:`newton.usd.SchemaResolverManager.schema_attrs`.
+                ``result["schema_attrs"]`` returned from :func:`parse_usd`.
 
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
@@ -2168,6 +2185,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
             force_position_velocity_actuation=force_position_velocity_actuation,
+            override_root_xform=override_root_xform,
         )
 
     def add_mjcf(
@@ -2202,6 +2220,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
+        override_root_xform: bool = False,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -2210,6 +2229,12 @@ class ModelBuilder:
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform (Transform): The transform to apply to the imported mechanism.
+            override_root_xform (bool): If ``True``, the articulation root's world-space
+                transform is replaced by ``xform`` instead of being composed with it,
+                preserving only the internal structure (relative body positions). Useful
+                for cloning articulations at explicit positions. Not intended for sources
+                containing multiple articulations, as all roots would be placed at the
+                same ``xform``. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body.
 
                 - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
@@ -2340,6 +2365,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             ctrl_direct=ctrl_direct,
             path_resolver=path_resolver,
+            override_root_xform=override_root_xform,
         )
 
     # endregion
@@ -4248,8 +4274,15 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(self, verbose=wp.config.verbose):
-        """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation."""
+    def collapse_fixed_joints(
+        self, verbose: bool = wp.config.verbose, joints_to_keep: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
+
+        Args:
+            verbose: If True, print additional information about the collapsed joints. Defaults to the value of `wp.config.verbose`.
+            joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
+        """
 
         body_data = {}
         body_children = {-1: []}
@@ -4358,11 +4391,17 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
+            nonlocal joints_to_keep
 
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
             # and would be merged into world (last_dynamic_body == -1)
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+
+            # Don't merge fixed joints listed in joints_to_keep list
+            if joints_to_keep is None:
+                joints_to_keep = []
+            joint_in_keep_list = joint["label"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
@@ -4374,7 +4413,25 @@ class ModelBuilder:
                         f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
                     )
 
-            if joint["type"] == JointType.FIXED and not should_skip_merge:
+            if joint_in_keep_list and joint["type"] == JointType.FIXED:
+                # Skip merging this joint if it is listed in the joints_to_keep list
+                parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
+                child_lbl = self.body_label[child_body]
+                if verbose:
+                    print(
+                        f"Skipping collapse of joint {joint['label']} between {parent_lbl} and {child_lbl}: "
+                        f"{child_lbl} is listed in joints_to_keep and this fixed joint will be preserved"
+                    )
+                # Warn if the child_body of skipped joint has zero or negative mass
+                if body_data[child_body]["mass"] <= 0:
+                    warnings.warn(
+                        f"Skipped joint {joint['label']} has a child {child_lbl} with zero or negative mass ({body_data[child_body]['mass']}). "
+                        f"This may cause unexpected behavior.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+
+            if joint["type"] == JointType.FIXED and not should_skip_merge and not joint_in_keep_list:
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
@@ -9077,7 +9134,14 @@ class ModelBuilder:
 
             # ---------------------
             # heightfield collision data
-            has_heightfields = any(t == GeoType.HFIELD for t in self.shape_type)
+            hfield_count = sum(1 for t in self.shape_type if t == GeoType.HFIELD)
+            has_heightfields = hfield_count > 0
+            if hfield_count > 1:
+                warnings.warn(
+                    "Heightfield-vs-heightfield collision is not supported; "
+                    "contacts between heightfield pairs will be skipped.",
+                    stacklevel=2,
+                )
             if has_heightfields:
                 from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 

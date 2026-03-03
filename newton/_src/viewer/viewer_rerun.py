@@ -243,29 +243,11 @@ class ViewerRerun(ViewerBase):
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling (unused).
         """
-        if hidden:
-            # Cache minimal mesh data so log_instances can reference template geometry
-            # created by _populate_geometry (which uses hidden=True for instance templates).
-            points_np = self._to_numpy(points).astype(np.float32)
-            indices_np = self._to_numpy(indices).astype(np.uint32)
-            if indices_np.ndim == 1:
-                indices_np = indices_np.reshape(-1, 3)
-            normals_np = self._to_numpy(normals) if normals is not None else None
-            self._meshes[name] = {
-                "points": points_np,
-                "indices": indices_np,
-                "normals": normals_np,
-                "uvs": None,
-                "texture_image": None,
-                "texture_buffer": None,
-                "texture_format": None,
-            }
-            return
-
-        assert isinstance(points, wp.array)
-        assert isinstance(indices, wp.array)
-        assert normals is None or isinstance(normals, wp.array)
-        assert uvs is None or isinstance(uvs, wp.array)
+        if not hidden:
+            assert isinstance(points, wp.array)
+            assert isinstance(indices, wp.array)
+            assert normals is None or isinstance(normals, wp.array)
+            assert uvs is None or isinstance(uvs, wp.array)
 
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
@@ -276,8 +258,13 @@ class ViewerRerun(ViewerBase):
             indices_np = indices_np.reshape(-1, 3)
 
         if normals is None:
-            normals = compute_vertex_normals(points, indices, device=self.device)
-            normals_np = normals.numpy()
+            if hidden and not (isinstance(points, wp.array) and isinstance(indices, wp.array)):
+                # Hidden-mode callers can use lightweight array-like objects that are
+                # incompatible with compute_vertex_normals.
+                normals_np = None
+            else:
+                normals = compute_vertex_normals(points, indices, device=self.device)
+                normals_np = self._to_numpy(normals)
         else:
             normals_np = self._to_numpy(normals)
 
@@ -311,6 +298,9 @@ class ViewerRerun(ViewerBase):
             "texture_buffer": texture_buffer,
             "texture_format": texture_format,
         }
+
+        if hidden:
+            return
 
         mesh_kwargs = {
             "vertex_positions": points_np,
