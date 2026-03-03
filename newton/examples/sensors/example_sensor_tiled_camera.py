@@ -124,7 +124,7 @@ class Example:
 
         gaussian = None
         if args.ply:
-            gaussian = newton.Gaussian.create_from_ply(args.ply, 0.1)
+            gaussian = newton.Gaussian.create_from_ply(args.ply, args.min_response)
 
         builder = newton.ModelBuilder()
 
@@ -486,6 +486,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ply",
         help="Gaussian Filename",
+    )
+    parser.add_argument(
+        "-min",
+        "--min-response",
+        type=float,
+        default=0.1,
+        help="Gaussian min response",
     )
 
     # Parse arguments and initialize viewer
