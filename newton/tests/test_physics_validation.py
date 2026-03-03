@@ -727,7 +727,7 @@ def test_static_friction(test, device, solver_fn, uses_newton_contacts, uses_gen
     cfg.ke = 1e4
     cfg.kd = 500.0
     cfg.kf = 0.0
-    cfg.contact_margin = 0.1
+    cfg.gap = 0.1
 
     # Force below and above static friction
     F_below = 0.3 * mu * mass * abs(g)
@@ -797,7 +797,7 @@ def test_dynamic_friction(test, device, solver_fn, uses_newton_contacts, uses_ge
     cfg.ke = 1e4
     cfg.kd = 500.0
     cfg.kf = 0.0
-    cfg.contact_margin = 0.1
+    cfg.gap = 0.1
 
     # A simple box on a ground plane
     builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
@@ -869,7 +869,8 @@ def test_restitution(test, device, solver_fn):
         cfg.ke = 1e4
         cfg.kd = 100.0
         cfg.kf = 0.0
-        cfg.contact_margin = 0.001
+        cfg.margin = 0.001
+        cfg.gap = 0.0
 
         builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
         builder.add_ground_plane(cfg=cfg)
@@ -949,15 +950,17 @@ def test_restitution_mujoco(test, device, solver_fn, use_mujoco_cpu):
     cfg.ke = 1e4
     cfg.kd = 100.0
     cfg.kf = 0.0
-    cfg.contact_margin = 0.1
+    cfg.margin = 0.1
 
     # Single model: ground + elastic sphere (body 0) + inelastic sphere (body 1)
+    # Note: ground plane uses default cfg (custom cfg causes MuJoCo Warp divergence).
+    # Restitution is controlled via geom_solref set directly on the solver below.
     builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
-    builder.add_ground_plane(cfg=cfg)
+    builder.add_ground_plane()
     b_elastic = builder.add_body(xform=wp.transform(wp.vec3(0.0, radius + h_drop, 0.0), wp.quat_identity()))
     b_inelastic = builder.add_body(xform=wp.transform(wp.vec3(2.0, radius + h_drop, 0.0), wp.quat_identity()))
-    builder.add_shape_sphere(b_elastic, radius=radius, cfg=cfg)
-    builder.add_shape_sphere(b_inelastic, radius=radius, cfg=cfg)
+    builder.add_shape_sphere(b_elastic, radius=radius)
+    builder.add_shape_sphere(b_inelastic, radius=radius)
     model = builder.finalize(device=device)
 
     solver = solver_fn(model)
