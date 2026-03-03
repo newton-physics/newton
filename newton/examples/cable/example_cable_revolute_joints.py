@@ -377,11 +377,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        # Stiffen revolute constraint caps (non-cable joints) so the attachment behaves near-hard.
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-        )
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

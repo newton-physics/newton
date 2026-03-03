@@ -19,8 +19,8 @@
 # Two cables hanging from kinematic sphere anchors via revolute joints
 # (axis = Y), comparing drive tracking with and without joint limits:
 #
-#   y = -0.3   DRIVE        -- tracks oscillating target +/-1.2 rad
-#   y = +0.3   DRIVE+LIMIT  -- same drive, clamped at +/-0.3 rad
+#   y = -0.5   DRIVE        -- tracks oscillating target +/-1.2 rad
+#   y = +0.5   DRIVE+LIMIT  -- same drive, clamped at +/-0.3 rad
 #
 ###########################################################################
 
@@ -313,7 +313,6 @@ class Example:
         # Limit cable should be clamped within bounds.
         if abs(theta_limit) > self.limit_bound + 0.15:
             raise AssertionError(f"Limit violated: |theta|={abs(theta_limit):.3f}, bound={self.limit_bound}")
-
 
 
 if __name__ == "__main__":

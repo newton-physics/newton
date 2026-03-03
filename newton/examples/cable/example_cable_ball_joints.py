@@ -340,14 +340,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        # Stiffen ball constraint caps (non-cable joints) so the attachment behaves near-hard.
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-            friction_epsilon=0.1,
-            rigid_joint_linear_ke=1.0e9,
-            rigid_joint_linear_k_start=1.0e5,
-        )
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

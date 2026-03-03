@@ -16,11 +16,11 @@
 ###########################################################################
 # Example Cable Prismatic Drives
 #
-# Two cables hanging from kinematic sphere anchors via prismatic joints
+# Two cables hanging from kinematic box anchors via prismatic joints
 # (axis = X), comparing drive tracking with and without joint limits:
 #
 #   y = -0.5   DRIVE        -- tracks oscillating target +/-0.3 m
-#   y = +0.5   DRIVE+LIMIT  -- same drive, clamped at +/-0.1 m
+#   y = +0.5   DRIVE+LIMIT  -- same drive, clamped at +/-0.05 m
 #
 ###########################################################################
 
@@ -187,7 +187,7 @@ class Example:
                     axis=(1.0, 0.0, 0.0),
                     target_ke=drive_ke,
                     target_kd=drive_kd,
-                    label="pris_drive",
+                    label="prismatic_drive",
                 )
             else:
                 # Drive + limit.
@@ -203,7 +203,7 @@ class Example:
                     limit_upper=self.limit_bound,
                     limit_ke=1.0e5,
                     limit_kd=1.0e2,
-                    label="pris_limit",
+                    label="prismatic_limit",
                 )
 
             builder.add_articulation([*rod_joints, j])
@@ -228,14 +228,14 @@ class Example:
         joint_types = self.model.joint_type.numpy()
         joint_qd_start = self.model.joint_qd_start.numpy()
 
-        pris_indices = [
+        prismatic_indices = [
             i for i in range(self.model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC)
         ]
-        assert len(pris_indices) == 2, f"Expected 2 prismatic joints, found {len(pris_indices)}"
-        self._pris_joint_indices = pris_indices
+        assert len(prismatic_indices) == 2, f"Expected 2 prismatic joints, found {len(prismatic_indices)}"
+        self._prismatic_joint_indices = prismatic_indices
 
         # Drive target is written to both cables.
-        drive_dofs = [int(joint_qd_start[pris_indices[0]]), int(joint_qd_start[pris_indices[1]])]
+        drive_dofs = [int(joint_qd_start[prismatic_indices[0]]), int(joint_qd_start[prismatic_indices[1]])]
         self._drive_dof_indices = wp.array(drive_dofs, dtype=int, device=self.device)
 
         self.capture()
@@ -296,8 +296,8 @@ class Example:
         t = self.sim_time_array.numpy()[0]
         target = self.drive_amplitude * math.sin(self.omega * t)
 
-        d_drive = _extract_prismatic_displacement(self.model, body_q_np, self._pris_joint_indices[0])
-        d_limit = _extract_prismatic_displacement(self.model, body_q_np, self._pris_joint_indices[1])
+        d_drive = _extract_prismatic_displacement(self.model, body_q_np, self._prismatic_joint_indices[0])
+        d_limit = _extract_prismatic_displacement(self.model, body_q_np, self._prismatic_joint_indices[1])
 
         # Drive cable should track the target.
         if abs(d_drive - target) > 0.15:

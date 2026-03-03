@@ -238,7 +238,7 @@ class Example:
         # Anchor height (raise this to give the cables more room to hang)
         z0 = 4.0
 
-        # Two sets: free-slide (translate X) and constrained-follow (translate Z)
+        # Two sets: free-slide (translate X) and constrained-follow (translate Y)
         sets = [
             ("free_slide", -1.0, 0),  # (label, x_offset, mode)
             ("locked_y", 1.0, 1),
@@ -374,15 +374,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        # Stiffen prismatic constraint caps (non-cable joints) so the attachment behaves near-hard.
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-            friction_epsilon=0.1,
-            rigid_joint_linear_ke=1.0e9,
-            rigid_joint_angular_ke=1.0e9,
-            rigid_joint_linear_k_start=1.0e5,
-        )
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

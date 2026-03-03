@@ -614,11 +614,13 @@ class SolverVBD(SolverBase):
                     dim_np[j] = 2  # [linear (isotropic), angular (2-DOF perpendicular)]
                 elif jt[j] == JointType.PRISMATIC:
                     dim_np[j] = 2  # [linear (2-DOF perpendicular), angular (isotropic)]
+                elif jt[j] == JointType.D6:
+                    dim_np[j] = 2  # [linear, angular] -- always 2 slots like FIXED
                 else:
                     if jt[j] != JointType.FREE:
                         raise NotImplementedError(
                             f"SolverVBD rigid joints: JointType.{JointType(jt[j]).name} is not implemented yet "
-                            "(only CABLE, BALL, FIXED, REVOLUTE, and PRISMATIC are supported)."
+                            "(only CABLE, BALL, FIXED, REVOLUTE, PRISMATIC, and D6 are supported)."
                         )
                     dim_np[j] = 0
 
@@ -652,6 +654,7 @@ class SolverVBD(SolverBase):
           - ``JointType.FIXED`` (2 scalars: isotropic linear + isotropic angular)
           - ``JointType.REVOLUTE`` (2 scalars: isotropic linear + 2-DOF perpendicular angular)
           - ``JointType.PRISMATIC`` (2 scalars: 2-DOF perpendicular linear + isotropic angular)
+          - ``JointType.D6`` (2 scalars: projected linear + projected angular)
 
         ``JointType.FREE`` joints (created by :meth:`ModelBuilder.add_body`) are not constraints and are ignored.
         """
@@ -779,6 +782,21 @@ class SolverVBD(SolverBase):
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
                 elif jt[j] == JointType.PRISMATIC:
                     # PRISMATIC joints: 2-DOF perpendicular linear + isotropic angular
+                    c0 = int(jc_start[j])
+
+                    joint_k_max_np[c0 + 0] = self.rigid_joint_linear_ke
+                    k_lin_floor = min(stretch_k, self.rigid_joint_linear_ke)
+                    joint_k_min_np[c0 + 0] = k_lin_floor
+                    joint_k0_np[c0 + 0] = k_lin_floor
+                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+
+                    joint_k_max_np[c0 + 1] = self.rigid_joint_angular_ke
+                    k_ang_floor = min(bend_k, self.rigid_joint_angular_ke)
+                    joint_k_min_np[c0 + 1] = k_ang_floor
+                    joint_k0_np[c0 + 1] = k_ang_floor
+                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+                elif jt[j] == JointType.D6:
+                    # D6 joints: projected linear + projected angular (same layout as FIXED)
                     c0 = int(jc_start[j])
 
                     joint_k_max_np[c0 + 0] = self.rigid_joint_linear_ke
@@ -1922,6 +1940,7 @@ class SolverVBD(SolverBase):
                     model.joint_limit_upper,
                     model.joint_limit_ke,
                     model.joint_limit_kd,
+                    model.joint_dof_dim,
                     self.body_forces,
                     self.body_torques,
                     self.body_hessian_ll,
@@ -2011,6 +2030,7 @@ class SolverVBD(SolverBase):
                 model.body_q,
                 self.avbd_beta,
                 self.joint_penalty_k,  # input/output
+                model.joint_dof_dim,
             ],
             device=self.device,
         )

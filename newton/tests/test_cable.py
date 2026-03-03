@@ -336,6 +336,29 @@ def _build_cable_loop(device, num_links: int = 6):
 # -----------------------------------------------------------------------------
 
 
+def _numpy_to_transform(arr):
+    """Convert a [p(3), q(4)] numpy row (xyzw quaternion) to wp.transform."""
+    return wp.transform(wp.vec3(arr[0], arr[1], arr[2]), wp.quat(arr[3], arr[4], arr[5], arr[6]))
+
+
+def _get_joint_rest_relative_rotation(model: newton.Model, joint_id: int) -> wp.quat:
+    """Return q_rel_rest = quat_inverse(q_wp_rest) * q_wc_rest for the joint's rest configuration."""
+    with wp.ScopedDevice("cpu"):
+        jp = model.joint_parent.numpy()[joint_id].item()
+        jc = model.joint_child.numpy()[joint_id].item()
+        X_pj = _numpy_to_transform(model.joint_X_p.numpy()[joint_id])
+        X_cj = _numpy_to_transform(model.joint_X_c.numpy()[joint_id])
+        bq_rest = model.body_q.numpy()
+        if jp >= 0:
+            X_wp_rest = _numpy_to_transform(bq_rest[jp]) * X_pj
+        else:
+            X_wp_rest = X_pj
+        X_wc_rest = _numpy_to_transform(bq_rest[jc]) * X_cj
+        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        return wp.normalize(wp.mul(wp.quat_inverse(q_wp_rest), q_wc_rest))
+
+
 def _get_joint_world_frames(model: newton.Model, body_q: wp.array, joint_id: int) -> tuple[wp.transform, wp.transform]:
     """Compute world-space joint frames (X_wp, X_wc) for a given joint."""
     with wp.ScopedDevice("cpu"):
@@ -384,7 +407,9 @@ def _compute_fixed_joint_frame_error(model: newton.Model, body_q: wp.array, join
         (pos_err, ang_err)
 
         - pos_err: anchor coincidence error |x_c - x_p| [m].
-        - ang_err: full rotation angle between joint frames [rad].
+        - ang_err: rotation angle relative to the rest configuration [rad].
+          Measures how much the joint has deviated from its initial
+          rest-relative orientation, not the absolute angle between frames.
     """
     X_wp, X_wc = _get_joint_world_frames(model, body_q, joint_id)
 
@@ -392,10 +417,15 @@ def _compute_fixed_joint_frame_error(model: newton.Model, body_q: wp.array, join
     x_c = wp.transform_get_translation(X_wc)
     pos_err = float(wp.length(x_c - x_p))
 
+    # Current relative rotation
     q_wp = wp.transform_get_rotation(X_wp)
     q_wc = wp.transform_get_rotation(X_wc)
     q_rel = wp.normalize(wp.mul(wp.quat_inverse(q_wp), q_wc))
-    ang_err = float(2.0 * wp.acos(wp.clamp(wp.abs(q_rel[3]), 0.0, 1.0)))
+
+    # Measure deviation from rest: q_err = q_rel * q_rel_rest^{-1}
+    q_rel_rest = _get_joint_rest_relative_rotation(model, joint_id)
+    q_err = wp.normalize(wp.mul(q_rel, wp.quat_inverse(q_rel_rest)))
+    ang_err = float(2.0 * wp.acos(wp.clamp(wp.abs(q_err[3]), 0.0, 1.0)))
 
     return pos_err, ang_err
 
@@ -407,8 +437,8 @@ def _compute_revolute_joint_error(model: newton.Model, body_q: wp.array, joint_i
         (pos_err, ang_perp_err, rot_along_free)
 
         - pos_err: anchor coincidence error |x_c - x_p| [m].
-        - ang_perp_err: rotation angle perpendicular to the joint axis [rad].
-        - rot_along_free: absolute rotation about the free (joint) axis [rad].
+        - ang_perp_err: rotation angle perpendicular to the joint axis relative to rest [rad].
+        - rot_along_free: rotation about the free (joint) axis relative to rest [rad].
     """
     X_wp, X_wc = _get_joint_world_frames(model, body_q, joint_id)
     a = _get_joint_axis_local(model, joint_id)
@@ -420,10 +450,14 @@ def _compute_revolute_joint_error(model: newton.Model, body_q: wp.array, joint_i
     q_wp = wp.transform_get_rotation(X_wp)
     q_wc = wp.transform_get_rotation(X_wc)
     q_rel = wp.normalize(wp.mul(wp.quat_inverse(q_wp), q_wc))
-    if q_rel[3] < 0.0:
-        q_rel = wp.quat(-q_rel[0], -q_rel[1], -q_rel[2], -q_rel[3])
 
-    axis_angle, angle = wp.quat_to_axis_angle(q_rel)
+    # Measure relative to rest configuration
+    q_rel_rest = _get_joint_rest_relative_rotation(model, joint_id)
+    q_err = wp.normalize(wp.mul(q_rel, wp.quat_inverse(q_rel_rest)))
+    if q_err[3] < 0.0:
+        q_err = wp.quat(-q_err[0], -q_err[1], -q_err[2], -q_err[3])
+
+    axis_angle, angle = wp.quat_to_axis_angle(q_err)
     rot_vec = axis_angle * angle
     rot_perp = rot_vec - wp.dot(rot_vec, a) * a
     ang_perp_err = float(wp.length(rot_perp))
@@ -439,7 +473,7 @@ def _compute_prismatic_joint_error(model: newton.Model, body_q: wp.array, joint_
         (pos_perp_err, ang_err, c_along)
 
         - pos_perp_err: position error perpendicular to the joint axis [m].
-        - ang_err: full rotation angle between joint frames [rad].
+        - ang_err: rotation angle relative to the rest configuration [rad].
         - c_along: signed displacement along the free (joint) axis [m].
     """
     X_wp, X_wc = _get_joint_world_frames(model, body_q, joint_id)
@@ -457,7 +491,11 @@ def _compute_prismatic_joint_error(model: newton.Model, body_q: wp.array, joint_
 
     q_wc = wp.transform_get_rotation(X_wc)
     q_rel = wp.normalize(wp.mul(wp.quat_inverse(q_wp), q_wc))
-    ang_err = float(2.0 * wp.acos(wp.clamp(wp.abs(q_rel[3]), 0.0, 1.0)))
+
+    # Rest relative rotation
+    q_rel_rest = _get_joint_rest_relative_rotation(model, joint_id)
+    q_err = wp.normalize(wp.mul(q_rel, wp.quat_inverse(q_rel_rest)))
+    ang_err = float(2.0 * wp.acos(wp.clamp(wp.abs(q_err[3]), 0.0, 1.0)))
 
     return pos_perp_err, ang_err, c_along
 
@@ -1637,7 +1675,9 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     # Drive convergence: free-axis rotation should be near target.
     test.assertAlmostEqual(
-        rot_free, target_angle, delta=0.15,
+        rot_free,
+        target_angle,
+        delta=0.15,
         msg=f"Revolute drive not tracking: rot_free={rot_free:.4f}, target={target_angle}",
     )
 
@@ -1859,8 +1899,8 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     # Find the prismatic joint and its DOF index after finalize().
     joint_types = model.joint_type.numpy()
     joint_qd_start = model.joint_qd_start.numpy()
-    pris_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC))
-    dof_idx = int(joint_qd_start[pris_idx])
+    prismatic_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC))
+    dof_idx = int(joint_qd_start[prismatic_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -1886,13 +1926,15 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
             state0, state1 = state1, state0
 
     # Joint constraint checks.
-    pos_perp_err, ang_err, c_along = _compute_prismatic_joint_error(model, state0.body_q, pris_idx)
+    pos_perp_err, ang_err, c_along = _compute_prismatic_joint_error(model, state0.body_q, prismatic_idx)
     test.assertLess(pos_perp_err, 2.0e-3, f"Prismatic drive: perpendicular position error {pos_perp_err:.6f}")
     test.assertLess(ang_err, 5.0e-2, f"Prismatic drive: angular error {ang_err:.4f}")
 
     # Drive convergence: signed free-axis displacement should be near target.
     test.assertAlmostEqual(
-        c_along, target_displacement, delta=0.03,
+        c_along,
+        target_displacement,
+        delta=0.03,
         msg=f"Prismatic drive not tracking: d={c_along:.4f}, target={target_displacement}",
     )
 
@@ -2551,37 +2593,44 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         if joint_kind == "ball":
             err = _compute_ball_joint_anchor_error(model, state0.body_q, j)
             test.assertLess(
-                err, 1.0e-3,
+                err,
+                1.0e-3,
                 msg=f"{joint_label} world joint: anchor error {err:.6f} m > 1e-3 m",
             )
         elif joint_kind == "fixed":
             pos_err, ang_err = _compute_fixed_joint_frame_error(model, state0.body_q, j)
             test.assertLess(
-                pos_err, 1.0e-3,
+                pos_err,
+                1.0e-3,
                 msg=f"{joint_label} world joint: pos error {pos_err:.6f} m > 1e-3 m",
             )
             test.assertLess(
-                ang_err, 2.0e-2,
+                ang_err,
+                2.0e-2,
                 msg=f"{joint_label} world joint: ang error {ang_err:.4f} rad > 2e-2 rad",
             )
         elif joint_kind == "revolute":
             pos_err, ang_perp_err, _ = _compute_revolute_joint_error(model, state0.body_q, j)
             test.assertLess(
-                pos_err, 1.0e-3,
+                pos_err,
+                1.0e-3,
                 msg=f"{joint_label} world joint: pos error {pos_err:.6f} m > 1e-3 m",
             )
             test.assertLess(
-                ang_perp_err, 2.0e-2,
+                ang_perp_err,
+                2.0e-2,
                 msg=f"{joint_label} world joint: perp ang error {ang_perp_err:.4f} rad > 2e-2 rad",
             )
         elif joint_kind == "prismatic":
             pos_perp_err, ang_err, _ = _compute_prismatic_joint_error(model, state0.body_q, j)
             test.assertLess(
-                pos_perp_err, 1.0e-3,
+                pos_perp_err,
+                1.0e-3,
                 msg=f"{joint_label} world joint: perp pos error {pos_perp_err:.6f} m > 1e-3 m",
             )
             test.assertLess(
-                ang_err, 2.0e-2,
+                ang_err,
+                2.0e-2,
                 msg=f"{joint_label} world joint: ang error {ang_err:.4f} rad > 2e-2 rad",
             )
 
