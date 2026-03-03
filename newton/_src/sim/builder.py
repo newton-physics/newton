@@ -3051,9 +3051,9 @@ class ModelBuilder:
         inertia: Mat33 | None = None,
         mass: float = 0.0,
         label: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
         is_kinematic: bool = False,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a link (rigid body) to the model within an articulation.
 
@@ -3070,12 +3070,12 @@ class ModelBuilder:
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             label: Label of the body (optional).
-            custom_attributes: Dictionary of custom attribute names to values.
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
             is_kinematic: If True, the body is kinematic and does not respond to forces.
                 Only root bodies (bodies whose joint parent is ``-1``) may be kinematic.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             The index of the body in the model.
@@ -3141,9 +3141,9 @@ class ModelBuilder:
         inertia: Mat33 | None = None,
         mass: float = 0.0,
         label: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
         is_kinematic: bool = False,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
 
@@ -3165,11 +3165,11 @@ class ModelBuilder:
             mass: Mass of the body.
             label: Label of the body. When provided, the auto-created free joint and articulation
                 are assigned labels ``{label}_free_joint`` and ``{label}_articulation`` respectively.
-            custom_attributes: Dictionary of custom attribute names to values.
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
             is_kinematic: If True, the body is kinematic and does not respond to forces.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             The index of the body in the model.
