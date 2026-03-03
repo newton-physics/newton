@@ -500,7 +500,7 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
     # Check momentum conservation
     p_rel = np.linalg.norm(p_final - p0) / np.linalg.norm(p0)
     L_rel = np.linalg.norm(L_final - L0) / np.linalg.norm(L0)
-    test.assertLess(p_rel, 5e-4, f"Linear momentum drift: {p_rel:.6e})")
+    test.assertLess(p_rel, 5e-4, f"Linear momentum drift: {p_rel:.6e}")
     test.assertLess(L_rel, 5e-4, f"Angular momentum drift: {L_rel:.6e}")
 
     # Sanity: positions should have changed
