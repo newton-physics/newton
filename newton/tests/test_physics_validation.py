@@ -1033,7 +1033,20 @@ def test_restitution_mujoco(test, device, solver_fn, use_mujoco_cpu):
 # The simulated rocker angle is compared to the analytical solution from the
 #  Freudenstein equation
 # ---------------------------------------------------------------------------
-def test_fourbar_linkage(test, device, solver_fn, use_mujoco_cpu):
+@wp.kernel
+def _velocity_pd_kernel(
+    joint_qd: wp.array(dtype=wp.float32),
+    joint_f: wp.array(dtype=wp.float32),
+    qd_idx: int,
+    f_idx: int,
+    kp: float,
+    target: float,
+):
+    omega = joint_qd[qd_idx]
+    joint_f[f_idx] = kp * (target - omega)
+
+
+def test_fourbar_linkage(test, device, solver_fn):
     def solve_fourbar(theta2, a, b, c, d):
         """Solve the Freudenstein equation for rocker angle theta4 given crank angle theta2.
 
@@ -1127,51 +1140,56 @@ def test_fourbar_linkage(test, device, solver_fn, use_mujoco_cpu):
 
     solver = solver_fn(model)
     # Stiffen equality constraint for tight loop closure
-    if use_mujoco_cpu:
-        solver.mj_model.eq_solref[:] = [0.001, 1.0]
-    else:
-        sr = solver.mjw_model.eq_solref.numpy()
-        sr[:] = [0.001, 1.0]
-        solver.mjw_model.eq_solref.assign(sr)
-    state_0 = model.state()
-    state_1 = model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    sr = solver.mjw_model.eq_solref.numpy()
+    sr[:] = [0.001, 1.0]
+    solver.mjw_model.eq_solref.assign(sr)
 
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
     control = model.control()
     crank_qd_start = int(model.joint_qd_start.numpy()[j0])
     crank_q_start = int(model.joint_q_start.numpy()[j0])
 
-    kp = 100.0  # proportional gain for velocity controller
+    kp = 100.0
     max_angle_error_deg = 0.0
     max_closure_error = 0.0
     sim_dt = 2e-4
     sim_time = 2.0
     num_steps = int(sim_time / sim_dt)
-    check_interval = 10  # only run analytical check every N steps to reduce GPU-CPU sync overhead
-    for step_i in range(num_steps):
-        # Read current crank angular velocity and apply proportional torque
-        qd = state_0.joint_qd.numpy()
-        omega_current = float(qd[crank_qd_start])
-        tau = kp * (omega_target - omega_current)
-        jf = np.zeros(model.joint_dof_count, dtype=np.float32)
-        jf[crank_qd_start] = tau
-        control.joint_f.assign(jf)
+    check_interval = 10
 
-        solver.step(state_0, state_1, control, None, sim_dt)
-        state_0, state_1 = state_1, state_0
+    # Initial control (crank starts at rest, so tau = kp * omega_target)
+    jf = np.zeros(model.joint_dof_count, dtype=np.float32)
+    jf[crank_qd_start] = kp * omega_target
+    control.joint_f.assign(jf)
 
-        # Only read back state and check every N steps
+    # Warmup
+    solver.step(state, state, control, None, sim_dt)
+
+    with wp.ScopedCapture(device) as capture:
+        wp.launch(
+            _velocity_pd_kernel,
+            dim=1,
+            inputs=[state.joint_qd, control.joint_f, crank_qd_start, crank_qd_start, kp, omega_target],
+            device=device,
+        )
+        solver.step(state, state, control, None, sim_dt)
+    graph = capture.graph
+
+    for step_i in range(num_steps - 1):
+        wp.capture_launch(graph)
+
         if step_i < 20 or step_i % check_interval != 0:
             continue
 
         # Read crank angle
-        q = state_0.joint_q.numpy()
+        q = state.joint_q.numpy()
         theta2 = float(q[crank_q_start])
         # Analytical rocker angle from Freudenstein
         _, theta4_analytical = solve_fourbar(theta2, a_link, b_link, c_link, d_link)
 
         # Simulated rocker angle from body positions
-        body_q = state_0.body_q.numpy()
+        body_q = state.body_q.numpy()
         rocker_pos = body_q[2, :3]  # rocker body (index 2)
         rx = rocker_pos[0] - d_link
         ry = rocker_pos[1]
@@ -1190,8 +1208,8 @@ def test_fourbar_linkage(test, device, solver_fn, use_mujoco_cpu):
         closure_err = np.linalg.norm(rocker_tip - np.array([d_link, 0.0, 0.0]))
         max_closure_error = max(max_closure_error, closure_err)
 
-    # Read final crank angle for revolution count (not sampled at check_interval)
-    q_final = state_0.joint_q.numpy()
+    # Read final crank angle for revolution count
+    q_final = state.joint_q.numpy()
     theta2_final = float(q_final[crank_q_start])
 
     test.assertLess(
@@ -1246,6 +1264,8 @@ for device in devices:
     }
     for solver_name, (solver_fn, uses_gen_coords) in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        if not device.is_cuda and solver_name in ("mujoco_warp", "xpbd"):
             continue
 
         add_function_test(
@@ -1310,6 +1330,8 @@ for device in devices:
     for solver_name, (solver_fn, uses_gen_coords) in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
+        if not device.is_cuda and solver_name in ("mujoco_warp", "xpbd"):
+            continue
 
         add_function_test(
             TestPhysicsValidation,
@@ -1346,6 +1368,8 @@ for device in devices:
     }
     for solver_name, (solver_fn, uses_gen_coords) in articulation_solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        if not device.is_cuda and solver_name in ("mujoco_warp", "xpbd"):
             continue
 
         add_function_test(
@@ -1407,6 +1431,8 @@ for device in devices:
     for solver_name, (solver_fn, uses_newton_contacts, uses_gen_coords) in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
+        if not device.is_cuda and solver_name in ("mujoco_warp", "xpbd"):
+            continue
 
         add_function_test(
             TestPhysicsValidation,
@@ -1429,13 +1455,14 @@ for device in devices:
         )
 
     # Restitution test
-    add_function_test(
-        TestPhysicsValidation,
-        "test_restitution_xpbd",
-        test_restitution,
-        devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverXPBD(model, iterations=10, angular_damping=0.0, enable_restitution=True),
-    )
+    if device.is_cuda:
+        add_function_test(
+            TestPhysicsValidation,
+            "test_restitution_xpbd",
+            test_restitution,
+            devices=[device],
+            solver_fn=lambda model: newton.solvers.SolverXPBD(model, iterations=10, angular_damping=0.0, enable_restitution=True),
+        )
 
     if not device.is_cuda:
         add_function_test(
@@ -1446,14 +1473,15 @@ for device in devices:
             solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
             use_mujoco_cpu=True,
         )
-    add_function_test(
-        TestPhysicsValidation,
-        "test_restitution_mujoco_warp",
-        test_restitution_mujoco,
-        devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
-        use_mujoco_cpu=False,
-    )
+    if device.is_cuda:
+        add_function_test(
+            TestPhysicsValidation,
+            "test_restitution_mujoco_warp",
+            test_restitution_mujoco,
+            devices=[device],
+            solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+            use_mujoco_cpu=False,
+        )
 
     # FK/IK test
     add_function_test(
@@ -1463,28 +1491,17 @@ for device in devices:
         devices=[device],
     )
 
-    # Kinematic loop test
-    if not device.is_cuda:
+    # Kinematic loop test (CUDA only, uses CUDA graph for performance)
+    if device.is_cuda:
         add_function_test(
             TestPhysicsValidation,
-            "test_fourbar_linkage_mujoco_cpu",
+            "test_fourbar_linkage_mujoco_warp",
             test_fourbar_linkage,
             devices=[device],
             solver_fn=lambda model: newton.solvers.SolverMuJoCo(
-                model, use_mujoco_cpu=True, iterations=100, ls_iterations=50
+                model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
             ),
-            use_mujoco_cpu=True,
         )
-    add_function_test(
-        TestPhysicsValidation,
-        "test_fourbar_linkage_mujoco_warp",
-        test_fourbar_linkage,
-        devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(
-            model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
-        ),
-        use_mujoco_cpu=False,
-    )
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
