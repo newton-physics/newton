@@ -366,7 +366,6 @@ class Example:
 
                 self.anchor_bodies.append(body)
                 anchor_base_pos.append(wp.vec3(x, y, z))
-                # Different velocities via phase + set offset
                 # Sync motion within each set for easy visual comparison.
                 anchor_phase.append(0.0)
                 anchor_mode.append(int(m))

@@ -390,6 +390,11 @@ def evaluate_angular_constraint_force_hessian_revolute(
     Frames:
       - ``joint_axis_local`` is defined in the parent joint frame (same frame as kappa).
       - All outputs (tau_world, H_aa) are in world frame.
+
+    Returns:
+        (tau_world, H_aa, kappa, J_world) -- constraint torque and Hessian in world
+        frame, plus the curvature vector and world-frame Jacobian for reuse by the
+        drive/limit block.
     """
     inv_dt = 1.0 / dt
 
@@ -445,7 +450,7 @@ def evaluate_angular_constraint_force_hessian_revolute(
     if not is_parent:
         tau_world = -tau_world
 
-    return tau_world, H_aa
+    return tau_world, H_aa, kappa_now_vec, J_world
 
 
 @wp.func
@@ -1042,6 +1047,16 @@ def evaluate_joint_force_hessian(
     joint_penalty_kd: wp.array(dtype=float),
     joint_sigma_start: wp.array(dtype=wp.vec3),
     joint_C_fric: wp.array(dtype=wp.vec3),
+    # Drive parameters (DOF-indexed via joint_qd_start)
+    joint_target_ke: wp.array(dtype=float),
+    joint_target_kd: wp.array(dtype=float),
+    joint_target_pos: wp.array(dtype=float),
+    joint_target_vel: wp.array(dtype=float),
+    # Limit parameters (DOF-indexed via joint_qd_start)
+    joint_limit_lower: wp.array(dtype=float),
+    joint_limit_upper: wp.array(dtype=float),
+    joint_limit_ke: wp.array(dtype=float),
+    joint_limit_kd: wp.array(dtype=float),
     dt: float,
 ):
     """Compute AVBD joint force and Hessian contributions for one body.
@@ -1061,6 +1076,13 @@ def evaluate_joint_force_hessian(
         ``joint_penalty_kd`` stores a dimensionless Rayleigh-style coefficient used to build a
         physical damping term proportional to stiffness (e.g. D = kd * K).
 
+    Joint drives and limits (REVOLUTE/PRISMATIC only):
+        Drive and limit parameters are indexed by DOF (``joint_qd_start[j]``), matching the model
+        arrays. Drives apply a spring-damper on the free DOF; limits apply a unilateral penalty
+        when the free DOF exceeds bounds.  Limits disable drives when active, matching the
+        XPBD/Semi-Implicit ``joint_force()`` convention.  Default values (ke=0, limits=+/-MAXVAL)
+        produce zero contribution for backward compatibility.
+
     Uses ``body_q_prev`` to estimate constraint rates over timestep ``dt``; outputs are
     (force, torque, H_ll, H_al, H_aa) in world frame.
     """
@@ -1076,21 +1098,28 @@ def evaluate_joint_force_hessian(
 
     parent_index = joint_parent[joint_index]
     child_index = joint_child[joint_index]
-    if parent_index < 0 or (body_index != parent_index and body_index != child_index):
+    if body_index != child_index and (parent_index < 0 or body_index != parent_index):
         return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
 
-    is_parent_body = body_index == parent_index
+    is_parent_body = parent_index >= 0 and body_index == parent_index
 
     X_pj = joint_X_p[joint_index]
     X_cj = joint_X_c[joint_index]
 
-    parent_pose = body_q[parent_index]
+    if parent_index >= 0:
+        parent_pose = body_q[parent_index]
+        parent_pose_prev = body_q_prev[parent_index]
+        parent_pose_rest = body_q_rest[parent_index]
+        parent_com = body_com[parent_index]
+    else:
+        parent_pose = wp.transform(wp.vec3(0.0), wp.quat_identity())
+        parent_pose_prev = parent_pose
+        parent_pose_rest = parent_pose
+        parent_com = wp.vec3(0.0)
+
     child_pose = body_q[child_index]
-    parent_pose_prev = body_q_prev[parent_index]
     child_pose_prev = body_q_prev[child_index]
-    parent_pose_rest = body_q_rest[parent_index]
     child_pose_rest = body_q_rest[child_index]
-    parent_com = body_com[parent_index]
     child_com = body_com[child_index]
 
     X_wp = parent_pose * X_pj
@@ -1187,7 +1216,7 @@ def evaluate_joint_force_hessian(
 
     elif jt == JointType.FIXED:
         # FIXED: isotropic linear anchor-coincidence + isotropic angular constraint.
-        # Linear part
+        # Linear part (isotropic, same as BALL)
         k_lin = joint_penalty_k[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
         f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_isotropic(
@@ -1205,7 +1234,7 @@ def evaluate_joint_force_hessian(
             dt,
         )
 
-        # Rotational part: reuse kappa-based isotropic rotational constraint.
+        # Angular part (isotropic, same as CABLE bend without Dahl friction)
         k_ang = joint_penalty_k[c_start + 1]
         kd_ang = joint_penalty_kd[c_start + 1]
         if k_ang > 0.0:
@@ -1263,14 +1292,24 @@ def evaluate_joint_force_hessian(
         # Angular part (constrain 2 DOFs perpendicular to the joint axis)
         k_ang = joint_penalty_k[c_start + 1]
         kd_ang = joint_penalty_kd[c_start + 1]
+
+        # Extract quaternions once -- shared by constraint, drive, and limit
+        q_wp = wp.transform_get_rotation(X_wp)
+        q_wc = wp.transform_get_rotation(X_wc)
+        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        q_wp_prev = wp.transform_get_rotation(X_wp_prev)
+        q_wc_prev = wp.transform_get_rotation(X_wc_prev)
+
+        # Precompute kappa and J_world shared between constraint and drive/limit.
+        # When k_ang > 0, the constraint function returns them; otherwise compute
+        # on demand only if the drive/limit block needs them.
+        kappa_cached = wp.vec3(0.0)
+        J_world_cached = wp.mat33(0.0)
+        has_cached = False
+
         if k_ang > 0.0:
-            q_wp = wp.transform_get_rotation(X_wp)
-            q_wc = wp.transform_get_rotation(X_wc)
-            q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-            q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-            q_wp_prev = wp.transform_get_rotation(X_wp_prev)
-            q_wc_prev = wp.transform_get_rotation(X_wc_prev)
-            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian_revolute(
+            t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian_revolute(
                 q_wp,
                 q_wc,
                 q_wp_rest,
@@ -1283,9 +1322,86 @@ def evaluate_joint_force_hessian(
                 kd_ang,
                 dt,
             )
+            has_cached = True
         else:
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
+
+        # Drive + limits on free angular DOF
+        # Read DOF-indexed drive/limit parameters
+        dof_idx = joint_qd_start[joint_index]
+        drive_ke = joint_target_ke[dof_idx]
+        drive_kd = joint_target_kd[dof_idx]
+        target_pos = joint_target_pos[dof_idx]
+        target_vel = joint_target_vel[dof_idx]
+        lim_lower = joint_limit_lower[dof_idx]
+        lim_upper = joint_limit_upper[dof_idx]
+        lim_ke = joint_limit_ke[dof_idx]
+        lim_kd = joint_limit_kd[dof_idx]
+
+        has_drive = drive_ke > 0.0 or drive_kd > 0.0
+        has_limits = lim_ke > 0.0 and (lim_lower > -1.0e18 or lim_upper < 1.0e18)
+
+        if has_drive or has_limits:
+            inv_dt = 1.0 / dt
+            a = wp.normalize(axis_local)
+
+            # Reuse kappa/J_world from constraint, or compute if constraint was skipped.
+            if has_cached:
+                kappa = kappa_cached
+                J_world = J_world_cached
+            else:
+                kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+                Jr_inv = compute_right_jacobian_inverse(kappa)
+                R_wp = wp.quat_to_matrix(q_wp)
+                R_wc = wp.quat_to_matrix(q_wc)
+                R_wp_r = wp.quat_to_matrix(q_wp_rest)
+                R_wc_r = wp.quat_to_matrix(q_wc_rest)
+                R_rel = wp.transpose(R_wp) * R_wc
+                R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
+                R_align = R_rel * wp.transpose(R_rel_rest)
+                J_world = R_wp * (R_align * wp.transpose(Jr_inv))
+
+            # Extract free-axis angle and velocity
+            theta = wp.dot(kappa, a)
+            omega_p = quat_velocity(q_wp, q_wp_prev, dt)
+            omega_c = quat_velocity(q_wc, q_wc_prev, dt)
+            dkappa_dt = compute_kappa_dot_analytic(
+                q_wp, q_wc, q_wp_rest, q_wc_rest, omega_p, omega_c, kappa
+            )
+            dtheta_dt = wp.dot(dkappa_dt, a)
+
+            # Accumulate drive/limit force and Hessian in kappa-space
+            f_local = wp.vec3(0.0)
+            H_scalar = float(0.0)
+
+            limit_active = False
+            if has_limits:
+                if theta < lim_lower:
+                    err = theta - lim_lower
+                    f_local = (lim_ke * err + lim_kd * dtheta_dt) * a
+                    H_scalar = lim_ke + lim_kd * inv_dt
+                    limit_active = True
+                elif theta > lim_upper:
+                    err = theta - lim_upper
+                    f_local = (lim_ke * err + lim_kd * dtheta_dt) * a
+                    H_scalar = lim_ke + lim_kd * inv_dt
+                    limit_active = True
+
+            if not limit_active and has_drive:
+                err = theta - target_pos
+                vel_err = dtheta_dt - target_vel
+                f_local = (drive_ke * err + drive_kd * vel_err) * a
+                H_scalar = drive_ke + drive_kd * inv_dt
+
+            if H_scalar > 0.0:
+                H_local = H_scalar * wp.outer(a, a)
+                tau_drive = J_world * f_local
+                Haa_drive = J_world * (H_local * wp.transpose(J_world))
+                if not is_parent_body:
+                    tau_drive = -tau_drive
+                t_ang = t_ang + tau_drive
+                Haa_ang = Haa_ang + Haa_drive
 
         return f_lin, t_lin + t_ang, Hll_lin, Hal_lin, Haa_lin + Haa_ang
 
@@ -1341,6 +1457,90 @@ def evaluate_joint_force_hessian(
         else:
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
+
+        # Drive + limits on free linear DOF
+        dof_idx = joint_qd_start[joint_index]
+        drive_ke = joint_target_ke[dof_idx]
+        drive_kd = joint_target_kd[dof_idx]
+        target_pos = joint_target_pos[dof_idx]
+        target_vel = joint_target_vel[dof_idx]
+        lim_lower = joint_limit_lower[dof_idx]
+        lim_upper = joint_limit_upper[dof_idx]
+        lim_ke = joint_limit_ke[dof_idx]
+        lim_kd = joint_limit_kd[dof_idx]
+
+        has_drive = drive_ke > 0.0 or drive_kd > 0.0
+        has_limits = lim_ke > 0.0 and (lim_lower > -1.0e18 or lim_upper < 1.0e18)
+
+        if has_drive or has_limits:
+            inv_dt = 1.0 / dt
+
+            # Extract attachment points and free-axis displacement (same as prismatic constraint)
+            x_p = wp.transform_get_translation(X_wp)
+            x_c = wp.transform_get_translation(X_wc)
+            C_vec = x_c - x_p
+            q_wp_rot = wp.transform_get_rotation(X_wp)
+            axis_w = wp.normalize(wp.quat_rotate(q_wp_rot, axis_local))
+
+            # Free-axis displacement and velocity (matches XPBD: q = dot(x_err, axis_p))
+            d_along = wp.dot(C_vec, axis_w)
+            x_p_prev = wp.transform_get_translation(X_wp_prev)
+            x_c_prev = wp.transform_get_translation(X_wc_prev)
+            C_vec_prev = x_c_prev - x_p_prev
+            dC_dt = (C_vec - C_vec_prev) * inv_dt
+            dd_dt = wp.dot(dC_dt, axis_w)
+
+            # Accumulate drive/limit force along free axis
+            f_scalar = float(0.0)
+            H_scalar = float(0.0)
+
+            limit_active = False
+            if has_limits:
+                if d_along < lim_lower:
+                    err = d_along - lim_lower
+                    f_scalar = lim_ke * err + lim_kd * dd_dt
+                    H_scalar = lim_ke + lim_kd * inv_dt
+                    limit_active = True
+                elif d_along > lim_upper:
+                    err = d_along - lim_upper
+                    f_scalar = lim_ke * err + lim_kd * dd_dt
+                    H_scalar = lim_ke + lim_kd * inv_dt
+                    limit_active = True
+
+            if not limit_active and has_drive:
+                err = d_along - target_pos
+                vel_err = dd_dt - target_vel
+                f_scalar = drive_ke * err + drive_kd * vel_err
+                H_scalar = drive_ke + drive_kd * inv_dt
+
+            if H_scalar > 0.0:
+                # Force at attachment point along free axis
+                f_attachment = f_scalar * axis_w
+
+                # Moment arm from body COM to attachment point
+                if is_parent_body:
+                    com_w = wp.transform_point(parent_pose, parent_com)
+                    r = x_p - com_w
+                else:
+                    com_w = wp.transform_point(child_pose, child_com)
+                    r = x_c - com_w
+
+                # Hessian blocks: rank-1 along axis_w
+                aa = wp.outer(axis_w, axis_w)
+                K_point = H_scalar * aa
+                rx = wp.skew(r)
+                Hll_drive = K_point
+                Hal_drive = rx * K_point
+                Haa_drive = wp.transpose(rx) * K_point * rx
+
+                force_drive = f_attachment if is_parent_body else -f_attachment
+                torque_drive = wp.cross(r, force_drive)
+
+                f_lin = f_lin + force_drive
+                t_lin = t_lin + torque_drive
+                Hll_lin = Hll_lin + Hll_drive
+                Hal_lin = Hal_lin + Hal_drive
+                Haa_lin = Haa_lin + Haa_drive
 
         return f_lin, t_lin + t_ang, Hll_lin, Hal_lin, Haa_lin + Haa_ang
 
@@ -1714,15 +1914,19 @@ def compute_cable_dahl_parameters(
     child = joint_child[j]
 
     # Skip invalid joints
-    if parent < 0 or child < 0:
+    if child < 0:
         joint_sigma_start[j] = wp.vec3(0.0)
         joint_C_fric[j] = wp.vec3(0.0)
         return
 
     # Compute joint frames in world space (current and rest only)
-    X_wp = body_q[parent] * joint_X_p[j]
+    if parent >= 0:
+        X_wp = body_q[parent] * joint_X_p[j]
+        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+    else:
+        X_wp = joint_X_p[j]
+        X_wp_rest = joint_X_p[j]
     X_wc = body_q[child] * joint_X_c[j]
-    X_wp_rest = body_q_rest[parent] * joint_X_p[j]
     X_wc_rest = body_q_rest[child] * joint_X_c[j]
 
     # Extract quaternions (current and rest configurations)
@@ -2241,6 +2445,16 @@ def solve_rigid_body(
     # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
     joint_sigma_start: wp.array(dtype=wp.vec3),
     joint_C_fric: wp.array(dtype=wp.vec3),
+    # Drive parameters (DOF-indexed via joint_qd_start)
+    joint_target_ke: wp.array(dtype=float),
+    joint_target_kd: wp.array(dtype=float),
+    joint_target_pos: wp.array(dtype=float),
+    joint_target_vel: wp.array(dtype=float),
+    # Limit parameters (DOF-indexed via joint_qd_start)
+    joint_limit_lower: wp.array(dtype=float),
+    joint_limit_upper: wp.array(dtype=float),
+    joint_limit_ke: wp.array(dtype=float),
+    joint_limit_kd: wp.array(dtype=float),
     external_forces: wp.array(dtype=wp.vec3),
     external_torques: wp.array(dtype=wp.vec3),
     external_hessian_ll: wp.array(dtype=wp.mat33),  # Linear-linear block from rigid contacts
@@ -2397,6 +2611,14 @@ def solve_rigid_body(
             joint_penalty_kd,
             joint_sigma_start,
             joint_C_fric,
+            joint_target_ke,
+            joint_target_kd,
+            joint_target_pos,
+            joint_target_vel,
+            joint_limit_lower,
+            joint_limit_upper,
+            joint_limit_ke,
+            joint_limit_kd,
             dt,
         )
 
@@ -2542,7 +2764,7 @@ def update_duals_joint(
     child = joint_child[j]
 
     # Early exit for invalid joints
-    if parent < 0 or child < 0:
+    if child < 0:
         return
 
     jt = joint_type[j]
@@ -2559,9 +2781,13 @@ def update_duals_joint(
     c_start = joint_constraint_start[j]
 
     # Compute joint frames in world space
-    X_wp = body_q[parent] * joint_X_p[j]
+    if parent >= 0:
+        X_wp = body_q[parent] * joint_X_p[j]
+        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+    else:
+        X_wp = joint_X_p[j]
+        X_wp_rest = joint_X_p[j]
     X_wc = body_q[child] * joint_X_c[j]
-    X_wp_rest = body_q_rest[parent] * joint_X_p[j]
     X_wc_rest = body_q_rest[child] * joint_X_c[j]
 
     # Cable joint: adaptive penalty for stretch and bend constraints
@@ -2941,13 +3167,17 @@ def update_cable_dahl_state(
     child = joint_child[j]
 
     # Skip invalid joints
-    if parent < 0 or child < 0:
+    if child < 0:
         return
 
     # Compute joint frames in world space (final state)
-    X_wp = body_q[parent] * joint_X_p[j]
+    if parent >= 0:
+        X_wp = body_q[parent] * joint_X_p[j]
+        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+    else:
+        X_wp = joint_X_p[j]
+        X_wp_rest = joint_X_p[j]
     X_wc = body_q[child] * joint_X_c[j]
-    X_wp_rest = body_q_rest[parent] * joint_X_p[j]
     X_wc_rest = body_q_rest[child] * joint_X_c[j]
 
     q_wp = wp.transform_get_rotation(X_wp)

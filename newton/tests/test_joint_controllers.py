@@ -68,6 +68,7 @@ def test_revolute_controller(
         actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
     )
     builder.add_articulation([j])
+    builder.color()
 
     model = builder.finalize(device=device)
 
@@ -466,6 +467,7 @@ solvers = {
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, iterations=5),
+    "vbd": lambda model: newton.solvers.SolverVBD(model, iterations=5),
     # "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
 }
 for device in devices:

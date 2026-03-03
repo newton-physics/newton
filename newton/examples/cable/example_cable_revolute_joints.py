@@ -381,10 +381,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            friction_epsilon=0.1,
-            rigid_joint_linear_ke=1.0e9,
-            rigid_joint_angular_ke=1.0e9,
-            rigid_joint_linear_k_start=1.0e5,
         )
 
         self.state_0 = self.model.state()

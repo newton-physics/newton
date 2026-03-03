@@ -30,6 +30,7 @@ from ...sim import (
     State,
 )
 from ..solver import SolverBase
+from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -1218,11 +1219,11 @@ class SolverVBD(SolverBase):
         update_rigid_history = self.update_rigid_history
         self.update_rigid_history = True
 
-        self.initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history)
+        self.initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid_history)
         self.initialize_particles(state_in, state_out, dt)
 
         for iter_num in range(self.iterations):
-            self.solve_rigid_body_iteration(state_in, state_out, contacts, dt)
+            self.solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self.solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
         self.finalize_rigid_bodies(state_out, dt)
@@ -1332,6 +1333,7 @@ class SolverVBD(SolverBase):
     def initialize_rigid_bodies(
         self,
         state_in: State,
+        control: Control,
         contacts: Contacts | None,
         dt: float,
         update_rigid_history: bool,
@@ -1342,6 +1344,9 @@ class SolverVBD(SolverBase):
 
         If ``contacts`` is None, rigid contact-related work is skipped:
         no per-body contact adjacency is built, and no contact penalties are warmstarted.
+
+        If ``control`` provides ``joint_f``, per-DOF joint forces are mapped to body spatial
+        wrenches and included in the forward integration (shifting the inertial target).
         """
         model = self.model
 
@@ -1349,6 +1354,33 @@ class SolverVBD(SolverBase):
         # Rigid-only initialization
         # ---------------------------
         if model.body_count > 0 and not self.integrate_with_external_rigid_solver:
+            # Accumulate per-DOF joint forces (joint_f) into body spatial wrenches.
+            # Clone body_f to avoid mutating user state; the clone is used only for integration.
+            body_f_for_integration = state_in.body_f
+            if model.joint_count > 0 and control is not None and control.joint_f is not None:
+                body_f_for_integration = wp.clone(state_in.body_f)
+                wp.launch(
+                    kernel=apply_joint_forces,
+                    dim=model.joint_count,
+                    inputs=[
+                        state_in.body_q,
+                        model.body_com,
+                        model.joint_type,
+                        model.joint_parent,
+                        model.joint_child,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                        model.joint_qd_start,
+                        model.joint_dof_dim,
+                        model.joint_axis,
+                        control.joint_f,
+                    ],
+                    outputs=[
+                        body_f_for_integration,
+                    ],
+                    device=self.device,
+                )
+
             # Forward integrate rigid bodies
             wp.launch(
                 kernel=forward_step_rigid_bodies,
@@ -1356,7 +1388,7 @@ class SolverVBD(SolverBase):
                     dt,
                     model.gravity,
                     model.body_world,
-                    state_in.body_f,
+                    body_f_for_integration,
                     model.body_com,
                     model.body_inertia,
                     model.body_inv_mass,
@@ -1703,7 +1735,9 @@ class SolverVBD(SolverBase):
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
-    def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
+    def solve_rigid_body_iteration(
+        self, state_in: State, state_out: State, control: Control, contacts: Contacts | None, dt: float
+    ):
         """Solve one AVBD iteration for rigid bodies (per-iteration phase).
 
         Accumulates contact and joint forces/hessians, solves 6x6 rigid body systems per color,
@@ -1878,6 +1912,16 @@ class SolverVBD(SolverBase):
                     self.joint_penalty_kd,
                     self.joint_sigma_start,
                     self.joint_C_fric,
+                    # Drive parameters (DOF-indexed)
+                    model.joint_target_ke,
+                    model.joint_target_kd,
+                    control.joint_target_pos,
+                    control.joint_target_vel,
+                    # Limit parameters (DOF-indexed)
+                    model.joint_limit_lower,
+                    model.joint_limit_upper,
+                    model.joint_limit_ke,
+                    model.joint_limit_kd,
                     self.body_forces,
                     self.body_torques,
                     self.body_hessian_ll,
