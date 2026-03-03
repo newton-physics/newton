@@ -31,7 +31,10 @@ class FastExampleClothManipulation:
 
     def setup(self):
         self.num_frames = 30
-        args = newton.examples.default_args()
+        try:
+            args = newton.examples.default_args()
+        except AttributeError:
+            args = None
         self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames), args)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -47,7 +50,10 @@ class FastExampleClothTwist:
 
     def setup(self):
         self.num_frames = 100
-        args = newton.examples.default_args()
+        try:
+            args = newton.examples.default_args()
+        except AttributeError:
+            args = None
         self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames), args)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
