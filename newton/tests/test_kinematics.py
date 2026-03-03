@@ -484,7 +484,9 @@ class TestSimKinematics(unittest.TestCase):
 
 
 add_function_test(TestSimKinematics, "test_fk_ik", test_fk_ik, devices=devices)
-add_function_test(TestSimKinematics, "test_fk_ik_with_analytical_solution", test_fk_ik_with_analytical_solution, devices=devices)
+add_function_test(
+    TestSimKinematics, "test_fk_ik_with_analytical_solution", test_fk_ik_with_analytical_solution, devices=devices
+)
 add_function_test(TestSimKinematics, "test_fk_with_indices", test_fk_with_indices, devices=devices)
 add_function_test(TestSimKinematics, "test_ik_with_indices", test_ik_with_indices, devices=devices)
 add_function_test(TestSimKinematics, "test_fk_error_mask_and_indices", test_fk_error_mask_and_indices, devices=devices)
