@@ -299,9 +299,6 @@ class ImplicitMPMModel:
         self.material_parameters = MaterialParameters()
         """Material parameters struct"""
 
-        self.collider_velocity_mode = options.collider_velocity_mode
-        """Collider velocity computation mode (instantaneous or finite_difference)"""
-
         self.collider_body_mass = None
         self.collider_body_inv_inertia = None
         self.collider_body_q = None
@@ -580,9 +577,6 @@ class ImplicitMPMModel:
         self.collider_body_inv_inertia = body_inv_inertia
         self.collider_body_q = body_q
         self._collider_meshes = collider_meshes  # Keep a ref so that meshes are not garbage collected
-
-        # Toggle finite-difference collider velocities based on model setting
-        self.collider.use_finite_difference_velocity = self.collider_velocity_mode == "finite_difference"
 
         self.notify_collider_changed()
 

@@ -1620,8 +1620,8 @@ class SolverImplicitMPM(SolverBase):
         """Solver to use for the rheology solver. May be one of gauss-seidel, jacobi."""
         warmstart_mode: str = "auto"
         """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid, smoothed."""
-        collider_velocity_mode: str = "instantaneous"
-        """Collider velocity computation mode. May be one of instantaneous, finite_difference."""
+        collider_velocity_mode: str = "forward"
+        """Collider velocity computation mode, may be one of 'forward' or 'backward'. 'forward' uses the current velocity, 'backward' uses the previous timestep position."""
 
         # grid
         voxel_size: float = 0.1
@@ -1884,7 +1884,16 @@ class SolverImplicitMPM(SolverBase):
 
         self.collider_normal_from_sdf_gradient = config.collider_normal_from_sdf_gradient
         self.collider_basis = config.collider_basis
-        self.collider_velocity_mode = self._mpm_model.collider_velocity_mode
+
+        # For backward compatibility
+        if config.collider_velocity_mode == "finite_difference":
+            self.collider_velocity_mode = "backward"
+        elif config.collider_velocity_mode == "instantaneous":
+            self.collider_velocity_mode = "forward"
+        else:
+            if config.collider_velocity_mode not in ("forward", "backward"):
+                raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
+            self.collider_velocity_mode = config.collider_velocity_mode
 
         if config.warmstart_mode == "none":
             self._stress_warmstart = ""
@@ -1894,7 +1903,8 @@ class SolverImplicitMPM(SolverBase):
             else:
                 self._stress_warmstart = "grid"
         else:
-            assert config.warmstart_mode in ("particles", "grid", "smoothed"), "Invalid warmstart mode"
+            if config.warmstart_mode not in ("particles", "grid", "smoothed"):
+                raise ValueError(f"Invalid warmstart mode: {config.warmstart_mode}")
             self._stress_warmstart = config.warmstart_mode
 
         self._use_cuda_graph = self.model.device.is_cuda and wp.is_conditional_graph_supported()
@@ -1915,7 +1925,7 @@ class SolverImplicitMPM(SolverBase):
         self,
         collider_meshes: list[wp.Mesh] | None = None,
         collider_body_ids: list[int] | None = None,
-        collider_thicknesses: list[float] | None = None,
+        collider_margins: list[float] | None = None,
         collider_friction: list[float] | None = None,
         collider_adhesion: list[float] | None = None,
         collider_projection_threshold: list[float] | None = None,
@@ -1934,7 +1944,7 @@ class SolverImplicitMPM(SolverBase):
         Args:
             collider_meshes: Warp triangular meshes used as colliders.
             collider_body_ids: For dynamic colliders, per-mesh body ids.
-            collider_thicknesses: Per-mesh signed distance offsets (m).
+            collider_margins: Per-mesh signed distance offsets (m).
             collider_friction: Per-mesh Coulomb friction coefficients.
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold (m).
@@ -1947,7 +1957,7 @@ class SolverImplicitMPM(SolverBase):
         self._mpm_model.setup_collider(
             collider_meshes=collider_meshes,
             collider_body_ids=collider_body_ids,
-            collider_thicknesses=collider_thicknesses,
+            collider_thicknesses=collider_margins,
             collider_friction=collider_friction,
             collider_adhesion=collider_adhesion,
             collider_projection_threshold=collider_projection_threshold,
@@ -1986,21 +1996,19 @@ class SolverImplicitMPM(SolverBase):
     def notify_model_changed(self, flags: int) -> None:
         self._mpm_model.notify_particle_material_changed()
 
-    def _project_outside(
-        self, state_in: newton.State, state_out: newton.State, dt: float, max_dist: float | None = None
-    ):
+    def _project_outside(self, state_in: newton.State, state_out: newton.State, dt: float, gap: float | None = None):
         """Project particles outside of colliders, and adjust their velocity and velocity gradients
 
         Args:
             state_in: The input state.
             state_out: The output state. Only particle_q, particle_qd, and particle_qd_grad are written.
             dt: The time step, for extrapolating the collider end-of-step positions from its current position and velocity.
-            max_dist: Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).
+            gap: Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).
         """
 
-        if max_dist is not None:
+        if gap is not None:
             # Update max query dist if provided
-            prev_max_dist, self._mpm_model.collider.query_max_dist = self._mpm_model.collider.query_max_dist, max_dist
+            prev_gap, self._mpm_model.collider.query_max_dist = self._mpm_model.collider.query_max_dist, gap
 
         self._last_step_data.require_collider_previous_position(state_in.body_q)
         wp.launch(
@@ -2013,8 +2021,8 @@ class SolverImplicitMPM(SolverBase):
                 self.model.particle_flags,
                 self._mpm_model.collider,
                 state_in.body_q,
-                state_in.body_qd,
-                self._last_step_data.body_q_prev,
+                state_in.body_qd if self.collider_velocity_mode == "forward" else None,
+                self._last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
                 dt,
             ],
             outputs=[
@@ -2025,9 +2033,9 @@ class SolverImplicitMPM(SolverBase):
             device=state_in.particle_q.device,
         )
 
-        if max_dist is not None:
+        if gap is not None:
             # Restore previous max query dist
-            self._mpm_model.collider.query_max_dist = prev_max_dist
+            self._mpm_model.collider.query_max_dist = prev_gap
 
     def _collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
@@ -2618,8 +2626,8 @@ class SolverImplicitMPM(SolverBase):
             rasterize_collider(
                 self._mpm_model.collider,
                 state_in.body_q,
-                state_in.body_qd,
-                last_step_data.body_q_prev,
+                state_in.body_qd if self.collider_velocity_mode == "forward" else None,
+                last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
                 self._mpm_model.voxel_size,
                 dt,
                 scratch.collider_fraction_test.space_restriction,
@@ -3181,7 +3189,7 @@ class SolverImplicitMPM(SolverBase):
         """Save data for next step or further processing."""
 
         # Copy current body_q to last_step_data.body_q_prev for next step's velocity computation
-        self._last_step_data.save_collider_current_position(state_in.body_q)
+        last_step_data.save_collider_current_position(state_in.body_q)
 
         # Necessary fields for two-way coupling
         state_out.impulse_field = scratch.impulse_field

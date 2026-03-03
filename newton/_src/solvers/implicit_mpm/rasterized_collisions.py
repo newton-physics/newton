@@ -43,6 +43,8 @@ _SDF_SIGN_FROM_AVERAGE_NORMAL = True
 Otherwise, use Warp's default sign determination strategy (raycasts).
 """
 
+_SMALL_ANGLE_EPS = wp.constant(1.0e-4)
+"""Small angle threshold to use more robust and faster path for angular velocity calculations"""
 
 _NULL_COLLIDER_ID = -1
 """Indicator for no collider"""
@@ -78,9 +80,6 @@ class Collider:
 
     body_com: wp.array(dtype=wp.vec3)
     """Body center of mass of each collider. Shape (body_count,)"""
-
-    use_finite_difference_velocity: bool
-    """Use finite-difference collider velocities from body_q_prev instead of instantaneous velocities."""
 
     query_max_dist: float
     """Maximum distance to query collider sdf"""
@@ -196,27 +195,36 @@ def collision_sdf(
     if collider_id >= 0:
         body_id = collider.collider_body_index[collider_id]
         if body_id >= 0:
-            b_pos = wp.transform_get_translation(body_q[body_id])
-            b_rot = wp.transform_get_rotation(body_q[body_id])
+            b_xform = body_q[body_id]
+            b_rot = wp.transform_get_rotation(b_xform)
 
-            mesh_vel_world = wp.quat_rotate(b_rot, sdf_vel)
+            sdf_vel = wp.quat_rotate(b_rot, sdf_vel)
             sdf_grad = wp.normalize(wp.quat_rotate(b_rot, sdf_grad))
 
             # Compute rigid body velocity at the contact point
-            if collider.use_finite_difference_velocity and dt > 0.0:
-                # Finite-difference velocity from position change
-                b_pos_prev = wp.transform_get_translation(body_q_prev[body_id])
-                b_rot_prev = wp.transform_get_rotation(body_q_prev[body_id])
-                closest_point_world = wp.quat_rotate(b_rot, closest_point) + b_pos
-                closest_point_world_prev = wp.quat_rotate(b_rot_prev, closest_point) + b_pos_prev
-                rigid_vel = (closest_point_world - closest_point_world_prev) / dt
-            else:
-                # Instantaneous rigid body velocity (v + omega x r)
+            if body_q_prev:
+                # backward-differenced velocity from position change
+                b_xform_prev = body_q_prev[body_id]
+                closest_point_world = wp.transform_point(b_xform, closest_point)
+                closest_point_world_prev = wp.transform_point(b_xform_prev, closest_point)
+                sdf_vel += (closest_point_world - closest_point_world_prev) / dt
+
+            if body_qd:
                 b_v = wp.spatial_top(body_qd[body_id])
                 b_w = wp.spatial_bottom(body_qd[body_id])
-                rigid_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
-
-            sdf_vel = mesh_vel_world + rigid_vel
+                b_com = collider.body_com[body_id]
+                com_offset_cur = wp.quat_rotate(b_rot, closest_point - b_com)
+                ang_vel = wp.length(b_w)
+                angle_delta = ang_vel * dt
+                if angle_delta > _SMALL_ANGLE_EPS:
+                    # forward-differenced velocity from current velocity
+                    # (using exponential map)
+                    b_rot_delta = wp.quat_from_axis_angle(b_w / ang_vel, angle_delta)
+                    com_offset_next = wp.quat_rotate(b_rot_delta, com_offset_cur)
+                    sdf_vel += b_v + (com_offset_next - com_offset_cur) / dt
+                else:
+                    # Instantaneous rigid body velocity (v + omega x r)
+                    sdf_vel += b_v + wp.cross(b_w, com_offset_cur)
 
     return min_sdf, sdf_grad, sdf_vel, collider_id, material_id
 
