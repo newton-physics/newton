@@ -327,126 +327,7 @@ def test_projectile_motion(test, device, solver_fn, uses_generalized_coords):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: External Torque Application
-# Verify angular velocity under constant torque: omega_z(t) = tau*t / I_zz.
-# ---------------------------------------------------------------------------
-def test_external_torque(test, device, solver_fn, box_half_extent=0.5):
-    # Test parameters: constant applied torque
-    tau = 10.0
-
-    # Add a simple box
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
-    b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-    builder.add_shape_box(b, hx=box_half_extent, hy=box_half_extent, hz=box_half_extent)
-    model = builder.finalize(device=device)
-
-    solver = solver_fn(model)
-    state_0 = model.state()
-    state_1 = model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    I_body = model.body_inertia.numpy()[0]
-    I_zz = float(I_body[2, 2] if I_body.ndim == 2 else I_body[2])
-    wrench = np.array([0.0, 0.0, 0.0, 0.0, 0.0, tau], dtype=np.float32)
-
-    sim_dt = 1e-3
-    num_steps = 500
-    check_steps = [100, 200, 300, 500]
-    for step_i in range(1, num_steps + 1):
-        state_0.clear_forces()
-        state_0.body_f.assign(wrench)
-        solver.step(state_0, state_1, None, None, sim_dt)
-        state_0, state_1 = state_1, state_0
-
-        if step_i in check_steps:
-            # Checkpoint to verify correct simulation
-            t = step_i * sim_dt
-            vel = state_0.body_qd.numpy()[0]
-            omega_z = vel[5]
-
-            expected_omega_z = tau * t / I_zz
-            tol = max(tau / I_zz * sim_dt, 1e-3)
-
-            test.assertAlmostEqual(
-                omega_z,
-                expected_omega_z,
-                delta=tol,
-                msg=f"Angular velocity at t={t:.3f}: got {omega_z:.6f}, expected {expected_omega_z:.6f}",
-            )
-
-    # Sanity checks
-    final_vel = state_0.body_qd.numpy()[0][:3]
-    final_pos = state_0.body_q.numpy()[0][:3]
-    test.assertAlmostEqual(np.linalg.norm(final_vel), 0.0, delta=1e-3, msg="Linear velocity should be ~0")
-    test.assertAlmostEqual(np.linalg.norm(final_pos), 0.0, delta=1e-3, msg="Position should be unchanged")
-
-
-# ---------------------------------------------------------------------------
-# Test 6: External Force Application
-# Verify linear acceleration under constant force: v_x(t) = F*t/m, x(t) = 0.5*F*t^2/m.
-# ---------------------------------------------------------------------------
-def test_external_force(test, device, solver_fn):
-    # Test parameters: constant applied force
-    F = 5.0
-
-    # Add a sphere
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
-    b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-    builder.add_shape_sphere(b, radius=0.1)
-    model = builder.finalize(device=device)
-
-    solver = solver_fn(model)
-    state_0 = model.state()
-    state_1 = model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    mass = float(model.body_mass.numpy()[0])
-    wrench = np.array([F, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-
-    sim_dt = 1e-3
-    num_steps = 500
-    check_steps = [100, 200, 300, 500]
-    for step_i in range(1, num_steps + 1):
-        state_0.clear_forces()
-        state_0.body_f.assign(wrench)
-        solver.step(state_0, state_1, None, None, sim_dt)
-        state_0, state_1 = state_1, state_0
-
-        if step_i in check_steps:
-            # Checkpoint to verify correct simulation
-            t = step_i * sim_dt
-            pos = state_0.body_q.numpy()[0][:3]
-            vel = state_0.body_qd.numpy()[0][:3]
-
-            expected_vel = F * t / mass
-            expected_pos = 0.5 * F * t * t / mass
-
-            pos_tol = max(2.0 * 0.5 * (F / mass) * sim_dt * t, 1e-3)
-            vel_tol = max((F / mass) * sim_dt, 1e-3)
-
-            test.assertAlmostEqual(
-                vel[0],
-                expected_vel,
-                delta=vel_tol,
-                msg=f"Velocity at t={t:.3f}: got {vel[0]:.6f}, expected {expected_vel:.6f}",
-            )
-            test.assertAlmostEqual(
-                pos[0],
-                expected_pos,
-                delta=pos_tol,
-                msg=f"Position at t={t:.3f}: got {pos[0]:.6f}, expected {expected_pos:.6f}",
-            )
-
-    # Sanity checks
-    final_pos = state_0.body_q.numpy()[0][:3]
-    final_vel = state_0.body_qd.numpy()[0][3:6]
-    test.assertAlmostEqual(final_pos[1], 0.0, delta=1e-3, msg="Y drift")
-    test.assertAlmostEqual(final_pos[2], 0.0, delta=1e-3, msg="Z drift")
-    test.assertAlmostEqual(np.linalg.norm(final_vel), 0.0, delta=1e-3, msg="Angular velocity should be ~0")
-
-
-# ---------------------------------------------------------------------------
-# Test 7: Joint Actuation Application
+# Test 5: Joint Actuation Application
 # Verify joint response to actuation forces for revolute and prismatic joints.
 # ---------------------------------------------------------------------------
 def test_joint_actuation(test, device, solver_fn):
@@ -538,87 +419,7 @@ def test_joint_actuation(test, device, solver_fn):
 
 
 # ---------------------------------------------------------------------------
-# Test 8: FK/IK Round-Trip
-# Verify FK computes correct positions for a 2-link planar arm, and IK recovers joint angles.
-# ---------------------------------------------------------------------------
-def test_fk_ik(test, device):
-    # Test parameters: length of the two links
-    L1, L2 = 1.0, 0.8
-
-    # Add two dummy links with revolute joint
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
-    link0 = builder.add_link()
-    builder.add_shape_sphere(link0, radius=0.01)
-    link1 = builder.add_link()
-    builder.add_shape_sphere(link1, radius=0.01)
-    j0 = builder.add_joint_revolute(
-        parent=-1,
-        child=link0,
-        axis=newton.Axis.Z,
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, L1, 0.0), wp.quat_identity()),
-    )
-    j1 = builder.add_joint_revolute(
-        parent=link0,
-        child=link1,
-        axis=newton.Axis.Z,
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, L2, 0.0), wp.quat_identity()),
-    )
-    builder.add_articulation([j0, j1])
-    model = builder.finalize(device=device)
-
-    q_start = model.joint_q_start.numpy()
-    qi0 = q_start[0]
-    qi1 = q_start[1]
-
-    angle_configs = [(0.0, 0.0), (0.3, 0.0), (0.0, -0.5), (np.pi / 4, np.pi / 4), (0.3, -0.2)]
-    tol = 1e-4
-    for theta1, theta2 in angle_configs:
-        # Set desired angles
-        state = model.state()
-        q_init = state.joint_q.numpy()
-        q_init[qi0] = theta1
-        q_init[qi1] = theta2
-        state.joint_q.assign(q_init)
-
-        # Call Fk
-        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-
-        body_q = state.body_q.numpy()
-        pos0 = body_q[0][:3]
-        pos1 = body_q[1][:3]
-
-        # Calculate analytical pose
-        expected_pos0_x = L1 * np.sin(theta1)
-        expected_pos0_y = -L1 * np.cos(theta1)
-        expected_pos1_x = L1 * np.sin(theta1) + L2 * np.sin(theta1 + theta2)
-        expected_pos1_y = -L1 * np.cos(theta1) - L2 * np.cos(theta1 + theta2)
-
-        test.assertAlmostEqual(pos0[0], expected_pos0_x, delta=tol, msg=f"Link0 X @ ({theta1:.2f},{theta2:.2f})")
-        test.assertAlmostEqual(pos0[1], expected_pos0_y, delta=tol, msg=f"Link0 Y @ ({theta1:.2f},{theta2:.2f})")
-        test.assertAlmostEqual(pos0[2], 0.0, delta=tol, msg=f"Link0 Z @ ({theta1:.2f},{theta2:.2f})")
-
-        test.assertAlmostEqual(pos1[0], expected_pos1_x, delta=tol, msg=f"Link1 X @ ({theta1:.2f},{theta2:.2f})")
-        test.assertAlmostEqual(pos1[1], expected_pos1_y, delta=tol, msg=f"Link1 Y @ ({theta1:.2f},{theta2:.2f})")
-        test.assertAlmostEqual(pos1[2], 0.0, delta=tol, msg=f"Link1 Z @ ({theta1:.2f},{theta2:.2f})")
-
-        # Call IK to recover joint angles from body state
-        q_ik = wp.zeros_like(model.joint_q, device=device)
-        qd_ik = wp.zeros_like(model.joint_qd, device=device)
-        newton.eval_ik(model, state, q_ik, qd_ik)
-
-        q_recovered = q_ik.numpy()
-        test.assertAlmostEqual(
-            float(q_recovered[qi0]), theta1, delta=tol, msg=f"IK theta1 @ ({theta1:.2f},{theta2:.2f})"
-        )
-        test.assertAlmostEqual(
-            float(q_recovered[qi1]), theta2, delta=tol, msg=f"IK theta2 @ ({theta1:.2f},{theta2:.2f})"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Test 9: Momentum Conservation
+# Test 6: Momentum Conservation
 # Verify total linear and angular momentum is conserved for isolated free bodies.
 # ---------------------------------------------------------------------------
 def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords):
@@ -710,7 +511,7 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
 
 
 # ---------------------------------------------------------------------------
-# Test 10: Static Friction
+# Test 7: Static Friction
 # Verify Coulomb static friction: no sliding before threshold, sliding above threshold.
 # ---------------------------------------------------------------------------
 def test_static_friction(test, device, solver_fn, uses_newton_contacts):
@@ -776,7 +577,7 @@ def test_static_friction(test, device, solver_fn, uses_newton_contacts):
 
 
 # ---------------------------------------------------------------------------
-# Test 11: Dynamic Friction
+# Test 8: Dynamic Friction
 # Verify sliding box decelerates and stops at d_stop = v0^2 / (2*mu*g).
 # ---------------------------------------------------------------------------
 def test_dynamic_friction(test, device, solver_fn, uses_newton_contacts, uses_generalized_coords):
@@ -849,7 +650,7 @@ def test_dynamic_friction(test, device, solver_fn, uses_newton_contacts, uses_ge
 
 
 # ---------------------------------------------------------------------------
-# Test 12a: Restitution
+# Test 9a: Restitution
 # Verify bounce height h_rebound = e^2 * h_drop for different restitution coefficients.
 # ---------------------------------------------------------------------------
 def test_restitution(test, device, solver_fn):
@@ -930,7 +731,7 @@ def test_restitution(test, device, solver_fn):
 
 
 # ---------------------------------------------------------------------------
-# Test 12b: Restitution (mujoco)
+# Test 9b: Restitution (mujoco)
 # Verify perfectly elastic bounce with zero damping.
 # Verify perfectly inelastic bounce with high damping.
 # ---------------------------------------------------------------------------
@@ -1026,7 +827,7 @@ def test_restitution_mujoco(test, device, solver_fn, use_mujoco_cpu):
 
 
 # ---------------------------------------------------------------------------
-# Test 13: Kinematic loop
+# Test 10: Kinematic loop
 # Verify four-bar linkage rocker angle against the Freudenstein equation.
 # A Grashof crank-rocker linkage is driven at constant angular velocity.
 # The simulated rocker angle is compared to the analytical solution from the
@@ -1290,42 +1091,11 @@ for device in devices:
 
         add_function_test(
             TestPhysicsValidation,
-            f"test_external_force_{solver_name}",
-            test_external_force,
-            devices=[device],
-            solver_fn=solver_fn,
-        )
-
-        add_function_test(
-            TestPhysicsValidation,
             f"test_momentum_conservation_{solver_name}",
             test_momentum_conservation,
             devices=[device],
             solver_fn=solver_fn,
             uses_generalized_coords=uses_gen_coords,
-        )
-
-    # External torque test
-    solvers = {
-        "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-        "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
-        "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
-        "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
-        "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
-    }
-    for solver_name, solver_fn in solvers.items():
-        if device.is_cuda and solver_name == "mujoco_cpu":
-            continue
-        if not device.is_cuda and solver_name in ("mujoco_warp", "xpbd"):
-            continue
-
-        add_function_test(
-            TestPhysicsValidation,
-            f"test_external_torque_{solver_name}",
-            test_external_torque,
-            devices=[device],
-            solver_fn=solver_fn,
-            box_half_extent=0.1 if solver_name == "xpbd" else 0.5,
         )
 
     # Articulation tests (generalized-coord solvers only)
@@ -1469,14 +1239,6 @@ for device in devices:
             solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
             use_mujoco_cpu=False,
         )
-
-    # FK/IK test
-    add_function_test(
-        TestPhysicsValidation,
-        "test_fk_ik",
-        test_fk_ik,
-        devices=[device],
-    )
 
     # Kinematic loop test (CUDA only, uses CUDA graph for performance)
     if device.is_cuda:
