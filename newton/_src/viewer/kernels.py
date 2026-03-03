@@ -35,6 +35,7 @@ class PickingState:
 @wp.kernel
 def compute_pick_state_kernel(
     body_q: wp.array(dtype=wp.transform),
+    body_flags: wp.array(dtype=int),
     body_index: int,
     hit_point_world: wp.vec3,
     # output
@@ -45,6 +46,9 @@ def compute_pick_state_kernel(
     Initialize the pick state when a body is first picked.
     """
     if body_index < 0:
+        return
+    if body_flags[body_index] & newton.BodyFlags.KINEMATIC:
+        pick_body[0] = -1
         return
 
     # store body index
@@ -73,11 +77,14 @@ def apply_picking_force_kernel(
     body_f: wp.array(dtype=wp.spatial_vector),
     pick_body_arr: wp.array(dtype=int),
     pick_state: wp.array(dtype=PickingState),
+    body_flags: wp.array(dtype=int),
     body_com: wp.array(dtype=wp.vec3),
     body_mass: wp.array(dtype=float),
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
+        return
+    if body_flags[pick_body] & newton.BodyFlags.KINEMATIC:
         return
 
     pick_pos_local = pick_state[0].picked_point_local
