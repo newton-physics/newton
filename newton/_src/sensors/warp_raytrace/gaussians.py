@@ -1,3 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import warp as wp
 
 from ...geometry import Gaussian
@@ -5,8 +24,11 @@ from ...math import safe_div
 from . import bvh
 from .ray_intersect import GeomHit, map_ray_to_local_scaled
 
+if TYPE_CHECKING:
+    from .render_context import RenderContext
+
+
 SH_C0 = wp.float32(0.28209479177387814)
-MAX_NUM_HITS = 20
 
 
 @wp.kernel
@@ -73,94 +95,95 @@ def ray_gsplat_hit_response(
     return 0.0, -1.0
 
 
-@wp.func
-def shade(
-    transform: wp.transformf,
-    scale: wp.vec3f,
-    ray_origin: wp.vec3f,
-    ray_direction: wp.vec3f,
-    gaussian_data: Gaussian.Data,
-    gaussians_mode: wp.int32,
-    gaussians_min_transmittance: wp.float32,
-    max_distance: wp.float32,
-) -> tuple[GeomHit, wp.vec3f]:
-    result_hit = GeomHit()
-    result_hit.hit = False
-    result_hit.normal = wp.vec3f(0.0)
-    result_hit.distance = max_distance
-    result_color = wp.vec3f(0.0)
+def create_shade_function(config: RenderContext.Config, state: RenderContext.State) -> wp.func:
+    @wp.func
+    def shade(
+        transform: wp.transformf,
+        scale: wp.vec3f,
+        ray_origin: wp.vec3f,
+        ray_direction: wp.vec3f,
+        gaussian_data: Gaussian.Data,
+        max_distance: wp.float32,
+    ) -> tuple[GeomHit, wp.vec3f]:
+        result_hit = GeomHit()
+        result_hit.hit = False
+        result_hit.normal = wp.vec3f(0.0)
+        result_hit.distance = max_distance
+        result_color = wp.vec3f(0.0)
 
-    ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
+        ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
 
-    hit_index = wp.int32(0)
-    min_distance = wp.float32(0.0)
-    ray_transmittance = wp.float32(1.0)
+        hit_index = wp.int32(0)
+        min_distance = wp.float32(0.0)
+        ray_transmittance = wp.float32(1.0)
 
-    hit_distances = wp.vector(max_distance, length=MAX_NUM_HITS, dtype=wp.float32)
-    hit_indices = wp.vector(-1, length=MAX_NUM_HITS, dtype=wp.int32)
-    hit_alphas = wp.vector(0.0, length=MAX_NUM_HITS, dtype=wp.float32)
+        hit_distances = wp.vector(max_distance, length=wp.static(config.gaussians_max_num_hits), dtype=wp.float32)
+        hit_indices = wp.vector(-1, length=wp.static(config.gaussians_max_num_hits), dtype=wp.int32)
+        hit_alphas = wp.vector(0.0, length=wp.static(config.gaussians_max_num_hits), dtype=wp.float32)
 
-    while ray_transmittance > 0.003:
-        num_hits = wp.int32(0)
+        while ray_transmittance > 0.003:
+            num_hits = wp.int32(0)
 
-        for i in range(MAX_NUM_HITS):
-            hit_distances[i] = max_distance - min_distance
+            for i in range(wp.static(config.gaussians_max_num_hits)):
+                hit_distances[i] = max_distance - min_distance
 
-        query = wp.bvh_query_ray(
-            gaussian_data.bvh_id, ray_origin_local + ray_direction_local * min_distance, ray_direction_local
-        )
-
-        while wp.bvh_query_next(query, hit_index, hit_distances[-1]):
-            hit_alpha, hit_distance = ray_gsplat_hit_response(
-                gaussian_data.transforms[hit_index],
-                gaussian_data.scales[hit_index],
-                gaussian_data.opacities[hit_index],
-                gaussian_data.min_response,
-                ray_origin_local,
-                ray_direction_local,
-                hit_distances[-1],
+            query = wp.bvh_query_ray(
+                gaussian_data.bvh_id, ray_origin_local + ray_direction_local * min_distance, ray_direction_local
             )
 
-            if hit_distance > -1:
-                if num_hits < MAX_NUM_HITS:
-                    num_hits += 1
+            while wp.bvh_query_next(query, hit_index, hit_distances[-1]):
+                hit_alpha, hit_distance = ray_gsplat_hit_response(
+                    gaussian_data.transforms[hit_index],
+                    gaussian_data.scales[hit_index],
+                    gaussian_data.opacities[hit_index],
+                    gaussian_data.min_response,
+                    ray_origin_local,
+                    ray_direction_local,
+                    hit_distances[-1],
+                )
 
-                for h in range(num_hits):
-                    if hit_distance < hit_distances[h]:
-                        for hh in range(num_hits - 1, h, -1):
-                            hit_distances[hh] = hit_distances[hh - 1]
-                            hit_indices[hh] = hit_indices[hh - 1]
-                            hit_alphas[hh] = hit_alphas[hh - 1]
-                        hit_distances[h] = hit_distance
-                        hit_indices[h] = hit_index
-                        hit_alphas[h] = hit_alpha
-                        break
+                if hit_distance > -1:
+                    if num_hits < wp.static(config.gaussians_max_num_hits):
+                        num_hits += 1
 
-        if num_hits == 0:
-            break
+                    for h in range(num_hits):
+                        if hit_distance < hit_distances[h]:
+                            for hh in range(num_hits - 1, h, -1):
+                                hit_distances[hh] = hit_distances[hh - 1]
+                                hit_indices[hh] = hit_indices[hh - 1]
+                                hit_alphas[hh] = hit_alphas[hh - 1]
+                            hit_distances[h] = hit_distance
+                            hit_indices[h] = hit_index
+                            hit_alphas[h] = hit_alpha
+                            break
 
-        result_hit.distance = wp.min(hit_distances[0], result_hit.distance)
+            if num_hits == 0:
+                break
 
-        for hit in range(num_hits):
-            hit_index = hit_indices[hit]
+            result_hit.distance = wp.min(hit_distances[0], result_hit.distance)
 
-            color = SH_C0 * wp.vec3f(
-                gaussian_data.sh_coeffs[hit_index][0],
-                gaussian_data.sh_coeffs[hit_index][1],
-                gaussian_data.sh_coeffs[hit_index][2],
-            ) + wp.vec3f(0.5)
+            for hit in range(num_hits):
+                hit_index = hit_indices[hit]
 
-            opacity = hit_alphas[hit]
-            result_color += color * opacity * ray_transmittance
-            ray_transmittance *= 1.0 - opacity
+                color = SH_C0 * wp.vec3f(
+                    gaussian_data.sh_coeffs[hit_index][0],
+                    gaussian_data.sh_coeffs[hit_index][1],
+                    gaussian_data.sh_coeffs[hit_index][2],
+                ) + wp.vec3f(0.5)
 
-        min_distance = hit_distances[-1] + wp.float32(1e-06)
+                opacity = hit_alphas[hit]
+                result_color += color * opacity * ray_transmittance
+                ray_transmittance *= 1.0 - opacity
 
-        if gaussians_mode == 0:
-            break
+            min_distance = hit_distances[-1] + wp.float32(1e-06)
 
-    if ray_transmittance < gaussians_min_transmittance:
-        result_hit.hit = True
-        result_color /= 1.0 - ray_transmittance
+            if wp.static(config.gaussians_mode) == 0:
+                break
 
-    return result_hit, result_color
+        if ray_transmittance < wp.static(config.gaussians_min_transmittance):
+            result_hit.hit = True
+            result_color /= 1.0 - ray_transmittance
+
+        return result_hit, result_color
+
+    return shade

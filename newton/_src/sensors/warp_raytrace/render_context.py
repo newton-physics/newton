@@ -26,7 +26,7 @@ from .bvh import (
     compute_particle_bvh_bounds,
     compute_shape_bvh_bounds,
 )
-from .render import render_megakernel
+from .render import create_kernel
 from .types import RenderOrder
 from .utils import Utils
 
@@ -44,7 +44,7 @@ DEFAULT_CLEAR_DATA = ClearData()
 
 
 class RenderContext:
-    @dataclass
+    @dataclass(unsafe_hash=True)
     class Config:
         enable_global_world: bool = True
         enable_textures: bool = True
@@ -58,11 +58,19 @@ class RenderContext:
         max_distance: float = 1000.0
         gaussians_mode: int = 0
         gaussians_min_transmittance: float = 0.49
+        gaussians_max_num_hits: int = 20
+
+    @dataclass(unsafe_hash=True)
+    class State:
+        num_gaussians: int = 0
 
     def __init__(self, world_count: int = 1, config: Config | None = None, device: str | None = None):
         self.device = device
         self.utils = Utils(self)
         self.config = config if config else RenderContext.Config()
+        self.state = RenderContext.State()
+
+        self.kernel_cache: dict[tuple[RenderContext.Config, RenderContext.State], wp.kernel] = {}
 
         self.world_count = world_count
 
@@ -88,7 +96,7 @@ class RenderContext:
         self.__particles_radius: wp.array(dtype=wp.float32) = None
         self.__particles_world_index: wp.array(dtype=wp.int32) = None
 
-        self.gaussians_data: wp.array(dtype=Gaussian.Data) = None
+        self.__gaussians_data: wp.array(dtype=Gaussian.Data) = None
 
         self.shape_enabled: wp.array(dtype=wp.uint32) = None
         self.shape_types: wp.array(dtype=wp.int32) = None
@@ -236,8 +244,14 @@ class RenderContext:
             if albedo_image is not None:
                 albedo_image = albedo_image.reshape(self.world_count * camera_count * width * height)
 
+            kernel_cache_key = (self.config, self.state)
+            render_kernel = self.kernel_cache.get(kernel_cache_key)
+            if render_kernel is None:
+                render_kernel = create_kernel(self.config, self.state)
+                self.kernel_cache[kernel_cache_key] = render_kernel
+
             wp.launch(
-                kernel=render_megakernel,
+                kernel=render_kernel,
                 dim=(self.world_count * camera_count * width * height),
                 inputs=[
                     # Model and config
@@ -246,18 +260,6 @@ class RenderContext:
                     self.light_count,
                     width,
                     height,
-                    self.config.render_order,
-                    self.config.tile_width,
-                    self.config.tile_height,
-                    self.config.enable_shadows,
-                    self.config.enable_textures,
-                    self.config.enable_ambient_lighting,
-                    self.config.enable_particles and self.has_particles,
-                    self.config.enable_backface_culling,
-                    self.config.enable_global_world,
-                    self.config.max_distance,
-                    self.config.gaussians_mode,
-                    self.config.gaussians_min_transmittance,
                     # Camera
                     camera_rays,
                     camera_transforms,
@@ -408,6 +410,18 @@ class RenderContext:
         if self.__particles_world_index is None or self.__particles_world_index.ptr != particles_world_index.ptr:
             self.bvh_particles = None
         self.__particles_world_index = particles_world_index
+
+    @property
+    def gaussians_data(self) -> wp.array(dtype=Gaussian.Data):
+        return self.__gaussians_data
+
+    @gaussians_data.setter
+    def gaussians_data(self, gaussians_data: wp.array(dtype=Gaussian.Data)):
+        self.__gaussians_data = gaussians_data
+        if gaussians_data is None:
+            self.state.num_gaussians = 0
+        else:
+            self.state.num_gaussians = gaussians_data.shape[0]
 
     def __update_bvh(
         self,

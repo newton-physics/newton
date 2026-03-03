@@ -409,6 +409,8 @@ class Example:
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
+        show_compile_kernel_info = False
+
         if ui.radio_button("Show Color Output", self.image_output == 0):
             self.image_output = 0
         if ui.radio_button("Show Albedo Output", self.image_output == 1):
@@ -424,9 +426,14 @@ class Example:
 
         ui.separator()
         if ui.radio_button("Gaussians: Fast", self.tiled_camera_sensor.render_context.config.gaussians_mode == 0):
-            self.tiled_camera_sensor.render_context.config.gaussians_mode = 0
+            if self.tiled_camera_sensor.render_context.config.gaussians_mode != 0:
+                self.tiled_camera_sensor.render_context.config.gaussians_mode = 0
+                show_compile_kernel_info = True
+
         if ui.radio_button("Gaussians: Quality", self.tiled_camera_sensor.render_context.config.gaussians_mode == 1):
-            self.tiled_camera_sensor.render_context.config.gaussians_mode = 1
+            if self.tiled_camera_sensor.render_context.config.gaussians_mode != 1:
+                self.tiled_camera_sensor.render_context.config.gaussians_mode = 1
+                show_compile_kernel_info = True
 
         changed, value = ui.slider_float(
             "Min Transmittance",
@@ -437,6 +444,44 @@ class Example:
         )
         if changed:
             self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance = value
+            show_compile_kernel_info = True
+
+        changed, value = ui.slider_int(
+            "Max Num Hits",
+            self.tiled_camera_sensor.render_context.config.gaussians_max_num_hits,
+            1,
+            40,
+            "%d",
+        )
+        if changed:
+            self.tiled_camera_sensor.render_context.config.gaussians_max_num_hits = value
+            show_compile_kernel_info = True
+
+        if show_compile_kernel_info:
+            display_width = self.viewer.ui.io.display_size[0]
+            display_height = self.viewer.ui.io.display_size[1]
+
+            overlay_width = 200
+            overlay_height = 100
+
+            text_width, text_height = ui.calc_text_size("Rebuilding Kernels")
+
+            ui.set_next_window_pos(
+                ui.ImVec2((display_width - overlay_width) * 0.5, (display_height - overlay_height) * 0.5)
+            )
+            ui.set_next_window_size(ui.ImVec2(overlay_width, overlay_height))
+
+            if ui.begin(
+                "Message",
+                flags=(
+                    ui.WindowFlags_.no_title_bar.value
+                    | ui.WindowFlags_.no_mouse_inputs.value
+                    | ui.WindowFlags_.no_scrollbar.value
+                ),
+            ):
+                ui.set_cursor_pos(ui.ImVec2((overlay_width - text_width) * 0.5, (overlay_height - text_height) * 0.5))
+                ui.text("Rebuilding Kernels")
+            ui.end()
 
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
