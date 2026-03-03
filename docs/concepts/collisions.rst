@@ -1018,9 +1018,11 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``is_solid``
      - Whether shape is solid or hollow. Affects inertia and SDF sign. Default: True.
    * - ``is_hydroelastic``
-     - Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See :ref:`Hydroelastic Contacts`. Default: False.
+     - Legacy hydroelastic enable switch. Keep for backward compatibility; when True and ``hydroelastic_type`` is unset, mode defaults to compliant. See :ref:`Hydroelastic Contacts`. Default: False.
+   * - ``hydroelastic_type``
+     - Explicit hydroelastic mode: ``none``, ``rigid``, or ``compliant``. Hydroelastic contact is active when both shapes are non-``none`` and at least one is ``compliant``. Default: None.
    * - ``kh``
-     - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
+     - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when hydro mode is not ``none``. Default: 1.0e10.
 
 .. _margin-gap-semantics:
 
@@ -1133,7 +1135,7 @@ Use ``builder.default_shape_cfg`` to set defaults for all shapes:
     builder.default_shape_cfg.ke = 1.0e6
     builder.default_shape_cfg.kd = 1000.0
     builder.default_shape_cfg.mu = 0.5
-    builder.default_shape_cfg.is_hydroelastic = True
+    builder.default_shape_cfg.hydroelastic_type = "compliant"
     builder.default_shape_cfg.sdf_max_resolution = 64  # Primitive SDF defaults
 
 **Collision frequency in the simulation loop**
@@ -1462,11 +1464,11 @@ Hydroelastic contacts are an **opt-in** feature that generates contact areas (no
 
 **Default behavior (hydroelastic disabled):**
 
-When ``is_hydroelastic=False`` (default), shapes use **hard SDF contacts** - point contacts computed from SDF distance queries. This is efficient and suitable for most rigid body simulations.
+When hydro mode is ``none`` (default), shapes use **hard SDF contacts** - point contacts computed from SDF distance queries. This is efficient and suitable for most rigid body simulations.
 
 **Opt-in hydroelastic behavior:**
 
-When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates distributed contact areas instead of point contacts. This is useful for:
+When both shapes opt into hydroelastic and at least one is ``compliant``, the system generates distributed contact areas instead of point contacts. Use ``hydroelastic_type`` to select rigid/compliant behavior. This is useful for:
 
 - More stable and continuous contact forces for non-convex shape interactions
 - Better force distribution across large contact patches
@@ -1474,7 +1476,8 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 
 **Requirements:**
 
-- Both shapes in a pair must have ``is_hydroelastic=True``
+- Both shapes in a pair must set hydro mode to ``rigid`` or ``compliant``
+- At least one shape in the pair must be ``compliant`` (rigid-rigid pairs fall back to non-hydro contacts)
 - Shapes must have SDF data available:
   - mesh shapes: call ``mesh.build_sdf(...)``
   - primitive shapes: use ``sdf_max_resolution`` or ``sdf_target_voxel_size`` in ``ShapeConfig``
@@ -1486,7 +1489,7 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
     builder = newton.ModelBuilder()
     body = builder.add_body()
     cfg = builder.ShapeConfig(
-        is_hydroelastic=True,   # Opt-in to hydroelastic contacts
+        hydroelastic_type="compliant",  # Opt-in as compliant hydroelastic
         sdf_max_resolution=64,  # Required for hydroelastic
         kh=1.0e11,              # Contact stiffness
     )
@@ -1501,7 +1504,10 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 
 **Hydroelastic stiffness (kh):**
 
-The ``kh`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
+The ``kh`` parameter on each shape controls area-dependent contact stiffness. Effective pair stiffness is:
+
+- compliant-compliant: harmonic mean ``k_eff = 2 * k_a * k_b / (k_a + k_b)``
+- rigid-compliant: compliant shape stiffness
 
 Contact reduction options for hydroelastic contacts are configured via :class:`~geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
 

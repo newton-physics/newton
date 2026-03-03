@@ -47,6 +47,7 @@ newton
    Gaussian
    GeoType
    Heightfield
+   HydroelasticType
    JointTargetMode
    JointType
    Mesh

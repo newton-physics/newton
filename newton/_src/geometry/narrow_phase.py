@@ -75,6 +75,24 @@ class ContactWriterData:
     contact_sort_key: wp.array[wp.int64]
 
 
+HYDROELASTIC_MODE_NONE = wp.int32(0)
+HYDROELASTIC_MODE_RIGID = wp.int32(1)
+HYDROELASTIC_MODE_COMPLIANT = wp.int32(2)
+
+
+@wp.func
+def hydroelastic_mode_from_flags(flags: wp.int32) -> wp.int32:
+    """Decode hydroelastic mode from a shape flag bitmask."""
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC_RIGID)) != 0:
+        return HYDROELASTIC_MODE_RIGID
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC_COMPLIANT)) != 0:
+        return HYDROELASTIC_MODE_COMPLIANT
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC)) != 0:
+        # Backward compatibility with legacy models.
+        return HYDROELASTIC_MODE_COMPLIANT
+    return HYDROELASTIC_MODE_NONE
+
+
 @wp.func
 def write_contact_simple(
     contact_data: ContactData,
@@ -214,10 +232,17 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 shape_a, shape_b = shape_b, shape_a
                 type_a, type_b = type_b, type_a
 
-            # Check if both shapes are hydroelastic - route to SDF-SDF pipeline
-            is_hydro_a = (shape_flags[shape_a] & ShapeFlags.HYDROELASTIC) != 0
-            is_hydro_b = (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC) != 0
-            if is_hydro_a and is_hydro_b and shape_pairs_sdf_sdf:
+            # Route hydroelastic pairs to the SDF pipeline.
+            # Valid hydroelastic pairs require both shapes to opt in, and at least
+            # one compliant shape (rigid-rigid hydro pairs are ignored here).
+            hydro_mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
+            hydro_mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
+            is_hydro_a = hydro_mode_a != HYDROELASTIC_MODE_NONE
+            is_hydro_b = hydro_mode_b != HYDROELASTIC_MODE_NONE
+            has_compliant = (hydro_mode_a == HYDROELASTIC_MODE_COMPLIANT) or (
+                hydro_mode_b == HYDROELASTIC_MODE_COMPLIANT
+            )
+            if is_hydro_a and is_hydro_b and has_compliant and shape_pairs_sdf_sdf:
                 idx = wp.atomic_add(shape_pairs_sdf_sdf_count, 0, 1)
                 if idx < shape_pairs_sdf_sdf.shape[0]:
                     shape_pairs_sdf_sdf[idx] = wp.vec2i(shape_a, shape_b)
@@ -1447,7 +1472,9 @@ class NarrowPhase:
             shape_voxel_resolution: Optional per-shape voxel resolution array used for mesh/SDF and
                 hydroelastic contact processing.
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
-            hydroelastic_sdf: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
+            hydroelastic_sdf: Optional SDF hydroelastic instance. Configure shapes with
+                hydroelastic mode ``rigid`` or ``compliant`` to enable hydroelastic
+                collisions.
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related
                 kernel launches are skipped, improving performance for scenes with only primitive shapes.
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
@@ -2087,6 +2114,7 @@ class NarrowPhase:
                 texture_sdf_data,
                 shape_sdf_index,
                 shape_transform,
+                shape_flags,
                 shape_gap,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,

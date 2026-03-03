@@ -28,6 +28,7 @@ vec11 = wp.types.vector(length=11, dtype=wp.float32)
 # Constants
 MJ_MINVAL = 2.220446049250313e-16
 MJ_MINMU = 1e-5
+HYDROELASTIC_PRESSURE_EXPONENT = wp.float32(1.0)
 
 
 # Utility functions
@@ -215,6 +216,30 @@ def quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
     return wp.quat(q[3], q[0], q[1], q[2])
 
 
+@wp.func
+def linearize_pressure_contact_masterjohn(
+    stiffness: wp.float32,
+    penetration: wp.float32,
+    exponent: wp.float32,
+) -> tuple[wp.float32, wp.float32]:
+    """Linearize a pressure law using the Masterjohn velocity-level approximation.
+
+    Given ``p(g) = stiffness * g^exponent`` at the current penetration ``g``,
+    returns a linearized spring ``k_lin`` and rest gap ``phi0`` such that
+    ``p(g) ≈ k_lin * (phi0 - phi)`` near the operating point.
+    """
+    g = wp.max(penetration, wp.float32(1.0e-6))
+    e = wp.max(exponent, wp.float32(1.0))
+
+    k_lin = stiffness * e * wp.pow(g, e - 1.0)
+    p0 = stiffness * wp.pow(g, e)
+    if k_lin <= wp.float32(1.0e-12):
+        return stiffness, -g
+
+    phi0 = -p0 / k_lin
+    return k_lin, phi0
+
+
 # Kernel functions
 @wp.kernel
 def convert_newton_contacts_to_mjwarp_kernel(
@@ -388,6 +413,17 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if rigid_contact_stiffness:
             contact_ke = rigid_contact_stiffness[tid]
             if contact_ke > 0.0:
+                # Masterjohn et al. velocity-level approximation: linearize the
+                # pressure-field response at the current penetration depth.
+                penetration = wp.max(-dist, 0.0)
+                if penetration > 0.0:
+                    contact_ke, rest_gap = linearize_pressure_contact_masterjohn(
+                        contact_ke,
+                        penetration,
+                        HYDROELASTIC_PRESSURE_EXPONENT,
+                    )
+                    dist = rest_gap
+
                 imp = solimp[1]
                 solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
                 contact_ke = contact_ke * (1.0 - imp)

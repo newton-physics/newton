@@ -81,6 +81,12 @@
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
 
 ### Changed
+- Change hydroelastic shape configuration to support explicit modes
+  (``none``, ``rigid``, ``compliant``) via
+  :attr:`newton.ModelBuilder.ShapeConfig.hydroelastic_type`, and enable
+  rigid-compliant hydroelastic contact routing. Migrate by setting
+  ``hydroelastic_type="compliant"`` instead of relying on
+  ``is_hydroelastic=True`` when you need explicit mode selection.
 
 - Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
 - Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.

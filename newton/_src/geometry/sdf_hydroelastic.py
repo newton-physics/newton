@@ -176,6 +176,88 @@ def mc_calc_face_texture(
     return area, normal, center, pen_depth, face_verts
 
 
+@wp.func
+def hydroelastic_mode_from_flags(flags: wp.int32) -> wp.int32:
+    """Decode hydroelastic mode from shape flags inside Warp kernels."""
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC_RIGID)) != 0:
+        return HYDROELASTIC_MODE_RIGID
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC_COMPLIANT)) != 0:
+        return HYDROELASTIC_MODE_COMPLIANT
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC)) != 0:
+        return HYDROELASTIC_MODE_COMPLIANT
+    return HYDROELASTIC_MODE_NONE
+
+
+@wp.func
+def is_hydroelastic_compliant(mode: wp.int32) -> wp.bool:
+    return mode == HYDROELASTIC_MODE_COMPLIANT
+
+
+@wp.func
+def get_pair_effective_stiffness(
+    k_a: wp.float32,
+    k_b: wp.float32,
+    mode_a: wp.int32,
+    mode_b: wp.int32,
+) -> wp.float32:
+    """Compute pair stiffness for hydroelastic contacts."""
+    compliant_a = is_hydroelastic_compliant(mode_a)
+    compliant_b = is_hydroelastic_compliant(mode_b)
+    if compliant_a and compliant_b:
+        return get_effective_stiffness(k_a, k_b)
+    if compliant_a:
+        return k_a
+    if compliant_b:
+        return k_b
+    return 0.0
+
+
+@wp.func
+def get_pair_damping(
+    kd_a: wp.float32,
+    kd_b: wp.float32,
+    mode_a: wp.int32,
+    mode_b: wp.int32,
+) -> wp.float32:
+    """Compute hydroelastic contact damping from per-shape damping settings."""
+    compliant_a = is_hydroelastic_compliant(mode_a)
+    compliant_b = is_hydroelastic_compliant(mode_b)
+    if compliant_a and compliant_b:
+        return 0.5 * (kd_a + kd_b)
+    if compliant_a:
+        return kd_a
+    if compliant_b:
+        return kd_b
+    return 0.0
+
+
+@wp.func
+def get_pair_friction_scale(
+    mu_a: wp.float32,
+    mu_b: wp.float32,
+    mode_a: wp.int32,
+    mode_b: wp.int32,
+) -> wp.float32:
+    """Compute friction scale so hydroelastic contacts can target compliant-surface friction."""
+    compliant_a = is_hydroelastic_compliant(mode_a)
+    compliant_b = is_hydroelastic_compliant(mode_b)
+    base_mu = 0.5 * (mu_a + mu_b)
+    if base_mu <= wp.float32(1.0e-8):
+        return 1.0
+
+    desired_mu = base_mu
+    if compliant_a and compliant_b:
+        desired_mu = base_mu
+    elif compliant_a:
+        desired_mu = mu_a
+    elif compliant_b:
+        desired_mu = mu_b
+
+    if desired_mu <= wp.float32(0.0):
+        return 1.0
+    return desired_mu / base_mu
+
+
 class HydroelasticSDF:
     """Hydroelastic contact generation with SDF-based collision detection.
 
@@ -300,6 +382,8 @@ class HydroelasticSDF:
         shape_sdf_block_coords: wp.array[wp.vec3us],
         shape_sdf_shape2blocks: wp.array[wp.vec2i],
         shape_material_kh: wp.array[wp.float32],
+        shape_material_kd: wp.array[wp.float32],
+        shape_material_mu: wp.array[wp.float32],
         n_shapes: int,
         config: HydroelasticSDF.Config | None = None,
         device: Devicelike | None = None,
@@ -317,6 +401,8 @@ class HydroelasticSDF:
         self.shape_sdf_block_coords = shape_sdf_block_coords
         self.shape_sdf_shape2blocks = shape_sdf_shape2blocks
         self.shape_material_kh = shape_material_kh
+        self.shape_material_kd = shape_material_kd
+        self.shape_material_mu = shape_material_mu
 
         self.n_shapes = n_shapes
         self.max_num_shape_pairs = num_shape_pairs
@@ -453,16 +539,21 @@ class HydroelasticSDF:
             HydroelasticSDF instance, or None if no hydroelastic shape pairs exist.
         """
         shape_flags = model.shape_flags.numpy()
+        shape_hydro_mode = np.array([hydroelastic_type_from_flags(int(flags)) for flags in shape_flags], dtype=np.int32)
 
         # Check if any shapes have hydroelastic flag
-        has_hydroelastic = any((flags & ShapeFlags.HYDROELASTIC) for flags in shape_flags)
+        has_hydroelastic = np.any(shape_hydro_mode != int(HydroelasticType.NONE))
         if not has_hydroelastic:
             return None
 
         shape_pairs = model.shape_contact_pairs.numpy()
         num_hydroelastic_pairs = 0
         for shape_a, shape_b in shape_pairs:
-            if (shape_flags[shape_a] & ShapeFlags.HYDROELASTIC) and (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC):
+            mode_a = shape_hydro_mode[shape_a]
+            mode_b = shape_hydro_mode[shape_b]
+            both_hydro = mode_a != int(HydroelasticType.NONE) and mode_b != int(HydroelasticType.NONE)
+            has_compliant = mode_a == int(HydroelasticType.COMPLIANT) or mode_b == int(HydroelasticType.COMPLIANT)
+            if both_hydro and has_compliant:
                 num_hydroelastic_pairs += 1
 
         if num_hydroelastic_pairs == 0:
@@ -477,7 +568,7 @@ class HydroelasticSDF:
         hydroelastic_indices = [
             i
             for i in range(model.shape_count)
-            if (shape_flags[i] & ShapeFlags.COLLIDE_SHAPES) and (shape_flags[i] & ShapeFlags.HYDROELASTIC)
+            if (shape_flags[i] & ShapeFlags.COLLIDE_SHAPES) and (shape_hydro_mode[i] != int(HydroelasticType.NONE))
         ]
 
         for idx in hydroelastic_indices:
@@ -513,6 +604,8 @@ class HydroelasticSDF:
             shape_sdf_block_coords=model.sdf_block_coords,
             shape_sdf_shape2blocks=wp.array(shape_sdf_shape2blocks, dtype=wp.vec2i, device=model.device),
             shape_material_kh=model.shape_material_kh,
+            shape_material_kd=model.shape_material_kd,
+            shape_material_mu=model.shape_material_mu,
             n_shapes=model.shape_count,
             config=config,
             device=model.device,
@@ -541,6 +634,7 @@ class HydroelasticSDF:
         texture_sdf_data: wp.array[TextureSDFData],
         shape_sdf_index: wp.array[wp.int32],
         shape_transform: wp.array[wp.transform],
+        shape_flags: wp.array[wp.int32],
         shape_gap: wp.array[wp.float32],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -558,6 +652,7 @@ class HydroelasticSDF:
             texture_sdf_data: Compact texture SDF table.
             shape_sdf_index: Per-shape SDF index into texture_sdf_data.
             shape_transform: World transforms for each shape.
+            shape_flags: Per-shape flags with hydroelastic mode bits.
             shape_gap: Per-shape contact gap (detection threshold) for each shape.
             shape_collision_aabb_lower: Per-shape collision AABB lower bounds.
             shape_collision_aabb_upper: Per-shape collision AABB upper bounds.
@@ -579,17 +674,19 @@ class HydroelasticSDF:
         self._broadphase_sdfs(
             shape_sdf_data,
             shape_transform,
+            shape_flags,
             shape_pairs_sdf_sdf,
             shape_pairs_sdf_sdf_count,
         )
 
-        self._find_iso_voxels(shape_sdf_data, shape_transform, shape_gap)
+        self._find_iso_voxels(shape_sdf_data, shape_transform, shape_flags, shape_gap)
 
-        self._generate_contacts(shape_sdf_data, shape_transform, shape_gap)
+        self._generate_contacts(shape_sdf_data, shape_transform, shape_flags, shape_gap)
 
         if self.config.reduce_contacts:
             self._reduce_decode_contacts(
                 shape_transform,
+                shape_flags,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
                 shape_voxel_resolution,
@@ -599,6 +696,7 @@ class HydroelasticSDF:
         else:
             self._decode_contacts(
                 shape_transform,
+                shape_flags,
                 shape_gap,
                 writer_data,
             )
@@ -645,6 +743,7 @@ class HydroelasticSDF:
         self,
         shape_sdf_data: wp.array[TextureSDFData],
         shape_transform: wp.array[wp.transform],
+        shape_flags: wp.array[wp.int32],
         shape_pairs_sdf_sdf: wp.array[wp.vec2i],
         shape_pairs_sdf_sdf_count: wp.array[wp.int32],
     ) -> None:
@@ -659,6 +758,7 @@ class HydroelasticSDF:
                 shape_sdf_data,
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
+                shape_flags,
                 self.shape_sdf_shape2blocks,
             ],
             outputs=[
@@ -677,14 +777,14 @@ class HydroelasticSDF:
 
         wp.launch(
             kernel=broadphase_collision_pairs_scatter,
-            dim=[self.grid_size],
+            dim=[self.max_num_shape_pairs],
             inputs=[
-                self.grid_size,
-                self.block_broad_collide_count,
+                self.num_blocks_per_pair,
+                shape_sdf_data,
                 self.block_start_prefix,
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
-                shape_sdf_data,
+                shape_flags,
                 self.shape_sdf_shape2blocks,
                 self.max_num_blocks_broad,
             ],
@@ -717,6 +817,7 @@ class HydroelasticSDF:
         self,
         shape_sdf_data: wp.array[TextureSDFData],
         shape_transform: wp.array[wp.transform],
+        shape_flags: wp.array[wp.int32],
         shape_gap: wp.array[wp.float32],
     ) -> None:
         # Find voxels which contain the isosurface between the shapes using octree-like pruning.
@@ -732,6 +833,7 @@ class HydroelasticSDF:
                     shape_sdf_data,
                     shape_transform,
                     self.shape_material_kh,
+                    shape_flags,
                     self.iso_buffer_coords[i],
                     self.iso_buffer_shape_pairs[i],
                     shape_gap,
@@ -780,6 +882,7 @@ class HydroelasticSDF:
         self,
         shape_sdf_data: wp.array[TextureSDFData],
         shape_transform: wp.array[wp.transform],
+        shape_flags: wp.array[wp.int32],
         shape_gap: wp.array[wp.float32],
         shape_local_aabb_lower: wp.array | None = None,
         shape_local_aabb_upper: wp.array | None = None,
@@ -811,6 +914,7 @@ class HydroelasticSDF:
                 shape_sdf_data,
                 shape_transform,
                 self.shape_material_kh,
+                shape_flags,
                 self.iso_voxel_coords,
                 self.iso_voxel_shape_pair,
                 self.mc_tables[0],
@@ -835,6 +939,7 @@ class HydroelasticSDF:
     def _decode_contacts(
         self,
         shape_transform: wp.array[wp.transform],
+        shape_flags: wp.array[wp.int32],
         shape_gap: wp.array[wp.float32],
         writer_data: Any,
     ) -> None:
@@ -850,6 +955,9 @@ class HydroelasticSDF:
                 self.grid_size,
                 self.contact_reduction.contact_count,
                 self.shape_material_kh,
+                self.shape_material_kd,
+                self.shape_material_mu,
+                shape_flags,
                 shape_transform,
                 shape_gap,
                 self.contact_reduction.reducer.position_depth,
@@ -866,6 +974,7 @@ class HydroelasticSDF:
     def _reduce_decode_contacts(
         self,
         shape_transform: wp.array[wp.transform],
+        shape_flags: wp.array[wp.int32],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
         shape_voxel_resolution: wp.array[wp.vec3i],
@@ -880,6 +989,7 @@ class HydroelasticSDF:
         """
         self.contact_reduction.reduce(
             shape_material_k_hydro=self.shape_material_kh,
+            shape_flags=shape_flags,
             shape_transform=shape_transform,
             shape_collision_aabb_lower=shape_collision_aabb_lower,
             shape_collision_aabb_upper=shape_collision_aabb_upper,
@@ -887,6 +997,9 @@ class HydroelasticSDF:
             grid_size=self.grid_size,
         )
         self.contact_reduction.export(
+            shape_material_kd=self.shape_material_kd,
+            shape_material_mu=self.shape_material_mu,
+            shape_flags=shape_flags,
             shape_gap=shape_gap,
             shape_transform=shape_transform,
             writer_data=writer_data,
@@ -900,6 +1013,7 @@ def broadphase_collision_pairs_count(
     shape_sdf_data: wp.array[TextureSDFData],
     shape_pairs_sdf_sdf: wp.array[wp.vec2i],
     shape_pairs_sdf_sdf_count: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
     shape2blocks: wp.array[wp.vec2i],
     # outputs
     thread_num_blocks: wp.array[wp.int32],
@@ -930,11 +1044,18 @@ def broadphase_collision_pairs_count(
 
     does_collide = sat_box_intersection(centered_transform_a, half_extents_a, centered_transform_b, half_extents_b)
 
-    # Sort shapes so shape with smaller voxel size is shape_b (must match scatter kernel)
-    voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
-    voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
-    if voxel_radius_b > voxel_radius_a:
-        shape_b, shape_a = shape_a, shape_b
+    mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
+    mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
+    compliant_a = mode_a == HYDROELASTIC_MODE_COMPLIANT
+    compliant_b = mode_b == HYDROELASTIC_MODE_COMPLIANT
+
+    if compliant_a and (not compliant_b):
+        shape_a, shape_b = shape_b, shape_a
+    elif compliant_a == compliant_b:
+        voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
+        voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
+        if voxel_radius_b > voxel_radius_a:
+            shape_b, shape_a = shape_a, shape_b
 
     shape_b_idx = shape2blocks[shape_b]
     block_start, block_end = shape_b_idx[0], shape_b_idx[1]
@@ -948,52 +1069,58 @@ def broadphase_collision_pairs_count(
 
 @wp.kernel(enable_backward=False)
 def broadphase_collision_pairs_scatter(
-    grid_size: int,
-    block_broad_collide_count: wp.array[wp.int32],
+    thread_num_blocks: wp.array[wp.int32],
+    shape_sdf_data: wp.array[TextureSDFData],
     block_start_prefix: wp.array[wp.int32],
     shape_pairs_sdf_sdf: wp.array[wp.vec2i],
     shape_pairs_sdf_sdf_count: wp.array[wp.int32],
-    shape_sdf_data: wp.array[TextureSDFData],
+    shape_flags: wp.array[wp.int32],
     shape2blocks: wp.array[wp.vec2i],
     max_num_blocks_broad: int,
     # outputs
     block_broad_collide_shape_pair: wp.array[wp.vec2i],
     block_broad_idx: wp.array[wp.int32],
 ):
-    offset = wp.tid()
-    total_blocks = wp.min(block_broad_collide_count[0], max_num_blocks_broad)
-    pair_count = wp.min(shape_pairs_sdf_sdf_count[0], block_start_prefix.shape[0])
-    if pair_count == 0:
+    tid = wp.tid()
+    if tid >= shape_pairs_sdf_sdf_count[0]:
         return
 
-    for block_tid in range(offset, total_blocks, grid_size):
-        # Binary search: find rightmost pair_idx where prefix[pair_idx] <= block_tid
-        lo = int(0)
-        hi = int(pair_count - 1)
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if block_start_prefix[mid] <= block_tid:
-                lo = mid
-            else:
-                hi = mid - 1
-        pair_idx = lo
+    num_blocks = thread_num_blocks[tid]
+    if num_blocks == 0:
+        return
 
-        pair = shape_pairs_sdf_sdf[pair_idx]
-        shape_a = pair[0]
-        shape_b = pair[1]
+    pair = shape_pairs_sdf_sdf[tid]
+    shape_a = pair[0]
+    shape_b = pair[1]
 
-        # Sort shapes so the one with smaller voxel size is shape_b
+    mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
+    mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
+    compliant_a = mode_a == HYDROELASTIC_MODE_COMPLIANT
+    compliant_b = mode_b == HYDROELASTIC_MODE_COMPLIANT
+
+    if compliant_a and (not compliant_b):
+        shape_a, shape_b = shape_b, shape_a
+    elif compliant_a == compliant_b:
+        # Sort shapes such that the shape with the smaller voxel size is in second place.
         voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
         voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
         if voxel_radius_b > voxel_radius_a:
             shape_b, shape_a = shape_a, shape_b
 
-        shape_b_idx = shape2blocks[shape_b]
-        shape_b_block_start = shape_b_idx[0]
-        block_in_pair = block_tid - block_start_prefix[pair_idx]
+    shape_b_idx = shape2blocks[shape_b]
+    shape_b_block_start = shape_b_idx[0]
 
-        block_broad_collide_shape_pair[block_tid] = wp.vec2i(shape_a, shape_b)
-        block_broad_idx[block_tid] = shape_b_block_start + block_in_pair
+    block_start = block_start_prefix[tid]
+
+    remaining = max_num_blocks_broad - block_start
+    if remaining <= 0:
+        return
+    num_blocks = wp.min(num_blocks, remaining)
+
+    pair = wp.vec2i(shape_a, shape_b)
+    for i in range(num_blocks):
+        block_broad_collide_shape_pair[block_start + i] = pair
+        block_broad_idx[block_start + i] = shape_b_block_start + i
 
 
 @wp.kernel(enable_backward=False)
@@ -1028,9 +1155,25 @@ def decode_coords_8(bit_pos: wp.uint8) -> wp.vec3ub:
 
 
 @wp.func
-def get_rel_stiffness(k_a: wp.float32, k_b: wp.float32) -> tuple[wp.float32, wp.float32]:
-    k_m_inv = 1.0 / wp.sqrt(k_a * k_b)
-    return k_a * k_m_inv, k_b * k_m_inv
+def get_rel_stiffness(
+    k_a: wp.float32,
+    k_b: wp.float32,
+    mode_a: wp.int32,
+    mode_b: wp.int32,
+) -> tuple[wp.float32, wp.float32]:
+    """Compute relative stiffness weights used in SDF difference evaluation."""
+    compliant_a = is_hydroelastic_compliant(mode_a)
+    compliant_b = is_hydroelastic_compliant(mode_b)
+
+    if compliant_a and compliant_b:
+        denom = wp.max(k_a * k_b, wp.float32(1.0e-12))
+        k_m_inv = 1.0 / wp.sqrt(denom)
+        return k_a * k_m_inv, k_b * k_m_inv
+    if compliant_a and not compliant_b:
+        return 0.0, 1.0
+    if not compliant_a and compliant_b:
+        return 1.0, 0.0
+    return 1.0, 1.0
 
 
 @wp.func
@@ -1104,6 +1247,7 @@ def count_iso_voxels_block(
     shape_sdf_data: wp.array[TextureSDFData],
     shape_transform: wp.array[wp.transform],
     shape_material_kh: wp.array[float],
+    shape_flags: wp.array[wp.int32],
     in_buffer_collide_coords: wp.array[wp.vec3us],
     in_buffer_collide_shape_pair: wp.array[wp.vec2i],
     shape_gap: wp.array[wp.float32],
@@ -1137,8 +1281,9 @@ def count_iso_voxels_block(
 
         k_a = shape_material_kh[shape_a]
         k_b = shape_material_kh[shape_b]
-
-        k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
+        mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
+        mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
+        k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b, mode_a, mode_b)
         r_eff = r * (k_eff_a + k_eff_b)
 
         # get global voxel coordinates
@@ -1288,6 +1433,9 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
         grid_size: int,
         contact_count: wp.array[int],
         shape_material_kh: wp.array[wp.float32],
+        shape_material_kd: wp.array[wp.float32],
+        shape_material_mu: wp.array[wp.float32],
+        shape_flags: wp.array[wp.int32],
         shape_transform: wp.array[wp.transform],
         shape_gap: wp.array[wp.float32],
         position_depth: wp.array[wp.vec4],
@@ -1346,7 +1494,13 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
 
             k_a = shape_material_kh[shape_a]
             k_b = shape_material_kh[shape_b]
-            k_eff = get_effective_stiffness(k_a, k_b)
+            kd_a = shape_material_kd[shape_a]
+            kd_b = shape_material_kd[shape_b]
+            mu_a = shape_material_mu[shape_a]
+            mu_b = shape_material_mu[shape_b]
+            mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
+            mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
+            k_eff = get_pair_effective_stiffness(k_a, k_b, mode_a, mode_b)
             area = contact_area[tid]
 
             # Compute stiffness, use margin_contact_area for non-penetrating contacts
@@ -1355,6 +1509,8 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
                 c_stiffness = area * k_eff
             else:
                 c_stiffness = wp.static(margin_contact_area) * k_eff
+            c_damping = get_pair_damping(kd_a, kd_b, mode_a, mode_b)
+            c_friction_scale = get_pair_friction_scale(mu_a, mu_b, mode_a, mode_b)
 
             # Create ContactData for the writer function
             # contact_distance = 2 * depth (depth is negative for penetrating)
@@ -1370,6 +1526,8 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data.shape_b = shape_b
             contact_data.gap_sum = gap_sum
             contact_data.contact_stiffness = c_stiffness
+            contact_data.contact_damping = c_damping
+            contact_data.contact_friction_scale = c_friction_scale
 
             writer_func(contact_data, writer_data, output_index)
 
@@ -1418,6 +1576,7 @@ def get_generate_contacts_kernel(
         shape_sdf_data: wp.array[TextureSDFData],
         shape_transform: wp.array[wp.transform],
         shape_material_kh: wp.array[float],
+        shape_flags: wp.array[wp.int32],
         iso_voxel_coords: wp.array[wp.vec3us],
         iso_voxel_shape_pair: wp.array[wp.vec2i],
         tri_range_table: wp.array[wp.int32],
@@ -1457,8 +1616,9 @@ def get_generate_contacts_kernel(
 
             k_a = shape_material_kh[shape_a]
             k_b = shape_material_kh[shape_b]
-
-            k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
+            mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
+            mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
+            k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b, mode_a, mode_b)
 
             x_id = wp.int32(iso_coords.x)
             y_id = wp.int32(iso_coords.y)
@@ -1493,7 +1653,7 @@ def get_generate_contacts_kernel(
                 continue
 
             # Compute effective stiffness coefficient
-            k_eff = get_effective_stiffness(k_a, k_b)
+            k_eff = get_pair_effective_stiffness(k_a, k_b, mode_a, mode_b)
 
             X_ws_b = transform_b
 

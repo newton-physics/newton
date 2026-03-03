@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.geometry import HydroelasticSDF
+from newton.geometry import HydroelasticSDF, HydroelasticType
 from newton.tests.unittest_utils import (
     add_function_test,
     get_selected_cuda_test_devices,
@@ -852,6 +852,77 @@ def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
     )
 
 
+def _build_two_box_hydro_mode_scene(device, mode_a: HydroelasticType, mode_b: HydroelasticType):
+    """Create a minimal two-box scene for hydroelastic mode routing tests."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    cfg_a = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=mode_a,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=2.0e8,
+        kd=75.0,
+        mu=0.6,
+        margin=1.0e-5,
+    )
+    cfg_b = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=mode_b,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=3.0e8,
+        kd=120.0,
+        mu=0.4,
+        margin=1.0e-5,
+    )
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.29), wp.quat_identity()))
+
+    builder.add_shape_box(body=body_a, hx=0.1, hy=0.1, hz=0.1, cfg=cfg_a)
+    builder.add_shape_box(body=body_b, hx=0.1, hy=0.1, hz=0.1, cfg=cfg_b)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return pipeline, contacts
+
+
+def test_rigid_compliant_mode_routes_to_hydroelastic_sdf(test, device):
+    """Validate rigid-compliant hydro mode routing and per-contact damping/friction export."""
+    pipeline, contacts = _build_two_box_hydro_mode_scene(device, HydroelasticType.RIGID, HydroelasticType.COMPLIANT)
+
+    test.assertIsNotNone(pipeline.hydroelastic_sdf, "Expected hydroelastic SDF pipeline for rigid-compliant pair")
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 1, "Expected exactly one hydroelastic SDF pair")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected generated rigid contacts from hydroelastic pipeline")
+
+    damping = contacts.rigid_contact_damping.numpy()[:rigid_count]
+    friction = contacts.rigid_contact_friction.numpy()[:rigid_count]
+    test.assertTrue(np.any(damping > 0.0), "Expected hydroelastic contacts to export positive damping")
+    test.assertTrue(np.any(friction > 0.0), "Expected hydroelastic contacts to export positive friction scale")
+
+
+def test_rigid_rigid_mode_uses_nonhydro_path(test, device):
+    """Validate rigid-rigid hydro mode does not instantiate the hydroelastic SDF pipeline."""
+    pipeline, contacts = _build_two_box_hydro_mode_scene(device, HydroelasticType.RIGID, HydroelasticType.RIGID)
+
+    test.assertIsNone(pipeline.hydroelastic_sdf, "Rigid-rigid pairs should not use hydroelastic SDF contacts")
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected fallback non-hydro rigid contacts for rigid-rigid pair")
+
+
 def test_mujoco_hydroelastic_penetration_depth(test, device):
     """Test that hydroelastic penetration depth matches expectation.
 
@@ -1184,6 +1255,18 @@ add_function_test(
     TestHydroelastic,
     "test_entry_k_eff_matches_shape_harmonic_mean",
     test_entry_k_eff_matches_shape_harmonic_mean,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_rigid_compliant_mode_routes_to_hydroelastic_sdf",
+    test_rigid_compliant_mode_routes_to_hydroelastic_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_rigid_rigid_mode_uses_nonhydro_path",
+    test_rigid_rigid_mode_uses_nonhydro_path,
     devices=cuda_devices,
 )
 

@@ -36,6 +36,7 @@ from ..core.types import (
 from ..geometry import (
     Gaussian,
     GeoType,
+    HydroelasticType,
     Mesh,
     ParticleFlags,
     ShapeFlags,
@@ -44,6 +45,7 @@ from ..geometry import (
     transform_inertia,
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.flags import hydroelastic_type_from_flags
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -266,11 +268,25 @@ class ModelBuilder:
         the memory of ``"float32"``). ``"float32"`` stores full-precision
         values. ``"uint8"`` uses 8-bit textures for minimum memory."""
         is_hydroelastic: bool = False
-        """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False.
+        """Whether to enable hydroelastic collision for this shape.
+
+        This legacy boolean is kept for backward compatibility. When set to True,
+        and ``hydroelastic_type`` is not explicitly specified, the shape defaults to
+        ``HydroelasticType.COMPLIANT``.
 
         .. note::
             Hydroelastic collision handling only works with volumetric shapes and in particular will not work for shapes like flat meshes or cloth.
             This flag will be automatically set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
+        """
+        hydroelastic_type: HydroelasticType | str | None = None
+        """Hydroelastic mode for this shape.
+
+        Supported values:
+        - ``HydroelasticType.NONE`` / ``"none"``
+        - ``HydroelasticType.RIGID`` / ``"rigid"``
+        - ``HydroelasticType.COMPLIANT`` / ``"compliant"``
+
+        If None, mode is inferred from ``is_hydroelastic`` for backward compatibility.
         """
         kh: float = 1.0e10
         """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
@@ -286,6 +302,7 @@ class ModelBuilder:
             max_resolution: int | None = None,
             target_voxel_size: float | None = None,
             is_hydroelastic: bool = False,
+            hydroelastic_type: HydroelasticType | str | None = None,
             kh: float = 1.0e10,
             texture_format: str | None = None,
         ) -> None:
@@ -302,6 +319,8 @@ class ModelBuilder:
                     SDF generation and clears any previous max_resolution setting.
                 is_hydroelastic: Whether to use SDF-based hydroelastic contacts. Both shapes
                     in a pair must have this enabled.
+                hydroelastic_type: Hydroelastic mode (none, rigid, compliant). If set,
+                    this takes precedence over ``is_hydroelastic``.
                 kh: Contact stiffness coefficient for hydroelastic collisions.
                 texture_format: Subgrid texture storage format. ``"uint16"``
                     (default) uses 16-bit normalized textures. ``"float32"``
@@ -318,10 +337,50 @@ class ModelBuilder:
             if target_voxel_size is not None:
                 self.sdf_target_voxel_size = target_voxel_size
                 self.sdf_max_resolution = None
-            self.is_hydroelastic = is_hydroelastic
+            if hydroelastic_type is not None:
+                resolved = self._parse_hydroelastic_type(hydroelastic_type)
+                if is_hydroelastic and resolved == HydroelasticType.NONE:
+                    raise ValueError("is_hydroelastic=True conflicts with hydroelastic_type='none'.")
+                self.hydroelastic_type = resolved
+                self.is_hydroelastic = resolved != HydroelasticType.NONE
+            else:
+                self.is_hydroelastic = is_hydroelastic
+                if is_hydroelastic:
+                    self.hydroelastic_type = HydroelasticType.COMPLIANT
+                else:
+                    self.hydroelastic_type = HydroelasticType.NONE
             self.kh = kh
             if texture_format is not None:
                 self.sdf_texture_format = texture_format
+
+        @staticmethod
+        def _parse_hydroelastic_type(value: HydroelasticType | str | int | None) -> HydroelasticType:
+            """Parse hydroelastic mode from enum, string, or integer."""
+            if value is None:
+                return HydroelasticType.NONE
+            if isinstance(value, HydroelasticType):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in ("none", "off", "disabled"):
+                    return HydroelasticType.NONE
+                if normalized == "rigid":
+                    return HydroelasticType.RIGID
+                if normalized == "compliant":
+                    return HydroelasticType.COMPLIANT
+                raise ValueError(f"Unsupported hydroelastic_type string: {value!r}")
+            try:
+                return HydroelasticType(int(value))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Unsupported hydroelastic_type value: {value!r}") from exc
+
+        def resolved_hydroelastic_type(self) -> HydroelasticType:
+            """Resolve effective hydroelastic mode with backward-compatible defaults."""
+            if self.hydroelastic_type is not None:
+                return self._parse_hydroelastic_type(self.hydroelastic_type)
+            if self.is_hydroelastic:
+                return HydroelasticType.COMPLIANT
+            return HydroelasticType.NONE
 
         def validate(self, shape_type: int | None = None) -> None:
             """Validate ShapeConfig parameters.
@@ -351,8 +410,9 @@ class ModelBuilder:
                 GeoType.ELLIPSOID,
                 GeoType.CONE,
             )
+            hydroelastic_mode = self.resolved_hydroelastic_type()
             if (
-                self.is_hydroelastic
+                hydroelastic_mode != HydroelasticType.NONE
                 and hydroelastic_supported
                 and hydroelastic_requires_configured_sdf
                 and self.has_shape_collision
@@ -378,6 +438,8 @@ class ModelBuilder:
             self.has_particle_collision = False
             self.density = 0.0
             self.collision_group = 0
+            self.is_hydroelastic = False
+            self.hydroelastic_type = HydroelasticType.NONE
 
         @property
         def flags(self) -> int:
@@ -387,7 +449,13 @@ class ModelBuilder:
             shape_flags |= ShapeFlags.COLLIDE_SHAPES if self.has_shape_collision else 0
             shape_flags |= ShapeFlags.COLLIDE_PARTICLES if self.has_particle_collision else 0
             shape_flags |= ShapeFlags.SITE if self.is_site else 0
-            shape_flags |= ShapeFlags.HYDROELASTIC if self.is_hydroelastic else 0
+            hydroelastic_mode = self.resolved_hydroelastic_type()
+            if hydroelastic_mode != HydroelasticType.NONE:
+                shape_flags |= ShapeFlags.HYDROELASTIC
+            if hydroelastic_mode == HydroelasticType.RIGID:
+                shape_flags |= ShapeFlags.HYDROELASTIC_RIGID
+            elif hydroelastic_mode == HydroelasticType.COMPLIANT:
+                shape_flags |= ShapeFlags.HYDROELASTIC_COMPLIANT
             return shape_flags
 
         @flags.setter
@@ -395,7 +463,9 @@ class ModelBuilder:
             """Sets the flags for the shape."""
 
             self.is_visible = bool(value & ShapeFlags.VISIBLE)
-            self.is_hydroelastic = bool(value & ShapeFlags.HYDROELASTIC)
+            hydroelastic_mode = hydroelastic_type_from_flags(value)
+            self.hydroelastic_type = hydroelastic_mode
+            self.is_hydroelastic = hydroelastic_mode != HydroelasticType.NONE
 
             # Check if SITE flag is being set
             is_site_flag = bool(value & ShapeFlags.SITE)
@@ -5225,7 +5295,10 @@ class ModelBuilder:
                     "Mesh shapes do not use cfg.sdf_* for SDF generation. "
                     "Build and attach an SDF on the mesh via mesh.build_sdf()."
                 )
-            if cfg.is_hydroelastic and (src is None or getattr(src, "sdf", None) is None):
+            if (
+                cfg.resolved_hydroelastic_type() != HydroelasticType.NONE
+                and (src is None or getattr(src, "sdf", None) is None)
+            ):
                 raise ValueError(
                     "Hydroelastic mesh shapes require mesh.sdf. "
                     "Call mesh.build_sdf() before add_shape_mesh(..., cfg=...)."
@@ -5274,16 +5347,18 @@ class ModelBuilder:
         # Get flags and clear HYDROELASTIC for unsupported shape types (PLANE, HFIELD)
         shape_flags = cfg.flags
         if (shape_flags & ShapeFlags.HYDROELASTIC) and (type == GeoType.PLANE or type == GeoType.HFIELD):
-            shape_flags &= (
-                ~ShapeFlags.HYDROELASTIC
-            )  # Falling back to mesh/primitive collisions for plane and hfield shapes
+            # Falling back to mesh/primitive collisions for plane and hfield shapes.
+            shape_flags &= ~(
+                ShapeFlags.HYDROELASTIC
+                | ShapeFlags.HYDROELASTIC_RIGID
+                | ShapeFlags.HYDROELASTIC_COMPLIANT
+            )
 
         resolved_color = color
         if resolved_color is None and src is not None:
             resolved_color = getattr(src, "color", None)
         if resolved_color is None:
             resolved_color = ModelBuilder._shape_palette_color(shape)
-
         self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
         self.shape_scale.append((float(scale[0]), float(scale[1]), float(scale[2])))

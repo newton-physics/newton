@@ -33,10 +33,50 @@ class ShapeFlags(IntEnum):
     """Indicates that the shape is a site (non-colliding reference point)."""
 
     HYDROELASTIC = 1 << 4
-    """Indicates that the shape uses hydroelastic collision."""
+    """Legacy hydroelastic enable bit (defaults to compliant when mode bits are absent)."""
+
+    HYDROELASTIC_RIGID = 1 << 5
+    """Indicates rigid hydroelastic behavior for this shape."""
+
+    HYDROELASTIC_COMPLIANT = 1 << 6
+    """Indicates compliant hydroelastic behavior for this shape."""
+
+
+class HydroelasticType(IntEnum):
+    """Hydroelastic participation mode for a collision shape."""
+
+    NONE = 0
+    """Disable hydroelastic behavior for this shape."""
+
+    RIGID = 1
+    """Treat this shape as rigid in hydroelastic contacts."""
+
+    COMPLIANT = 2
+    """Treat this shape as compliant in hydroelastic contacts."""
+
+
+def hydroelastic_type_from_flags(flags: int) -> HydroelasticType:
+    """Decode hydroelastic mode from a shape flag bitmask.
+
+    Args:
+        flags: Integer bitmask using :class:`ShapeFlags`.
+
+    Returns:
+        Hydroelastic mode encoded by the bitmask.
+    """
+    if flags & int(ShapeFlags.HYDROELASTIC_RIGID):
+        return HydroelasticType.RIGID
+    if flags & int(ShapeFlags.HYDROELASTIC_COMPLIANT):
+        return HydroelasticType.COMPLIANT
+    if flags & int(ShapeFlags.HYDROELASTIC):
+        # Backward compatibility with models that only set HYDROELASTIC.
+        return HydroelasticType.COMPLIANT
+    return HydroelasticType.NONE
 
 
 __all__ = [
+    "HydroelasticType",
     "ParticleFlags",
     "ShapeFlags",
+    "hydroelastic_type_from_flags",
 ]
