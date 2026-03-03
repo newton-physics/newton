@@ -1305,21 +1305,21 @@ class LastStepData:
         self.ws_stress_field = None  # Warmstart for stress field
         self.body_q_prev = None  # Previous body transforms for finite-difference velocities
 
-    def _ws_stress_space(self, scratch: ImplicitMPMScratchpad, smoothed: bool = True):
+    def _ws_stress_space(self, scratch: ImplicitMPMScratchpad, smoothed: bool):
         sym_strain_space = scratch.sym_strain_test.space
         if isinstance(sym_strain_space.basis, fem.PointBasisSpace) or not smoothed:
             return sym_strain_space
         else:
             return fem.make_polynomial_space(scratch.grid, degree=1, dof_mapper=sym_strain_space.dof_mapper)
 
-    def require_strain_space_fields(self, scratch: ImplicitMPMScratchpad):
+    def require_strain_space_fields(self, scratch: ImplicitMPMScratchpad, smoothed: bool):
         """Ensure strain-space fields exist and match current spaces."""
         if self.ws_stress_field is None:
-            self.ws_stress_field = self._ws_stress_space(scratch).make_field()
+            self.ws_stress_field = self._ws_stress_space(scratch, smoothed).make_field()
 
-    def rebind_strain_space_fields(self, scratch: ImplicitMPMScratchpad):
+    def rebind_strain_space_fields(self, scratch: ImplicitMPMScratchpad, smoothed: bool):
         if self.ws_stress_field.geometry != scratch.sym_strain_test.space.geometry:
-            ws_stress_space = self._ws_stress_space(scratch)
+            ws_stress_space = self._ws_stress_space(scratch, smoothed)
             self.ws_stress_field.rebind(
                 space=ws_stress_space,
                 space_partition=fem.make_space_partition(
@@ -1619,7 +1619,7 @@ class SolverImplicitMPM(SolverBase):
         solver: str = "gauss-seidel"
         """Solver to use for the rheology solver. May be one of gauss-seidel, jacobi."""
         warmstart_mode: str = "auto"
-        """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid."""
+        """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid, smoothed."""
         collider_velocity_mode: str = "instantaneous"
         """Collider velocity computation mode. May be one of instantaneous, finite_difference."""
 
@@ -1894,7 +1894,7 @@ class SolverImplicitMPM(SolverBase):
             else:
                 self._stress_warmstart = "grid"
         else:
-            assert config.warmstart_mode in ("particles", "grid"), "Invalid warmstart mode"
+            assert config.warmstart_mode in ("particles", "grid", "smoothed"), "Invalid warmstart mode"
             self._stress_warmstart = config.warmstart_mode
 
         self._use_cuda_graph = self.model.device.is_cuda and wp.is_conditional_graph_supported()
@@ -3208,7 +3208,7 @@ class SolverImplicitMPM(SolverBase):
     def _require_strain_space_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Ensure strain-space fields exist and match current spaces."""
         scratch.require_strain_space_fields()
-        last_step_data.require_strain_space_fields(scratch)
+        last_step_data.require_strain_space_fields(scratch, smoothed=self._stress_warmstart == "smoothed")
 
     def _load_warmstart(
         self,
@@ -3274,7 +3274,7 @@ class SolverImplicitMPM(SolverBase):
         # Interpolate previous stress
         if isinstance(prev_stress_field.space.basis, fem.PointBasisSpace):
             scratch.stress_field.dof_values.assign(prev_stress_field.dof_values[pic.cell_particle_indices])
-        elif self._stress_warmstart == "grid":
+        elif self._stress_warmstart in ("grid", "smoothed"):
             prev_stress_field = fem.NonconformingField(
                 domain, prev_stress_field, background=scratch.background_stress_field
             )
@@ -3309,7 +3309,7 @@ class SolverImplicitMPM(SolverBase):
                     ],
                 )
 
-            last_step_data.rebind_strain_space_fields(scratch)
+            last_step_data.rebind_strain_space_fields(scratch, smoothed=self._stress_warmstart == "smoothed")
             if isinstance(last_step_data.ws_stress_field.space.basis, fem.PointBasisSpace):
                 last_step_data.ws_stress_field.dof_values[pic.cell_particle_indices].assign(
                     scratch.stress_field.dof_values
