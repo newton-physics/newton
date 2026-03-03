@@ -29,9 +29,12 @@ class FastExampleQuadrupedXPBD:
 
     def setup(self):
         self.num_frames = 1000
-        args = newton.examples.default_args(Example.create_parser())
-        args.world_count = 200
-        self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), args)
+        try:
+            args = newton.examples.default_args(Example.create_parser())
+            args.world_count = 200
+            self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), args)
+        except AttributeError:
+            self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), 200)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

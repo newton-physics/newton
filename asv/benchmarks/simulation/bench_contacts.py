@@ -72,8 +72,18 @@ class FastExampleContactSdfDefaults:
             ]
         )
         self.num_frames = 20
-        args = newton.examples.default_args(example_cls.create_parser())
-        self.example = example_cls(ViewerNull(num_frames=self.num_frames), args)
+        try:
+            args = newton.examples.default_args(example_cls.create_parser())
+            self.example = example_cls(ViewerNull(num_frames=self.num_frames), args)
+        except AttributeError:
+            self.example = example_cls(
+                viewer=ViewerNull(num_frames=self.num_frames),
+                world_count=100,
+                num_per_world=1,
+                scene="nut_bolt",
+                solver="mujoco",
+                test_mode=False,
+            )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
@@ -99,8 +109,18 @@ class FastExampleContactHydroWorkingDefaults:
             ]
         )
         self.num_frames = 20
-        args = newton.examples.default_args(example_cls.create_parser())
-        self.example = example_cls(ViewerNull(num_frames=self.num_frames), args)
+        try:
+            args = newton.examples.default_args(example_cls.create_parser())
+            self.example = example_cls(ViewerNull(num_frames=self.num_frames), args)
+        except AttributeError:
+            self.example = example_cls(
+                viewer=ViewerNull(num_frames=self.num_frames),
+                world_count=20,
+                num_per_world=1,
+                scene="nut_bolt",
+                solver="mujoco",
+                test_mode=False,
+            )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
