@@ -32,14 +32,13 @@ from pxr import Usd
 
 import newton
 import newton.examples
-import newton.usd
 import newton.utils
 from newton import Model, ModelBuilder, State, eval_fk
 from newton.math import transform_twist
 from newton.solvers import SolverFeatherstone, SolverVBD
 
 # Hardcoded local path for now (asset not yet published in newton-assets repo)
-DUCK_ASSET = "D:/Code/Graphics/newton-assets/manipulation_objects/rubber_duck/rubber_duck_small_head_tetmesh.usda"
+DUCK_ASSET = "D:/Code/Graphics/newton-assets/manipulation_objects/rubber_duck/mesh.usd"
 
 
 @wp.kernel
@@ -66,7 +65,7 @@ def compute_ee_delta(
 class Example:
     def __init__(self, viewer, args=None):
         # simulation parameters (meter scale)
-        self.sim_substeps = 15
+        self.sim_substeps = 10
         self.iterations = 5
         self.fps = 60
         self.frame_dt = 1 / self.fps
@@ -80,7 +79,7 @@ class Example:
         self.particle_self_contact_margin = 0.005
 
         self.soft_contact_ke = 2e6
-        self.soft_contact_kd = 1e-5
+        self.soft_contact_kd = 1e-7
         self.self_contact_friction = 0.5
 
         self.scene = ModelBuilder(gravity=-9.81)
@@ -108,15 +107,15 @@ class Example:
             hz=table_hz,
         )
 
-        # load rubber duck TetMesh from USDA
+        # load pre-computed tetrahedral mesh from USD
         usd_stage = Usd.Stage.Open(DUCK_ASSET)
-        prim = usd_stage.GetPrimAtPath("/RubberDuck")
-        tetmesh = newton.usd.get_tetmesh(prim)
+        prim = usd_stage.GetPrimAtPath("/TetModel")
+        tetmesh = newton.TetMesh.create_from_usd(prim)
 
         # Duck USDA is in meters (metersPerUnit=1.0), small-head variant.
         # Table top is at z=0.2m. Duck center offset ~0.05m above table.
         self.scene.add_soft_mesh(
-            pos=wp.vec3(0.0, -0.5, 0.25),
+            pos=wp.vec3(0.0, -0.5, 0.23),
             rot=wp.quat_identity(),
             scale=1.0,  # already in meters
             vel=wp.vec3(0.0, 0.0, 0.0),
@@ -124,7 +123,7 @@ class Example:
             density=100.0,
             k_mu=1.0e6,
             k_lambda=1.0e6,
-            k_damp=1e-5,
+            k_damp=1e-6,
             particle_radius=self.particle_radius,
         )
 
@@ -249,7 +248,7 @@ class Example:
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
         gripper_open = 1.0
-        gripper_close = 0.7
+        gripper_close = 0.65
 
         # Keyframe sequence: approach, descend, pinch, lift, hold, place, release, retract
         # [duration, px, py, pz, qx, qy, qz, qw, gripper_activation] (positions in meters)
@@ -428,40 +427,9 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--record", type=str, default=None, help="Path to output MP4 file for GL recording.")
     parser.set_defaults(num_frames=1000)
     viewer, args = newton.examples.init(parser)
 
     example = Example(viewer, args)
 
-    if args.record:
-        import cv2
-
-        output_path = args.record
-        fps = example.fps
-        writer = None
-        frame_idx = 0
-
-        while example.viewer.is_running():
-            if not example.viewer.is_paused():
-                example.step()
-            example.render()
-
-            frame_arr = example.viewer.get_frame()
-            pixels = frame_arr.numpy()
-
-            if writer is None:
-                h, w = pixels.shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
-                print(f"Recording {w}x{h} @ {fps} fps to {output_path} ...")
-
-            writer.write(cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR))
-            frame_idx += 1
-
-        if writer is not None:
-            writer.release()
-        example.viewer.close()
-        print(f"Saved {frame_idx} frames to {output_path}")
-    else:
-        newton.examples.run(example, args)
+    newton.examples.run(example, args)
