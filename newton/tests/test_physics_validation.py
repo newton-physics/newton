@@ -30,7 +30,7 @@ class TestPhysicsValidation(unittest.TestCase):
 # Test 1: Free Fall
 # Verify free-fall trajectory against y(t) = h0 + 0.5*g*t^2 and v(t) = g*t.
 # ---------------------------------------------------------------------------
-def test_free_fall(test, device, solver_fn, uses_generalized_coords):
+def test_free_fall(test, device, solver_fn):
     # Test parameters: gravity and initial height
     g = -10.0
     h0 = 5.0
@@ -330,7 +330,7 @@ def test_projectile_motion(test, device, solver_fn, uses_generalized_coords):
 # Test 5: External Torque Application
 # Verify angular velocity under constant torque: omega_z(t) = tau*t / I_zz.
 # ---------------------------------------------------------------------------
-def test_external_torque(test, device, solver_fn, uses_generalized_coords, box_half_extent=0.5):
+def test_external_torque(test, device, solver_fn, box_half_extent=0.5):
     # Test parameters: constant applied torque
     tau = 10.0
 
@@ -385,7 +385,7 @@ def test_external_torque(test, device, solver_fn, uses_generalized_coords, box_h
 # Test 6: External Force Application
 # Verify linear acceleration under constant force: v_x(t) = F*t/m, x(t) = 0.5*F*t^2/m.
 # ---------------------------------------------------------------------------
-def test_external_force(test, device, solver_fn, uses_generalized_coords):
+def test_external_force(test, device, solver_fn):
     # Test parameters: constant applied force
     F = 5.0
 
@@ -449,7 +449,7 @@ def test_external_force(test, device, solver_fn, uses_generalized_coords):
 # Test 7: Joint Actuation Application
 # Verify joint response to actuation forces for revolute and prismatic joints.
 # ---------------------------------------------------------------------------
-def test_joint_actuation(test, device, solver_fn, uses_generalized_coords):
+def test_joint_actuation(test, device, solver_fn):
     # Test parameters: applied force for prismatic joint and applied torque for revolute joint
     tau_rev = 5.0
     F_prismatic = 5.0
@@ -713,7 +713,7 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
 # Test 10: Static Friction
 # Verify Coulomb static friction: no sliding before threshold, sliding above threshold.
 # ---------------------------------------------------------------------------
-def test_static_friction(test, device, solver_fn, uses_newton_contacts, uses_generalized_coords):
+def test_static_friction(test, device, solver_fn, uses_newton_contacts):
     # Test parameters: gravity, static friction coefficient, box size, box mass.
     g = -10.0
     mu = 0.5
@@ -1277,7 +1277,6 @@ for device in devices:
             test_free_fall,
             devices=[device],
             solver_fn=solver_fn,
-            uses_generalized_coords=uses_gen_coords,
         )
 
         add_function_test(
@@ -1295,7 +1294,6 @@ for device in devices:
             test_external_force,
             devices=[device],
             solver_fn=solver_fn,
-            uses_generalized_coords=uses_gen_coords,
         )
 
         add_function_test(
@@ -1309,28 +1307,13 @@ for device in devices:
 
     # External torque test
     solvers = {
-        "featherstone": (
-            lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-            True,
-        ),
-        "mujoco_cpu": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
-            True,
-        ),
-        "mujoco_warp": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
-            True,
-        ),
-        "semi_implicit": (
-            lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
-            False,
-        ),
-        "xpbd": (
-            lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
-            False,
-        ),
+        "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
+        "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+        "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+        "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+        "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     }
-    for solver_name, (solver_fn, uses_gen_coords) in solvers.items():
+    for solver_name, solver_fn in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
         if not device.is_cuda and solver_name in ("mujoco_warp", "xpbd"):
@@ -1342,7 +1325,6 @@ for device in devices:
             test_external_torque,
             devices=[device],
             solver_fn=solver_fn,
-            uses_generalized_coords=uses_gen_coords,
             box_half_extent=0.1 if solver_name == "xpbd" else 0.5,
         )
 
@@ -1412,7 +1394,6 @@ for device in devices:
             test_joint_actuation,
             devices=[device],
             solver_fn=solver_fn,
-            uses_generalized_coords=uses_gen_coords,
         )
 
     # Friction tests
@@ -1446,7 +1427,6 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
             uses_newton_contacts=uses_newton_contacts,
-            uses_generalized_coords=uses_gen_coords,
         )
 
         add_function_test(
