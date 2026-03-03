@@ -1343,10 +1343,16 @@ class Gaussian:
         Returns:
             A :class:`Mesh` for use as collision proxy.
         """
-        from .utils import remesh_convex_hull  # noqa: PLC0415
 
         if method == "convex_hull":
+            from .utils import remesh_convex_hull  # noqa: PLC0415
+
             hull_verts, hull_faces = remesh_convex_hull(self._positions)
+            return Mesh(hull_verts, hull_faces, compute_inertia=True)
+        elif method == "alphashape":
+            from .utils import remesh_alphashape  # noqa: PLC0415
+
+            hull_verts, hull_faces = remesh_alphashape(self._positions)
             return Mesh(hull_verts, hull_faces, compute_inertia=True)
         raise ValueError(f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull'.")
 
