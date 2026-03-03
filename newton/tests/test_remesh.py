@@ -1092,7 +1092,7 @@ class TestRemeshUnifiedAPI(unittest.TestCase):
     def test_remesh_mesh_poisson(self):
         """Test remesh_mesh() with method='poisson' using Mesh-based API."""
         import newton  # noqa: PLC0415
-        from newton.geometry import remesh_mesh  # noqa: PLC0415
+        from newton.utils import remesh_mesh  # noqa: PLC0415
 
         vertices, indices = create_unit_cube_mesh()
 

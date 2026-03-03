@@ -35,7 +35,6 @@ from ._src.geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder,
 from ._src.geometry.narrow_phase import NarrowPhase
 from ._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from ._src.geometry.sdf_utils import create_empty_sdf_data
-from ._src.geometry.utils import remesh_mesh
 
 __all__ = [
     "BroadPhaseAllPairs",
@@ -57,7 +56,6 @@ __all__ = [
     "collide_sphere_sphere",
     "compute_inertia_shape",
     "create_empty_sdf_data",
-    "remesh_mesh",
     "sdf_box",
     "sdf_capsule",
     "sdf_cone",

@@ -102,31 +102,31 @@ def build_stacked_cubes_scene(
 
     # Scale SDF parameters proportionally to cube size
     narrow_band = cube_half * 0.2
-    contact_margin = cube_half * 0.2
+    contact_gap = cube_half * 0.2
 
     if cube_mesh is not None:
         cube_mesh.build_sdf(
             max_resolution=32,
             narrow_band_range=(-narrow_band, narrow_band),
-            margin=contact_margin,
+            margin=contact_gap,
         )
 
     builder = newton.ModelBuilder()
     if shape_type == ShapeType.PRIMITIVE:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-            thickness=1e-5,
+            margin=1e-5,
             mu=0.5,
             sdf_max_resolution=32,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-narrow_band, narrow_band),
-            contact_margin=contact_margin,
+            gap=contact_gap,
         )
     else:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-            thickness=1e-5,
+            margin=1e-5,
             mu=0.5,
             is_hydroelastic=True,
-            contact_margin=contact_margin,
+            gap=contact_gap,
         )
 
     builder.add_ground_plane()
@@ -273,7 +273,7 @@ def test_buffer_fraction_no_crash(test, device):
     """
     cube_half = 0.5
     narrow_band = cube_half * 0.2
-    contact_margin = cube_half * 0.2
+    contact_gap = cube_half * 0.2
     num_cubes = 3
 
     builder = newton.ModelBuilder()
@@ -281,7 +281,7 @@ def test_buffer_fraction_no_crash(test, device):
         sdf_max_resolution=32,
         is_hydroelastic=True,
         sdf_narrow_band_range=(-narrow_band, narrow_band),
-        contact_margin=contact_margin,
+        gap=contact_gap,
     )
     builder.add_ground_plane()
 
@@ -555,11 +555,11 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         I_m_upper = wp.mat33(inertia_upper, 0.0, 0.0, 0.0, inertia_upper, 0.0, 0.0, 0.0, inertia_upper)
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
-            thickness=1e-5,
+            margin=1e-5,
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.1, 0.1),
-            contact_margin=0.01,
+            gap=0.01,
             kh=kh_val,
             density=0.0,
         )
@@ -623,8 +623,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         broad_phase="explicit",
         sdf_hydroelastic_config=sdf_config,
     )
-    # Enable contact surface output for this test (validates penetration depth)
-    collision_pipeline.set_output_contact_surface(True)
     contacts = collision_pipeline.contacts()
 
     # Simulate for 3 seconds to reach equilibrium
@@ -663,14 +661,18 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         )
 
     # Measure penetration from contact surface depth
-    surface_data = collision_pipeline.get_hydro_contact_surface()
-    test.assertIsNotNone(surface_data, "Hydroelastic contact surface data should be available")
+    contact_surface_data = (
+        collision_pipeline.hydroelastic_sdf.get_contact_surface()
+        if collision_pipeline.hydroelastic_sdf is not None
+        else None
+    )
+    test.assertIsNotNone(contact_surface_data, "Hydroelastic contact surface data should be available")
 
-    num_faces = int(surface_data.face_contact_count.numpy()[0])
+    num_faces = int(contact_surface_data.face_contact_count.numpy()[0])
     test.assertGreater(num_faces, 0, "Should have face contacts")
 
-    depths = surface_data.contact_surface_depth.numpy()[:num_faces]
-    shape_pairs = surface_data.contact_surface_shape_pair.numpy()[:num_faces]
+    depths = contact_surface_data.contact_surface_depth.numpy()[:num_faces]
+    shape_pairs = contact_surface_data.contact_surface_shape_pair.numpy()[:num_faces]
 
     # Calculate expected and measured penetration for each case
     total_force = gravity * mass_upper + external_force
@@ -752,7 +754,14 @@ class TestHydroelastic(unittest.TestCase):
                 viewer.begin_frame(sim_time)
                 viewer.log_state(state_0)
                 viewer.log_contacts(contacts, state_0)
-                viewer.log_hydro_contact_surface(collision_pipeline.get_hydro_contact_surface(), penetrating_only=False)
+                viewer.log_hydro_contact_surface(
+                    (
+                        collision_pipeline.hydroelastic_sdf.get_contact_surface()
+                        if collision_pipeline.hydroelastic_sdf is not None
+                        else None
+                    ),
+                    penetrating_only=False,
+                )
                 viewer.end_frame()
 
                 state_0, state_1 = simulate(

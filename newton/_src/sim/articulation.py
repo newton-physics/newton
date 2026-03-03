@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..core.spatial import quat_decompose, quat_twist, transform_twist
+from ..math import quat_decompose, transform_twist
 from .joints import JointType
 from .model import Model
 from .state import State
@@ -529,7 +529,7 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
         qd (float): The joint velocity coordinate.
     """
     axis_p = wp.transform_vector(X_wp, axis)
-    twist = quat_twist(axis, q_pc)
+    twist = wp.quat_twist(axis, q_pc)
     q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
     qd = wp.dot(w_err, axis_p)
     return q, qd

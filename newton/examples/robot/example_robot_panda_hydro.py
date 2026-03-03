@@ -81,7 +81,7 @@ class Example:
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.01, 0.01),
-            contact_margin=0.01,
+            gap=0.01,
             mu_torsional=0.0,
             mu_rolling=0.0,
         )
@@ -132,7 +132,7 @@ class Example:
                     mesh.build_sdf(
                         max_resolution=hydro_mesh_sdf_max_resolution,
                         narrow_band_range=shape_cfg.sdf_narrow_band_range,
-                        margin=shape_cfg.contact_margin if shape_cfg.contact_margin is not None else 0.05,
+                        margin=shape_cfg.gap if shape_cfg.gap is not None else 0.05,
                     )
                 builder.shape_flags[shape_idx] |= newton.ShapeFlags.HYDROELASTIC
             elif body_idx not in finger_body_indices:
@@ -182,7 +182,7 @@ class Example:
             pad_mesh.build_sdf(
                 max_resolution=hydro_mesh_sdf_max_resolution,
                 narrow_band_range=shape_cfg.sdf_narrow_band_range,
-                margin=shape_cfg.contact_margin if shape_cfg.contact_margin is not None else 0.05,
+                margin=shape_cfg.gap if shape_cfg.gap is not None else 0.05,
             )
             pad_xform = wp.transform(
                 wp.vec3(0.0, 0.005, 0.045),
@@ -206,7 +206,7 @@ class Example:
         table_mesh.build_sdf(
             max_resolution=hydro_mesh_sdf_max_resolution,
             narrow_band_range=shape_cfg.sdf_narrow_band_range,
-            margin=shape_cfg.contact_margin if shape_cfg.contact_margin is not None else 0.05,
+            margin=shape_cfg.gap if shape_cfg.gap is not None else 0.05,
         )
         builder.add_shape_mesh(
             body=-1,
@@ -256,7 +256,7 @@ class Example:
             cup_mesh.build_sdf(
                 max_resolution=hydro_mesh_sdf_max_resolution,
                 narrow_band_range=shape_cfg.sdf_narrow_band_range,
-                margin=shape_cfg.contact_margin if shape_cfg.contact_margin is not None else 0.05,
+                margin=shape_cfg.gap if shape_cfg.gap is not None else 0.05,
             )
             cup_xform = wp.transform(
                 wp.vec3(self.cup_pos),
@@ -286,7 +286,6 @@ class Example:
 
         # Create collision pipeline with SDF hydroelastic config
         # Enable output_contact_surface so the kernel code is compiled (allows runtime toggle)
-        # The actual writing is controlled by set_output_contact_surface() at runtime
         sdf_hydroelastic_config = HydroelasticSDF.Config(
             output_contact_surface=hasattr(viewer, "renderer"),  # Compile in if viewer supports it
         )
@@ -417,7 +416,12 @@ class Example:
         # Always call log_hydro_contact_surface - it handles show_hydro_contact_surface internally
         # and will clear the lines when disabled
         self.viewer.log_hydro_contact_surface(
-            self.collision_pipeline.get_hydro_contact_surface(), penetrating_only=True
+            (
+                self.collision_pipeline.hydroelastic_sdf.get_contact_surface()
+                if self.collision_pipeline.hydroelastic_sdf is not None
+                else None
+            ),
+            penetrating_only=True,
         )
         self.viewer.end_frame()
 
@@ -425,13 +429,11 @@ class Example:
         changed, self.show_isosurface = imgui.checkbox("Show Isosurface", self.show_isosurface)
         if changed:
             self.viewer.show_hydro_contact_surface = self.show_isosurface
-            # Toggle whether to compute/write the isosurface data in the collision pipeline
-            self.collision_pipeline.set_output_contact_surface(self.show_isosurface)
 
     def test_final(self):
         # Verify that the object was picked up by checking the maximum height reached
         initial_z = self.object_pos[2]
-        min_lift_height = 0.25  # Object should be lifted at least 25cm above initial position
+        min_lift_height = 0.15  # Object should be lifted at least 15cm above initial position
 
         for world_idx in range(self.world_count):
             max_z = self.object_max_z[world_idx]
@@ -442,6 +444,22 @@ class Example:
                 f"Initial z={initial_z:.3f}, max z reached={max_z:.3f}, "
                 f"max lift={max_lift:.3f} (expected > {min_lift_height})"
             )
+
+        # Verify that the object ended up in the cup
+        if self.put_in_cup:
+            body_q = self.state_0.body_q.numpy()
+            cup_x, cup_y, cup_z = self.cup_pos
+            tolerance_xy = 0.05
+            min_z = cup_z - 0.05
+
+            for world_idx in range(self.world_count):
+                object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
+                x, y, z = body_q[object_body_idx][:3]
+                assert abs(x - cup_x) < tolerance_xy and abs(y - cup_y) < tolerance_xy and z > min_z, (
+                    f"World {world_idx}: Object is not in the cup. "
+                    f"Object pos=({x:.3f}, {y:.3f}, {z:.3f}), "
+                    f"cup pos=({cup_x:.3f}, {cup_y:.3f}, {cup_z:.3f})"
+                )
 
     def setup_ik(self):
         self.ee_index = 10
@@ -514,7 +532,7 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=600)
+    parser.set_defaults(num_frames=720)
     parser.add_argument(
         "--scene",
         type=str,

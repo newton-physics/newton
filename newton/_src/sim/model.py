@@ -226,16 +226,16 @@ class Model:
         self.shape_material_kh = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Contact stiffness is computed as ``area * kh``, yielding an effective spring constant [N/m]."""
-        self.shape_contact_margin = None
-        """Shape contact margin for collision detection [m], shape [shape_count], float."""
+        self.shape_gap = None
+        """Shape additional contact detection gap [m], shape [shape_count], float."""
 
         # Shape geometry properties
         self.shape_type = None
         """Shape geometry type, shape [shape_count], int32."""
         self.shape_is_solid = None
         """Whether shape is solid or hollow, shape [shape_count], bool."""
-        self.shape_thickness = None
-        """Shape thickness [m], shape [shape_count], float."""
+        self.shape_margin = None
+        """Shape surface margin [m], shape [shape_count], float."""
         self.shape_source = []
         """List of source geometry objects (e.g., :class:`~newton.Mesh`) used for rendering and broadphase, shape [shape_count]."""
         self.shape_source_ptr = None
@@ -429,8 +429,8 @@ class Model:
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
         self.joint_armature = None
         """Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_act_mode = None
-        """Actuator mode per DOF, see :class:`newton.ActuatorMode`. Shape [joint_dof_count], dtype int32."""
+        self.joint_target_mode = None
+        """Joint target mode per DOF, see :class:`newton.JointTargetMode`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke = None
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd = None
@@ -711,7 +711,7 @@ class Model:
         self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_act"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_act_mode"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_mode"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_lower"] = Model.AttributeFrequency.JOINT_DOF
@@ -735,10 +735,10 @@ class Model:
         self.attribute_frequency["shape_material_mu_torsional"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_mu_rolling"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_kh"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_contact_margin"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_gap"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_thickness"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_margin"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_source_ptr"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_scale"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
@@ -901,9 +901,9 @@ class Model:
         Call :meth:`collide` to run the collision detection and populate the contacts object.
 
         Note:
-            Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`, which is populated
-            from ``ShapeConfig.contact_margin`` during model building. If a shape doesn't specify a contact margin,
-            it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
+            Rigid contact gaps are controlled per-shape via :attr:`Model.shape_gap`, which is populated
+            from ``ShapeConfig.gap`` [m] during model building. If a shape doesn't specify a gap [m],
+            it defaults to ``builder.rigid_gap`` [m]. To adjust contact gaps [m], set them before calling
             :meth:`ModelBuilder.finalize`.
         Returns:
             Contacts: The contact object containing collision information.

@@ -397,7 +397,7 @@ class SolverStyle3D(SolverBase):
             )
         )
 
-    def precompute(self, builder: ModelBuilder):
+    def _precompute(self, builder: ModelBuilder):
         with wp.ScopedTimer("SolverStyle3D::precompute()"):
             tri_aniso_attr = builder.custom_attributes.get("style3d:tri_aniso_ke")
             edge_rest_area_attr = builder.custom_attributes.get("style3d:edge_rest_area")
@@ -428,7 +428,7 @@ class SolverStyle3D(SolverBase):
                 self.device
             )
 
-    def update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):
+    def _update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):
         """Should be invoked when state changed."""
         # print([index, pos, bary_coord])
         self.drag_bary_coord.fill_(bary_coord)

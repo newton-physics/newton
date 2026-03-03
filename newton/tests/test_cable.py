@@ -1684,6 +1684,58 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
         assert_body_pair_filtered(builder, model, a, b)
 
 
+def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
+    """VBD rigid contact-force query returns valid per-contact buffers."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e3
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 0.5
+
+    # Two overlapping dynamic boxes to guarantee rigid-rigid contact generation.
+    b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, label="box0")
+    b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()), mass=1.0, label="box1")
+    builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    state0 = model.state()
+    contacts = model.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+
+    dt = 1.0 / 60.0
+
+    # Build contacts on the current state and query them directly.
+    # This keeps the test focused on contact-force extraction, not on integration dynamics.
+    model.collide(state0, contacts)
+
+    c_b0, c_b1, c_p0w, c_p1w, c_f_b1, c_count = solver.collect_rigid_contact_forces(state0, contacts, dt)
+    count = int(c_count.numpy()[0])
+
+    # Buffer lengths must match rigid contact capacity.
+    expected_len = int(contacts.rigid_contact_shape0.shape[0])
+    test.assertEqual(int(c_b0.shape[0]), expected_len)
+    test.assertEqual(int(c_b1.shape[0]), expected_len)
+    test.assertEqual(int(c_p0w.shape[0]), expected_len)
+    test.assertEqual(int(c_p1w.shape[0]), expected_len)
+    test.assertEqual(int(c_f_b1.shape[0]), expected_len)
+
+    # We set up overlapping boxes, so at least one rigid contact should be queryable.
+    test.assertGreater(count, 0, msg="Expected at least one rigid-rigid contact")
+
+    b0_np = c_b0.numpy()
+    b1_np = c_b1.numpy()
+    f_np = c_f_b1.numpy()
+    test.assertTrue(np.all(b0_np[:count] >= 0), msg="Invalid body0 ids in active contact range")
+    test.assertTrue(np.all(b1_np[:count] >= 0), msg="Invalid body1 ids in active contact range")
+    test.assertTrue(np.isfinite(f_np[:count]).all(), msg="Non-finite contact force values in active contact range")
+
+    force_norms = np.linalg.norm(f_np[:count], axis=1)
+    test.assertTrue(np.any(force_norms > 1.0e-8), msg="Expected at least one non-zero rigid contact force")
+
+
 class TestCable(unittest.TestCase):
     pass
 
@@ -1764,6 +1816,12 @@ add_function_test(
     TestCable,
     "test_cable_graph_collision_filter_pairs",
     _cable_graph_collision_filter_pairs_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_collect_rigid_body_contact_forces",
+    _collect_rigid_body_contact_forces_impl,
     devices=devices,
 )
 

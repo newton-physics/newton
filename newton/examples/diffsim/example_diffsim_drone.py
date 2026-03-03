@@ -330,7 +330,7 @@ class Drone:
 
         # Initialize the helper to build a physics scene.
         builder = newton.ModelBuilder()
-        builder.rigid_contact_margin = 0.05
+        builder.rigid_gap = 0.05
 
         # Initialize the rigid bodies, propellers, and colliders.
         props = []

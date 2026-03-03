@@ -36,7 +36,7 @@ def check_aabb_overlap(
     box2_upper: wp.vec3,
     box2_cutoff: float,
 ) -> bool:
-    cutoff_combined = max(box1_cutoff, box2_cutoff)
+    cutoff_combined = box1_cutoff + box2_cutoff
     return (
         box1_lower[0] <= box2_upper[0] + cutoff_combined
         and box1_upper[0] >= box2_lower[0] - cutoff_combined
@@ -192,7 +192,7 @@ def test_world_and_group_pair(world_a: int, world_b: int, collision_group_a: int
     return test_group_pair(collision_group_a, collision_group_b)
 
 
-def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None = None):
+def precompute_world_map(shape_world: np.ndarray | list[int], shape_flags: np.ndarray | list[int] | None = None):
     """Precompute an index map that groups shapes by world ID with shared shapes.
 
     This method creates an index mapping where shapes belonging to the same world

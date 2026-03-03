@@ -14,7 +14,7 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Poker Cards Stacking
+# Cloth Poker Cards
 #
 # This simulation demonstrates 52 poker cards (13 ranks x 4 suits) dropping
 # and stacking on a cube, then being knocked off by a sphere. The cards use
@@ -26,7 +26,7 @@
 # - Height: 8.89 cm (3.5 inches) = 0.0889 m
 # - Resolution: 4x6 cells per card
 #
-# Command: uv run -m newton.examples multiphysics.example_poker_cards_stacking
+# Command: uv run -m newton.examples cloth_poker_cards
 #
 ###########################################################################
 
@@ -183,7 +183,11 @@ class Example:
             )
 
         # Add ground plane
-        builder.add_ground_plane()
+        ground_cfg = newton.ModelBuilder.ShapeConfig()
+        ground_cfg.ke = 1.0e5  # Contact stiffness
+        ground_cfg.kd = 1.0e-4  # Contact damping
+        ground_cfg.mu = 0.3  #
+        builder.add_ground_plane(cfg=ground_cfg)
 
         # Color the mesh for VBD solver (include bending constraints)
         builder.color(include_bending=True)

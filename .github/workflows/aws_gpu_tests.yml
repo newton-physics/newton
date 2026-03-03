@@ -109,7 +109,7 @@ jobs:
         run: df -h
 
       - name: Run Tests
-        run: uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu13 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Check disk space (post-test)
         if: always()

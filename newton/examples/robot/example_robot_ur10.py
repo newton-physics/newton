@@ -30,7 +30,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
-from newton import ActuatorMode
+from newton import JointTargetMode
 from newton.selection import ArticulationView
 
 
@@ -93,7 +93,7 @@ class Example:
         for i in range(len(ur10.joint_target_ke)):
             ur10.joint_target_ke[i] = 500
             ur10.joint_target_kd[i] = 50
-            ur10.joint_act_mode[i] = int(ActuatorMode.POSITION)
+            ur10.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(ur10, self.world_count, spacing=(2, 2, 0))

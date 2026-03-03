@@ -555,7 +555,7 @@ def test_export_reduced_contacts_kernel(test, device):
     shape_data = wp.array(shape_data_np, dtype=wp.vec4, device=device)
 
     # Create per-shape contact margins
-    shape_contact_margin = wp.full(num_shapes, 0.01, dtype=wp.float32, device=device)
+    shape_gap = wp.full(num_shapes, 0.01, dtype=wp.float32, device=device)
 
     writer_data = ContactWriterData()
     writer_data.contact_max = max_output
@@ -580,7 +580,7 @@ def test_export_reduced_contacts_kernel(test, device):
             reducer.shape_pairs,
             shape_types,
             shape_data,
-            shape_contact_margin,
+            shape_gap,
             writer_data,
             total_threads,
         ],

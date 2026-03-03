@@ -27,7 +27,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import ActuatorMode
+from newton import JointTargetMode
 
 
 class Example:
@@ -61,7 +61,7 @@ class Example:
         for i in range(len(humanoid.joint_target_ke)):
             humanoid.joint_target_ke[i] = 150
             humanoid.joint_target_kd[i] = 5
-            humanoid.joint_act_mode[i] = int(ActuatorMode.POSITION)
+            humanoid.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(humanoid, self.world_count)

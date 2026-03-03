@@ -34,7 +34,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import ActuatorMode
+from newton import JointTargetMode
 from newton.solvers import SolverNotifyFlags
 
 hand_rotation = wp.normalize(wp.quat(0.283, 0.683, -0.622, 0.258))
@@ -109,7 +109,7 @@ class Example:
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
             allegro_hand.joint_target_pos[i] = 0.0
-            allegro_hand.joint_act_mode[i] = int(ActuatorMode.POSITION)
+            allegro_hand.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(allegro_hand, self.world_count)

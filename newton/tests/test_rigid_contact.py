@@ -103,7 +103,7 @@ def test_shapes_on_plane(test, device, solver_fn):
     # Set contact margin via ShapeConfig (preferred method)
     # Must be set BEFORE adding shapes
     # Using 0.1 like the example (which is stable)
-    builder.default_shape_cfg.contact_margin = 0.1
+    builder.default_shape_cfg.gap = 0.1
 
     expected_end_positions = []
 

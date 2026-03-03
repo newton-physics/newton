@@ -312,7 +312,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         contact_area: wp.array(dtype=wp.float32),
         entry_k_eff: wp.array(dtype=wp.float32),
         # Shape data for margin
-        shape_contact_margin: wp.array(dtype=float),
+        shape_gap: wp.array(dtype=float),
         shape_transform: wp.array(dtype=wp.transform),
         # Writer data (custom struct)
         writer_data: Any,
@@ -463,8 +463,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
             # Get transform and margin (same for all contacts in the entry)
             transform_b = shape_transform[shape_b_first]
-            margin_a = shape_contact_margin[shape_a_first]
-            margin_b = shape_contact_margin[shape_b_first]
+            margin_a = shape_gap[shape_a_first]
+            margin_b = shape_gap[shape_b_first]
             margin = margin_a + margin_b
 
             # === Second pass: export contacts ===
@@ -512,8 +512,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.contact_distance = 2.0 * depth  # depth is negative = penetrating
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
-                contact_data.thickness_a = 0.0
-                contact_data.thickness_b = 0.0
+                contact_data.margin_a = 0.0
+                contact_data.margin_b = 0.0
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
                 contact_data.margin = margin
@@ -538,8 +538,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.contact_distance = -2.0 * anchor_depth  # anchor_depth is positive magnitude
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
-                contact_data.thickness_a = 0.0
-                contact_data.thickness_b = 0.0
+                contact_data.margin_a = 0.0
+                contact_data.margin_b = 0.0
                 contact_data.shape_a = shape_a_first
                 contact_data.shape_b = shape_b_first
                 contact_data.margin = margin
@@ -614,7 +614,7 @@ class HydroelasticContactReduction:
             # export_hydroelastic_contact_to_buffer(..., reduction.get_data_struct())
 
             reduction.reduce(shape_transform, shape_sdf_data, grid_size)
-            reduction.export(shape_contact_margin, shape_transform, writer_data, grid_size)
+            reduction.export(shape_gap, shape_transform, writer_data, grid_size)
 
     Attributes:
         reducer: The underlying ``GlobalContactReducer`` instance.
@@ -739,7 +739,7 @@ class HydroelasticContactReduction:
 
     def export(
         self,
-        shape_contact_margin: wp.array,
+        shape_gap: wp.array,
         shape_transform: wp.array,
         writer_data: Any,
         grid_size: int,
@@ -750,7 +750,7 @@ class HydroelasticContactReduction:
         aggregate stiffness and applying optional normal matching.
 
         Args:
-            shape_contact_margin: Per-shape contact margin (dtype: float).
+            shape_gap: Per-shape contact gap (detection threshold) (dtype: float).
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             writer_data: Data struct for the writer function.
             grid_size: Number of threads for the kernel launch.
@@ -770,7 +770,7 @@ class HydroelasticContactReduction:
                 self.reducer.shape_pairs,
                 self.reducer.contact_area,
                 self.reducer.entry_k_eff,
-                shape_contact_margin,
+                shape_gap,
                 shape_transform,
                 writer_data,
                 grid_size,
@@ -785,7 +785,7 @@ class HydroelasticContactReduction:
         shape_collision_aabb_lower: wp.array,
         shape_collision_aabb_upper: wp.array,
         shape_voxel_resolution: wp.array,
-        shape_contact_margin: wp.array,
+        shape_gap: wp.array,
         writer_data: Any,
         grid_size: int,
     ):
@@ -799,7 +799,7 @@ class HydroelasticContactReduction:
             shape_collision_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
             shape_collision_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
             shape_voxel_resolution: Per-shape voxel grid resolution (dtype: wp.vec3i).
-            shape_contact_margin: Per-shape contact margin (dtype: float).
+            shape_gap: Per-shape contact gap (detection threshold) (dtype: float).
             writer_data: Data struct for the writer function.
             grid_size: Number of threads for the kernel launch.
         """
@@ -811,4 +811,4 @@ class HydroelasticContactReduction:
             shape_voxel_resolution,
             grid_size,
         )
-        self.export(shape_contact_margin, shape_transform, writer_data, grid_size)
+        self.export(shape_gap, shape_transform, writer_data, grid_size)

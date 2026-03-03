@@ -38,14 +38,9 @@ import warp as wp
 import yaml
 
 import newton
-
-# Test: Disable CUDA-OpenGL interop to see if that fixes the issue
-import newton._src.viewer.gl.opengl as opengl_module
 import newton.examples
 import newton.utils
-from newton import ActuatorMode, State
-
-opengl_module.ENABLE_CUDA_INTEROP = False
+from newton import JointTargetMode, State
 
 
 @dataclass
@@ -262,7 +257,7 @@ class Example:
             builder.joint_target_ke[i + 6] = config["mjw_joint_stiffness"][i]
             builder.joint_target_kd[i + 6] = config["mjw_joint_damping"][i]
             builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
-            builder.joint_act_mode[i + 6] = int(ActuatorMode.POSITION)
+            builder.joint_target_mode[i + 6] = int(JointTargetMode.POSITION)
 
         self.model = builder.finalize()
         self.model.set_gravity((0.0, 0.0, -9.81))

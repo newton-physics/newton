@@ -113,6 +113,24 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.constant)
         np.testing.assert_allclose(display_color, np.array([[0.25, 0.5, 0.75]], dtype=np.float32), atol=1e-6)
 
+    def test_log_points_defaults_radii_when_omitted(self):
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.4, 0.0, 0.0]],
+            dtype=wp.vec3,
+        )
+
+        viewer.begin_frame(0.0)
+        path = viewer.log_points("/points_default_radii", points)
+
+        points_prim = UsdGeom.Points.Get(viewer.stage, path)
+        widths = np.asarray(points_prim.GetWidthsAttr().Get(viewer._frame_index), dtype=np.float32)
+        interpolation = UsdGeom.Primvar(points_prim.GetWidthsAttr()).GetInterpolation()
+
+        self.assertEqual(interpolation, UsdGeom.Tokens.constant)
+        np.testing.assert_allclose(widths, np.array([0.2], dtype=np.float32), atol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

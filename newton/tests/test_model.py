@@ -252,62 +252,61 @@ class TestModelMesh(unittest.TestCase):
                 f"New body1 shape {parent_shape} should filter with child body2 shape {shape2_initial}",
             )
 
-    def test_shape_thickness_exceeds_contact_margin_warning(self):
-        """Test that a warning is raised when shape thickness > contact_margin."""
+    def test_shape_gap_negative_warning(self):
+        """Test that a warning is raised when shape gap < 0."""
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0)
 
-        # Create a shape with thickness > contact_margin (should trigger warning)
+        # Create a shape with negative gap (should trigger warning)
         cfg = ModelBuilder.ShapeConfig()
-        cfg.thickness = 0.01
-        cfg.contact_margin = 0.005  # Less than thickness
+        cfg.margin = 0.01
+        cfg.gap = -0.005  # Negative gap
         builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg, label="bad_sphere")
 
-        # Should warn about thickness > contact_margin
+        # Should warn about gap < 0
         with self.assertWarns(UserWarning) as cm:
             builder.finalize()
 
         warning_msg = str(cm.warning)
-        self.assertIn("thickness > contact_margin", warning_msg)
+        self.assertIn("gap < 0", warning_msg)
         self.assertIn("bad_sphere", warning_msg)
         self.assertIn("missed collisions", warning_msg)
 
-    def test_shape_thickness_within_contact_margin_no_warning(self):
-        """Test that no warning is raised when shape thickness <= contact_margin."""
+    def test_shape_gap_non_negative_no_warning(self):
+        """Test that no warning is raised when shape gap >= 0."""
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0)
 
-        # Create a shape with thickness <= contact_margin (should not trigger warning)
+        # Create a shape with non-negative gap (should not trigger warning)
         cfg = ModelBuilder.ShapeConfig()
-        cfg.thickness = 0.005
-        cfg.contact_margin = 0.01  # Greater than thickness
+        cfg.margin = 0.005
+        cfg.gap = 0.01
         builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
 
         # Should NOT warn
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             builder.finalize()
-            # Filter for our specific warning about thickness
-            thickness_warnings = [warning for warning in w if "thickness > contact_margin" in str(warning.message)]
-            self.assertEqual(len(thickness_warnings), 0, "Unexpected warning about thickness > contact_margin")
+            gap_warnings = [warning for warning in w if "gap < 0" in str(warning.message)]
+            self.assertEqual(len(gap_warnings), 0, "Unexpected warning about gap < 0")
 
-    def test_shape_thickness_warning_multiple_shapes(self):
-        """Test that the warning correctly reports multiple shapes with thickness > contact_margin."""
+    def test_shape_gap_warning_multiple_shapes(self):
+        """Test that the warning correctly reports multiple shapes with gap < 0."""
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0)
 
-        # Create multiple shapes with thickness > contact_margin
+        # Create multiple shapes with negative gap
         cfg_bad = ModelBuilder.ShapeConfig()
-        cfg_bad.thickness = 0.02
-        cfg_bad.contact_margin = 0.01
+        cfg_bad.margin = 0.02
+        cfg_bad.gap = -0.01
 
         builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg_bad, label="sphere1")
         builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_bad, label="box1")
 
         # One good shape that should not be in the warning
         cfg_good = ModelBuilder.ShapeConfig()
-        cfg_good.thickness = 0.005
-        cfg_good.contact_margin = 0.01
+        cfg_good.margin = 0.005
+        cfg_good.gap = 0.01
         builder.add_shape_capsule(body=body, radius=0.2, half_height=0.5, cfg=cfg_good, label="good_capsule")
 
         with self.assertWarns(UserWarning) as cm:
@@ -669,6 +668,95 @@ class TestModelJoints(unittest.TestCase):
         self.assertTrue(np.array_equal(joint_dof_world_start, np.array([0, 2, 4, 10])))
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([0, 2, 4, 11])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 20])))
+
+    def test_collapse_fixed_joints_with_selective_fixed_joint_collapsing(self):
+        """Test that joints listed in joints_to_keep are not collapsed."""
+
+        def add_joints_and_links(builder: ModelBuilder):
+            b0 = builder.add_link(label="body_1", mass=1.0)
+            b1 = builder.add_link(label="body_2", mass=1.0)
+            j1 = builder.add_joint_fixed(parent=b0, child=b1, label="fixed_1")
+            b2 = builder.add_link(label="body_3", mass=1.0)
+            j2 = builder.add_joint_revolute(parent=b1, child=b2, label="rev_1")
+            b3 = builder.add_link(label="body_4", mass=1.0)
+            j3 = builder.add_joint_fixed(parent=b2, child=b3, label="fixed_2")
+            builder.add_articulation([j1, j2, j3])
+
+        # Testing default behaviour when the list joints_to_keep is empty
+        builder_1 = ModelBuilder()
+        add_joints_and_links(builder_1)
+
+        builder_1.collapse_fixed_joints(joints_to_keep=[])
+
+        # After collapse:
+        # - body_1 and body_2 are merged (fixed_1 removed)
+        # - body_3 and body_4 are merged (fixed_2 removed)
+        # - Remaining bodies : body_1 (merged) and body_3 (merged)
+        # - Remaining joints : rev_1
+
+        self.assertEqual(builder_1.body_count, 2)
+        self.assertEqual(builder_1.joint_count, 1)
+        self.assertAlmostEqual(builder_1.body_mass[0], 2.0)
+        self.assertAlmostEqual(builder_1.body_mass[1], 2.0)
+
+        # Testing behaviour when joints_to_keep contains a joint
+        builder_2 = ModelBuilder()
+        add_joints_and_links(builder_2)
+
+        builder_2.collapse_fixed_joints(joints_to_keep=["fixed_1"])
+
+        # After collapse:
+        # - fixed_1 is retained
+        # - body_3 and body_4 are merged (fixed_2 removed)
+        # - Remaining bodies : body_1, body_2 and body_3 (merged)
+        # - Remaining joints : fixed_1 , rev_1
+
+        self.assertIn("fixed_1", builder_2.joint_label)
+        self.assertEqual(builder_2.body_count, 3)
+        self.assertEqual(builder_2.joint_count, 2)
+        self.assertAlmostEqual(builder_2.body_mass[0], 1.0)
+        self.assertAlmostEqual(builder_2.body_mass[1], 1.0)
+        self.assertAlmostEqual(builder_2.body_mass[2], 2.0)
+
+        # Testing behaviour when joints_to_keep contains a hierarchical joint
+        builder_3 = ModelBuilder()
+        add_joints_and_links(builder_3)
+
+        # Adding a nested builder in builder_3 to test hierarchical joints
+        builder_nested = ModelBuilder()
+        add_joints_and_links(builder_nested)
+        builder_3.add_builder(builder_nested, label_prefix="builder_nested")
+
+        builder_3.collapse_fixed_joints(joints_to_keep=["fixed_2", "builder_nested/fixed_1"])
+
+        # After collapse:
+        # - builder_nested/fixed_1 is retained
+        # - body_1 and body_2 are merged (fixed_1 removed)
+        # - builder_nested/body_3 and builder_nested/body_4 are merged (builder_nested/fixed_2 removed)
+        # - Remaining bodies : body_1 (merged), body_3, body_4, builder_nested/body_1, builder_nested/body_2, builder_nested/body_3 (merged)
+        # - Remaining joints : rev_1, fixed_2, builder_nested/fixed_1, builder_nested/rev_1
+
+        self.assertIn("fixed_2", builder_3.joint_label)
+        self.assertIn("builder_nested/fixed_1", builder_3.joint_label)
+        self.assertEqual(builder_3.body_count, 6)
+        self.assertEqual(builder_3.joint_count, 4)
+        self.assertAlmostEqual(builder_3.body_mass[0], 2.0)
+        self.assertAlmostEqual(builder_3.body_mass[1], 1.0)
+        self.assertAlmostEqual(builder_3.body_mass[2], 1.0)
+        self.assertAlmostEqual(builder_3.body_mass[3], 1.0)
+        self.assertAlmostEqual(builder_3.body_mass[4], 1.0)
+        self.assertAlmostEqual(builder_3.body_mass[5], 2.0)
+
+        # Testing the warning when joints_to_keep contains a joint whose child has zero or negative mass
+        builder_4 = ModelBuilder()
+        b0 = builder_4.add_link(label="body_1", mass=1.0)
+        b1 = builder_4.add_link(label="body_2", mass=0.0)
+        j1 = builder_4.add_joint_fixed(parent=b0, child=b1, label="fixed_1")
+        builder_4.add_articulation([j1])
+
+        with self.assertWarns(UserWarning) as cm:
+            builder_4.collapse_fixed_joints(joints_to_keep=["fixed_1"])
+        self.assertIn("Skipped joint fixed_1 has a child body_2 with zero or negative mass", str(cm.warning))
 
     def test_articulation_validation_contiguous(self):
         """Test that articulation requires contiguous joint indices"""

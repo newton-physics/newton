@@ -29,7 +29,7 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import Mesh
 from ..sim import ModelBuilder
-from ..sim.joints import ActuatorMode
+from ..sim.joints import JointTargetMode
 from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
 from .mesh import load_meshes_from_file
@@ -85,6 +85,7 @@ def parse_urdf(
     collapse_fixed_joints: bool = False,
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
+    override_root_xform: bool = False,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -93,6 +94,14 @@ def parse_urdf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the URDF file to parse, or the URDF XML string content.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
+        override_root_xform (bool): If ``True``, the articulation root's world-space
+            transform is replaced by ``xform`` instead of being composed with it,
+            preserving only the internal structure (relative body positions). Useful
+            for cloning articulations at explicit positions. When a ``base_joint`` is
+            specified, ``xform`` is applied as the full parent transform (including
+            rotation) rather than splitting position/rotation. Not intended for
+            sources containing multiple articulations, as all roots would be placed
+            at the same ``xform``. Defaults to ``False``.
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
@@ -170,14 +179,17 @@ def parse_urdf(
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
-            (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-            If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
-            :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
-            damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
-            (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
+            (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
+            If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
+            :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
+            damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
+            (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
+
+    if override_root_xform and xform is None:
+        raise ValueError("override_root_xform=True requires xform to be set")
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -675,11 +687,14 @@ def parse_urdf(
     base_parent = parent_body
 
     if base_joint is not None:
-        # in case of a given base joint, the position is applied first, the rotation only
-        # after the base joint itself to not rotate its axis
-        # When parent_body is set, xform is interpreted as relative to the parent body
-        base_parent_xform = wp.transform(xform.p, wp.quat_identity())
-        base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
+        if override_root_xform:
+            base_parent_xform = xform
+            base_child_xform = wp.transform_identity()
+        else:
+            # Split xform: position goes to parent, rotation to child (inverted)
+            # so the custom base joint's axis isn't rotated by xform.
+            base_parent_xform = wp.transform(xform.p, wp.quat_identity())
+            base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
         base_joint_id = builder._add_base_joint(
             child=root,
             base_joint=base_joint,
@@ -750,7 +765,9 @@ def parse_urdf(
 
         # URDF doesn't contain gain information (only damping, no stiffness), so we can't infer
         # actuator mode. Default to POSITION.
-        actuator_mode = ActuatorMode.POSITION_VELOCITY if force_position_velocity_actuation else ActuatorMode.POSITION
+        actuator_mode = (
+            JointTargetMode.POSITION_VELOCITY if force_position_velocity_actuation else JointTargetMode.POSITION
+        )
 
         created_joint_idx: int
         if joint["type"] == "revolute" or joint["type"] == "continuous":

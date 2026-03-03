@@ -1,12 +1,14 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 newton.solvers.style3d
 ======================
 
 Style3D solver module.
 
-This module provides the :class:`~newton.solvers.SolverStyle3D` cloth simulation
-solver along with helper functions for setting up cloth assets. It includes
-utilities for creating cloth meshes and grids, handling collisions, and sewing
-cloth vertices together.
+This module provides helper functions for setting up Style3D cloth assets.
+Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver
+import path.
 
 .. currentmodule:: newton.solvers.style3d
 

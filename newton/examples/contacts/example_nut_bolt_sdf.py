@@ -46,11 +46,11 @@ ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 ISAACGYM_GEARS_FOLDER = "assets/factory/mesh/factory_gears"
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
-    thickness=0.0,
+    margin=0.0,
     mu=0.01,
     ke=1e7,  # Contact stiffness for MuJoCo solver
     kd=1e4,  # Contact damping
-    contact_margin=0.005,
+    gap=0.005,
     density=8000.0,
     mu_torsional=0.0,
     mu_rolling=0.0,
@@ -105,7 +105,7 @@ def load_mesh_with_sdf(
     mesh.build_sdf(
         max_resolution=MESH_SDF_MAX_RESOLUTION,
         narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
-        margin=shape_cfg.contact_margin if shape_cfg and shape_cfg.contact_margin is not None else 0.05,
+        margin=shape_cfg.gap if shape_cfg and shape_cfg.gap is not None else 0.05,
     )
     return mesh, center_vec
 
@@ -154,7 +154,7 @@ class Example:
             raise ValueError(f"Unknown scene: {scene}")
 
         main_scene = newton.ModelBuilder()
-        main_scene.default_shape_cfg.contact_margin = 0.01
+        main_scene.default_shape_cfg.gap = 0.01
         # Add ground plane with offset (plane equation: z = offset)
         # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d
         # Therefore, to get plane at z = offset, we need d = -offset
@@ -245,7 +245,7 @@ class Example:
         print(f"Assets downloaded to: {asset_path}")
 
         world_builder = newton.ModelBuilder()
-        world_builder.default_shape_cfg.contact_margin = 0.01 * self.scene_scale
+        world_builder.default_shape_cfg.gap = 0.01 * self.scene_scale
 
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
         nut_file = str(asset_path / f"factory_nut_{ASSEMBLY_STR}_subdiv_3x.obj")
@@ -303,7 +303,7 @@ class Example:
         print(f"Assets downloaded to: {asset_path}")
 
         world_builder = newton.ModelBuilder()
-        world_builder.default_shape_cfg.contact_margin = 0.003 * self.scene_scale
+        world_builder.default_shape_cfg.gap = 0.003 * self.scene_scale
 
         for _, (gear_filename, gear_key) in enumerate(GEAR_FILES):
             gear_file = str(asset_path / gear_filename)

@@ -19,20 +19,6 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis
-from ..math import (
-    boltzmann,
-    leaky_max,
-    leaky_min,
-    smooth_max,
-    smooth_min,
-    vec_abs,
-    vec_allclose,
-    vec_inside_limits,
-    vec_leaky_max,
-    vec_leaky_min,
-    vec_max,
-    vec_min,
-)
 from .download_assets import clear_git_cache, download_asset
 from .texture import load_texture, normalize_texture
 from .topology import topological_sort, topological_sort_undirected
@@ -118,24 +104,12 @@ def compute_world_offsets(world_count: int, spacing: tuple[float, float, float],
 
 
 __all__ = [
-    "boltzmann",
     "check_conditional_graph_support",
     "clear_git_cache",
     "compute_world_offsets",
     "download_asset",
-    "leaky_max",
-    "leaky_min",
     "load_texture",
     "normalize_texture",
-    "smooth_max",
-    "smooth_min",
     "topological_sort",
     "topological_sort_undirected",
-    "vec_abs",
-    "vec_allclose",
-    "vec_inside_limits",
-    "vec_leaky_max",
-    "vec_leaky_min",
-    "vec_max",
-    "vec_min",
 ]

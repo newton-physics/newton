@@ -28,7 +28,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
-from newton import ActuatorMode
+from newton import JointTargetMode
 
 
 class Example:
@@ -71,7 +71,7 @@ class Example:
         for i in range(articulation_builder.joint_dof_count):
             articulation_builder.joint_target_ke[i] = 150
             articulation_builder.joint_target_kd[i] = 5
-            articulation_builder.joint_act_mode[i] = int(ActuatorMode.POSITION)
+            articulation_builder.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for _ in range(self.world_count):

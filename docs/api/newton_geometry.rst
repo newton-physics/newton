@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 newton.geometry
 ===============
 
@@ -35,7 +38,6 @@ newton.geometry
    collide_sphere_sphere
    compute_inertia_shape
    create_empty_sdf_data
-   remesh_mesh
    sdf_box
    sdf_capsule
    sdf_cone
