@@ -454,7 +454,6 @@ def test_joint_actuation(test, device, solver_fn, uses_generalized_coords):
     tau_rev = 5.0
     F_prismatic = 5.0
 
-
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
     # Articulation 0: revolute joint (box body)
     link_rev = builder.add_link()
@@ -1118,7 +1117,9 @@ def test_fourbar_linkage(test, device, solver_fn):
         parent=crank_body,
         child=coupler_body,
         axis=(0, 0, 1),
-        parent_xform=wp.transform(wp.vec3(a_link / 2.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(theta3_0))),
+        parent_xform=wp.transform(
+            wp.vec3(a_link / 2.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(theta3_0))
+        ),
         child_xform=wp.transform(wp.vec3(-b_link / 2.0, 0.0, 0.0), wp.quat_identity()),
         armature=0.0,
     )
@@ -1128,7 +1129,9 @@ def test_fourbar_linkage(test, device, solver_fn):
         parent=coupler_body,
         child=rocker_body,
         axis=(0, 0, 1),
-        parent_xform=wp.transform(wp.vec3(b_link / 2.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(delta_rocker))),
+        parent_xform=wp.transform(
+            wp.vec3(b_link / 2.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(delta_rocker))
+        ),
         child_xform=wp.transform(wp.vec3(-c_link / 2.0, 0.0, 0.0), wp.quat_identity()),
         armature=0.0,
     )
@@ -1358,7 +1361,9 @@ for device in devices:
             True,
         ),
         "semi_implicit": (
-            lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0, joint_attach_ke=1e5, joint_attach_kd=1e1),
+            lambda model: newton.solvers.SolverSemiImplicit(
+                model, angular_damping=0.0, joint_attach_ke=1e5, joint_attach_kd=1e1
+            ),
             False,
         ),
         "xpbd": (
@@ -1461,7 +1466,9 @@ for device in devices:
             "test_restitution_xpbd",
             test_restitution,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverXPBD(model, iterations=10, angular_damping=0.0, enable_restitution=True),
+            solver_fn=lambda model: newton.solvers.SolverXPBD(
+                model, iterations=10, angular_damping=0.0, enable_restitution=True
+            ),
         )
 
     if not device.is_cuda:
