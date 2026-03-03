@@ -132,7 +132,6 @@ class Example:
         # setup mpm solver
         mpm_options = SolverImplicitMPM.Config()
         mpm_options.voxel_size = voxel_size
-        mpm_options.tolerance = 1.0e-6
         mpm_options.grid_type = "fixed"  # fixed grid so we can graph-capture
         mpm_options.grid_padding = 50
         mpm_options.max_active_cell_count = 1 << 15

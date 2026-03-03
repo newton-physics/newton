@@ -403,7 +403,7 @@ if __name__ == "__main__":
     parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
 
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
-    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
+    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-4)
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
 
     # Parse arguments and initialize viewer

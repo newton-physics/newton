@@ -1612,7 +1612,7 @@ class SolverImplicitMPM(SolverBase):
         # numerics
         max_iterations: int = 250
         """Maximum number of iterations for the rheology solver."""
-        tolerance: float = 1.0e-5
+        tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
         strain_basis: str = "P0"
         """Strain basis functions. May be one of P0, Q1"""
