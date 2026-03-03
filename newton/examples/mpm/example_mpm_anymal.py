@@ -161,21 +161,26 @@ class Example:
 
         particle_mass = self.model.particle_mass[:1].numpy()[0]
 
-        snow_density = 500.0
+        # Snow, cohesive Drucker-Prager plasticity with hardening
+        snow_density = 250.0
         self.model.particle_mass[snow_particles].fill_(particle_mass * snow_density / density)
-        self.model.mpm.yield_pressure[snow_particles].fill_(2.0e4)
-        self.model.mpm.yield_stress[snow_particles].fill_(1.0e4)
-        self.model.mpm.tensile_yield_ratio[snow_particles].fill_(0.5)
-        self.model.mpm.friction[snow_particles].fill_(0.1)
-        self.model.mpm.hardening[snow_particles].fill_(10.0)
+        self.model.mpm.yield_pressure[snow_particles].fill_(1.0e5)
+        self.model.mpm.yield_stress[snow_particles].fill_(1.0e2)
+        self.model.mpm.tensile_yield_ratio[snow_particles].fill_(0.2)
+        self.model.mpm.friction[snow_particles].fill_(0.5)
+        self.model.mpm.hardening[snow_particles].fill_(1.0)
+        self.model.mpm.dilatancy[snow_particles].fill_(1.0)
 
+
+        # Mud, using Von-Mises plasticity
         mud_density = 1500.0
         self.model.particle_mass[mud_particles].fill_(particle_mass * mud_density / density)
         self.model.mpm.yield_pressure[mud_particles].fill_(1.0e10)
         self.model.mpm.yield_stress[mud_particles].fill_(3.0e2)
         self.model.mpm.tensile_yield_ratio[mud_particles].fill_(1.0)
-        self.model.mpm.hardening[mud_particles].fill_(2.0)
+        self.model.mpm.hardening[mud_particles].fill_(0.0)
         self.model.mpm.friction[mud_particles].fill_(0.0)
+        self.model.mpm.viscosity[mud_particles].fill_(1.0)
 
         # Select and merge meshes for robot/sand collisions
 
