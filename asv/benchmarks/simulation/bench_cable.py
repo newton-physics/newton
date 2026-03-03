@@ -31,7 +31,8 @@ class FastExampleCablePile:
 
     def setup(self):
         self.num_frames = 30
-        self.example = ExampleCablePile(ViewerNull(num_frames=self.num_frames))
+        args = newton.examples.default_args()
+        self.example = ExampleCablePile(ViewerNull(num_frames=self.num_frames), args)
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
