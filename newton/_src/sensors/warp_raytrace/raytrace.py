@@ -72,7 +72,9 @@ def closest_hit_shape(
             if group_root < 0:
                 continue
 
-            hit_gaussians = wp.bool(False)
+            gaussians_hit = wp.vec3ui()
+            num_gaussians_hit = wp.int32(0)
+
             query = wp.bvh_query_ray(bvh_shapes_id, ray_origin_world, ray_dir_world, group_root)
             shape_index = wp.int32(0)
 
@@ -149,7 +151,9 @@ def closest_hit_shape(
                         ray_dir_world,
                     )
                 elif shape_types[si] == GeoType.GAUSSIAN:
-                    hit_gaussians = True
+                    if num_gaussians_hit < 3:
+                        gaussians_hit[num_gaussians_hit] = si
+                        num_gaussians_hit += 1
                     # gaussian_id = shape_source_ptr[shape_indices[si]]
                     # geom_hit, hit_color = gaussians.shade(
                     #     shape_transforms[si],
@@ -179,31 +183,31 @@ def closest_hit_shape(
             # Although, this workaround may actually be a performance improvement
             # since it only renders gaussians if they are not blocked by other
             # objects.
-            if hit_gaussians:
-                for _si in range(shape_indices.shape[0]):
-                    si = wp.uint32(_si)
-                    if shape_types[si] == GeoType.GAUSSIAN:
-                        gaussian_id = shape_source_ptr[shape_indices[si]]
-                        geom_hit, hit_color = gaussians.shade(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            gaussians_data[gaussian_id],
-                            gaussians_mode,
-                            gaussians_min_transmittance,
-                            closest_hit.distance,
-                        )
+            if num_gaussians_hit > 0:
+                for gi in range(num_gaussians_hit):
+                    si = gaussians_hit[gi]
 
-                        if geom_hit.hit and geom_hit.distance < closest_hit.distance:
-                            closest_hit.distance = geom_hit.distance
-                            closest_hit.normal = geom_hit.normal
-                            closest_hit.shape_index = si
-                            closest_hit.bary_u = hit_u
-                            closest_hit.bary_v = hit_v
-                            closest_hit.face_idx = hit_face_id
-                            closest_hit.shape_mesh_index = hit_mesh_id
-                            closest_hit.color = hit_color
+                    gaussian_id = shape_source_ptr[shape_indices[si]]
+                    geom_hit, hit_color = gaussians.shade(
+                        shape_transforms[si],
+                        shape_sizes[si],
+                        ray_origin_world,
+                        ray_dir_world,
+                        gaussians_data[gaussian_id],
+                        gaussians_mode,
+                        gaussians_min_transmittance,
+                        closest_hit.distance,
+                    )
+
+                    if geom_hit.hit and geom_hit.distance < closest_hit.distance:
+                        closest_hit.distance = geom_hit.distance
+                        closest_hit.normal = geom_hit.normal
+                        closest_hit.shape_index = si
+                        closest_hit.bary_u = hit_u
+                        closest_hit.bary_v = hit_v
+                        closest_hit.face_idx = hit_face_id
+                        closest_hit.shape_mesh_index = hit_mesh_id
+                        closest_hit.color = hit_color
 
     return closest_hit
 
