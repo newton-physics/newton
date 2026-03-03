@@ -60,17 +60,18 @@ from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
+from .enums import (
+    BodyFlags,
+    EqType,
+    JointTargetMode,
+    JointType,
+)
 from .graph_coloring import (
     ColoringAlgorithm,
     color_graph,
     color_rigid_bodies,
     combine_independent_particle_coloring,
     construct_particle_graph,
-)
-from .joints import (
-    EqType,
-    JointTargetMode,
-    JointType,
 )
 from .model import Model
 
@@ -887,6 +888,7 @@ class ModelBuilder:
         self.body_qd = []
         self.body_label = []
         self.body_lock_inertia = []
+        self.body_flags = []  # body flags (e.g. BodyFlags.KINEMATIC)
         self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_world = []  # world index for each body
         self.body_color_groups: list[nparray] = []
@@ -1803,6 +1805,18 @@ class ModelBuilder:
                     f"This creates an invalid tree structure. Loop-closing joints must not be part of an articulation."
                 )
             child_to_parent[child] = parent
+
+        # Validate that only root bodies (parent == -1) can be kinematic
+        for joint_idx in joints:
+            child = self.joint_child[joint_idx]
+            parent = self.joint_parent[joint_idx]
+            if self.body_flags[child] & BodyFlags.KINEMATIC and parent != -1:
+                child_label = self.body_label[child]
+                parent_label = self.body_label[parent]
+                raise ValueError(
+                    f"Body {child} ('{child_label}') is kinematic but is attached to parent body {parent} "
+                    f"('{parent_label}'). Only root bodies (whose joint parent is the world) can be kinematic."
+                )
 
         # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
@@ -2782,6 +2796,7 @@ class ModelBuilder:
             "body_inv_mass",
             "body_com",
             "body_lock_inertia",
+            "body_flags",
             "body_qd",
             "joint_type",
             "joint_enabled",
@@ -3038,6 +3053,7 @@ class ModelBuilder:
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
+        is_kinematic: bool = False,
     ) -> int:
         """Adds a link (rigid body) to the model within an articulation.
 
@@ -3058,12 +3074,11 @@ class ModelBuilder:
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
+            is_kinematic: If True, the body is kinematic and does not respond to forces.
+                Only root bodies (bodies whose joint parent is ``-1``) may be kinematic.
 
         Returns:
             The index of the body in the model.
-
-        Note:
-            If the mass is zero then the body is treated as kinematic with no dynamics.
 
         """
 
@@ -3090,6 +3105,7 @@ class ModelBuilder:
         self.body_mass.append(mass)
         self.body_com.append(com)
         self.body_lock_inertia.append(lock_inertia)
+        self.body_flags.append(int(BodyFlags.KINEMATIC) if is_kinematic else int(BodyFlags.DYNAMIC))
 
         if mass > 0.0:
             self.body_inv_mass.append(1.0 / mass)
@@ -3127,6 +3143,7 @@ class ModelBuilder:
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
+        is_kinematic: bool = False,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
 
@@ -3152,12 +3169,10 @@ class ModelBuilder:
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
+            is_kinematic: If True, the body is kinematic and does not respond to forces.
 
         Returns:
             The index of the body in the model.
-
-        Note:
-            If the mass is zero then the body is treated as kinematic with no dynamics.
 
         """
         # Create the link
@@ -3170,6 +3185,7 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             lock_inertia=lock_inertia,
+            is_kinematic=is_kinematic,
         )
 
         # Add a free joint to make it float
@@ -4301,6 +4317,7 @@ class ModelBuilder:
                 "inv_inertia": self.body_inv_inertia[i],
                 "com": wp.vec3(*self.body_com[i]),
                 "lock_inertia": self.body_lock_inertia[i],
+                "flags": self.body_flags[i],
                 "label": body_lbl,
                 "original_id": i,
             }
@@ -4535,6 +4552,7 @@ class ModelBuilder:
         self.body_inertia.clear()
         self.body_com.clear()
         self.body_lock_inertia.clear()
+        self.body_flags.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_world.clear()  # Clear body groups
@@ -4555,6 +4573,7 @@ class ModelBuilder:
             self.body_inertia.append(inertia)
             self.body_com.append(body["com"])
             self.body_lock_inertia.append(body["lock_inertia"])
+            self.body_flags.append(body["flags"])
             if body["inv_mass"] is None:
                 # recompute inverse mass and inertia
                 if m > 0.0:
@@ -9324,6 +9343,7 @@ class ModelBuilder:
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_label = self.body_label
+            m.body_flags = wp.array(self.body_flags, dtype=wp.int32)
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors

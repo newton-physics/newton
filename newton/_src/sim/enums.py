@@ -16,6 +16,19 @@
 from enum import IntEnum
 
 
+# Body flags
+class BodyFlags(IntEnum):
+    """
+    Flags for body properties.
+    """
+
+    DYNAMIC = 0
+    """Default flag indicating a dynamic body that participates in simulation dynamics."""
+
+    KINEMATIC = 1 << 0
+    """Indicates that the body is kinematic and does not respond to forces."""
+
+
 # Types of joints linking rigid bodies
 class JointType(IntEnum):
     """
@@ -192,6 +205,7 @@ class JointTargetMode(IntEnum):
 
 
 __all__ = [
+    "BodyFlags",
     "EqType",
     "JointTargetMode",
     "JointType",

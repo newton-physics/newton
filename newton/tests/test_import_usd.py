@@ -2169,7 +2169,7 @@ def PhysicsRevoluteJoint "Joint2"
         """Test that JointTargetMode is correctly inferred from USD joint drives."""
         from pxr import Usd
 
-        from newton._src.sim.joints import JointTargetMode  # noqa: PLC0415
+        from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
 
         usd_content = """#usda 1.0
 (
