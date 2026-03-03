@@ -1288,6 +1288,54 @@ class LastStepData:
         self.ws_stress_field = None  # Warmstart for stress field
         self.body_q_prev = None  # Previous body transforms for finite-difference velocities
 
+    def _ws_stress_space(self, scratch: ImplicitMPMScratchpad, smoothed: bool = True):
+        sym_strain_space = scratch.sym_strain_test.space
+        if isinstance(sym_strain_space.basis, fem.PointBasisSpace) or not smoothed:
+            return sym_strain_space
+        else:
+            return fem.make_polynomial_space(scratch.grid, degree=1, dof_mapper=sym_strain_space.dof_mapper)
+
+    def require_strain_space_fields(self, scratch: ImplicitMPMScratchpad):
+        """Ensure strain-space fields exist and match current spaces."""
+        if self.ws_stress_field is None:
+            self.ws_stress_field = self._ws_stress_space(scratch).make_field()
+
+    def rebind_strain_space_fields(self, scratch: ImplicitMPMScratchpad):
+        if self.ws_stress_field.geometry != scratch.sym_strain_test.space.geometry:
+            ws_stress_space = self._ws_stress_space(scratch)
+            self.ws_stress_field.rebind(
+                space=ws_stress_space,
+                space_partition=fem.make_space_partition(
+                    space_topology=ws_stress_space.topology, geometry_partition=None
+                ),
+            )
+
+    def require_collision_space_fields(self, scratch: ImplicitMPMScratchpad):
+        """Ensure collision-space fields exist and match current spaces."""
+        if self.ws_impulse_field is None:
+            self.ws_impulse_field = scratch.impulse_field.space.make_field()
+
+    def rebind_collision_space_fields(self, scratch: ImplicitMPMScratchpad):
+        if self.ws_impulse_field.geometry != scratch.impulse_field.space.geometry:
+            self.ws_impulse_field.rebind(
+                space=scratch.impulse_field.space,
+                space_partition=fem.make_space_partition(
+                    space_topology=scratch.impulse_field.space.topology,
+                    geometry_partition=None,
+                ),
+            )
+
+    def require_collider_previous_position(self, collider_body_q: wp.array | None):
+        if collider_body_q is None:
+            self.body_q_prev = None
+        elif self.body_q_prev is None or self.body_q_prev.shape != collider_body_q.shape:
+            self.body_q_prev = wp.clone(collider_body_q)
+
+    def save_collider_current_position(self, collider_body_q: wp.array | None):
+        self.require_collider_previous_position(collider_body_q)
+        if collider_body_q is not None:
+            self.body_q_prev.assign(collider_body_q)
+
 
 @wp.kernel
 def compute_bounds(
@@ -1781,8 +1829,7 @@ class SolverImplicitMPM(SolverBase):
             body_q=body_q,
         )
 
-        if self._mpm_model.collider_body_q is not None:
-            self._last_step_data.body_q_prev = wp.clone(self._mpm_model.collider_body_q)
+        self._last_step_data.save_collider_current_position(self._mpm_model.collider_body_q)
 
     @property
     def voxel_size(self) -> float:
@@ -1827,14 +1874,7 @@ class SolverImplicitMPM(SolverBase):
             # Update max query dist if provided
             prev_max_dist, self._mpm_model.collider.query_max_dist = self._mpm_model.collider.query_max_dist, max_dist
 
-        if (
-            self._last_step_data.body_q_prev is not None
-            and state_in.body_q is not None
-            and self._last_step_data.body_q_prev.shape != state_in.body_q.shape
-        ):
-            # In unlikely case that number of colliding bodies has changed
-            self._last_step_data.body_q_prev = wp.clone(state_in.body_q)
-
+        self._last_step_data.require_collider_previous_position(state_in.body_q)
         wp.launch(
             project_outside_collider,
             dim=state_in.particle_count,
@@ -2951,8 +2991,7 @@ class SolverImplicitMPM(SolverBase):
         """Save data for next step or further processing."""
 
         # Copy current body_q to last_step_data.body_q_prev for next step's velocity computation
-        if state_in.body_q is not None and last_step_data.body_q_prev is not None:
-            last_step_data.body_q_prev.assign(state_in.body_q)
+        self._last_step_data.save_collider_current_position(state_in.body_q)
 
         # Necessary fields for two-way coupling
         state_out.impulse_field = scratch.impulse_field
@@ -2973,34 +3012,13 @@ class SolverImplicitMPM(SolverBase):
     def _require_collision_space_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Ensure collision-space fields exist and match current spaces."""
         scratch.require_collision_space_fields()
-
-        # Impulse warmstarting, defined at space level
-        if last_step_data.ws_impulse_field is None:
-            last_step_data.ws_impulse_field = scratch.impulse_field.space.make_field()
-
-        # Initialize body_q_prev on first step if needed (only if there are dynamic colliders)
-        if self._mpm_model.collider_body_q is not None and (
-            last_step_data.body_q_prev is None
-            or last_step_data.body_q_prev.shape != self._mpm_model.collider_body_q.shape
-        ):
-            last_step_data.body_q_prev = wp.clone(self._mpm_model.collider_body_q)
+        last_step_data.require_collision_space_fields(scratch)
+        last_step_data.require_collider_previous_position(self._mpm_model.collider_body_q)
 
     def _require_strain_space_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Ensure strain-space fields exist and match current spaces."""
         scratch.require_strain_space_fields()
-
-        # Stress warmstarting, define at space level
-        sym_strain_space = scratch.sym_strain_test.space
-        if (
-            last_step_data.ws_stress_field is None
-            or last_step_data.ws_stress_field.geometry != sym_strain_space.geometry
-        ):
-            if isinstance(sym_strain_space.basis, fem.PointBasisSpace):
-                last_step_data.ws_stress_field = sym_strain_space.make_field()
-            else:
-                last_step_data.ws_stress_field = fem.make_polynomial_space(
-                    scratch.grid, degree=1, dof_mapper=sym_strain_space.dof_mapper
-                ).make_field()
+        last_step_data.require_strain_space_fields(scratch)
 
     def _warmstart_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Interpolate previous grid fields into the current grid layout.
@@ -3048,9 +3066,7 @@ class SolverImplicitMPM(SolverBase):
 
     @staticmethod
     def _save_for_next_warmstart(scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
-        if last_step_data.ws_impulse_field.geometry != scratch.impulse_field.geometry:
-            last_step_data.ws_impulse_field = scratch.impulse_field.space.make_field()
-
+        last_step_data.rebind_collision_space_fields(scratch)
         if isinstance(last_step_data.ws_impulse_field.space.basis, fem.PointBasisSpace):
             # point-based collisions, simply copy the previous impulses
             last_step_data.ws_impulse_field.dof_values.assign(scratch.impulse_field.dof_values)
@@ -3066,9 +3082,7 @@ class SolverImplicitMPM(SolverBase):
                 ],
             )
 
-        if last_step_data.ws_stress_field.geometry != scratch.stress_field.geometry:
-            last_step_data.ws_stress_field = scratch.stress_field.space.make_field()
-
+        last_step_data.rebind_strain_space_fields(scratch)
         if isinstance(last_step_data.ws_stress_field.space.basis, fem.PointBasisSpace):
             last_step_data.ws_stress_field.dof_values.assign(scratch.stress_field.dof_values)
         else:
@@ -3081,11 +3095,11 @@ class SolverImplicitMPM(SolverBase):
 
             # wp.launch(
             #     scatter_field_dof_values,
-            #     dim=state_out.stress_field.space_partition.node_count(),
+            #     dim=last_step_data.ws_stress_field.space_partition.node_count(),
             #     inputs=[
-            #         state_out.stress_field.space_partition.space_node_indices(),
-            #         state_out.stress_field.dof_values,
-            #         state_out.ws_stress_field.dof_values,
+            #         last_step_data.ws_stress_field.space_partition.space_node_indices(),
+            #         scratch.stress_field.dof_values,
+            #         last_step_data.ws_stress_field.dof_values,
             #     ],
             # )
 

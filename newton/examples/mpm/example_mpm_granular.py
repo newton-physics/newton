@@ -199,8 +199,8 @@ class Example:
         if self.show_stress:
             # for debugging purposes, we can visualize the collider normals
 
-            stresses = self.state_0.ws_stress_field.dof_values
-            pos = self.state_0.ws_stress_field.space.node_positions()
+            stresses = self.solver._last_step_data.ws_stress_field.dof_values
+            pos = self.solver._last_step_data.ws_stress_field.space.node_positions()
 
             pressure = stresses.numpy()[:, 0]
 
