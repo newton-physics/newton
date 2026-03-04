@@ -8001,11 +8001,14 @@ class ModelBuilder:
             balance_colors: Whether to apply the color balancing algorithm to balance the size of each color
             target_max_min_color_ratio: the color balancing algorithm will stop when the ratio between the largest color and
                 the smallest color reaches this value
-            algorithm: Value should be an enum type of ColoringAlgorithm, otherwise it will raise an error. ColoringAlgorithm.mcs means using the MCS coloring algorithm,
-                while ColoringAlgorithm.ordered_greedy means using the degree-ordered greedy algorithm. The MCS algorithm typically generates 30% to 50% fewer colors
-                compared to the ordered greedy algorithm, while maintaining the same linear complexity. Although MCS has a constant overhead that makes it about twice
-                as slow as the greedy algorithm, it produces significantly better coloring results. We recommend using MCS, especially if coloring is only part of the
-                preprocessing.
+            coloring_algorithm: Coloring algorithm to use. `ColoringAlgorithm.MCS` uses
+                maximum cardinality search (MCS), while `ColoringAlgorithm.GREEDY` uses
+                degree-ordered greedy coloring. The MCS algorithm typically generates 30% to
+                50% fewer colors compared to the ordered greedy algorithm, while maintaining
+                the same linear complexity. Although MCS has a constant overhead that makes
+                it about twice as slow as the greedy algorithm, it produces significantly
+                better coloring results. We recommend using MCS, especially if coloring is
+                only part of preprocessing.
 
         Note:
 
