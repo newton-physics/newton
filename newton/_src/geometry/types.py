@@ -1197,8 +1197,7 @@ class Gaussian:
             )
             self.warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
             self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
-            if self._sh_coeffs is not None:
-                self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
             self.warp_data.min_response = self.min_response
 
             lowers = wp.zeros(self.count, dtype=wp.vec3f)
