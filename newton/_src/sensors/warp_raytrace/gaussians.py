@@ -38,7 +38,7 @@ def compute_gaussian_bounds(gaussians_data: Gaussian.Data, tid: wp.int32) -> tup
     scale = gaussians_data.scales[tid]
 
     mod = gaussians_data.min_response / wp.max(gaussians_data.opacities[tid], wp.float32(1e-6))
-    min_response = wp.min(mod, wp.float32(0.97))
+    min_response = wp.clamp(mod, wp.float32(1e-6), wp.float32(0.97))
     ks = wp.sqrt(wp.log(min_response) / wp.float32(-0.5))
     scale = wp.vec3f(scale[0] * ks, scale[1] * ks, scale[2] * ks)
 

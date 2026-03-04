@@ -1158,12 +1158,7 @@ class Gaussian:
 
     @property
     def sh_degree(self) -> int:
-        """Spherical harmonics degree (0--3), inferred from *sh_coeffs* shape.
-
-        Returns 0 when only flat *colors* are available.
-        """
-        if self._sh_coeffs is None:
-            return 0
+        """Spherical harmonics degree (0--3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
         # SH bands: degree 0 -> 1*3=3, degree 1 -> 4*3=12,
         #           degree 2 -> 9*3=27, degree 3 -> 16*3=48
@@ -1379,16 +1374,11 @@ class Gaussian:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Gaussian):
             return NotImplemented
-        sh_equal = (self._sh_coeffs is None and other._sh_coeffs is None) or (
-            self._sh_coeffs is not None
-            and other._sh_coeffs is not None
-            and np.array_equal(self._sh_coeffs, other._sh_coeffs)
-        )
         return (
             np.array_equal(self._positions, other._positions)
             and np.array_equal(self._rotations, other._rotations)
             and np.array_equal(self._scales, other._scales)
             and np.array_equal(self._opacities, other._opacities)
-            and sh_equal
+            and np.array_equal(self._sh_coeffs, other._sh_coeffs)
             and self._min_response == other._min_response
         )
