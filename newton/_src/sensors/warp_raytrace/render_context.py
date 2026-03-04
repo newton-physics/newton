@@ -27,7 +27,7 @@ from .bvh import (
     compute_shape_bvh_bounds,
 )
 from .render import create_kernel
-from .types import RenderOrder
+from .types import GaussianRenderMode, RenderOrder
 from .utils import Utils
 
 
@@ -56,7 +56,7 @@ class RenderContext:
         tile_width: int = 16
         tile_height: int = 8
         max_distance: float = 1000.0
-        gaussians_mode: int = 0
+        gaussians_mode: int = GaussianRenderMode.FAST
         gaussians_min_transmittance: float = 0.49
         gaussians_max_num_hits: int = 20
 

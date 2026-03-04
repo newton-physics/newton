@@ -22,7 +22,7 @@ import warp as wp
 
 from ..geometry import GeoType, ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderOrder
+from .warp_raytrace import ClearData, GaussianRenderMode, RenderContext, RenderLightType, RenderOrder
 
 DEFAULT_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
@@ -108,6 +108,7 @@ class SensorTiledCamera:
     RenderContext = RenderContext
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
+    GaussianRenderMode = GaussianRenderMode
 
     @dataclass
     class Config:

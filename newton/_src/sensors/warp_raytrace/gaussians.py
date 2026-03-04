@@ -23,6 +23,7 @@ from ...geometry import Gaussian
 from ...math import safe_div
 from . import bvh
 from .ray_intersect import GeomHit, map_ray_to_local_scaled
+from .types import GaussianRenderMode
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -177,7 +178,7 @@ def create_shade_function(config: RenderContext.Config, state: RenderContext.Sta
 
             min_distance = hit_distances[-1] + wp.float32(1e-06)
 
-            if wp.static(config.gaussians_mode) == 0:
+            if wp.static(config.gaussians_mode) == GaussianRenderMode.FAST:
                 break
 
         if ray_transmittance < wp.static(config.gaussians_min_transmittance):

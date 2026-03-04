@@ -432,14 +432,31 @@ class Example:
             self.image_output = 5
 
         ui.separator()
-        if ui.radio_button("Gaussians: Fast", self.tiled_camera_sensor.render_context.config.gaussians_mode == 0):
-            if self.tiled_camera_sensor.render_context.config.gaussians_mode != 0:
-                self.tiled_camera_sensor.render_context.config.gaussians_mode = 0
+        if ui.radio_button(
+            "Gaussians: Fast",
+            self.tiled_camera_sensor.render_context.config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
+        ):
+            if (
+                self.tiled_camera_sensor.render_context.config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.FAST
+            ):
+                self.tiled_camera_sensor.render_context.config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.FAST
+                )
                 show_compile_kernel_info = True
 
-        if ui.radio_button("Gaussians: Quality", self.tiled_camera_sensor.render_context.config.gaussians_mode == 1):
-            if self.tiled_camera_sensor.render_context.config.gaussians_mode != 1:
-                self.tiled_camera_sensor.render_context.config.gaussians_mode = 1
+        if ui.radio_button(
+            "Gaussians: Quality",
+            self.tiled_camera_sensor.render_context.config.gaussians_mode
+            == SensorTiledCamera.GaussianRenderMode.QUALITY,
+        ):
+            if (
+                self.tiled_camera_sensor.render_context.config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.QUALITY
+            ):
+                self.tiled_camera_sensor.render_context.config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.QUALITY
+                )
                 show_compile_kernel_info = True
 
         changed, value = ui.slider_float(
