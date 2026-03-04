@@ -7406,8 +7406,14 @@ def Mesh "JustAMesh" ()
         temperature = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
         region_id = np.array([7], dtype=np.int32)
 
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
         tm = newton.TetMesh(
-            vertices, tet_indices, custom_attributes={"temperature": temperature, "regionId": region_id}
+            vertices,
+            tet_indices,
+            custom_attributes={
+                "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
+                "regionId": region_id,
+            },
         )
 
         self.assertIn("temperature", tm.custom_attributes)
@@ -7464,8 +7470,14 @@ def Mesh "JustAMesh" ()
         temperature = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
         region_id = np.array([3], dtype=np.int32)
 
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
         tm = newton.TetMesh(
-            vertices, tet_indices, custom_attributes={"temperature": temperature, "regionId": region_id}
+            vertices,
+            tet_indices,
+            custom_attributes={
+                "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
+                "regionId": region_id,
+            },
         )
 
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
