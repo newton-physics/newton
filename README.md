@@ -325,8 +325,8 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_benchmark.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_benchmark.jpg" alt="IK Benchmark">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_custom.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_custom.jpg" alt="IK Custom">
       </a>
     </td>
   </tr>
@@ -338,15 +338,10 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples ik_h1</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples ik_benchmark</code>
+      <code>python -m newton.examples ik_custom</code>
     </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_custom.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_custom.jpg" alt="IK Custom">
-      </a>
-    </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_franka.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_franka.jpg" alt="Cloth Franka">
@@ -357,16 +352,17 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_cube_stacking.jpg" alt="Stack Cubes">
       </a>
     </td>
+    <td align="center" width="33%">
+    </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <code>python -m newton.examples ik_custom</code>
-    </td>
     <td align="center" width="33%">
       <code>python -m newton.examples cloth_franka</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples ik_cube_stacking</code>
+    </td>
+    <td align="center" width="33%">
     </td>
   </tr>
   <tr>
