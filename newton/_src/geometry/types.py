@@ -1101,11 +1101,10 @@ class Gaussian:
         else:
             self._opacities = np.ones(n, dtype=np.float32)
 
-        self._sh_coeffs = (
-            np.ascontiguousarray(np.asarray(sh_coeffs, dtype=np.float32).reshape(n, -1))
-            if sh_coeffs is not None
-            else None
-        )
+        if sh_coeffs is not None:
+            self._sh_coeffs = np.ascontiguousarray(np.asarray(sh_coeffs, dtype=np.float32).reshape(n, -1))
+        else:
+            self._sh_coeffs = np.ones((n, 3), dtype=np.float32)
 
         if not np.isfinite(min_response) or not (0.0 < min_response < 1.0):
             raise ValueError("min_response must be finite and in (0, 1)")
