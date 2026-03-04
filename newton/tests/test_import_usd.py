@@ -1166,6 +1166,48 @@ class TestImportUsdPhysics(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mass_fallback_instanced_colliders(self):
+        """Regression test: bodies with PhysicsMassAPI but no authored mass properties
+        and instanceable collision shapes must get positive mass from shape accumulation.
+
+        When collision shapes live inside instanceable prims, USD's
+        ComputeMassProperties cannot traverse into them and returns invalid results
+        (mass < 0). The importer must fall back to the mass properties already
+        accumulated by the builder during add_shape_*() calls.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create a prototype with a collision sphere (outside the body hierarchy).
+        proto = stage.OverridePrim("/Prototype_Collisions")
+        sphere = UsdGeom.Sphere.Define(stage, "/Prototype_Collisions/sphere")
+        sphere.CreateRadiusAttr().Set(0.5)
+        UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+
+        # Create a rigid body with MassAPI applied but no values authored.
+        body_xform = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body_xform.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        UsdPhysics.MassAPI.Apply(body_prim)
+
+        # Reference the collision prototype as an instanceable prim.
+        collisions = stage.DefinePrim("/World/Body/collisions")
+        collisions.GetReferences().AddInternalReference("/Prototype_Collisions")
+        collisions.SetInstanceable(True)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertGreater(builder.body_mass[0], 0.0, "Body mass must be positive (not overwritten by failed ComputeMassProperties)")
+        # Verify inertia is also positive (not garbage).
+        inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
+        self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_cube_cylinder_joint_count(self):
         builder = newton.ModelBuilder()
         import_results = builder.add_usd(
