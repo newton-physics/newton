@@ -78,6 +78,10 @@ if TYPE_CHECKING:
     from newton_actuators import Actuator
     from pxr import Usd
 
+    UsdStage = Usd.Stage
+else:
+    UsdStage = Any
+
 
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
@@ -1973,7 +1977,7 @@ class ModelBuilder:
 
     def add_usd(
         self,
-        source: Any,
+        source: str | UsdStage,
         *,
         xform: Transform | None = None,
         floating: bool | None = None,
@@ -3212,9 +3216,9 @@ class ModelBuilder:
             joint_type: The type of joint to add (see :ref:`Joint types`).
             parent: The index of the parent body (-1 is the world).
             child: The index of the child body.
-            linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint,
+            linear_axes: The linear axes (see :class:`JointDofConfig`) of the joint,
                 defined in the joint parent anchor frame.
-            angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint,
+            angular_axes: The angular axes (see :class:`JointDofConfig`) of the joint,
                 defined in the joint parent anchor frame.
             label: The label of the joint (optional).
             parent_xform: The transform from the parent body frame to the joint parent anchor frame.
@@ -4828,8 +4832,8 @@ class ModelBuilder:
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             scale: The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
-            is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
-            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
+            is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
+            label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:

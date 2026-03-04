@@ -415,7 +415,7 @@ def eval_fk(
     model: Model,
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
-    state: State,
+    state: State | Model | object,
     mask: wp.array(dtype=bool) | None = None,
     indices: wp.array(dtype=int) | None = None,
 ):
@@ -426,7 +426,7 @@ def eval_fk(
         model: The model to evaluate.
         joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
         joint_qd: Generalized joint velocity coordinates, shape [joint_dof_count], float
-        state: The state to update.
+        state: The state-like target to update (e.g., :class:`State` or :class:`Model`).
         mask: The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
         indices: Integer indices of articulations to update. If None, updates all articulations.
             Cannot be used together with mask parameter.
@@ -753,18 +753,18 @@ def eval_articulation_ik(
 # given maximal coordinate model computes ik (closest point projection)
 def eval_ik(
     model: Model,
-    state: State,
-    joint_q: wp.array,
-    joint_qd: wp.array,
-    mask: wp.array | None = None,
-    indices: wp.array | None = None,
+    state: State | Model | object,
+    joint_q: wp.array(dtype=float),
+    joint_qd: wp.array(dtype=float),
+    mask: wp.array(dtype=bool) | None = None,
+    indices: wp.array(dtype=int) | None = None,
 ):
     """
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
 
     Args:
         model: The model to evaluate.
-        state: The state with the body's maximal coordinates (positions :attr:`State.body_q` and velocities :attr:`State.body_qd`) to use.
+        state: The state-like object with the body's maximal coordinates (positions :attr:`State.body_q` and velocities :attr:`State.body_qd`) to use.
         joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
         joint_qd: Generalized joint velocity coordinates, shape [joint_dof_count], float
         mask: Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).

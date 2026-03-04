@@ -26,6 +26,10 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from pxr import Usd
 
+    UsdStage = Usd.Stage
+else:
+    UsdStage = Any
+
 import numpy as np
 import warp as wp
 
@@ -45,7 +49,7 @@ AttributeFrequency = Model.AttributeFrequency
 
 def parse_usd(
     builder: ModelBuilder,
-    source: Any,
+    source: str | UsdStage,
     *,
     xform: Transform | None = None,
     floating: bool | None = None,
@@ -80,6 +84,7 @@ def parse_usd(
     See :ref:`usd_parsing` for more information.
 
     Args:
+        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
         override_root_xform: If ``True``, the articulation root's world-space

@@ -91,6 +91,7 @@ def parse_urdf(
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
+        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source: The filename of the URDF file to parse, or the URDF XML string content.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
         override_root_xform: If ``True``, the articulation root's world-space

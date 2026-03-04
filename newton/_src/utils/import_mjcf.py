@@ -193,6 +193,7 @@ def parse_mjcf(
     MuJoCo-specific custom attributes are registered on the builder automatically.
 
     Args:
+        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform: The transform to apply to the imported mechanism.
         override_root_xform: If ``True``, the articulation root's world-space
