@@ -145,6 +145,9 @@
 - Visualize an immutable harmonic pressure field in
   ``newton.examples.contacts.example_hydro_pressure_slice`` to avoid
   discrete interior contour transitions in slice heat maps.
+- Remove nonlinear gamma remapping from
+  ``newton.examples.contacts.example_hydro_pressure_slice`` so the demo
+  displays the raw normalized Poisson pressure field.
 
 - Fix GL viewer crash when enabling "Gap + Margin" for soft-body-only states with no rigid body transforms
 - Fix inertia validation spuriously inflating small but physically valid eigenvalues for lightweight components (< ~50 g) by using a relative threshold instead of an absolute 1e-6 cutoff

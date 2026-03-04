@@ -34,63 +34,21 @@ import newton
 import newton.examples
 
 
-@wp.func
-def sample_sdf_extrapolated_local(
-    sparse_sdf_ptr: wp.uint64,
-    coarse_sdf_ptr: wp.uint64,
-    center: wp.vec3,
-    half_extents: wp.vec3,
-    sparse_voxel_size: wp.vec3,
-    background_value: float,
-    sdf_pos: wp.vec3,
-) -> float:
-    """Sample SDF using sparse->coarse->extrapolated fallback."""
-    lower = center - half_extents
-    upper = center + half_extents
-
-    inside_extent = (
-        sdf_pos[0] >= lower[0]
-        and sdf_pos[0] <= upper[0]
-        and sdf_pos[1] >= lower[1]
-        and sdf_pos[1] <= upper[1]
-        and sdf_pos[2] >= lower[2]
-        and sdf_pos[2] <= upper[2]
-    )
-
-    if inside_extent:
-        sparse_idx = wp.volume_world_to_index(sparse_sdf_ptr, sdf_pos)
-        sparse_dist = wp.volume_sample_f(sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR)
-        if sparse_dist >= background_value * 0.99 or wp.isnan(sparse_dist):
-            coarse_idx = wp.volume_world_to_index(coarse_sdf_ptr, sdf_pos)
-            return wp.volume_sample_f(coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
-        return sparse_dist
-
-    eps = 1.0e-2 * sparse_voxel_size
-    clamped_pos = wp.min(wp.max(sdf_pos, lower + eps), upper - eps)
-    dist_to_boundary = wp.length(sdf_pos - clamped_pos)
-    coarse_idx = wp.volume_world_to_index(coarse_sdf_ptr, clamped_pos)
-    boundary_dist = wp.volume_sample_f(coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
-    return boundary_dist + dist_to_boundary
-
-
 @wp.kernel
 def build_pressure_slice_field(
     resolution: int,
     axis: int,
     axis_position: float,
     plane_scale: float,
-    sparse_sdf_ptr: wp.uint64,
-    coarse_sdf_ptr: wp.uint64,
+    mesh_id: wp.uint64,
+    max_query_dist: float,
     sdf_center: wp.vec3,
     sdf_half_extents: wp.vec3,
-    sparse_voxel_size: wp.vec3,
-    background_value: float,
-    global_pressure_depth: float,
     out_points: wp.array(dtype=wp.vec3),
-    out_density: wp.array(dtype=wp.float32),
+    out_inside: wp.array(dtype=wp.float32),
     out_inside_count: wp.array(dtype=wp.int32),
 ):
-    """Sample one axis-aligned section and write mesh points + heat values."""
+    """Sample one axis-aligned section and write mesh points + inside mask."""
     tid = wp.tid()
     total = resolution * resolution
     if tid >= total:
@@ -128,23 +86,17 @@ def build_pressure_slice_field(
 
     out_points[tid] = sample
 
-    sdf_val = sample_sdf_extrapolated_local(
-        sparse_sdf_ptr,
-        coarse_sdf_ptr,
-        sdf_center,
-        sdf_half_extents,
-        sparse_voxel_size,
-        background_value,
-        sample,
-    )
+    face_index = int(0)
+    face_u = float(0.0)
+    face_v = float(0.0)
+    sign = float(0.0)
+    hit = wp.mesh_query_point_sign_normal(mesh_id, sample, max_query_dist, sign, face_index, face_u, face_v)
 
-    if sdf_val > 0.0:
-        out_density[tid] = -1.0
+    if (not hit) or sign >= 0.0:
+        out_inside[tid] = -1.0
         return
 
-    # Raw penetration extent proxy from SDF depth. Smoothing/remapping to the
-    # immutable pressure potential is done on the full slice in Python.
-    out_density[tid] = wp.clamp((-sdf_val) / wp.max(global_pressure_depth, 1.0e-8), 0.0, 1.0)
+    out_inside[tid] = 1.0
     wp.atomic_add(out_inside_count, 0, 1)
 
 
@@ -182,105 +134,143 @@ def density_to_rgb_image(density_grid: np.ndarray) -> np.ndarray:
     return np.clip(np.round(rgb * 255.0), 0, 255).astype(np.uint8)
 
 
-def harmonic_pressure_potential(
-    depth_grid: np.ndarray,
-    gamma: float,
-    iterations: int,
-) -> np.ndarray:
-    """Build a smooth slice-intrinsic pressure potential.
+def regularize_inside_domain(inside: np.ndarray) -> np.ndarray:
+    """Regularize rasterized interior domain from mesh sign queries.
 
-    Solves a Poisson problem on the slice interior with zero Dirichlet boundary
-    on the shape boundary and outside. This yields a smooth field that is not
-    tied to axis-depth scaling and avoids piecewise nearest-face transitions.
+    Keeps the largest connected interior component and fills enclosed voids.
+    This is a geometry-domain cleanup step to suppress sampling noise before
+    solving the PDE field.
     """
-    inside = depth_grid >= 0.0
     if not np.any(inside):
-        return depth_grid.copy()
+        return inside
 
-    # SDF narrow-band truncation can create enclosed "outside" islands inside the
-    # true shape interior. Fill holes topologically so immutable pressure remains
-    # continuous through the full cross-section.
-    outside = ~inside
-    exterior_outside = np.zeros_like(outside, dtype=bool)
-    h, w = outside.shape
+    h, w = inside.shape
+    visited = np.zeros_like(inside, dtype=bool)
     q: deque[tuple[int, int]] = deque()
 
+    best_component: list[tuple[int, int]] = []
+    for y0 in range(h):
+        for x0 in range(w):
+            if not inside[y0, x0] or visited[y0, x0]:
+                continue
+
+            component: list[tuple[int, int]] = []
+            visited[y0, x0] = True
+            q.append((y0, x0))
+            while q:
+                y, x = q.popleft()
+                component.append((y, x))
+                if y > 0 and inside[y - 1, x] and not visited[y - 1, x]:
+                    visited[y - 1, x] = True
+                    q.append((y - 1, x))
+                if y + 1 < h and inside[y + 1, x] and not visited[y + 1, x]:
+                    visited[y + 1, x] = True
+                    q.append((y + 1, x))
+                if x > 0 and inside[y, x - 1] and not visited[y, x - 1]:
+                    visited[y, x - 1] = True
+                    q.append((y, x - 1))
+                if x + 1 < w and inside[y, x + 1] and not visited[y, x + 1]:
+                    visited[y, x + 1] = True
+                    q.append((y, x + 1))
+
+            if len(component) > len(best_component):
+                best_component = component
+
+    cleaned = np.zeros_like(inside, dtype=bool)
+    for y, x in best_component:
+        cleaned[y, x] = True
+
+    # Fill enclosed holes by flooding outside from image boundary.
+    outside = ~cleaned
+    exterior = np.zeros_like(outside, dtype=bool)
     for x in range(w):
         if outside[0, x]:
-            exterior_outside[0, x] = True
+            exterior[0, x] = True
             q.append((0, x))
-        if outside[h - 1, x] and not exterior_outside[h - 1, x]:
-            exterior_outside[h - 1, x] = True
+        if outside[h - 1, x] and not exterior[h - 1, x]:
+            exterior[h - 1, x] = True
             q.append((h - 1, x))
     for y in range(h):
-        if outside[y, 0] and not exterior_outside[y, 0]:
-            exterior_outside[y, 0] = True
+        if outside[y, 0] and not exterior[y, 0]:
+            exterior[y, 0] = True
             q.append((y, 0))
-        if outside[y, w - 1] and not exterior_outside[y, w - 1]:
-            exterior_outside[y, w - 1] = True
+        if outside[y, w - 1] and not exterior[y, w - 1]:
+            exterior[y, w - 1] = True
             q.append((y, w - 1))
 
     while q:
         y, x = q.popleft()
-        if y > 0 and outside[y - 1, x] and not exterior_outside[y - 1, x]:
-            exterior_outside[y - 1, x] = True
+        if y > 0 and outside[y - 1, x] and not exterior[y - 1, x]:
+            exterior[y - 1, x] = True
             q.append((y - 1, x))
-        if y + 1 < h and outside[y + 1, x] and not exterior_outside[y + 1, x]:
-            exterior_outside[y + 1, x] = True
+        if y + 1 < h and outside[y + 1, x] and not exterior[y + 1, x]:
+            exterior[y + 1, x] = True
             q.append((y + 1, x))
-        if x > 0 and outside[y, x - 1] and not exterior_outside[y, x - 1]:
-            exterior_outside[y, x - 1] = True
+        if x > 0 and outside[y, x - 1] and not exterior[y, x - 1]:
+            exterior[y, x - 1] = True
             q.append((y, x - 1))
-        if x + 1 < w and outside[y, x + 1] and not exterior_outside[y, x + 1]:
-            exterior_outside[y, x + 1] = True
+        if x + 1 < w and outside[y, x + 1] and not exterior[y, x + 1]:
+            exterior[y, x + 1] = True
             q.append((y, x + 1))
 
-    hole_cells = outside & (~exterior_outside)
-    if np.any(hole_cells):
-        inside = inside | hole_cells
-        outside = ~inside
+    cleaned |= outside & (~exterior)
+    return cleaned
 
+
+def build_immutable_pressure_field(
+    inside_grid: np.ndarray,
+) -> np.ndarray:
+    """Build pressure extent by solving a PDE on the interior slice domain.
+
+    We solve Poisson's equation on the interior raster:
+        -Laplace(u) = 1,  u = 0 on boundary
+    then normalize to [0, 1].
+    """
+    inside = regularize_inside_domain(inside_grid >= 0.0)
+    mapped = np.full_like(inside_grid, -1.0, dtype=np.float32)
+    if not np.any(inside):
+        return mapped
+
+    outside = ~inside
     outside_up = np.ones_like(outside, dtype=bool)
     outside_down = np.ones_like(outside, dtype=bool)
     outside_left = np.ones_like(outside, dtype=bool)
     outside_right = np.ones_like(outside, dtype=bool)
-
     outside_up[1:, :] = outside[:-1, :]
     outside_down[:-1, :] = outside[1:, :]
     outside_left[:, 1:] = outside[:, :-1]
     outside_right[:, :-1] = outside[:, 1:]
-
     boundary = inside & (outside_up | outside_down | outside_left | outside_right)
     free = inside & (~boundary)
 
-    potential = np.zeros_like(depth_grid, dtype=np.float32)
+    field = np.zeros_like(inside_grid, dtype=np.float32)
+    next_field = np.zeros_like(field)
+    rhs = np.zeros_like(field)
+    rhs[free] = 1.0
+    poisson_iterations = 320
 
-    if np.any(free):
-        for _ in range(max(int(iterations), 1)):
-            up = np.zeros_like(potential)
-            down = np.zeros_like(potential)
-            left = np.zeros_like(potential)
-            right = np.zeros_like(potential)
+    for _ in range(poisson_iterations):
+        work = np.where(inside, field, 0.0)
+        neighbor_sum = np.zeros_like(work)
+        neighbor_sum[1:, :] += work[:-1, :]
+        neighbor_sum[:-1, :] += work[1:, :]
+        neighbor_sum[:, 1:] += work[:, :-1]
+        neighbor_sum[:, :-1] += work[:, 1:]
 
-            up[1:, :] = potential[:-1, :]
-            down[:-1, :] = potential[1:, :]
-            left[:, 1:] = potential[:, :-1]
-            right[:, :-1] = potential[:, 1:]
+        next_field[:] = field
+        next_field[free] = 0.25 * (neighbor_sum[free] + rhs[free])
+        next_field[boundary] = 0.0
+        next_field[outside] = 0.0
+        field, next_field = next_field, field
 
-            # Discrete Poisson solve: -L u = 1 on free interior cells.
-            update = 0.25 * (up + down + left + right + 1.0)
-            potential[free] = update[free]
+    mapped[inside] = field[inside]
 
-    max_val = float(np.max(potential[inside]))
-    if max_val <= 1.0e-8:
-        mapped = np.zeros_like(depth_grid, dtype=np.float32)
-        mapped[inside] = np.clip(depth_grid[inside], 0.0, 1.0)
+    max_val = float(np.max(mapped[inside]))
+    if max_val > 1.0e-8:
+        mapped[inside] = mapped[inside] / max_val
     else:
-        mapped = np.zeros_like(depth_grid, dtype=np.float32)
-        mapped[inside] = np.clip(potential[inside] / max_val, 0.0, 1.0)
+        mapped[inside] = 0.0
 
-    mapped[inside] = np.power(mapped[inside], max(gamma, 1.0e-6)).astype(np.float32)
-    mapped[~inside] = -1.0
     return mapped
 
 
@@ -328,8 +318,6 @@ class Example:
         self.slice_speed = float(args.slice_speed)
         self.plane_scale = float(args.plane_scale)
         self.resolution = int(args.resolution)
-        self.pressure_gamma = float(args.pressure_gamma)
-        self.harmonic_iterations = int(args.harmonic_iterations)
         self.show_shape = False
         self.show_slice = True
 
@@ -344,18 +332,14 @@ class Example:
 
         self.sdf_center = wp.vec3(sdf_data.center)
         self.sdf_half_extents = wp.vec3(sdf_data.half_extents)
-        self.sparse_voxel_size = wp.vec3(sdf_data.sparse_voxel_size)
-        self.background_value = float(sdf_data.background_value)
-        self.sparse_sdf_ptr = wp.uint64(int(sdf_data.sparse_sdf_ptr))
-        self.coarse_sdf_ptr = wp.uint64(int(sdf_data.coarse_sdf_ptr))
-
-        self.global_pressure_depth = max(
-            1.0e-4,
-            min(
-                float(self.sdf_half_extents[0]),
-                float(self.sdf_half_extents[1]),
-                float(self.sdf_half_extents[2]),
-            ),
+        self.mesh_id = wp.uint64(int(self.mesh.finalize(device=self.device)))
+        self.mesh_query_dist = float(
+            4.0
+            * np.sqrt(
+                float(self.sdf_half_extents[0]) ** 2
+                + float(self.sdf_half_extents[1]) ** 2
+                + float(self.sdf_half_extents[2]) ** 2
+            )
         )
 
         self.capacity = self.resolution * self.resolution
@@ -428,13 +412,10 @@ class Example:
                 self.slice_axis,
                 axis_position,
                 self.plane_scale,
-                self.sparse_sdf_ptr,
-                self.coarse_sdf_ptr,
+                self.mesh_id,
+                self.mesh_query_dist,
                 self.sdf_center,
                 self.sdf_half_extents,
-                self.sparse_voxel_size,
-                self.background_value,
-                self.global_pressure_depth,
             ],
             outputs=[self.slice_points, self.slice_density, self.slice_inside_count],
             device=self.device,
@@ -442,11 +423,7 @@ class Example:
 
         self.last_slice_count = int(self.slice_inside_count.numpy()[0])
         density_grid = self.slice_density.numpy().reshape(self.resolution, self.resolution)
-        immutable_field = harmonic_pressure_potential(
-            density_grid,
-            gamma=self.pressure_gamma,
-            iterations=self.harmonic_iterations,
-        )
+        immutable_field = build_immutable_pressure_field(density_grid)
         self.slice_texture = density_to_rgb_image(immutable_field)
         self._slice_dirty = False
 
@@ -486,9 +463,9 @@ class Example:
     def render_ui(self, imgui):
         imgui.text("Hydro Pressure Slice")
         imgui.text(f"Shape: {self.shape_name}")
-        imgui.text("Immutable harmonic pressure field.")
-        imgui.text("Smooth interior potential from slice Poisson solve.")
-        imgui.text(f"Nonlinear curve: field^gamma, gamma={self.pressure_gamma:.2f}")
+        imgui.text("Immutable Poisson field on mesh-defined interior.")
+        imgui.text("PDE: -Laplace(u)=1, boundary=0.")
+        imgui.text("No nonlinear remapping.")
 
         _changed, self.show_shape = imgui.checkbox("Show Shape", self.show_shape)
         _changed, self.show_slice = imgui.checkbox("Show Slice", self.show_slice)
@@ -563,18 +540,6 @@ if __name__ == "__main__":
         type=int,
         default=128,
         help="Slice grid resolution per axis (total samples = resolution^2).",
-    )
-    parser.add_argument(
-        "--pressure-gamma",
-        type=float,
-        default=2.2,
-        help="Nonlinear pressure curve exponent (density^gamma).",
-    )
-    parser.add_argument(
-        "--harmonic-iterations",
-        type=int,
-        default=160,
-        help="Jacobi iterations for slice harmonic pressure potential.",
     )
     parser.add_argument(
         "--plane-scale",
