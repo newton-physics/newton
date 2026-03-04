@@ -1136,7 +1136,7 @@ class Gaussian:
 
     @property
     def rotations(self) -> nparray:
-        """Quaternion orientations ``(w, x, y, z)``, shape ``(N, 4)``, float."""
+        """Quaternion orientations ``(x, y, z, w)``, shape ``(N, 4)``, float."""
         return self._rotations
 
     @property

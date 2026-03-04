@@ -684,17 +684,6 @@ class ViewerBase(ABC):
         if geo_type == newton.GeoType.GAUSSIAN:
             if geo_src is None:
                 raise ValueError(f"log_geo requires geo_src for GAUSSIAN (name={name})")
-            # lower, upper = geo_src.compute_aabb()
-            # center = (lower + upper) / 2.0
-            # half_extents = (upper - lower) / 2.0
-            # half_extents = np.maximum(half_extents, 1e-3)
-            # mesh = newton.Mesh.create_box(
-            #     half_extents[0],
-            #     half_extents[1],
-            #     half_extents[2],
-            #     duplicate_vertices=True,
-            #     compute_inertia=False,
-            # )
             mesh = geo_src.compute_proxy_mesh()
             points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
             indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
