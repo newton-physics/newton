@@ -2207,10 +2207,22 @@ def solve_body_contact_positions(
         delta = bx_b - bx_a
         friction_delta = delta - wp.dot(n, delta) * n
 
-        perp = wp.normalize(friction_delta)
-
         r_a = bx_a - wp.transform_point(X_wb_a, com_a)
         r_b = bx_b - wp.transform_point(X_wb_b, com_b)
+
+        # Include tangential relative surface motion so moving kinematic
+        # bodies (e.g. conveyor belts) can transmit traction to dynamics.
+        v_a = wp.vec3(0.0)
+        v_b = wp.vec3(0.0)
+        if body_a >= 0:
+            v_a = velocity_at_point(body_qd[body_a], r_a)
+        if body_b >= 0:
+            v_b = velocity_at_point(body_qd[body_b], r_b)
+        rel_v = v_b - v_a
+        rel_v_t = rel_v - wp.dot(n, rel_v) * n
+        friction_delta += rel_v_t * dt
+
+        perp = wp.normalize(friction_delta)
 
         angular_a = -wp.cross(r_a, perp)
         angular_b = wp.cross(r_b, perp)
