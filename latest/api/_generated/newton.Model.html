@@ -2099,16 +2099,16 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dt class="sig sig-object py" id="newton.Model.shape_collision_aabb_lower">
 <span class="sig-name descname"><span class="pre">shape_collision_aabb_lower</span></span><a class="headerlink" href="#newton.Model.shape_collision_aabb_lower" title="Link to this definition">#</a></dt>
 <dd><p>Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
-Computed from base geometry only (excludes thickness - thickness is added during contact
-margin calculations). Used for voxel-based contact reduction.</p>
+Computed from base geometry only (excludes shape margin; shape margin and gap are applied
+during contact margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_collision_aabb_upper">
 <span class="sig-name descname"><span class="pre">shape_collision_aabb_upper</span></span><a class="headerlink" href="#newton.Model.shape_collision_aabb_upper" title="Link to this definition">#</a></dt>
 <dd><p>Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
-Computed from base geometry only (excludes thickness - thickness is added during contact
-margin calculations). Used for voxel-based contact reduction.</p>
+Computed from base geometry only (excludes shape margin; shape margin and gap are applied
+during contact margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
