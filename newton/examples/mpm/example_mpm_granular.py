@@ -196,101 +196,10 @@ class Example:
             self.viewer.log_lines("/normal_roots", None, None, None)
             self.viewer.log_lines("/normal_tips", None, None, None)
 
-        if self.show_stress:
-            # for debugging purposes, we can visualize the collider normals
-
-            stresses = self.solver._last_step_data.ws_stress_field.dof_values
-            pos = self.solver._last_step_data.ws_stress_field.space.node_positions()
-
-            pressure = stresses.numpy()[:, 0]
-
-            # map pressure to color using a colormap
-            # Map pressure to colors using a simple colormap: blue (min) -> green (mid) -> red (max)
-            pressure_min = np.min(pressure)
-            pressure_max = np.max(pressure)
-            pressure_range = pressure_max - pressure_min if pressure_max > pressure_min else 1.0
-            # Normalize pressure to [0, 1]
-            pressure_norm = (pressure - pressure_min) / pressure_range
-
-            # Blue (low), Green (mid), Red (high)
-            # mid point at 0.5, so interpolate <0.5 blue->green, >=0.5 green->red
-            colors_np = np.zeros((pressure.shape[0], 3), dtype=np.float32)
-            for i, v in enumerate(pressure_norm):
-                if v < 0.5:
-                    # blue to green
-                    t = v / 0.5
-                    colors_np[i] = (
-                        0.0 * (1 - t) + 0.0 * t,  # R: blue->green: 0->0
-                        0.0 * (1 - t) + 1.0 * t,  # G: blue->green: 0->1
-                        1.0 * (1 - t) + 0.0 * t,
-                    )  # B: blue->green: 1->0
-                else:
-                    # green to red
-                    t = (v - 0.5) / 0.5
-                    colors_np[i] = (
-                        0.0 * (1 - t) + 1.0 * t,  # R: green->red: 0->1
-                        1.0 * (1 - t) + 0.0 * t,  # G: green->red: 1->0
-                        0.0,
-                    )  # B: green->red: 0->0
-
-            colors = wp.array(colors_np, dtype=wp.vec3)
-
-            # draw two segments per normal so we can visualize direction (red roots, orange tips)
-            self.viewer.log_lines(
-                "/stress",
-                starts=pos,
-                ends=pos + wp.vec3(0.0, 0.0, 0.01),
-                colors=colors,
-            )
-        else:
-            self.viewer.log_lines("/stress", None, None, None)
-
-        # self.particle_colors = wp.full(
-        #     shape=self.model.particle_count, value=wp.vec3(0.1, 0.1, 0.2), device=self.model.device
-        # )
-
-        # Jp = self.state_0.particle_Jp.numpy()
-        # Jp_min = 0.01
-        # Jp_max = 4.0
-        # Jp_range = Jp_max - Jp_min if Jp_max > Jp_min else 1.0
-        # Jp_norm = (Jp - Jp_min) / Jp_range
-
-        # colors_np = np.zeros((Jp.shape[0], 3), dtype=np.float32)
-        # for i, v in enumerate(Jp_norm):
-        #     if v < 0.5:
-        #         # blue to green
-        #         t = v / 0.5
-        #         colors_np[i] = (
-        #             0.0 * (1 - t) + 0.0 * t,  # R: blue->green: 0->0
-        #             0.0 * (1 - t) + 1.0 * t,  # G: blue->green: 0->1
-        #             1.0 * (1 - t) + 0.0 * t,
-        #         )  # B: blue->green: 1->0
-        #     else:
-        #         # green to red
-        #         t = (v - 0.5) / 0.5
-        #         colors_np[i] = (
-        #             0.0 * (1 - t) + 1.0 * t,  # R: green->red: 0->1
-        #             1.0 * (1 - t) + 0.0 * t,  # G: green->red: 1->0
-        #             0.0,
-        #         )  # B: green->red: 0->0
-
-        # self.particle_colors = wp.array(colors_np, dtype=wp.vec3)
-
-        # # Jp_colors = Jp_norm * wp.vec3(1.0, 0.0, 0.0) + (1.0 - Jp_norm) * wp.vec3(0.0, 1.0, 0.0)
-
-        # self.viewer.log_points(
-        #     name="/model/particles",
-        #     points=self.state_0.particle_q,
-        #     radii=self.model.particle_radius,
-        #     colors=self.particle_colors,
-        #     hidden=False,
-        # )
-
         self.viewer.end_frame()
 
     def render_ui(self, imgui):
         _changed, self.show_normals = imgui.checkbox("Show Normals", self.show_normals)
-        _changed, self.show_stress = imgui.checkbox("Show Stress", self.show_stress)
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, args):

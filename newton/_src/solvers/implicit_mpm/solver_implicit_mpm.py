@@ -383,19 +383,12 @@ def update_particle_strains(
     p_strain_delta = plastic_strain_delta(s)
     p_rate = wp.trace(p_strain_delta)
 
-    # if wp.abs(p_rate) < 1.0e-4:
-    #     p_rate = 0.0
-
-    shear = p_strain_delta - p_rate / 3.0 * wp.identity(n=3, dtype=float)
-    shear_n = wp.sqrt(wp.ddot(shear, shear))
-
     delta_Jp = wp.exp(
         p_rate
         * wp.where(
             p_rate < 0.0, material_parameters.hardening_rate[s.qp_index], material_parameters.softening_rate[s.qp_index]
         )
     )
-    # delta_Jp += 0.1 * shear_n
     particle_Jp_new = particle_Jp_prev[s.qp_index] * wp.clamp(delta_Jp, MIN_JP_DELTA, MAX_JP_DELTA)
 
     # elastic strain
