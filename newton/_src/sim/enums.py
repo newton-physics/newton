@@ -22,11 +22,14 @@ class BodyFlags(IntEnum):
     Flags for body properties.
     """
 
-    DYNAMIC = 0
+    DYNAMIC = 1 << 0
     """Default flag indicating a dynamic body that participates in simulation dynamics."""
 
-    KINEMATIC = 1 << 0
+    KINEMATIC = 1 << 1
     """Indicates that the body is kinematic and does not respond to forces."""
+
+    ALL = DYNAMIC | KINEMATIC
+    """Bitmask selecting both dynamic and kinematic bodies."""
 
 
 # Types of joints linking rigid bodies

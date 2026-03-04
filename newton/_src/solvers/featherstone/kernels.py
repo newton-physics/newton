@@ -18,7 +18,7 @@ from __future__ import annotations
 import warp as wp
 
 from ...math import transform_twist
-from ...sim import JointType, Model, State
+from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
@@ -57,6 +57,17 @@ def compute_com_transforms(
     tid = wp.tid()
     com = body_com[tid]
     body_X_com[tid] = wp.transform(com, wp.quat_identity())
+
+
+@wp.kernel
+def zero_kinematic_body_forces(
+    body_flags: wp.array(dtype=wp.int32),
+    body_f: wp.array(dtype=wp.spatial_vector),
+):
+    tid = wp.tid()
+    if (body_flags[tid] & BodyFlags.KINEMATIC) == 0:
+        return
+    body_f[tid] = wp.spatial_vector()
 
 
 @wp.func
@@ -1379,6 +1390,51 @@ def integrate_generalized_joints(
         joint_q_new,
         joint_qd_new,
     )
+
+
+@wp.kernel
+def zero_kinematic_joint_qdd(
+    joint_child: wp.array(dtype=int),
+    body_flags: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=int),
+    joint_qdd: wp.array(dtype=float),
+):
+    joint_id = wp.tid()
+    child = joint_child[joint_id]
+    if (body_flags[child] & BodyFlags.KINEMATIC) == 0:
+        return
+
+    dof_start = joint_qd_start[joint_id]
+    dof_end = joint_qd_start[joint_id + 1]
+    for i in range(dof_start, dof_end):
+        joint_qdd[i] = 0.0
+
+
+@wp.kernel
+def copy_kinematic_joint_state(
+    joint_child: wp.array(dtype=int),
+    body_flags: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=int),
+    joint_qd_start: wp.array(dtype=int),
+    joint_q_in: wp.array(dtype=float),
+    joint_qd_in: wp.array(dtype=float),
+    joint_q_out: wp.array(dtype=float),
+    joint_qd_out: wp.array(dtype=float),
+):
+    joint_id = wp.tid()
+    child = joint_child[joint_id]
+    if (body_flags[child] & BodyFlags.KINEMATIC) == 0:
+        return
+
+    q_start = joint_q_start[joint_id]
+    q_end = joint_q_start[joint_id + 1]
+    for i in range(q_start, q_end):
+        joint_q_out[i] = joint_q_in[i]
+
+    qd_start = joint_qd_start[joint_id]
+    qd_end = joint_qd_start[joint_id + 1]
+    for i in range(qd_start, qd_end):
+        joint_qd_out[i] = joint_qd_in[i]
 
 
 # ============================================================================

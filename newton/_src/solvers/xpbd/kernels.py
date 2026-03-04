@@ -24,7 +24,22 @@ from ...math import (
     vec_min,
     velocity_at_point,
 )
-from ...sim import JointType
+from ...sim import BodyFlags, JointType
+
+
+@wp.kernel
+def copy_kinematic_body_state_kernel(
+    body_flags: wp.array(dtype=wp.int32),
+    body_q_in: wp.array(dtype=wp.transform),
+    body_qd_in: wp.array(dtype=wp.spatial_vector),
+    body_q_out: wp.array(dtype=wp.transform),
+    body_qd_out: wp.array(dtype=wp.spatial_vector),
+):
+    tid = wp.tid()
+    if (body_flags[tid] & int(BodyFlags.KINEMATIC)) == 0:
+        return
+    body_q_out[tid] = body_q_in[tid]
+    body_qd_out[tid] = body_qd_in[tid]
 
 
 @wp.kernel

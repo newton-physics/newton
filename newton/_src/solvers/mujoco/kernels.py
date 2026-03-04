@@ -22,7 +22,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import EqType, JointTargetMode, JointType
+from ...sim import BodyFlags, EqType, JointTargetMode, JointType
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
@@ -1395,6 +1395,8 @@ def update_ctrl_direct_actuator_properties_kernel(
 @wp.kernel
 def update_dof_properties_kernel(
     mjc_dof_to_newton_dof: wp.array2d(dtype=wp.int32),
+    newton_dof_to_body: wp.array(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
     joint_damping: wp.array(dtype=float),
@@ -1411,13 +1413,16 @@ def update_dof_properties_kernel(
 
     Iterates over MuJoCo DOFs [world, dof], looks up Newton DOF,
     and copies armature, friction, damping, solimp, solref.
+    Armature updates are skipped for DOFs whose child body is marked kinematic.
     """
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
 
-    dof_armature[world, mjc_dof] = joint_armature[newton_dof]
+    newton_body = newton_dof_to_body[newton_dof]
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) == 0:
+        dof_armature[world, mjc_dof] = joint_armature[newton_dof]
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
@@ -1425,6 +1430,34 @@ def update_dof_properties_kernel(
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
     if dof_solref:
         dof_solref_out[world, mjc_dof] = dof_solref[newton_dof]
+
+
+@wp.kernel
+def update_body_properties_kernel(
+    mjc_dof_to_newton_dof: wp.array2d(dtype=wp.int32),
+    newton_dof_to_body: wp.array(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
+    joint_armature: wp.array(dtype=float),
+    kinematic_armature: float,
+    # outputs
+    dof_armature: wp.array2d(dtype=float),
+):
+    """Update MuJoCo dof_armature from Newton body flags.
+
+    For each MuJoCo DOF, the mapped Newton child body controls armature source:
+    - kinematic body -> ``kinematic_armature``
+    - dynamic body   -> Newton ``joint_armature``
+    """
+    world, mjc_dof = wp.tid()
+    newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
+    if newton_dof < 0:
+        return
+
+    newton_body = newton_dof_to_body[newton_dof]
+    if newton_body >= 0 and (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+        dof_armature[world, mjc_dof] = kinematic_armature
+    else:
+        dof_armature[world, mjc_dof] = joint_armature[newton_dof]
 
 
 @wp.kernel
@@ -1480,39 +1513,6 @@ def update_jnt_properties_kernel(
 
 
 @wp.kernel
-def update_mocap_transforms_kernel(
-    mjc_mocap_to_newton_jnt: wp.array2d(dtype=wp.int32),
-    newton_joint_X_p: wp.array(dtype=wp.transform),
-    newton_joint_X_c: wp.array(dtype=wp.transform),
-    # outputs
-    mocap_pos: wp.array2d(dtype=wp.vec3),
-    mocap_quat: wp.array2d(dtype=wp.quat),
-):
-    """Update mocap body positions and orientations from Newton joint data.
-
-    Iterates over MuJoCo mocap bodies [world, mocap_idx].
-    Mocap bodies are fixed-base articulations with no MuJoCo joint.
-    """
-    world, mocap_idx = wp.tid()
-
-    # Get the Newton joint index for this mocap body
-    newton_jnt = mjc_mocap_to_newton_jnt[world, mocap_idx]
-    if newton_jnt < 0:
-        return
-
-    # Get transforms from Newton
-    parent_xform = newton_joint_X_p[newton_jnt]
-    child_xform = newton_joint_X_c[newton_jnt]
-
-    # Compute body transform: X_p * inv(X_c)
-    tf = parent_xform * wp.transform_inverse(child_xform)
-
-    # Update mocap position and orientation
-    mocap_pos[world, mocap_idx] = tf.p
-    mocap_quat[world, mocap_idx] = quat_xyzw_to_wxyz(tf.q)
-
-
-@wp.kernel
 def update_joint_transforms_kernel(
     mjc_jnt_to_newton_jnt: wp.array2d(dtype=wp.int32),
     mjc_jnt_to_newton_dof: wp.array2d(dtype=wp.int32),
@@ -1535,7 +1535,7 @@ def update_joint_transforms_kernel(
     - Updates MuJoCo body_pos/body_quat from Newton joint transforms
     - Updates MuJoCo jnt_pos and jnt_axis
 
-    Note: Mocap bodies are handled by update_mocap_transforms_kernel.
+    Free joints are skipped because their motion is encoded directly in qpos/qvel.
     """
     world, mjc_jnt = wp.tid()
 
@@ -1560,8 +1560,6 @@ def update_joint_transforms_kernel(
     tf = parent_xform * wp.transform_inverse(child_xform)
 
     # Get the MuJoCo body for this joint and update its transform
-    # Note: Mocap bodies don't have MuJoCo joints, so they're handled
-    # separately by update_mocap_transforms_kernel
     mjc_body = mjc_jnt_bodyid[mjc_jnt]
     body_pos[world, mjc_body] = tf.p
     body_quat[world, mjc_body] = quat_xyzw_to_wxyz(tf.q)

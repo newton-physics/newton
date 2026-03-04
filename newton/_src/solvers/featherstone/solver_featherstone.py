@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
+from ...sim import BodyFlags, Contacts, Control, Model, State
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -36,6 +37,7 @@ from .kernels import (
     compute_com_transforms,
     compute_spatial_inertia,
     convert_body_force_com_to_origin,
+    copy_kinematic_joint_state,
     create_inertia_matrix_cholesky_kernel,
     create_inertia_matrix_kernel,
     eval_dense_cholesky_batched,
@@ -48,6 +50,8 @@ from .kernels import (
     eval_rigid_mass,
     eval_rigid_tau,
     integrate_generalized_joints,
+    zero_kinematic_body_forces,
+    zero_kinematic_joint_qdd,
 )
 
 
@@ -121,6 +125,27 @@ class SolverFeatherstone(SolverBase):
         self.fuse_cholesky = fuse_cholesky
 
         self._step = 0
+
+        self.has_kinematic_bodies = False
+        self.has_kinematic_joints = False
+        self.joint_armature_effective = model.joint_armature
+        if model.body_count:
+            body_flags = model.body_flags.numpy()
+            kinematic_mask = (body_flags & int(BodyFlags.KINEMATIC)) != 0
+            self.has_kinematic_bodies = bool(np.any(kinematic_mask))
+            if model.joint_count and self.has_kinematic_bodies:
+                joint_child = model.joint_child.numpy()
+                joint_qd_start = model.joint_qd_start.numpy()
+                joint_armature = model.joint_armature.numpy().copy()
+                for joint_idx in range(model.joint_count):
+                    if not kinematic_mask[joint_child[joint_idx]]:
+                        continue
+                    self.has_kinematic_joints = True
+                    dof_start = int(joint_qd_start[joint_idx])
+                    dof_end = int(joint_qd_start[joint_idx + 1])
+                    joint_armature[dof_start:dof_end] = 1.0e10
+                if self.has_kinematic_joints:
+                    self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
 
         self._compute_articulation_indices(model)
         self._allocate_model_aux_vars(model)
@@ -438,6 +463,15 @@ class SolverFeatherstone(SolverBase):
                         device=model.device,
                     )
 
+                if self.has_kinematic_bodies and body_f is not None:
+                    wp.launch(
+                        zero_kinematic_body_forces,
+                        dim=model.body_count,
+                        inputs=[model.body_flags],
+                        outputs=[body_f],
+                        device=model.device,
+                    )
+
                 if model.articulation_count:
                     # evaluate joint torques
                     state_aug.body_ft_s.zero_()
@@ -548,7 +582,7 @@ class SolverFeatherstone(SolverBase):
                                         self.articulation_H_start,
                                         self.articulation_H_rows,
                                         self.H,
-                                        model.joint_armature,
+                                        self.joint_armature_effective,
                                     ],
                                     outputs=[self.L],
                                     device=model.device,
@@ -617,7 +651,7 @@ class SolverFeatherstone(SolverBase):
                                     self.articulation_H_start,
                                     self.articulation_H_rows,
                                     self.H,
-                                    model.joint_armature,
+                                    self.joint_armature_effective,
                                 ],
                                 outputs=[self.L],
                                 device=model.device,
@@ -651,6 +685,15 @@ class SolverFeatherstone(SolverBase):
                         ],
                         device=model.device,
                     )
+
+                    if self.has_kinematic_joints:
+                        wp.launch(
+                            zero_kinematic_joint_qdd,
+                            dim=model.joint_count,
+                            inputs=[model.joint_child, model.body_flags, model.joint_qd_start],
+                            outputs=[state_aug.joint_qdd],
+                            device=model.device,
+                        )
                     # print("joint_qdd:")
                     # print(state_aug.joint_qdd.numpy())
                     # print("\n\n")
@@ -675,6 +718,22 @@ class SolverFeatherstone(SolverBase):
                     outputs=[state_out.joint_q, state_out.joint_qd],
                     device=model.device,
                 )
+
+                if self.has_kinematic_joints:
+                    wp.launch(
+                        copy_kinematic_joint_state,
+                        dim=model.joint_count,
+                        inputs=[
+                            model.joint_child,
+                            model.body_flags,
+                            model.joint_q_start,
+                            model.joint_qd_start,
+                            state_in.joint_q,
+                            state_in.joint_qd,
+                        ],
+                        outputs=[state_out.joint_q, state_out.joint_qd],
+                        device=model.device,
+                    )
 
                 # update maximal coordinates using FK with velocity conversion
                 eval_fk_with_velocity_conversion(model, state_out.joint_q, state_out.joint_qd, state_out)
