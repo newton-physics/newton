@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.sdf_hydroelastic import weighted_sdf_difference
+from newton._src.geometry.sdf_hydroelastic import _solve_poisson_pressure_extent, weighted_sdf_difference
 from newton.geometry import HydroelasticSDF, HydroelasticType
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -896,6 +896,43 @@ def test_weighted_sdf_difference_is_continuous_across_surface(test, device):
     test.assertTrue(np.allclose(values, expected, rtol=1.0e-6, atol=1.0e-8))
 
 
+def test_poisson_pressure_extent_has_positive_deep_interior(test, device):
+    """Ensure PDE pressure extent has no internal zero pocket for a box-like SDF."""
+    _ = device
+    n = 33
+    x = np.linspace(-0.5, 0.5, n, dtype=np.float32)
+    y = np.linspace(-0.4, 0.4, n, dtype=np.float32)
+    z = np.linspace(-0.3, 0.3, n, dtype=np.float32)
+    xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
+
+    # SDF of an axis-aligned box centered at origin.
+    sdf = np.maximum.reduce([np.abs(xx) - 0.45, np.abs(yy) - 0.32, np.abs(zz) - 0.22]).astype(np.float32)
+    voxel_size = np.array(
+        [
+            float(x[1] - x[0]),
+            float(y[1] - y[0]),
+            float(z[1] - z[0]),
+        ],
+        dtype=np.float32,
+    )
+
+    field = _solve_poisson_pressure_extent(sdf, voxel_size, max_iters=900, tol=1.0e-6)
+    inside = sdf < 0.0
+    deep_inside = sdf < (-2.0 * np.min(voxel_size))
+
+    test.assertTrue(np.all(field[~inside] == 0.0), "Pressure field must stay zero outside geometry")
+    test.assertGreater(float(np.max(field[inside])), 0.5, "Expected meaningful interior pressure values")
+    test.assertGreater(
+        float(np.min(field[deep_inside])),
+        1.0e-4,
+        "Deep interior should remain strictly positive (no internal cavity/discontinuity)",
+    )
+
+    center = float(field[n // 2, n // 2, n // 2])
+    near_surface = float(field[n // 2, n // 2, 2])
+    test.assertGreater(center, near_surface, "Pressure extent should increase from boundary toward interior")
+
+
 def _build_two_box_hydro_mode_scene(device, mode_a: HydroelasticType, mode_b: HydroelasticType):
     """Create a minimal two-box scene for hydroelastic mode routing tests."""
     builder = newton.ModelBuilder(gravity=0.0)
@@ -1305,6 +1342,12 @@ add_function_test(
     TestHydroelastic,
     "test_weighted_sdf_difference_is_continuous_across_surface",
     test_weighted_sdf_difference_is_continuous_across_surface,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_poisson_pressure_extent_has_positive_deep_interior",
+    test_poisson_pressure_extent_has_positive_deep_interior,
     devices=cuda_devices,
 )
 add_function_test(
