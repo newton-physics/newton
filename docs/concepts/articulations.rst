@@ -236,6 +236,13 @@ In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a 
 You can tune this through the ``kinematic_armature`` constructor argument;
 see :meth:`~newton.solvers.SolverMuJoCo.__init__`.
 
+During Newton-to-MuJoCo conversion, :class:`~newton.solvers.SolverMuJoCo` handles kinematic roots in two ways:
+
+- Kinematic roots with non-fixed joints are exported as regular MuJoCo joints and use
+  ``kinematic_armature`` regularization on their DOFs.
+- Kinematic roots attached to world with a fixed joint are exported as MuJoCo mocap bodies
+  (no MuJoCo joint DOFs), and their poses are synchronized from the Newton joint transforms.
+
 .. _Joint types:
 
 Joint types
