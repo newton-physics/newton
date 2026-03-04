@@ -688,6 +688,72 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertEqual(builder.joint_child[fixed_idx], root_idx)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_fixed_root_joint_preserves_body_transform(self):
+        """A fixed root joint to world must preserve the root body's position and rotation in joint_X_p."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        root_pos = Gf.Vec3d(1.0, 2.0, 0.5)
+        root_rot = Gf.Quatf(0.5, 0.5, 0.5, 0.5)  # 120-deg rotation around (1,1,1)
+
+        root = UsdGeom.Xform.Define(stage, "/World/Articulation/Root")
+        root.AddTranslateOp().Set(root_pos)
+        root.AddOrientOp().Set(root_rot)
+        UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
+        UsdPhysics.MassAPI.Apply(root.GetPrim()).GetMassAttr().Set(1.0)
+
+        link = UsdGeom.Xform.Define(stage, "/World/Articulation/Link")
+        link.AddTranslateOp().Set(root_pos + Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/FixedToWorld")
+        fixed.CreateBody0Rel().SetTargets([root.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        revolute = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Revolute")
+        revolute.CreateBody0Rel().SetTargets([root.GetPath()])
+        revolute.CreateBody1Rel().SetTargets([link.GetPath()])
+        revolute.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        revolute.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        revolute.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        revolute.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        revolute.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        root_idx = builder.body_label.index("/World/Articulation/Root")
+        np.testing.assert_allclose(
+            body_q[root_idx, :3],
+            [root_pos[0], root_pos[1], root_pos[2]],
+            atol=1e-4,
+            err_msg="Root body position must match USD prim translation",
+        )
+        img = root_rot.GetImaginary()
+        expected_quat = [img[0], img[1], img[2], root_rot.GetReal()]
+        np.testing.assert_allclose(
+            body_q[root_idx, 3:],
+            expected_quat,
+            atol=1e-4,
+            err_msg="Root body rotation must match USD prim orientation",
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_d6_raises(self):
         """Reversing a D6 joint should raise an error."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

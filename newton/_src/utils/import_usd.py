@@ -1594,8 +1594,34 @@ def parse_usd(
                         world_body_prim = stage.GetPrimAtPath(world_body_path) if world_body_path else None
                         if world_body_prim is not None and world_body_prim.IsValid():
                             world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
+                        elif not world_body_path:
+                            # JointDesc returned "" for the world-side body.
+                            # Check whether the USD joint targets a non-rigid
+                            # prim (e.g. a Ground xform): if so, localPose0
+                            # already carries its world-space transform and we
+                            # should use identity (the original behaviour).
+                            # If no such prim exists the root body's own pose
+                            # must be used to anchor the fixed joint.
+                            joint_prim = stage.GetPrimAtPath(joint_names[i])
+                            usd_joint = UsdPhysics.Joint(joint_prim)
+                            has_nonrigid_target = False
+                            for rel in (usd_joint.GetBody0Rel(), usd_joint.GetBody1Rel()):
+                                targets = rel.GetTargets()
+                                if targets:
+                                    t = str(targets[0])
+                                    if t not in body_ids:
+                                        has_nonrigid_target = True
+                                        break
+                            if has_nonrigid_target:
+                                world_body_xform = wp.transform_identity()
+                            else:
+                                root_joint_child = joint_edges[sorted_joints[0]][1]
+                                if bodies_follow_joint_ordering:
+                                    child_body_id = path_body_map[body_data[root_joint_child]["label"]]
+                                else:
+                                    child_body_id = art_bodies[root_joint_child]
+                                world_body_xform = wp.transform_inverse(incoming_world_xform) * builder.body_q[child_body_id]
                         else:
-                            # world-side path can be empty (body0 == ""); localPose0 already carries world-side pose
                             world_body_xform = wp.transform_identity()
                         root_frame_xform = (
                             wp.transform_inverse(articulation_root_xform)
