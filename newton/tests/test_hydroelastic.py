@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.sdf_hydroelastic import weighted_sdf_difference
 from newton.geometry import HydroelasticSDF, HydroelasticType
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -53,6 +54,18 @@ solvers = {
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
 }
+
+
+@wp.kernel(enable_backward=False)
+def weighted_sdf_difference_kernel(
+    val_a: wp.array(dtype=wp.float32),
+    val_b: wp.array(dtype=wp.float32),
+    w_a: wp.float32,
+    w_b: wp.float32,
+    out: wp.array(dtype=wp.float32),
+):
+    tid = wp.tid()
+    out[tid] = weighted_sdf_difference(val_a[tid], val_b[tid], w_a, w_b)
 
 
 # --- Helper functions ---
@@ -852,6 +865,37 @@ def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
     )
 
 
+def test_weighted_sdf_difference_is_continuous_across_surface(test, device):
+    """Ensure the weighted hydroelastic field has no branch jump at phi=0."""
+    val_a = wp.array(np.array([-1.0e-6, 0.0, 1.0e-6], dtype=np.float32), dtype=wp.float32, device=device)
+    val_b = wp.array(np.array([-2.0e-2, -2.0e-2, -2.0e-2], dtype=np.float32), dtype=wp.float32, device=device)
+    out = wp.empty(3, dtype=wp.float32, device=device)
+
+    k_a = np.float32(2.0e8)
+    k_b = np.float32(8.0e8)
+    denom = np.sqrt(k_a * k_b).astype(np.float32)
+    w_a = np.float32(k_a / denom)
+    w_b = np.float32(k_b / denom)
+
+    wp.launch(
+        weighted_sdf_difference_kernel,
+        dim=3,
+        inputs=[val_a, val_b, w_a, w_b],
+        outputs=[out],
+        device=device,
+    )
+    wp.synchronize()
+
+    values = out.numpy()
+
+    # Around phi=0 the field should vary smoothly with slope w_a.
+    test.assertLess(abs(values[1] - values[0]), 1.0e-5)
+    test.assertLess(abs(values[2] - values[1]), 1.0e-5)
+
+    expected = w_a * val_a.numpy() - w_b * val_b.numpy()
+    test.assertTrue(np.allclose(values, expected, rtol=1.0e-6, atol=1.0e-8))
+
+
 def _build_two_box_hydro_mode_scene(device, mode_a: HydroelasticType, mode_b: HydroelasticType):
     """Create a minimal two-box scene for hydroelastic mode routing tests."""
     builder = newton.ModelBuilder(gravity=0.0)
@@ -1255,6 +1299,12 @@ add_function_test(
     TestHydroelastic,
     "test_entry_k_eff_matches_shape_harmonic_mean",
     test_entry_k_eff_matches_shape_harmonic_mean,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_weighted_sdf_difference_is_continuous_across_surface",
+    test_weighted_sdf_difference_is_continuous_across_surface,
     devices=cuda_devices,
 )
 add_function_test(

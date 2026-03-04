@@ -334,6 +334,11 @@ class MeshGL:
                 except Exception:
                     pass
                 self.texture_id = None
+            # Disable texture shading for direct mesh rendering.
+            gl.glBindVertexArray(self.vao)
+            gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
+            gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
+            gl.glBindVertexArray(0)
             return
 
         if self.texture_id is not None:
@@ -347,6 +352,12 @@ class MeshGL:
         if not texture_id:
             return
         self.texture_id = texture_id
+
+        # Enable texture shading and avoid tinting the texture by base color.
+        gl.glBindVertexArray(self.vao)
+        gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 1.0)
+        gl.glVertexAttrib3f(7, 1.0, 1.0, 1.0)
+        gl.glBindVertexArray(0)
 
     def render(self):
         if not self.hidden:

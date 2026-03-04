@@ -1161,7 +1161,10 @@ def get_rel_stiffness(
     mode_a: wp.int32,
     mode_b: wp.int32,
 ) -> tuple[wp.float32, wp.float32]:
-    """Compute relative stiffness weights used in SDF difference evaluation."""
+    """Compute relative stiffness weights used in SDF difference evaluation.
+
+    Returns ``(w_a, w_b)`` for the affine field ``w_a*phi_a - w_b*phi_b``.
+    """
     compliant_a = is_hydroelastic_compliant(mode_a)
     compliant_b = is_hydroelastic_compliant(mode_b)
 
@@ -1174,6 +1177,21 @@ def get_rel_stiffness(
     if not compliant_a and compliant_b:
         return 1.0, 0.0
     return 1.0, 1.0
+
+
+@wp.func
+def weighted_sdf_difference(
+    val_a: wp.float32,
+    val_b: wp.float32,
+    w_a: wp.float32,
+    w_b: wp.float32,
+) -> wp.float32:
+    """Evaluate the weighted SDF difference used for hydroelastic isosurfaces.
+
+    Using one affine expression everywhere avoids discontinuities caused by
+    switching formulas at ``phi=0`` boundaries.
+    """
+    return w_a * val_a - w_b * val_b
 
 
 @wp.func
@@ -1203,10 +1221,7 @@ def sdf_diff_sdf(
 
     is_valid = not (wp.isnan(valA) or wp.isnan(valB))
 
-    if valA < 0 and valB < 0:
-        diff = k_eff_a * valA - k_eff_b * valB
-    else:
-        diff = valA - valB
+    diff = weighted_sdf_difference(valA, valB, k_eff_a, k_eff_b)
     return diff, valA, valB, is_valid
 
 
@@ -1233,10 +1248,7 @@ def sdf_diff_sdf(
 
     is_valid = not (wp.isnan(valA) or wp.isnan(valB))
 
-    if valA < 0 and valB < 0:
-        diff = k_eff_a * valA - k_eff_b * valB
-    else:
-        diff = valA - valB
+    diff = weighted_sdf_difference(valA, valB, k_eff_a, k_eff_b)
     return diff, valA, valB, is_valid
 
 

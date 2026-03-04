@@ -138,6 +138,13 @@
 - Remove `robot_humanoid` example in favor of `basic_plotting` which uses the same humanoid model with diagnostics visualization
 
 ### Fixed
+- Keep hydroelastic weighted SDF field evaluation continuous across SDF
+  sign changes by removing piecewise inside/outside switching in
+  ``newton.geometry.HydroelasticSDF``. This avoids non-physical contour
+  transitions when compliant-compliant pairs use different stiffnesses.
+- Visualize an immutable harmonic pressure field in
+  ``newton.examples.contacts.example_hydro_pressure_slice`` to avoid
+  discrete interior contour transitions in slice heat maps.
 
 - Fix GL viewer crash when enabling "Gap + Margin" for soft-body-only states with no rigid body transforms
 - Fix inertia validation spuriously inflating small but physically valid eigenvalues for lightweight components (< ~50 g) by using a relative threshold instead of an absolute 1e-6 cutoff
