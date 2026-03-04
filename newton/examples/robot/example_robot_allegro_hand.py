@@ -37,8 +37,6 @@ import newton.examples
 from newton import JointTargetMode
 from newton.solvers import SolverNotifyFlags
 
-hand_rotation = wp.normalize(wp.quat(0.283, 0.683, -0.622, 0.258))
-
 
 @wp.kernel
 def move_hand(
@@ -47,6 +45,7 @@ def move_hand(
     joint_limit_upper: wp.array(dtype=wp.float32),
     sim_time: wp.array(dtype=wp.float32),
     sim_dt: float,
+    hand_rotation: wp.quat,
     # outputs
     joint_target_pos: wp.array(dtype=wp.float32),
     joint_parent_xform: wp.array(dtype=wp.transform),
@@ -60,7 +59,7 @@ def move_hand(
     # animate the finger joints
     for i in range(20):
         di = root_dof_start + i
-        target = wp.sin(t + float(i * 6) * 0.1) * 0.15 + 0.3
+        target = wp.sin(t + float(i * 6) * 0.1) * 0.1 + 0.3
         joint_target_pos[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
@@ -89,10 +88,19 @@ class Example:
 
         self.device = wp.get_device()
 
+        self.hand_rotation = wp.normalize(wp.quat(0.21643, 0.706218, -0.648166, 0.185191))
+        contact_margin = 0.003
+        contact_gap = 0.05
+        max_contacts_per_world = 300
+
         allegro_hand = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
         allegro_hand.default_shape_cfg.ke = 1.0e3
         allegro_hand.default_shape_cfg.kd = 1.0e2
+        # Increase contact envelope to reduce missed/late hand-cube contacts
+        # during fast finger/root motion.
+        # allegro_hand.default_shape_cfg.margin = contact_margin
+        # allegro_hand.default_shape_cfg.gap = contact_gap
 
         asset_path = newton.utils.download_asset("wonik_allegro")
         asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
@@ -118,6 +126,8 @@ class Example:
 
         builder.default_shape_cfg.ke = 1.0e3
         builder.default_shape_cfg.kd = 1.0e2
+        builder.default_shape_cfg.margin = contact_margin
+        builder.default_shape_cfg.gap = contact_gap
         builder.add_ground_plane()
 
         self.model = builder.finalize()
@@ -135,12 +145,12 @@ class Example:
             solver="newton",
             integrator="implicitfast",
             njmax=200,
-            nconmax=150,
+            nconmax=max_contacts_per_world,
             impratio=10.0,
             cone="elliptic",
             iterations=100,
             ls_iterations=50,
-            use_mujoco_cpu=False,
+            use_mujoco_contacts=False,
         )
 
         self.state_0 = self.model.state()
@@ -160,7 +170,6 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -176,6 +185,7 @@ class Example:
                     self.model.joint_limit_upper,
                     self.world_time,
                     self.sim_dt,
+                    self.hand_rotation,
                 ],
                 outputs=[self.control.joint_target_pos, self.model.joint_X_p],
             )
@@ -183,6 +193,9 @@ class Example:
             # # update the solver since we have updated the joint parent transforms
             self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
 
+            # When using Newton contacts in SolverMuJoCo, refresh contacts every
+            # substep so the buffer is cleared/rebuilt from the current state.
+            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
