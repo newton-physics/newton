@@ -221,9 +221,10 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
             if render_albedo:
                 out_albedo[out_index] = tiling.pack_rgba_to_uint32(base_color, 1.0)
 
-            if not render_color:
-                return
+        if not render_color:
+            return
 
+        if not is_gaussian:
             if wp.static(config.enable_ambient_lighting):
                 up = wp.vec3f(0.0, 0.0, 1.0)
                 len_n = wp.length(closest_hit.normal)

@@ -5505,6 +5505,7 @@ class ModelBuilder:
         proxy_cfg_base = cfg.copy()
         cfg.has_shape_collision = False
         cfg.has_particle_collision = False
+        cfg.density = 0.0
 
         # Optionally add a collision proxy alongside the Gaussian shape
         if collision_proxy is not None:
@@ -5534,6 +5535,7 @@ class ModelBuilder:
             cfg=cfg,
             scale=scale,
             src=gaussian,
+            is_static=True,
             label=label,
             custom_attributes=custom_attributes,
         )

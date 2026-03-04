@@ -1052,6 +1052,7 @@ class Gaussian:
 
     @wp.struct
     class Data:
+        num_points: wp.int32
         transforms: wp.array(dtype=wp.transformf)
         scales: wp.array(dtype=wp.vec3f)
         opacities: wp.array(dtype=wp.float32)
@@ -1152,7 +1153,7 @@ class Gaussian:
 
     @property
     def sh_coeffs(self) -> nparray | None:
-        """Spherical harmonic coefficients, shape ``(N, C)``, float, or ``None``."""
+        """Spherical harmonic coefficients, shape ``(N, C)``, float."""
         return self._sh_coeffs
 
     @property
@@ -1199,6 +1200,7 @@ class Gaussian:
             self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
             self.warp_data.min_response = self.min_response
+            self.warp_data.num_points = self.warp_data.transforms.shape[0]
 
             lowers = wp.zeros(self.count, dtype=wp.vec3f)
             uppers = wp.zeros(self.count, dtype=wp.vec3f)
@@ -1356,7 +1358,7 @@ class Gaussian:
 
             hull_verts, hull_faces = remesh_alphashape(self._positions)
             return Mesh(hull_verts, hull_faces, compute_inertia=True)
-        raise ValueError(f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull'.")
+        raise ValueError(f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull', 'alphashape'.")
 
     @override
     def __hash__(self) -> int:

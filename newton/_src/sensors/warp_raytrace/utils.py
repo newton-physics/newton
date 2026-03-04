@@ -23,7 +23,7 @@ import warp as wp
 
 from ...core import MAXVAL
 from ...geometry import Gaussian, GeoType
-from . import bvh
+from . import gaussians
 from .types import RenderLightType
 
 if TYPE_CHECKING:
@@ -50,10 +50,8 @@ def compute_shape_bounds(
 
     elif in_shape_type[tid] == GeoType.GAUSSIAN:
         gaussian_id = in_shape_ptr[tid]
-        transforms = in_gaussians[gaussian_id].transforms
-        scales = in_gaussians[gaussian_id].scales
-        for i in range(transforms.shape[0]):
-            lower, upper = bvh.compute_ellipsoid_bounds(transforms[i], scales[i])
+        for i in range(in_gaussians[gaussian_id].num_points):
+            lower, upper = gaussians.compute_gaussian_bounds(in_gaussians[gaussian_id], i)
             min_point = wp.min(min_point, lower)
             max_point = wp.max(max_point, upper)
 

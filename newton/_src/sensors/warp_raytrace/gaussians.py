@@ -32,14 +32,8 @@ if TYPE_CHECKING:
 SH_C0 = wp.float32(0.28209479177387814)
 
 
-@wp.kernel
-def compute_gaussian_bvh_bounds(
-    gaussians_data: Gaussian.Data,
-    lowers: wp.array(dtype=wp.vec3f),
-    uppers: wp.array(dtype=wp.vec3f),
-):
-    tid = wp.tid()
-
+@wp.func
+def compute_gaussian_bounds(gaussians_data: Gaussian.Data, tid: wp.int32) -> tuple[wp.vec3f, wp.vec3f]:
     transform = gaussians_data.transforms[tid]
     scale = gaussians_data.scales[tid]
 
@@ -48,8 +42,17 @@ def compute_gaussian_bvh_bounds(
     ks = wp.sqrt(wp.log(min_response) / wp.float32(-0.5))
     scale = wp.vec3f(scale[0] * ks, scale[1] * ks, scale[2] * ks)
 
-    lower, upper = bvh.compute_ellipsoid_bounds(transform, scale)
+    return bvh.compute_ellipsoid_bounds(transform, scale)
 
+
+@wp.kernel
+def compute_gaussian_bvh_bounds(
+    gaussians_data: Gaussian.Data,
+    lowers: wp.array(dtype=wp.vec3f),
+    uppers: wp.array(dtype=wp.vec3f),
+):
+    tid = wp.tid()
+    lower, upper = compute_gaussian_bounds(gaussians_data, tid)
     lowers[tid] = lower
     uppers[tid] = upper
 
