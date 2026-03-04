@@ -108,6 +108,7 @@ class PressureFieldData:
     """Per-shape immutable pressure field volume handle."""
 
     pressure_ptr: wp.uint64
+    pressure_max: wp.float32
 
 
 @wp.kernel
@@ -144,6 +145,7 @@ def map_shape_pressure_data_kernel(
     sdf_idx = shape_sdf_index[shape_idx]
     if sdf_idx < 0:
         out_shape_pressure_data[shape_idx].pressure_ptr = wp.uint64(0)
+        out_shape_pressure_data[shape_idx].pressure_max = 0.0
     else:
         out_shape_pressure_data[shape_idx] = pressure_data[sdf_idx]
 
@@ -223,6 +225,7 @@ def create_empty_pressure_field_data() -> PressureFieldData:
     """Create an empty pressure field payload."""
     pressure_data = PressureFieldData()
     pressure_data.pressure_ptr = wp.uint64(0)
+    pressure_data.pressure_max = 0.0
     return pressure_data
 
 
@@ -417,6 +420,7 @@ def build_immutable_pressure_field_from_sdf(
 
     pressure_data = PressureFieldData()
     pressure_data.pressure_ptr = pressure_volume.id
+    pressure_data.pressure_max = float(np.max(pressure_grid)) if pressure_grid.size > 0 else 0.0
     return pressure_data, pressure_volume
 
 

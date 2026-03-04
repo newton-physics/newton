@@ -337,6 +337,10 @@ class Example:
         if self.pressure_volume is None:
             raise RuntimeError("Hydroelastic immutable pressure volume is missing for main shape.")
         self.pressure_volume_id = wp.uint64(int(self.pressure_volume.id))
+        pressure_table = hydro.compact_pressure_field_data.numpy()
+        self.pressure_global_max = float(pressure_table[main_sdf_idx]["pressure_max"])
+        if self.pressure_global_max <= 1.0e-8:
+            raise RuntimeError("Hydroelastic immutable pressure max is zero; expected positive interior pressure.")
 
         sdf_data = model.sdf_data.numpy()[main_sdf_idx]
         self.sdf_center = wp.vec3(sdf_data["center"])
@@ -416,11 +420,11 @@ class Example:
         inside = pressure_grid >= 0.0
         normalized = np.full_like(pressure_grid, -1.0, dtype=np.float32)
         if np.any(inside):
-            max_p = float(np.max(pressure_grid[inside]))
-            if max_p > 1.0e-8:
-                normalized[inside] = pressure_grid[inside] / max_p
+            if self.pressure_global_max > 1.0e-8:
+                normalized[inside] = pressure_grid[inside] / self.pressure_global_max
             else:
                 normalized[inside] = 0.0
+            normalized[inside] = np.clip(normalized[inside], 0.0, 1.0)
 
         self.last_validation_ok, self.last_deep_p05, self.last_zero_fraction, self.last_hole_fraction = (
             validate_slice_field(pressure_grid)
@@ -465,6 +469,7 @@ class Example:
         imgui.text("Hydro Pressure Slice")
         imgui.text(f"Shape: {self.shape_name}")
         imgui.text("Source: Hydroelastic immutable pressure volume.")
+        imgui.text("Color scale: normalized by immutable global max (not per-slice).")
         imgui.text("This is the same field used by contact isosurface extraction.")
         imgui.text("Validation: deep interior percentile, zero-fraction, interior-hole fraction.")
 
