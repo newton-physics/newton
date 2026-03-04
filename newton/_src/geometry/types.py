@@ -1368,7 +1368,7 @@ class Gaussian:
                     self._rotations.data.tobytes(),
                     self._scales.data.tobytes(),
                     self._opacities.data.tobytes(),
-                    None if self._sh_coeffs is None else self._sh_coeffs.data.tobytes(),
+                    self._sh_coeffs.data.tobytes(),
                     float(self._min_response),
                 )
             )
