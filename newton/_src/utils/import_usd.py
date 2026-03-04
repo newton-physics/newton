@@ -2225,8 +2225,22 @@ def parse_usd(
                     # created by schema resolvers are not real USD prims). Fall back to
                     # builder-accumulated mass properties from add_shape_*() calls.
                     cmp_mass = builder.body_mass[body_id]
-                    cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_com = builder.body_com[body_id]
+                    # When the body has an authored density, rescale accumulated mass
+                    # and inertia from the builder's default shape density to the
+                    # body-level density (USD body density overrides per-shape density).
+                    body_density_attr = mass_api.GetDensityAttr()
+                    if (
+                        body_density_attr.HasAuthoredValue()
+                        and float(body_density_attr.Get()) > 0.0
+                        and default_shape_density > 0.0
+                    ):
+                        density_scale = float(body_density_attr.Get()) / default_shape_density
+                        cmp_mass *= density_scale
+                        builder.body_inertia[body_id] = wp.mat33(
+                            np.array(builder.body_inertia[body_id]) * density_scale
+                        )
+                    cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
             # Inertia: authored diagonal + principal axes take precedence over mass computer.

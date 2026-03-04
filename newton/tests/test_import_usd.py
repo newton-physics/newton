@@ -1173,7 +1173,8 @@ class TestImportUsdPhysics(unittest.TestCase):
         When collision shapes live inside instanceable prims, USD's
         ComputeMassProperties cannot traverse into them and returns invalid results
         (mass < 0). The importer must fall back to the mass properties already
-        accumulated by the builder during add_shape_*() calls.
+        accumulated by the builder during add_shape_*() calls, and respect the
+        body-level authored density instead of the builder's default shape density.
         """
         from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -1183,15 +1184,18 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         # Create a prototype with a collision sphere (outside the body hierarchy).
         stage.OverridePrim("/Prototype_Collisions")
+        radius = 0.5
         sphere = UsdGeom.Sphere.Define(stage, "/Prototype_Collisions/sphere")
-        sphere.CreateRadiusAttr().Set(0.5)
+        sphere.CreateRadiusAttr().Set(radius)
         UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
 
-        # Create a rigid body with MassAPI applied but no values authored.
+        # Create a rigid body with MassAPI applied and only density authored.
+        body_density = 5.0
         body_xform = UsdGeom.Xform.Define(stage, "/World/Body")
         body_prim = body_xform.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
-        UsdPhysics.MassAPI.Apply(body_prim)
+        mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+        mass_api.CreateDensityAttr().Set(body_density)
 
         # Reference the collision prototype as an instanceable prim.
         collisions = stage.DefinePrim("/World/Body/collisions")
@@ -1202,9 +1206,9 @@ class TestImportUsdPhysics(unittest.TestCase):
         builder.add_usd(stage)
 
         self.assertEqual(builder.body_count, 1)
-        self.assertGreater(
-            builder.body_mass[0], 0.0, "Body mass must be positive (not overwritten by failed ComputeMassProperties)"
-        )
+        # Expected mass = body_density * sphere_volume = 5 * (4/3 * pi * 0.5^3).
+        expected_mass = body_density * (4.0 / 3.0 * np.pi * radius**3)
+        np.testing.assert_allclose(builder.body_mass[0], expected_mass, rtol=1e-5)
         # Verify inertia is also positive (not garbage).
         inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
         self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
