@@ -291,7 +291,9 @@
   displays the raw normalized Poisson pressure field.
 - Visualize an immutable harmonic pressure field in
   ``newton.examples.contacts.example_hydro_pressure_slice`` to avoid
-  discrete interior contour transitions in slice heat maps.
+  discrete interior contour transitions in slice heat maps. The slice demo
+  now samples the same immutable pressure volume used by
+  ``HydroelasticSDF`` during contact and reports validation metrics in-UI.
 - Remove nonlinear gamma remapping from
   ``newton.examples.contacts.example_hydro_pressure_slice`` so the demo
   displays the raw normalized Poisson pressure field.
