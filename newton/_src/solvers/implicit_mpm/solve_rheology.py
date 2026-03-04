@@ -21,9 +21,8 @@ from typing import Any
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
-from warp.fem.linalg import array_axpy, symmetric_eigenvalues_qr
-from warp.optim.linear import cg, LinearOperator
-
+from warp.fem.linalg import symmetric_eigenvalues_qr
+from warp.optim.linear import LinearOperator, cg
 
 _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
@@ -49,8 +48,16 @@ wp.set_module_options({"enable_backward": False})
 
 
 class YieldParamVec(wp.types.vector(length=6, dtype=wp.float32)):
-    """Compact yield surface definition in an interpolation-friendly format:
-    [p_max sqrt_3_2, -p_min sqrt_3_2, s_max, mu p_max] in scaled units.
+    """Compact yield surface definition in an interpolation-friendly format.
+
+    Layout::
+
+        [0] p_max * sqrt(3/2)       -- scaled compressive yield pressure
+        [1] p_min * sqrt(3/2)       -- scaled tensile yield pressure
+        [2] s_max                   -- deviatoric yield stress
+        [3] mu * p_max              -- frictional shear limit
+        [4] dilatancy               -- dilatancy factor
+        [5] viscosity               -- viscosity
 
     The scaling by sqrt(3/2) is related to the orthogonal mapping from spherical/deviatoric
     tensors to vectors in R^6.
@@ -97,7 +104,7 @@ def shear_yield_stress_camclay(yield_params: YieldParamVec, r_N: float):
 
 
 @wp.func
-def shear_yield_stress_v2(yield_params: YieldParamVec, r_N: float):
+def shear_yield_stress(yield_params: YieldParamVec, r_N: float):
     """Maximum deviatoric stress for a given value of the normal stress."""
     p_min, p_max = normal_yield_bounds(yield_params)
 
@@ -143,25 +150,22 @@ def compute_delassus_diagonal(
     delassus_rotation: wp.array(dtype=mat55),
     delassus_diagonal: wp.array(dtype=vec6),
 ):
-    """
-    Computes the diagonal blocks of the Delassus operator and performs
+    """Computes the diagonal blocks of the Delassus operator and performs
     an eigendecomposition to decouple stress components.
 
-    This kernel iterates over each constraint (tau_i) and:
-    1. Assembles the diagonal block of the Delassus operator by summing contributions
-       from connected particles/nodes (u_i).
-    2. If mass splitting is enabled, it scales contributions by the (inverse) number of
-       constraints a particle is involved in.
-    3. Performs an eigendecomposition (symmetric_eigenvalues_qr) of the
-       assembled diagonal block.
-    4. Handles potential numerical issues by falling back to the diagonal if
-       eigendecomposition fails or if modes are null.
-    5. Stores the eigenvalues (delassus_diagonal) and the transpose of eigenvectors
-       (forming a rotation matrix, delassus_rotation).
-    6. Transforms the strain_rhs, stress, strain_mat_values, and stress_strain_matrices
-       into the eigenbasis.
-    7. Computes the normal vector in the rotated frame (delassus_normal).
-    8. If the trace of the diagonal block is too small, it disables the constraint.
+    For each constraint (tau_i) this kernel:
+
+    1. Assembles the diagonal block of the Delassus operator by summing
+       contributions from connected velocity nodes.
+    2. If mass splitting is enabled, scales contributions by the number
+       of constraints each velocity node participates in.
+    3. Zeros the shear-divergence coupling so the normal and deviatoric
+       components are decoupled.
+    4. Performs an eigendecomposition (``symmetric_eigenvalues_qr``) of
+       the deviatoric sub-block, falling back to the diagonal when the
+       decomposition is numerically unreliable.
+    5. Stores the eigenvalues (``delassus_diagonal``) and the transpose
+       of the deviatoric eigenvectors (``delassus_rotation``).
     """
     tau_i = wp.tid()
     block_beg = strain_mat_offsets[tau_i]
@@ -219,7 +223,13 @@ def preprocess_stress_and_strain(
     stress: wp.array(dtype=vec6),
     yield_stress: wp.array(dtype=YieldParamVec),
 ):
-    """Project the initial stress guess onto the yield surface."""
+    """Prepare stress and strain for the rheology solve.
+
+    Adds the unilateral strain offset to ``strain_rhs`` (removed in
+    :func:`postprocess_stress_and_strain`), disables cohesion for nodes
+    with a positive offset, and projects the initial stress guess onto
+    the yield surface.
+    """
 
     tau_i = wp.tid()
 
@@ -259,9 +269,13 @@ def postprocess_stress_and_strain(
     elastic_strain: wp.array(dtype=vec6),
     plastic_strain: wp.array(dtype=vec6),
 ):
-    """
-    Transforms stress back to the original basis and computes final
-    elastic and plastic strain deltas after the solver iterations.
+    """Computes elastic and plastic strain deltas after the solver iterations.
+
+    Removes the unilateral strain offset added by
+    :func:`preprocess_stress_and_strain`, accumulates compliance and
+    velocity contributions, re-projects the plastic strain through the
+    flow rule in the local eigenbasis, and writes the final
+    ``elastic_strain`` and ``plastic_strain`` arrays.
     """
     tau_i = wp.tid()
 
@@ -319,9 +333,11 @@ def postprocess_stress_and_strain(
 
 
 @wp.func
-def eval_sliding_residual_v2(alpha: float, D: Any, b_T: Any, gamma: float, mu_rn: float):
-    """Evaluates the value and gradient of the residual of the
-    sliding velocity-to-force ratio
+def eval_sliding_residual(alpha: float, D: Any, b_T: Any, gamma: float, mu_rn: float):
+    """Evaluates the sliding residual and its derivative w.r.t. ``alpha``.
+
+    The residual is ``f = |r(alpha)| * (1 - gamma * alpha) - mu_rn``
+    where ``r(alpha) = b_T / (D + alpha I)``.
     """
     d_alpha = D + type(D)(alpha)
 
@@ -338,19 +354,23 @@ def eval_sliding_residual_v2(alpha: float, D: Any, b_T: Any, gamma: float, mu_rn
 
 
 @wp.func
-def solve_sliding_aniso_v2(
+def solve_sliding_aniso(
     D: Any,
     b: Any,
     yield_stress: float,
     yield_stress_deriv: float,
     theta: float,
 ):
-    """Solves for the tangential component of the relative velocity in the 'sliding' case
-    of the frictional contact model.
+    """Solves the anisotropic sliding sub-problem with dilatancy coupling.
+
+    Finds the velocity ``u`` such that the tangential stress satisfies
+    the yield condition, accounting for the normal-tangential coupling
+    through ``yield_stress_deriv`` and the dilatancy parameter ``theta``.
 
     Returns:
-        Tangential component of the relative velocity u_T such that
-        u_T = -alpha r_T = D r_T + b_T and |r_T| = yield_stress
+        Full velocity vector ``u`` (tangential *and* normal components).
+        The normal component ``u[0]`` is set to
+        ``theta * yield_stress_deriv * |u_T|``.
     """
 
     # yield_stress = f_yield( r_N0 )
@@ -410,7 +430,7 @@ def solve_sliding_aniso_v2(
     alpha_cur = alpha_min
 
     for _k in range(24):
-        f_cur, df_dalpha = eval_sliding_residual_v2(alpha_cur, Dmu_rn, b_T, gamma, target)
+        f_cur, df_dalpha = eval_sliding_residual(alpha_cur, Dmu_rn, b_T, gamma, target)
 
         # wp.printf("alpha_cur: %f, f_cur: %f, df_dalpha: %f\n", alpha_cur, f_cur, df_dalpha)
         delta_alpha = wp.min(-f_cur / df_dalpha, alpha_max - alpha_cur)
@@ -424,62 +444,6 @@ def solve_sliding_aniso_v2(
     u[0] = theta * yield_stress_deriv * wp.length(u)
 
     return u
-
-
-@wp.func
-def eval_sliding_residual(alpha: float, D: Any, b_T: Any):
-    """Evaluates the value and gradient of the residual of the
-    sliding velocity-to-force ratio
-    """
-    d_alpha = D + type(D)(alpha)
-
-    r_alpha = wp.cw_div(b_T, d_alpha)
-    dr_dalpha = -wp.cw_div(r_alpha, d_alpha)
-
-    f = wp.dot(r_alpha, r_alpha) - 1.0
-    df_dalpha = 2.0 * wp.dot(r_alpha, dr_dalpha)
-    return f, df_dalpha
-
-
-@wp.func
-def solve_sliding_aniso(D: Any, b_T: Any, yield_stress: float):
-    """Solves for the tangential component of the relative velocity in the 'sliding' case
-    of the frictional contact model.
-
-    Returns:
-        Tangential component of the relative velocity u_T such that
-        u_T = -alpha r_T = D r_T + b_T and |r_T| = yield_stress
-    """
-
-    if yield_stress <= 0.0:
-        return b_T
-
-    # Viscous shear opposite to tangential stress, zero divergence
-    # find alpha, r_t,  mu_rn, (D + alpha/(mu r_n) I) r_t + b_t = 0, |r_t| = mu r_n
-    # find alpha,  |(D mu r_n + alpha I)^{-1} b_t|^2 = 1.0
-
-    Dmu_rn = D * yield_stress
-
-    alpha_0 = wp.length(b_T)
-    alpha_max = alpha_0 - wp.min(Dmu_rn)
-    alpha_min = wp.max(0.0, alpha_0 - wp.max(Dmu_rn))
-
-    # We're looking for the root of an hyperbola, approach using Newton from the left
-    alpha_cur = alpha_min
-
-    for _k in range(24):
-        f_cur, df_dalpha = eval_sliding_residual(alpha_cur, Dmu_rn, b_T)
-        delta_alpha = -f_cur / df_dalpha
-
-        # delta_alpha should always be positive, no need to take abs
-        if delta_alpha < __SLIDING_NEWTON_TOL:
-            break
-
-        alpha_cur = wp.clamp(alpha_cur + delta_alpha, alpha_min, alpha_max)
-
-    u_T = wp.cw_div(b_T * alpha_cur, Dmu_rn + type(D)(alpha_cur))
-
-    return u_T
 
 
 @wp.func
@@ -523,7 +487,7 @@ def solve_flow_rule_camclay(
         # Non-Associated Cam Clay
         b_T = b
         b_T[0] = 0.0
-        u = solve_sliding_aniso(D, b_T, ys)
+        u = solve_sliding_aniso(D, b_T, ys, 0.0, 0.0)
         r_N = wp.clamp(r_N0, r_N_min, r_N_max)
         u[0] = D[0] * r_N + b[0]
         return u
@@ -546,49 +510,34 @@ def solve_flow_rule_camclay(
     y = wp.length(r_T)
     x = r_N0 - r_mid
 
-    W = wp.vec2(beta, 1.0)
-    W_sq = wp.vec2(beta_sq, 1.0)
-    W_sq_inv = wp.vec2(1.0 / beta_sq, 1.0)
+    # Add a dummy normal component so we can reuse the sliding solver
+    W = wp.vec3(1.0, beta, 1.0)
+    W_sq = wp.vec3(1.0, beta_sq, 1.0)
+    W_sq_inv = wp.vec3(1.0, 1.0 / beta_sq, 1.0)
 
-    X0 = wp.vec2(x, y)
+    X0 = wp.vec3(0.0, x, y)
     WinvX0 = wp.cw_div(X0, W)
 
     # |Y| = c = |W X|
     # W_inv Y + alpha W Y = X0
     # W^-2 Y - W_inv X0 = - alpha Y = Z
 
-    Z = solve_sliding_aniso(W_sq_inv, -WinvX0, c)
+    Z = solve_sliding_aniso(W_sq_inv, -WinvX0, c, 0.0, 0.0)
     Y = wp.cw_mul(W_sq, Z + WinvX0)
-
-    # rr = wp.abs(wp.length_sq(Y) - c_sq)
-    # if rr > 1.0e-2*c_sq or not (rr < 1.e16):
-    #     wp.printf("rr: %f, Y: %f, c_sq: %f\n", rr/c_sq, wp.length_sq(Y), c_sq)
-
-    # Y = wp.cw_mul(W_sq, WinvX0)
-    # Y = c * wp.normalize(Y)
 
     X = wp.cw_div(Y, W)
 
-    r_N = r_mid + X[0]
-    murn = wp.abs(X[1])
+    r_N = r_mid + X[1]
+    murn = wp.abs(X[2])
 
     r = wp.normalize(r_T) * murn
     r[0] = r_N
     u = wp.cw_mul(r, D) + b
     return u
 
-    # u_N = r_N * D[0] + b[0]
-
-    # b_T = b
-    # b_T[0] = 0.0
-
-    # u = solve_sliding_aniso(D, b_T, murn)
-    # u[0] = u_N
-    # return u
-
 
 @wp.func
-def solve_flow_rule_aniso_v3(
+def solve_flow_rule_aniso_impl(
     D: vec6,
     b: vec6,
     r: vec6,
@@ -599,7 +548,7 @@ def solve_flow_rule_aniso_v3(
     r_0 = -wp.cw_div(b, D)
     r_N0 = r_0[0]
 
-    ys, dys, pmin, pmax = shear_yield_stress_v2(yield_params, r_N0)
+    ys, dys, pmin, pmax = shear_yield_stress(yield_params, r_N0)
 
     u_N0 = D[0] * (wp.clamp(r_N0, pmin, pmax) - r_N0)
 
@@ -612,21 +561,10 @@ def solve_flow_rule_aniso_v3(
         u[0] = u_N0
         return u
 
-    # r = r_T * (ys / r_T_n)
-    # r[0] =
-
-    # # r in {p_min, p_max} ok
-    # if r_N0 <= pmin or r_N0 >= pmax:
-    #     u = wp.cw_mul(r, D) + b
-    #     if wp.length_sq(u) * theta * theta < (u[0] * u[0]) * (1.0 + theta * theta):
-    #         u = solve_sliding_aniso_v2(D, b, ys, 0.0, dilatancy)
-    #         u[0] = D[0] * r[0] + b[0]
-    #         return u
-
     # sliding
     u = b
     u[0] = u_N0
-    u = solve_sliding_aniso_v2(D, u, ys, dys, dilatancy)
+    u = solve_sliding_aniso(D, u, ys, dys, dilatancy)
 
     # check for change of linear region
     r_N_new = (u[0] - b[0]) / D[0]
@@ -634,11 +572,9 @@ def solve_flow_rule_aniso_v3(
     if r_N_clamp == r_N_new:
         return u
 
-    # wp.printf("r_N: %f, r_N_clamp: %f\n", r_N_new, r_N_clamp)
-
     # moved from conic part to constant part. clamp and resolve tangent part
-    ys, dys, pmin, pmax = shear_yield_stress_v2(yield_params, r_N_clamp)
-    u = solve_sliding_aniso_v2(D, b, ys, 0.0, dilatancy)
+    ys, dys, pmin, pmax = shear_yield_stress(yield_params, r_N_clamp)
+    u = solve_sliding_aniso(D, b, ys, 0.0, dilatancy)
     u[0] = D[0] * (r_N_clamp - r_N0)
 
     return u
@@ -653,13 +589,15 @@ def solve_flow_rule_aniso(
     strain_node_volume: float,
 ):
     """Solves the local non-associated flow-rule problem.
-    u = D r + b
 
-    r_N = r_N- + r_N+
-    u_n           in NC(p_min <= r_N- <= 0)
-    u_n + off nor in NC(0 <= r_N+ <= p_max)
+    Applies viscosity scaling to the Delassus diagonal ``D`` and
+    right-hand side ``b``, then dispatches to
+    :func:`solve_flow_rule_aniso_impl` (or the cam-clay variant).
 
-    u_T in NC(|r_T| <= alpha s(r_N))
+    The returned velocity ``u`` satisfies ``u = D r + b`` subject to
+    the normal stress being clamped to the yield pressure bounds and
+    the deviatoric stress satisfying the yield condition with
+    dilatancy.
     """
 
     D_visc = vec6(1.0) + get_viscosity(yield_params) / strain_node_volume * D
@@ -669,7 +607,7 @@ def solve_flow_rule_aniso(
     if wp.static(_USE_CAM_CLAY):
         return solve_flow_rule_camclay(D, b, r_guess, yield_params)
     else:
-        return solve_flow_rule_aniso_v3(D, b, r_guess, yield_params)
+        return solve_flow_rule_aniso_impl(D, b, r_guess, yield_params)
 
 
 @wp.func
@@ -686,7 +624,7 @@ def project_stress(
     if wp.static(_USE_CAM_CLAY):
         ys, dys, pmin, pmax = shear_yield_stress_camclay(yield_params, r_N)
     else:
-        ys, dys, pmin, pmax = shear_yield_stress_v2(yield_params, r_N)
+        ys, dys, pmin, pmax = shear_yield_stress(yield_params, r_N)
 
     r_T_n2 = wp.length_sq(r_T)
     if r_T_n2 > ys * ys:
@@ -885,7 +823,7 @@ def apply_velocity_delta(
     strain_prev: wp.array(dtype=vec6),
     strain: wp.array(dtype=vec6),
 ):
-    """Updates particle velocities from a local stress delta."""
+    """Computes strain from a velocity delta: ``strain = alpha * B @ velocity_delta + beta * strain_prev``."""
 
     tau_i = wp.tid()
 
@@ -1071,7 +1009,7 @@ def project_on_friction_cone(
     nor: wp.vec3,
     r: wp.vec3,
 ):
-    """Projects lambda onto the Coulomb friction cone (non-orthogonally)"""
+    """Projects a stress vector ``r`` onto the Coulomb friction cone (non-orthogonally)."""
 
     r_n = wp.dot(r, nor)
     r_t = r - r_n * nor
@@ -1166,7 +1104,7 @@ def solve_nodal_friction(
     For each node (i) potentially in contact:
     1. Skips if friction coefficient is negative (no friction).
     2. Calculates the relative velocity `u0` between the particle and collider,
-       accounting for any existing normal impulse.
+       accounting for the existing impulse and adhesion.
     3. Computes the effective inverse mass `w` for the interaction.
     4. Calls `solve_coulomb_isotropic` to determine the change in relative
        velocity `u` due to friction.
@@ -1439,16 +1377,17 @@ def apply_rigidity_operator(rigidity_operator, delta_collider_impulse, collider_
     """Apply collider rigidity feedback to the current collider velocities.
 
     Computes and applies a velocity correction induced by the rigid coupling
-    matrix according to the relation:
+    operator according to the relation::
 
-        collider_velocity += rigidity_mat @ (collider_velocity - prev_collider_velocity)
+        delta_body_qd = -IJtm @ delta_collider_impulse
+        collider_velocity += J @ delta_body_qd
 
-    Then saves the updated collider velocity into ``prev_collider_velocity``
-    for the next iteration.
+    where ``(J, IJtm) = rigidity_operator`` are the block-sparse matrices
+    returned by ``build_rigidity_operator``.
 
     Args:
-        rigidity_mat: Block-sparse rigidity operator (J @ IJtm) returned by
-            ``build_rigidity_operator``.
+        rigidity_operator: Pair ``(J, IJtm)`` of block-sparse matrices returned
+            by ``build_rigidity_operator``.
         delta_collider_impulse: Change in collider impulse to be applied.
         collider_velocity: Current collider velocity vector to be corrected in place.
         delta_body_qd: Change in body velocity to be applied.
@@ -1475,12 +1414,47 @@ class _ScopedDisableGC:
 
 @dataclass
 class MomentumData:
+    """Per-node momentum quantities used by the rheology solver.
+
+    Attributes:
+        inv_volume: Inverse volume (or inverse mass scaling) per velocity
+            node, shape ``[node_count]``.
+        velocity: Grid velocity DOFs to be updated in place [m/s],
+            shape ``[node_count, 3]``.
+    """
+
     inv_volume: wp.array
     velocity: wp.array(dtype=wp.vec3)
 
 
 @dataclass
 class RheologyData:
+    """Strain, compliance, yield, and coloring data for the rheology solve.
+
+    Attributes:
+        strain_mat: Strain-to-velocity block-sparse matrix (B).
+        transposed_strain_mat: BSR container for B^T, used by the Jacobi
+            solver path.
+        compliance_mat: Compliance (inverse stiffness) block-sparse matrix.
+        strain_node_volume: Volume associated with each strain node [m^3],
+            shape ``[strain_count]``.
+        yield_params: Yield-surface parameters per strain node,
+            shape ``[strain_count]``.
+        unilateral_strain_offset: Per-node offset enforcing unilateral
+            incompressibility (void/critical fraction),
+            shape ``[strain_count]``.
+        color_offsets: Coloring offsets for Gauss-Seidel iteration,
+            shape ``[num_colors + 1]``.
+        color_blocks: Per-color strain-node indices for Gauss-Seidel,
+            shape ``[num_colors, max_block_size]``.
+        elastic_strain_delta: Output elastic strain increment per strain
+            node, shape ``[strain_count, 6]``.
+        plastic_strain_delta: Output plastic strain increment per strain
+            node, shape ``[strain_count, 6]``.
+        stress: In/out stress per strain node (rotated internally),
+            shape ``[strain_count, 6]``.
+    """
+
     strain_mat: sp.BsrMatrix
     transposed_strain_mat: sp.BsrMatrix
     compliance_mat: sp.BsrMatrix
@@ -1498,6 +1472,26 @@ class RheologyData:
 
 @dataclass
 class CollisionData:
+    """Collider contact data consumed by the rheology solver.
+
+    Attributes:
+        collider_mat: Block-sparse matrix mapping velocity nodes to
+            collider DOFs.
+        transposed_collider_mat: Transpose of ``collider_mat``.
+        collider_friction: Per-node friction coefficients; negative values
+            disable contact at that node, shape ``[node_count]``.
+        collider_adhesion: Per-node adhesion coefficients [N s / V0],
+            shape ``[node_count]``.
+        collider_normals: Per-node contact normals,
+            shape ``[node_count, 3]``.
+        collider_velocities: Per-node collider rigid-body velocities [m/s],
+            shape ``[node_count, 3]``.
+        rigidity_operator: Optional pair of BSR matrices coupling velocity
+            nodes to collider DOFs. ``None`` when unused.
+        collider_impulse: In/out stored collider impulses for warm-starting
+            [N s / V0], shape ``[node_count, 3]``.
+    """
+
     collider_mat: sp.BsrMatrix
     transposed_collider_mat: sp.BsrMatrix
     collider_friction: wp.array(dtype=float)
@@ -2252,31 +2246,20 @@ def solve_rheology(
     strain increment and plastic strain delta fields are produced.
 
     Args:
+        solver: Solver type string. ``"gauss-seidel"``, ``"jacobi"``,
+            ``"cg"``, or ``"cg+<solver>"`` (CG as initial guess then
+            ``<solver>`` for the main solve).
         max_iterations: Maximum number of nonlinear iterations.
         tolerance: Solver tolerance for the stress residual (L2 norm).
-        strain_mat: Strain-to-velocity block-sparse matrix (B).
-        transposed_strain_mat: BSR matrix container for assembling B^T. Used for Jacobi only.
-        compliance_mat: Compliance matrix for elastic materials.
-        inv_volume: Per-velocity-node inverse mass (or volume scaling) used in
-            the solver updates.
-        yield_params: Yield parameters per strain node.
-        unilateral_strain_offset: Per-node offset enforcing unilateral
-            incompressibility (void fraction/critical fraction).
-        strain_rhs: Initial strain right-hand side; becomes elastic strain at
-            the end of the solve.
-        plastic_strain_delta: Output plastic strain increment per node.
-        stress: In/out stress variable per node (rotated internally).
-        velocity: Grid velocity degrees of freedom to be updated in place.
-        collider_friction: Per-velocity-node collider friction coefficients; <0
-            disables contact at that node.
-        collider_adhesion: Per-velocity-node adhesion coefficients, same unit as impulse (N.s / V0) .
-        collider_normals: Per-velocity-node contact normals.
-        collider_velocities: Per-velocity-node collider rigid velocities.
-        collider_inv_mass: Per-velocity-node collider inverse masses.
-        collider_impulse: In/out stored collider impulses (warm start, N.s/V0).
-        color_offsets: Optional coloring offsets for Gauss-Seidel.
-        color_blocks: Optional coloring blocked indices for Gauss-Seidel.
-        rigidity_operator: Optional rigidity operator coupling nodes to collider DOFs.
+        momentum: :class:`MomentumData` containing per-node inverse volume
+            and velocity DOFs.
+        rheology: :class:`RheologyData` containing strain/compliance matrices,
+            yield parameters, coloring data, and output stress/strain arrays.
+        collision: :class:`CollisionData` containing collider matrices, friction,
+            adhesion, normals, velocities, rigidity operator, and impulse arrays.
+        jacobi_warmstart_smoother_iterations: Number of Jacobi smoother
+            iterations to run before the main Gauss-Seidel solve (ignored
+            for Jacobi solver).
         temporary_store: Temporary storage arena for intermediate arrays.
         use_graph: If True, uses conditional CUDA graphs for the iteration loop.
         verbose: If True, prints residuals/iteration counts.

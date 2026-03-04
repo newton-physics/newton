@@ -230,7 +230,7 @@ class Example:
         self.simulate_sand()
 
     def collect_collider_impulses(self):
-        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver._collect_collider_impulses(
+        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
             self.sand_state_0
         )
         self.collider_impulse_ids.fill_(-1)
@@ -299,7 +299,7 @@ class Example:
         )
 
         if self.show_impulses:
-            impulses, pos, _cid = self.mpm_solver._collect_collider_impulses(self.sand_state_0)
+            impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(self.sand_state_0)
             self.viewer.log_lines(
                 "/impulses",
                 starts=pos,

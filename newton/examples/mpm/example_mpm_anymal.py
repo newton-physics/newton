@@ -171,7 +171,6 @@ class Example:
         self.model.mpm.hardening[snow_particles].fill_(1.0)
         self.model.mpm.dilatancy[snow_particles].fill_(1.0)
 
-
         # Mud, using Von-Mises plasticity
         mud_density = 1500.0
         self.model.particle_mass[mud_particles].fill_(particle_mass * mud_density / density)

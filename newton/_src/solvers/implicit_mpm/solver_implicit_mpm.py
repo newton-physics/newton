@@ -36,7 +36,7 @@ from .rasterized_collisions import (
     rasterize_collider,
 )
 from .render_grains import sample_render_grains, update_render_grains
-from .solve_rheology import MomentumData, RheologyData, CollisionData, YieldParamVec, project_stress, solve_rheology
+from .solve_rheology import CollisionData, MomentumData, RheologyData, YieldParamVec, project_stress, solve_rheology
 
 __all__ = ["SolverImplicitMPM"]
 
@@ -71,6 +71,7 @@ mat63 = wp.types.matrix(shape=(6, 3), dtype=wp.float32)
 mat36 = wp.types.matrix(shape=(3, 6), dtype=wp.float32)
 mat13 = wp.types.matrix(shape=(1, 3), dtype=wp.float32)
 mat31 = wp.types.matrix(shape=(3, 1), dtype=wp.float32)
+mat11 = wp.types.matrix(shape=(1, 1), dtype=wp.float32)
 
 _yield_param_length = type_size(YieldParamVec)
 
@@ -1614,14 +1615,12 @@ class SolverImplicitMPM(SolverBase):
         """Maximum number of iterations for the rheology solver."""
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
-        strain_basis: str = "P0"
-        """Strain basis functions. May be one of P0, Q1"""
         solver: str = "gauss-seidel"
-        """Solver to use for the rheology solver. May be one of gauss-seidel, jacobi."""
+        """Solver to use for the rheology solver. May be one of gauss-seidel, jacobi, cg."""
         warmstart_mode: str = "auto"
         """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid, smoothed."""
         collider_velocity_mode: str = "forward"
-        """Collider velocity computation mode, may be one of 'forward' or 'backward'. 'forward' uses the current velocity, 'backward' uses the previous timestep position."""
+        """Collider velocity computation mode, may be one of 'forward' or 'backward'. 'forward' uses the current velocity, 'backward' uses the previous timestep position. Deprecated aliases 'instantaneous' (='forward') and 'finite_difference' (='backward') are also accepted."""
 
         # grid
         voxel_size: float = 0.1
@@ -1635,7 +1634,7 @@ class SolverImplicitMPM(SolverBase):
         transfer_scheme: str = "apic"
         """Transfer scheme to use for particle-grid transfers. May be one of apic, pic."""
         integration_scheme: str = "pic"
-        """Transfer scheme to use for particle-grid transfers. May be one of pic, gimp."""
+        """Integration scheme controlling shape-function support. May be one of pic, gimp."""
 
         # material / background
         critical_fraction: float = 0.0
@@ -1648,8 +1647,10 @@ class SolverImplicitMPM(SolverBase):
         """Compute collider normals from sdf gradient rather than closest point"""
         collider_basis: str = "Q1"
         """Collider basis function string. Examples: P0 (piecewise constant), Q1 (trilinear), S2 (quadratic serendipity), pic8 (particle-based with max 8 points per cell)"""
+        strain_basis: str = "P0"
+        """Strain basis functions. May be one of P0, P1d, Q1, Q1d, or pic[n]."""
         velocity_basis: str = "Q1"
-        """Velocity basis function string. Examples: B2 (cubic b-spline), Q1 (trilinear)"""
+        """Velocity basis function string. Examples: B2 (quadratic b-spline), Q1 (trilinear)"""
 
     @classmethod
     def register_custom_attributes(cls, builder: newton.ModelBuilder) -> None:
@@ -1670,12 +1671,13 @@ class SolverImplicitMPM(SolverBase):
             - ``mpm:hardening_rate``: Hardening rate for plasticity
             - ``mpm:softening_rate``: Softening rate for plasticity
             - ``mpm:dilatancy``: Dilatancy factor for plasticity
-            - ``mpm:viscosity``: Viscosity for plasticity
+            - ``mpm:viscosity``: Viscosity for plasticity [Pa·s]
 
         Attributes registered on State (per-particle):
             - ``mpm:particle_qd_grad``: Velocity gradient for APIC transfer
             - ``mpm:particle_elastic_strain``: Elastic deformation gradient
             - ``mpm:particle_Jp``: Determinant of plastic deformation gradient
+            - ``mpm:particle_stress``: Cauchy stress tensor [Pa]
             - ``mpm:particle_transform``: Overall deformation gradient for rendering
         """
         # Per-particle material parameters
@@ -2037,7 +2039,7 @@ class SolverImplicitMPM(SolverBase):
             # Restore previous max query dist
             self._mpm_model.collider.query_max_dist = prev_gap
 
-    def _collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
+    def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
 
         Returns a tuple of 3 arrays:
@@ -2909,7 +2911,7 @@ class SolverImplicitMPM(SolverBase):
         M_elt_wise = wps.bsr_copy(M, block_shape=(nodes_per_elt, nodes_per_elt))
 
         if M_elt_wise.block_shape == (1, 1):
-            M_values = M_elt_wise.values.view(dtype=wp.mat((1, 1), float))
+            M_values = M_elt_wise.values.view(dtype=mat11)
         else:
             M_values = M_elt_wise.values
 

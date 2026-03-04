@@ -357,9 +357,11 @@ def rasterize_collider_kernel(
         body_q: Rigid body transforms.
         body_qd: Rigid body velocities.
         body_q_prev: Previous rigid body transforms (for finite-difference velocity).
-        activation_distance: Distance below which to activate the collider.
+        voxel_size: Grid voxel size [m], used to scale the activation distance.
+        activation_distance: Distance (in voxels) below which to activate the collider.
         dt: Timestep length (used to scale adhesion and finite-difference velocity).
         node_positions: Grid node positions to sample at.
+        node_volumes: Per-node integration volumes.
         collider_sdf: Output signed distance per node.
         collider_velocity: Output collider velocity per node.
         collider_normals: Output contact normals per node.

@@ -171,7 +171,7 @@ class Example:
 
         if self.show_normals:
             # for debugging purposes, we can visualize the collider normals
-            _impulses, pos, _cid = self.solver._collect_collider_impulses(self.state_0)
+            _impulses, pos, _cid = self.solver.collect_collider_impulses(self.state_0)
             normals = self.state_0.collider_normal_field.dof_values
 
             normal_vecs = 0.25 * self.solver.voxel_size * normals
@@ -245,11 +245,9 @@ class Example:
         else:
             self.viewer.log_lines("/stress", None, None, None)
 
-
         # self.particle_colors = wp.full(
         #     shape=self.model.particle_count, value=wp.vec3(0.1, 0.1, 0.2), device=self.model.device
         # )
-
 
         # Jp = self.state_0.particle_Jp.numpy()
         # Jp_min = 0.01
@@ -278,10 +276,7 @@ class Example:
 
         # self.particle_colors = wp.array(colors_np, dtype=wp.vec3)
 
-
         # # Jp_colors = Jp_norm * wp.vec3(1.0, 0.0, 0.0) + (1.0 - Jp_norm) * wp.vec3(0.0, 1.0, 0.0)
-
-
 
         # self.viewer.log_points(
         #     name="/model/particles",
@@ -394,7 +389,13 @@ if __name__ == "__main__":
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
     parser.add_argument("--grid-padding", "-gp", type=int, default=0)
     parser.add_argument("--max-active-cell-count", "-mac", type=int, default=-1)
-    parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"])
+    parser.add_argument(
+        "--solver",
+        "-s",
+        type=str,
+        default="gauss-seidel",
+        choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+    )
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
     parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
 
