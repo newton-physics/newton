@@ -110,6 +110,38 @@ def sample_pressure_on_slice(
     wp.atomic_add(out_inside_count, 0, 1)
 
 
+@wp.kernel
+def apply_pressure_y_sine_modulation(
+    y_center: float,
+    y_half_extent: float,
+    amplitude: float,
+    cycles_across_extent: float,
+    phase_rad: float,
+    points: wp.array(dtype=wp.vec3),
+    inside_flag: wp.array(dtype=wp.float32),
+    pressure: wp.array(dtype=wp.float32),
+):
+    """Apply optional sine modulation along world/object y to interior pressure samples."""
+    tid = wp.tid()
+    if inside_flag[tid] <= 0.0:
+        return
+
+    p = pressure[tid]
+    if p <= 0.0:
+        return
+
+    y = points[tid][1]
+    y01 = 0.5
+    if y_half_extent > 1.0e-8:
+        y_norm = (y - y_center) / y_half_extent
+        y01 = 0.5 * (y_norm + 1.0)
+
+    two_pi = 6.283185307179586
+    wave = wp.sin(two_pi * cycles_across_extent * y01 + phase_rad)
+    modulation = wp.max(1.0 + amplitude * wave, 0.0)
+    pressure[tid] = p * modulation
+
+
 def density_to_rgb_image(density_grid: np.ndarray) -> np.ndarray:
     """Map density [0, 1] to RGB with a monotonic perceptual colormap."""
     d = np.clip(density_grid.astype(np.float32), 0.0, 1.0)
@@ -277,6 +309,9 @@ class Example:
         self.plane_scale = float(args.plane_scale)
         self.resolution = int(args.resolution)
         self.shape_opacity = float(args.shape_opacity)
+        self.pressure_y_sine_amplitude = float(args.pressure_y_sine_amplitude)
+        self.pressure_y_sine_cycles = float(args.pressure_y_sine_cycles)
+        self.pressure_y_sine_phase = float(args.pressure_y_sine_phase)
         self.show_shape = self.viewer_is_viser
         self.show_shape_wireframe = not self.viewer_is_viser
         self.show_slice = True
@@ -357,6 +392,27 @@ class Example:
                 step=0.01,
                 initial_value=float(self.shape_opacity),
             )
+            self._viser_controls["pressure_y_sine_amplitude"] = gui.add_slider(
+                "Pressure Y Sine Amp",
+                min=-2.0,
+                max=2.0,
+                step=0.01,
+                initial_value=float(self.pressure_y_sine_amplitude),
+            )
+            self._viser_controls["pressure_y_sine_cycles"] = gui.add_slider(
+                "Pressure Y Sine Cycles",
+                min=0.0,
+                max=12.0,
+                step=0.1,
+                initial_value=float(self.pressure_y_sine_cycles),
+            )
+            self._viser_controls["pressure_y_sine_phase"] = gui.add_slider(
+                "Pressure Y Sine Phase [rad]",
+                min=-3.14159,
+                max=3.14159,
+                step=0.01,
+                initial_value=float(self.pressure_y_sine_phase),
+            )
 
     def _sync_viser_controls(self):
         """Pull current values from viser controls into example state."""
@@ -370,6 +426,9 @@ class Example:
         axis_name = str(self._viser_controls["slice_axis"].value).lower()
         axis = {"x": 0, "y": 1, "z": 2}.get(axis_name, self.slice_axis)
         shape_opacity = float(self._viser_controls["shape_opacity"].value)
+        pressure_y_sine_amplitude = float(self._viser_controls["pressure_y_sine_amplitude"].value)
+        pressure_y_sine_cycles = float(self._viser_controls["pressure_y_sine_cycles"].value)
+        pressure_y_sine_phase = float(self._viser_controls["pressure_y_sine_phase"].value)
 
         if self.show_shape != show_shape:
             self.show_shape = show_shape
@@ -383,6 +442,15 @@ class Example:
         if self.shape_opacity != shape_opacity:
             self.shape_opacity = shape_opacity
             self._refresh_shape_materials()
+        if self.pressure_y_sine_amplitude != pressure_y_sine_amplitude:
+            self.pressure_y_sine_amplitude = pressure_y_sine_amplitude
+            self._slice_dirty = True
+        if self.pressure_y_sine_cycles != pressure_y_sine_cycles:
+            self.pressure_y_sine_cycles = pressure_y_sine_cycles
+            self._slice_dirty = True
+        if self.pressure_y_sine_phase != pressure_y_sine_phase:
+            self.pressure_y_sine_phase = pressure_y_sine_phase
+            self._slice_dirty = True
 
         # Disable manual slider while animating.
         if hasattr(self._viser_controls["slice_position"], "disabled"):
@@ -523,6 +591,23 @@ class Example:
             device=self.device,
         )
 
+        if abs(self.pressure_y_sine_amplitude) > 1.0e-8:
+            wp.launch(
+                kernel=apply_pressure_y_sine_modulation,
+                dim=self.capacity,
+                inputs=[
+                    float(self.sdf_center[1]),
+                    float(self.sdf_half_extents[1]),
+                    self.pressure_y_sine_amplitude,
+                    self.pressure_y_sine_cycles,
+                    self.pressure_y_sine_phase,
+                    self.slice_points,
+                    self.slice_inside_flag,
+                ],
+                outputs=[self.slice_pressure],
+                device=self.device,
+            )
+
         self.last_slice_count = int(self.slice_inside_count.numpy()[0])
         pressure_grid = self.slice_pressure.numpy().reshape(self.resolution, self.resolution)
 
@@ -644,6 +729,7 @@ class Example:
         imgui.text("Source: Hydroelastic immutable pressure volume.")
         imgui.text("Color scale: normalized by immutable global max (not per-slice).")
         imgui.text("This is the same field used by contact isosurface extraction.")
+        imgui.text("Optional: pressure can be modulated by a sine wave along Y.")
         imgui.text("Validation: deep interior percentile, zero-fraction, interior-hole fraction.")
 
         _changed, self.show_shape = imgui.checkbox("Show Shape", self.show_shape)
@@ -651,6 +737,30 @@ class Example:
         changed, self.shape_opacity = imgui.slider_float("Shape Opacity (viser)", self.shape_opacity, 0.0, 1.0)
         if changed:
             self._refresh_shape_materials()
+        changed, self.pressure_y_sine_amplitude = imgui.slider_float(
+            "Pressure Y Sine Amp",
+            self.pressure_y_sine_amplitude,
+            -2.0,
+            2.0,
+        )
+        if changed:
+            self._slice_dirty = True
+        changed, self.pressure_y_sine_cycles = imgui.slider_float(
+            "Pressure Y Sine Cycles",
+            self.pressure_y_sine_cycles,
+            0.0,
+            12.0,
+        )
+        if changed:
+            self._slice_dirty = True
+        changed, self.pressure_y_sine_phase = imgui.slider_float(
+            "Pressure Y Sine Phase [rad]",
+            self.pressure_y_sine_phase,
+            -np.pi,
+            np.pi,
+        )
+        if changed:
+            self._slice_dirty = True
         _changed, self.show_slice = imgui.checkbox("Show Slice", self.show_slice)
         changed, self.animate_slice = imgui.checkbox("Animate Slice", self.animate_slice)
         if changed:
@@ -704,6 +814,24 @@ if __name__ == "__main__":
         type=float,
         default=0.22,
         help="Shape opacity in [0, 1] when using --viewer viser.",
+    )
+    parser.add_argument(
+        "--pressure-y-sine-amplitude",
+        type=float,
+        default=0.0,
+        help="Amplitude for pressure sine modulation along y (0 disables modulation).",
+    )
+    parser.add_argument(
+        "--pressure-y-sine-cycles",
+        type=float,
+        default=1.0,
+        help="Sine cycles across the full y extent for pressure modulation.",
+    )
+    parser.add_argument(
+        "--pressure-y-sine-phase",
+        type=float,
+        default=0.0,
+        help="Phase offset [rad] for pressure y sine modulation.",
     )
     parser.add_argument(
         "--slice-axis",
