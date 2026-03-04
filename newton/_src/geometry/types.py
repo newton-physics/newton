@@ -1072,7 +1072,7 @@ class Gaussian:
 
         Args:
             positions: Gaussian centers in local space [m], shape ``(N, 3)``, float.
-            rotations: Quaternion orientations ``(w, x, y, z)``, shape ``(N, 4)``, float.
+            rotations: Quaternion orientations ``(x, y, z, w)``, shape ``(N, 4)``, float.
                 If ``None``, defaults to identity quaternions.
             scales: Per-axis scales (linear), shape ``(N, 3)``, float.
                 If ``None``, defaults to ones.
@@ -1089,7 +1089,7 @@ class Gaussian:
         if rotations is not None:
             self._rotations = np.ascontiguousarray(np.asarray(rotations, dtype=np.float32).reshape(n, 4))
         else:
-            self._rotations = np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (n, 1))
+            self._rotations = np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (n, 1))
 
         if scales is not None:
             self._scales = np.ascontiguousarray(np.asarray(scales, dtype=np.float32).reshape(n, 3))
@@ -1340,7 +1340,7 @@ class Gaussian:
         """Generate a proxy collision :class:`Mesh` from Gaussian positions.
 
         Args:
-            method: ``"convex_hull"`` (default) or ``"alpha_shape"``.
+            method: ``"convex_hull"`` (default) or ``"alphashape"``.
 
         Returns:
             A :class:`Mesh` for use as collision proxy.
@@ -1367,6 +1367,8 @@ class Gaussian:
                     self._rotations.data.tobytes(),
                     self._scales.data.tobytes(),
                     self._opacities.data.tobytes(),
+                    None if self._sh_coeffs is None else self._sh_coeffs.data.tobytes(),
+                    float(self._min_response),
                 )
             )
         return self._cached_hash
@@ -1375,4 +1377,16 @@ class Gaussian:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Gaussian):
             return NotImplemented
-        return hash(self) == hash(other)
+        sh_equal = (self._sh_coeffs is None and other._sh_coeffs is None) or (
+            self._sh_coeffs is not None
+            and other._sh_coeffs is not None
+            and np.array_equal(self._sh_coeffs, other._sh_coeffs)
+        )
+        return (
+            np.array_equal(self._positions, other._positions)
+            and np.array_equal(self._rotations, other._rotations)
+            and np.array_equal(self._scales, other._scales)
+            and np.array_equal(self._opacities, other._opacities)
+            and sh_equal
+            and self._min_response == other._min_response
+        )

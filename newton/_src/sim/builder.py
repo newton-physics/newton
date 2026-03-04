@@ -5498,7 +5498,13 @@ class ModelBuilder:
         """
         if cfg is None:
             cfg = self.default_shape_cfg.copy()
-            cfg.has_shape_collision = False
+        else:
+            cfg = cfg.copy()
+
+        # Gaussian shape is render-only; collisions are represented by optional proxy geometry.
+        proxy_cfg_base = cfg.copy()
+        cfg.has_shape_collision = False
+        cfg.has_particle_collision = False
 
         # Optionally add a collision proxy alongside the Gaussian shape
         if collision_proxy is not None:
@@ -5509,8 +5515,9 @@ class ModelBuilder:
             else:
                 raise TypeError(f"collision_proxy must be None, a string, or a Mesh, got {type(collision_proxy)}")
 
-            proxy_cfg = self.default_shape_cfg.copy()
+            proxy_cfg = proxy_cfg_base.copy()
             proxy_cfg.is_visible = False
+            proxy_cfg.has_shape_collision = True
             self.add_shape_convex_hull(
                 body=body,
                 xform=xform,

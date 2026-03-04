@@ -158,17 +158,18 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             ray_dir_world,
                         )
                     elif shape_types[si] == GeoType.GAUSSIAN:
-                        gaussians_hit[num_gaussians_hit] = si
-                        num_gaussians_hit += 1
-                        # gaussian_id = shape_source_ptr[shape_indices[si]]
-                        # geom_hit, hit_color = shade_gaussians(
-                        #     shape_transforms[si],
-                        #     shape_sizes[si],
-                        #     ray_origin_world,
-                        #     ray_dir_world,
-                        #     gaussians_data[gaussian_id],
-                        #     closest_hit.distance
-                        # )
+                        if num_gaussians_hit < wp.static(state.num_gaussians):
+                            gaussians_hit[num_gaussians_hit] = si
+                            num_gaussians_hit += 1
+                            # gaussian_id = shape_source_ptr[shape_indices[si]]
+                            # geom_hit, hit_color = shade_gaussians(
+                            #     shape_transforms[si],
+                            #     shape_sizes[si],
+                            #     ray_origin_world,
+                            #     ray_dir_world,
+                            #     gaussians_data[gaussian_id],
+                            #     closest_hit.distance
+                            # )
 
                     if geom_hit.hit and geom_hit.distance < closest_hit.distance:
                         closest_hit.distance = geom_hit.distance

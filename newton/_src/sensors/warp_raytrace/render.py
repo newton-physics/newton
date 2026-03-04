@@ -240,34 +240,34 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
                     base_color[2] * (ambient_color[2] * ambient_intensity),
                 )
 
-                # Apply lighting and shadows
-                for light_index in range(light_count):
-                    light_contribution = compute_lighting(
-                        world_index,
-                        bvh_shapes_size,
-                        bvh_shapes_id,
-                        bvh_shapes_group_roots,
-                        bvh_particles_size,
-                        bvh_particles_id,
-                        bvh_particles_group_roots,
-                        shape_enabled,
-                        shape_types,
-                        shape_indices,
-                        shape_sizes,
-                        shape_transforms,
-                        shape_source_ptr,
-                        light_active[light_index],
-                        light_type[light_index],
-                        light_cast_shadow[light_index],
-                        light_positions[light_index],
-                        light_orientations[light_index],
-                        particles_position,
-                        particles_radius,
-                        triangle_mesh_id,
-                        closest_hit.normal,
-                        hit_point,
-                    )
-                    out_color = out_color + base_color * light_contribution
+            # Apply lighting and shadows
+            for light_index in range(light_count):
+                light_contribution = compute_lighting(
+                    world_index,
+                    bvh_shapes_size,
+                    bvh_shapes_id,
+                    bvh_shapes_group_roots,
+                    bvh_particles_size,
+                    bvh_particles_id,
+                    bvh_particles_group_roots,
+                    shape_enabled,
+                    shape_types,
+                    shape_indices,
+                    shape_sizes,
+                    shape_transforms,
+                    shape_source_ptr,
+                    light_active[light_index],
+                    light_type[light_index],
+                    light_cast_shadow[light_index],
+                    light_positions[light_index],
+                    light_orientations[light_index],
+                    particles_position,
+                    particles_radius,
+                    triangle_mesh_id,
+                    closest_hit.normal,
+                    hit_point,
+                )
+                out_color = out_color + base_color * light_contribution
 
         out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
         out_pixels[out_index] = tiling.pack_rgba_to_uint32(out_color, 1.0)
