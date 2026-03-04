@@ -323,7 +323,7 @@ def create_compute_gjk_mpr_contacts(
         contact_template.margin_b = margin_b
         contact_template.shape_a = shape_a
         contact_template.shape_b = shape_b
-        contact_template.margin = rigid_gap
+        contact_template.gap_sum = rigid_gap
 
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(create_solve_convex_multi_contact(support_map, writer_func, post_process_contact))(

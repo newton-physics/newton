@@ -832,7 +832,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 has_hfield = False
                 pair = pair_encoded
 
-            margin = shape_gap[pair[0]] + shape_gap[pair[1]]
+            gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
 
             for mode in range(2):
                 tri_shape = pair[mode]
@@ -902,13 +902,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                 X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws), X_tri_ws)
 
-                triangle_mesh_thickness = scale_data_tri[3]
-                sdf_mesh_thickness = scale_data_sdf[3]
+                triangle_mesh_margin = scale_data_tri[3]
+                sdf_mesh_margin = scale_data_sdf[3]
 
                 inv_sdf_scale = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), sdf_scale)
                 min_sdf_scale = wp.min(wp.min(sdf_scale[0], sdf_scale[1]), sdf_scale[2])
 
-                contact_threshold = margin + triangle_mesh_thickness + sdf_mesh_thickness
+                contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
 
                 tri_capacity = wp.block_dim()
@@ -999,7 +999,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 contact_data.margin_b = shape_data[pair[1]][3]
                                 contact_data.shape_a = pair[0]
                                 contact_data.shape_b = pair[1]
-                                contact_data.margin = margin
+                                contact_data.gap_sum = gap_sum
 
                                 writer_func(contact_data, writer_data, -1)
 
@@ -1049,7 +1049,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 has_hfield = False
                 pair = pair_encoded
 
-            margin = shape_gap[pair[0]] + shape_gap[pair[1]]
+            gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
 
             empty_marker = wp.static(-MAXVAL)
 
@@ -1140,15 +1140,15 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                 X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws), X_tri_ws)
 
-                triangle_mesh_thickness = scale_data_tri[3]
-                sdf_mesh_thickness = scale_data_sdf[3]
+                triangle_mesh_margin = scale_data_tri[3]
+                sdf_mesh_margin = scale_data_sdf[3]
 
                 midpoint = (wp.transform_get_translation(X_tri_ws) + wp.transform_get_translation(X_sdf_ws)) * 0.5
 
                 inv_sdf_scale = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), sdf_scale)
                 min_sdf_scale = wp.min(wp.min(sdf_scale[0], sdf_scale[1]), sdf_scale[2])
 
-                contact_threshold = margin + triangle_mesh_thickness + sdf_mesh_thickness
+                contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
 
                 tri_capacity = wp.block_dim()
@@ -1295,7 +1295,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 contact_data.margin_b = shape_data[pair[1]][3]
                 contact_data.shape_a = pair[0]
                 contact_data.shape_b = pair[1]
-                contact_data.margin = margin
+                contact_data.gap_sum = gap_sum
 
                 writer_func(contact_data, writer_data, -1)
 
