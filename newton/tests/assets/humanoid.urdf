@@ -1,7 +1,7 @@
 <?xml version="0.0" ?>
 <!-- Thanks to the Bullet project for providing this humanoid asset:
      https://github.com/bulletphysics/bullet3/blob/master/data/humanoid.urdf -->
-<robot name="">
+<robot name="humanoid">
 	<link name="torso">
 		<inertial>
 			<origin rpy="0.00000 -0.00000 0.00000" xyz="-0.01000 0.00000 -0.12000"/>
