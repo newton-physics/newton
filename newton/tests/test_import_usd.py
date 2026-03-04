@@ -6272,14 +6272,19 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
 
-        # hide_collision_shapes=True: no VISIBLE flag on any collision shape
+        # hide_collision_shapes=True: hide colliders on bodies that have visuals
+        # but keep colliders visible on bodies with no visual-only geometry.
         builder3 = newton.ModelBuilder()
         result3 = builder3.add_usd(stage, hide_collision_shapes=True)
         path_shape_map3 = result3["path_shape_map"]
 
-        for path in ["/BodyWithVisuals/CollisionBox", "/BodyWithoutVisuals/CollisionSphere"]:
-            flags_hidden = builder3.shape_flags[path_shape_map3[path]]
-            self.assertFalse(flags_hidden & ShapeFlags.VISIBLE)
+        flags_hidden_with_visual = builder3.shape_flags[path_shape_map3["/BodyWithVisuals/CollisionBox"]]
+        self.assertTrue(flags_hidden_with_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_hidden_with_visual & ShapeFlags.VISIBLE)
+
+        flags_fallback_no_visual = builder3.shape_flags[path_shape_map3["/BodyWithoutVisuals/CollisionSphere"]]
+        self.assertTrue(flags_fallback_no_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_fallback_no_visual & ShapeFlags.VISIBLE)
 
         # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
         builder4 = newton.ModelBuilder()
@@ -6290,6 +6295,71 @@ def Xform "BodyWithoutVisuals" (
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_inherits_visual_material_properties(self):
+        """Visible fallback collider meshes should carry resolved visual material data."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        collision_mesh = UsdGeom.Mesh.Define(stage, "/Body/CollisionMesh")
+        collision_mesh_prim = collision_mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collision_mesh_prim)
+        collision_mesh.CreatePointsAttr().Set(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ]
+        )
+        collision_mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        collision_mesh.CreateFaceVertexIndicesAttr().Set(
+            [
+                0,
+                2,
+                1,
+                0,
+                1,
+                3,
+                0,
+                3,
+                2,
+                1,
+                2,
+                3,
+            ]
+        )
+
+        material = UsdShade.Material.Define(stage, "/Materials/PBR")
+        shader = UsdShade.Shader.Define(stage, "/Materials/PBR/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set((0.2, 0.4, 0.6))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.35)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.75)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(collision_mesh_prim).Bind(material)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        np.testing.assert_allclose(np.array(mesh.color), np.array([0.2, 0.4, 0.6]), atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(mesh.roughness, 0.35, places=6)
+        self.assertAlmostEqual(mesh.metallic, 0.75, places=6)
 
 
 class TestImportUsdMimicJoint(unittest.TestCase):
