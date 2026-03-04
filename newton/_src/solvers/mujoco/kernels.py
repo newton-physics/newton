@@ -1513,6 +1513,33 @@ def update_jnt_properties_kernel(
 
 
 @wp.kernel
+def update_mocap_transforms_kernel(
+    mjc_mocap_to_newton_jnt: wp.array2d(dtype=wp.int32),
+    newton_joint_X_p: wp.array(dtype=wp.transform),
+    newton_joint_X_c: wp.array(dtype=wp.transform),
+    # outputs
+    mocap_pos: wp.array2d(dtype=wp.vec3),
+    mocap_quat: wp.array2d(dtype=wp.quat),
+):
+    """Update MuJoCo mocap body transforms from Newton joint data.
+
+    Iterates over MuJoCo mocap bodies [world, mocap_idx]. Each mocap body maps
+    to a fixed Newton joint and is updated from ``joint_X_p * inv(joint_X_c)``.
+    """
+    world, mocap_idx = wp.tid()
+    newton_jnt = mjc_mocap_to_newton_jnt[world, mocap_idx]
+    if newton_jnt < 0:
+        return
+
+    parent_xform = newton_joint_X_p[newton_jnt]
+    child_xform = newton_joint_X_c[newton_jnt]
+    tf = parent_xform * wp.transform_inverse(child_xform)
+
+    mocap_pos[world, mocap_idx] = tf.p
+    mocap_quat[world, mocap_idx] = quat_xyzw_to_wxyz(tf.q)
+
+
+@wp.kernel
 def update_joint_transforms_kernel(
     mjc_jnt_to_newton_jnt: wp.array2d(dtype=wp.int32),
     mjc_jnt_to_newton_dof: wp.array2d(dtype=wp.int32),

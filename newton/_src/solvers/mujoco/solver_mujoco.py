@@ -71,6 +71,7 @@ from .kernels import (
     update_jnt_properties_kernel,
     update_joint_transforms_kernel,
     update_mimic_eq_data_and_active_kernel,
+    update_mocap_transforms_kernel,
     update_model_properties_kernel,
     update_pair_properties_kernel,
     update_shape_mappings_kernel,
@@ -2836,6 +2837,8 @@ class SolverMuJoCo(SolverBase):
         """Mapping from MuJoCo [world, dof] to Newton DOF index. Shape [nworld, nv], dtype int32."""
         self.newton_dof_to_body: wp.array(dtype=wp.int32) | None = None
         """Mapping from Newton DOF index to child body index. Shape [joint_dof_count], dtype int32."""
+        self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
         self.mjc_actuator_ctrl_source: wp.array(dtype=wp.int32) | None = None
         """Control source for each MuJoCo actuator.
 
@@ -4206,6 +4209,7 @@ class SolverMuJoCo(SolverBase):
             body_mapping[child] = len(mj_bodies)
 
             j_type = joint_type[j]
+            is_kinematic_fixed_root = parent == -1 and j_type == JointType.FIXED and child_is_kinematic
 
             # Compute body transform for the MjSpec body pos/quat.
             # For free joints, the parent/child xforms are identity and the
@@ -4236,7 +4240,7 @@ class SolverMuJoCo(SolverBase):
             # MuJoCo requires positive-definite inertia. For zero-mass bodies
             # (sensor frames, reference links), omit mass and inertia entirely
             # and let MuJoCo handle them natively.
-            body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q)}
+            body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": is_kinematic_fixed_root}
             if mass > 0.0:
                 body_kwargs["mass"] = mass
                 body_kwargs["ipos"] = body_com[child, :]
@@ -4874,6 +4878,29 @@ class SolverMuJoCo(SolverBase):
 
             self.body_free_qd_start = wp.array(body_free_qd_start_np, dtype=wp.int32)
 
+            # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index.
+            # These mocap bodies correspond to kinematic fixed-root links (FIXED joint to world).
+            nmocap = self.mj_model.nmocap
+            if nmocap > 0:
+                mjc_mocap_to_newton_jnt_np = np.full((nworld, nmocap), -1, dtype=np.int32)
+                body_mocapid = self.mj_model.body_mocapid
+                for mjc_body in range(nbody):
+                    mocap_idx = body_mocapid[mjc_body]
+                    if mocap_idx < 0:
+                        continue
+                    newton_body = mjc_body_to_newton_np[0, mjc_body]
+                    if newton_body < 0:
+                        continue
+                    newton_body_template = newton_body % bodies_per_world
+                    for j in range(joints_per_world):
+                        if joint_child_np[j] == newton_body_template:
+                            for w in range(nworld):
+                                mjc_mocap_to_newton_jnt_np[w, mocap_idx] = w * joints_per_world + j
+                            break
+                self.mjc_mocap_to_newton_jnt = wp.array(mjc_mocap_to_newton_jnt_np, dtype=wp.int32)
+            else:
+                self.mjc_mocap_to_newton_jnt = None
+
             # Create mjc_jnt_to_newton_jnt: MuJoCo[world, joint] -> Newton joint index
             # selected_joints[idx] is the Newton template joint index
             mjc_jnt_to_newton_jnt_np = np.full((nworld, njnt), -1, dtype=np.int32)
@@ -5421,6 +5448,25 @@ class SolverMuJoCo(SolverBase):
         """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
         if self.model.joint_count == 0:
             return
+
+        # Update mocap body transforms first (fixed-root kinematic links have no MuJoCo joints).
+        if self.mjc_mocap_to_newton_jnt is not None and self.mjc_mocap_to_newton_jnt.shape[1] > 0:
+            nworld = self.mjc_mocap_to_newton_jnt.shape[0]
+            nmocap = self.mjc_mocap_to_newton_jnt.shape[1]
+            wp.launch(
+                update_mocap_transforms_kernel,
+                dim=(nworld, nmocap),
+                inputs=[
+                    self.mjc_mocap_to_newton_jnt,
+                    self.model.joint_X_p,
+                    self.model.joint_X_c,
+                ],
+                outputs=[
+                    self.mjw_data.mocap_pos,
+                    self.mjw_data.mocap_quat,
+                ],
+                device=self.model.device,
+            )
 
         # Update joint positions, joint axes, and relative body transforms
         # Iterates over MuJoCo joints [world, jnt]
