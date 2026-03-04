@@ -50,11 +50,11 @@ class ReplayUI:
         viewer.register_ui_callback(replay_ui.render, "free")
     """
 
-    def __init__(self, viewer=None, args=None):
+    def __init__(self, viewer):
         """Initialize the ReplayUI extension.
 
         Args:
-            viewer: The ViewerGL instance this UI will be attached to (optional)
+            viewer: The ViewerGL instance this UI will be attached to.
         """
         # Store reference to viewer for accessing viewer functionality
         self.viewer = viewer
@@ -67,10 +67,6 @@ class ReplayUI:
         self.selected_file = ""
         self.status_message = ""
         self.status_color = (1.0, 1.0, 1.0, 1.0)  # White by default
-
-    def set_viewer(self, viewer):
-        """Set the viewer reference after initialization."""
-        self.viewer = viewer
 
     def render(self, imgui):
         """
