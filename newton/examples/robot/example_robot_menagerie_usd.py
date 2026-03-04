@@ -52,6 +52,7 @@ MENAGERIE_USD_ROBOTS = {
         "asset_folder": "apptronik_apollo",
         "scene_file": "usd_structured/apptronik_apollo.usda",
         "initial_height": 1.0,
+        "ignore_paths": [".*/world_link.*"],
     },
     "booster_t1": {"asset_folder": "booster_t1", "scene_file": "usd_structured/T1.usda", "initial_height": 1.0},
     "g1_with_hands": {
@@ -120,6 +121,7 @@ class Example:
             enable_self_collisions=False,
             hide_collision_shapes=True,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            ignore_paths=robot_config.get("ignore_paths", []),
         )
 
         robot_builder.approximate_meshes("bounding_box")
