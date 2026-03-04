@@ -364,8 +364,9 @@ class ViewerGL(ViewerBase):
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
 
-        # Clear example-specific UI callbacks; panel/stats/free persist
+        # Clear example-specific UI callbacks; panel/stats persist
         self._ui_callbacks["side"] = []
+        self._ui_callbacks["free"] = []
 
         super().clear_model()
 
