@@ -39,9 +39,6 @@ import newton.utils
 from newton import ModelBuilder, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 
-# Hardcoded local path for now (asset not yet published in newton-assets repo)
-DUCK_ASSET = "D:/Code/Graphics/newton-assets/manipulation_objects/rubber_duck/mesh.usd"
-
 
 @wp.kernel
 def set_gripper_q(joint_q: wp.array2d(dtype=float), finger_pos: wp.array(dtype=float), idx0: int, idx1: int):
@@ -103,8 +100,9 @@ class Example:
         )
 
         # load pre-computed tetrahedral mesh from USD
-        usd_stage = Usd.Stage.Open(DUCK_ASSET)
-        prim = usd_stage.GetPrimAtPath("/TetModel")
+        duck_path = newton.utils.download_asset("manipulation_objects/rubber_duck")
+        usd_stage = Usd.Stage.Open(str(duck_path / "model.usda"))
+        prim = usd_stage.GetPrimAtPath("/root/Model/TetMesh")
         tetmesh = newton.TetMesh.create_from_usd(prim)
 
         # Duck USDA is in meters (metersPerUnit=1.0).
