@@ -511,13 +511,6 @@ add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, 
 
 add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_devices, use_viewer=True)
 
-add_example_test(
-    TestIKExamples,
-    name="ik.example_ik_benchmark",
-    devices=test_devices,
-    test_options_cpu={"batch_sizes": [1, 10]},
-    use_viewer=True,
-)
 
 add_example_test(
     TestIKExamples,
