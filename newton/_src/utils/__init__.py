@@ -43,10 +43,10 @@ def compute_world_offsets(world_count: int, spacing: tuple[float, float, float],
     based on the non-zero dimensions in the spacing tuple.
 
     Args:
-        world_count (int): The number of worlds to arrange.
-        spacing (tuple[float, float, float]): The spacing between worlds along each axis.
+        world_count: The number of worlds to arrange.
+        spacing: The spacing between worlds along each axis.
             Non-zero values indicate active dimensions for the grid layout.
-        up_axis (Any, optional): The up axis to ensure worlds are not shifted below the ground plane.
+        up_axis: The up axis to ensure worlds are not shifted below the ground plane.
             If provided, the offset correction along this axis will be zero.
 
     Returns:

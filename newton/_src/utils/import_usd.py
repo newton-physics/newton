@@ -26,6 +26,10 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from pxr import Usd
 
+    UsdStage = Usd.Stage
+else:
+    UsdStage = Any
+
 import numpy as np
 import warp as wp
 
@@ -45,7 +49,7 @@ AttributeFrequency = Model.AttributeFrequency
 
 def parse_usd(
     builder: ModelBuilder,
-    source,
+    source: str | UsdStage,
     *,
     xform: Transform | None = None,
     floating: bool | None = None,
@@ -81,15 +85,15 @@ def parse_usd(
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
-        xform (Transform): The transform to apply to the entire scene.
-        override_root_xform (bool): If ``True``, the articulation root's world-space
+        source: The file path to the USD file, or an existing USD stage instance.
+        xform: The transform to apply to the entire scene.
+        override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
             for cloning articulations at explicit positions. Not intended for sources
             containing multiple articulations, as all roots would be placed at the
             same ``xform``. Defaults to ``False``.
-        floating (bool or None): Controls the base joint type for the root body (bodies not connected as
+        floating: Controls the base joint type for the root body (bodies not connected as
             a child to any joint).
 
             - ``None`` (default): Uses format-specific default (creates a FREE joint for USD bodies without joints).
@@ -98,13 +102,13 @@ def parse_usd(
             - ``False``: Creates a FIXED joint (0 DOF).
 
             Cannot be specified together with ``base_joint``.
-        base_joint (dict): Custom joint specification for connecting the root body to the world
+        base_joint: Custom joint specification for connecting the root body to the world
             (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
             custom mobility. Dictionary with joint parameters as accepted by
             :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
             Cannot be specified together with ``floating``.
-        parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+        parent_body: Parent body index for hierarchical composition. If specified, attaches the
             imported root body to this existing body, making them part of the same kinematic articulation.
             The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
             the root connects to the world frame. **Restriction**: Only the most recently added
@@ -155,28 +159,28 @@ def parse_usd(
                     - ``body_idx``
                     - ❌ Error: FREE joints require world frame
 
-        only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
-        only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-        joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
-        verbose (bool): If True, print additional information about the parsed USD file. Default is False.
-        ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions (bool): Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
-        apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
-        root_path (str): The USD path to import, defaults to "/".
-        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
-        bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
-        skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-        load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
-        load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-        hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
-        force_show_colliders (bool): If True, collision shapes get the VISIBLE flag
+        only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+        only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
+        joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+        verbose: If True, print additional information about the parsed USD file. Default is False.
+        ignore_paths: A list of regular expressions matching prim paths to ignore.
+        collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
+        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+        apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
+        root_path: The USD path to import, defaults to "/".
+        joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
+        bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
+        skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
+        load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+        hide_collision_shapes: If True, collision shapes are hidden. Default is False.
+        force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
             ``hide_collision_shapes=True`` still takes precedence and will suppress
             the VISIBLE flag even when this option is set. Default is False.
-        parse_mujoco_options (bool): Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
-        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
-        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
+        parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+        schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
             These include namespaced attributes such as ``newton:*``, ``physx*``
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
@@ -186,7 +190,7 @@ def parse_usd(
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
-        force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
+        force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
