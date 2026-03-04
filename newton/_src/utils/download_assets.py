@@ -251,17 +251,18 @@ def download_git_folder(
             multi_options=["--filter=blob:none", "--sparse"],
         )
 
-        # Narrow sparse checkout to just the target folder, then checkout.
-        repo.git.sparse_checkout("set", folder_path)
-        repo.git.checkout(branch)
+        try:
+            # Narrow sparse checkout to just the target folder, then checkout.
+            repo.git.sparse_checkout("set", folder_path)
+            repo.git.checkout(branch)
+        finally:
+            repo.close()
 
         # Verify the folder exists
         if not target_folder.exists():
             raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}")
 
         _touch(stamp_file)
-
-        repo.close()
 
         print(f"Successfully downloaded folder to: {target_folder}")
         return target_folder
