@@ -17,8 +17,10 @@
 # Example Soft Body Franka
 #
 # Demonstrates a Franka Panda robot grasping a deformable rubber duck
-# on a table. The robot uses Jacobian-based IK to follow keyframed
-# end-effector poses. The duck is a tetrahedral mesh simulated with VBD.
+# on a table. The robot is positioned via Newton's GPU IK solver;
+# Featherstone is used as a kinematic integrator to produce proper
+# body velocities for VBD friction. The duck is a tetrahedral mesh
+# simulated with VBD.
 #
 # The simulation runs in meter scale.
 #
@@ -32,9 +34,9 @@ from pxr import Usd
 
 import newton
 import newton.examples
+import newton.ik as ik
 import newton.utils
-from newton import Model, ModelBuilder, State, eval_fk
-from newton.math import transform_twist
+from newton import ModelBuilder, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 
 # Hardcoded local path for now (asset not yet published in newton-assets repo)
@@ -42,24 +44,20 @@ DUCK_ASSET = "D:/Code/Graphics/newton-assets/manipulation_objects/rubber_duck/me
 
 
 @wp.kernel
-def compute_ee_delta(
-    body_q: wp.array(dtype=wp.transform),
-    offset: wp.transform,
-    body_id: int,
-    bodies_per_world: int,
-    target: wp.transform,
-    # outputs
-    ee_delta: wp.array(dtype=wp.spatial_vector),
+def set_gripper_q(joint_q: wp.array2d(dtype=float), finger_pos: wp.array(dtype=float), idx0: int, idx1: int):
+    joint_q[0, idx0] = finger_pos[0]
+    joint_q[0, idx1] = finger_pos[0]
+
+
+@wp.kernel
+def compute_joint_qd(
+    target_q: wp.array(dtype=float),
+    current_q: wp.array(dtype=float),
+    out_qd: wp.array(dtype=float),
+    inv_frame_dt: float,
 ):
-    world_id = wp.tid()
-    tf = body_q[bodies_per_world * world_id + body_id] * offset
-    pos = wp.transform_get_translation(tf)
-    pos_des = wp.transform_get_translation(target)
-    pos_diff = pos_des - pos
-    rot = wp.transform_get_rotation(tf)
-    rot_des = wp.transform_get_rotation(target)
-    ang_diff = rot_des * wp.quat_inverse(rot)
-    ee_delta[world_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
+    i = wp.tid()
+    out_qd[i] = (target_q[i] - current_q[i]) * inv_frame_dt
 
 
 class Example:
@@ -90,9 +88,6 @@ class Example:
         franka = ModelBuilder()
         self.create_articulation(franka)
         self.scene.add_world(franka)
-        self.bodies_per_world = franka.body_count
-        self.dof_q_per_world = franka.joint_coord_count
-        self.dof_qd_per_world = franka.joint_dof_count
 
         # add a table (meter scale)
         table_hx = 0.4
@@ -112,8 +107,8 @@ class Example:
         prim = usd_stage.GetPrimAtPath("/TetModel")
         tetmesh = newton.TetMesh.create_from_usd(prim)
 
-        # Duck USDA is in meters (metersPerUnit=1.0), small-head variant.
-        # Table top is at z=0.2m. Duck center offset ~0.05m above table.
+        # Duck USDA is in meters (metersPerUnit=1.0).
+        # Table top is at z=0.2m. Duck center offset ~0.03m above table.
         self.scene.add_soft_mesh(
             pos=wp.vec3(0.0, -0.5, 0.23),
             rot=wp.quat_identity(),
@@ -137,21 +132,9 @@ class Example:
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
 
-        shape_ke = self.model.shape_material_ke.numpy()
-        shape_kd = self.model.shape_material_kd.numpy()
-        shape_mu = self.model.shape_material_mu.numpy()
-        shape_ke[...] = self.soft_contact_ke
-        shape_kd[...] = self.soft_contact_kd
-        shape_mu[...] = 1.5
-        self.model.shape_material_ke = wp.array(
-            shape_ke, dtype=self.model.shape_material_ke.dtype, device=self.model.shape_material_ke.device
-        )
-        self.model.shape_material_kd = wp.array(
-            shape_kd, dtype=self.model.shape_material_kd.dtype, device=self.model.shape_material_kd.device
-        )
-        self.model.shape_material_mu = wp.array(
-            shape_mu, dtype=self.model.shape_material_mu.dtype, device=self.model.shape_material_mu.device
-        )
+        self.model.shape_material_ke.fill_(self.soft_contact_ke)
+        self.model.shape_material_kd.fill_(self.soft_contact_kd)
+        self.model.shape_material_mu.fill_(1.5)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -168,9 +151,11 @@ class Example:
 
         self.sim_time = 0.0
 
-        # robot solver
+        # robot solver (Featherstone as kinematic integrator for body velocities)
         self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.sim_substeps)
-        self.set_up_control()
+
+        # IK solver setup
+        self.set_up_ik()
 
         # soft body solver
         self.soft_solver = SolverVBD(
@@ -193,37 +178,66 @@ class Example:
         self.gravity_earth = wp.array(wp.vec3(0.0, 0.0, -9.81), dtype=wp.vec3)
 
         # evaluate FK for initial state
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # graph capture for performance
         self.capture()
 
-    def set_up_control(self):
-        self.control = self.model.control()
+    def set_up_ik(self):
+        """Set up GPU IK solver for end-effector pose tracking."""
+        # Evaluate FK to get initial EE transform
+        state = self.model.state()
+        eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
 
-        out_dim = 6
-        in_dim = self.model.joint_dof_count
+        # IK joint coordinates (1 problem, all DOFs)
+        self.n_coords = self.model.joint_coord_count
+        self.n_dofs = self.model.joint_dof_count
+        self.ik_joint_q = wp.array(self.model.joint_q, shape=(1, self.n_coords))
 
-        def onehot(i, out_dim):
-            x = wp.array([1.0 if j == i else 0.0 for j in range(out_dim)], dtype=float)
-            return x
+        # Finger DOF indices (last two)
+        self.finger_idx0 = self.n_coords - 2
+        self.finger_idx1 = self.n_coords - 1
 
-        self.Jacobian_one_hots = [onehot(i, out_dim) for i in range(out_dim)]
+        # Finger position buffer (wp.array so it works with graph capture)
+        self.finger_pos_buf = wp.zeros(1, dtype=float)
 
-        @wp.kernel
-        def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
-            mv = transform_twist(wp.static(self.endeffector_offset), body_qd[wp.static(self.endeffector_id)])
-            for i in range(6):
-                body_out[i] = mv[i]
+        # 1D buffer for IK result (target joint config)
+        self.target_joint_q = wp.zeros(self.n_coords, dtype=float)
 
-        self.compute_body_out_kernel = compute_body_out
-        self.temp_state_for_jacobian = self.model.state(requires_grad=True)
+        # Initial target from keyframe
+        target_pos = wp.vec3(*self.targets[0][:3].tolist())
+        target_rot = wp.vec4(*self.targets[0][3:7].tolist())
 
-        self.body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
-        self.J_flat = wp.empty(out_dim * in_dim, dtype=float)
-        self.J_shape = wp.array((out_dim, in_dim), dtype=int)
-        self.ee_delta = wp.empty(1, dtype=wp.spatial_vector)
-        self.initial_pose = self.model.joint_q.numpy()
+        # Position objective (with EE offset along tool axis)
+        self.pos_obj = ik.IKObjectivePosition(
+            link_index=self.endeffector_id,
+            link_offset=wp.vec3(0.0, 0.0, 0.22),
+            target_positions=wp.array([target_pos], dtype=wp.vec3),
+        )
+
+        # Rotation objective
+        self.rot_obj = ik.IKObjectiveRotation(
+            link_index=self.endeffector_id,
+            link_offset_rotation=wp.quat_identity(),
+            target_rotations=wp.array([target_rot], dtype=wp.vec4),
+        )
+
+        # Joint limit objective
+        self.joint_limits_obj = ik.IKObjectiveJointLimit(
+            joint_limit_lower=self.model.joint_limit_lower,
+            joint_limit_upper=self.model.joint_limit_upper,
+            weight=10.0,
+        )
+
+        self.ik_solver = ik.IKSolver(
+            model=self.model,
+            n_problems=1,
+            objectives=[self.pos_obj, self.rot_obj, self.joint_limits_obj],
+            lambda_initial=0.1,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+        )
+
+        self.ik_iters = 24
 
     def capture(self):
         if wp.get_device().is_cuda:
@@ -248,7 +262,7 @@ class Example:
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
         gripper_open = 1.0
-        gripper_close = 0.65
+        gripper_close = 0.5
 
         # Keyframe sequence: approach, descend, pinch, lift, hold, place, release, retract
         # [duration, px, py, pz, qx, qy, qz, qw, gripper_activation] (positions in meters)
@@ -259,7 +273,7 @@ class Example:
                 # descend: lower to duck body
                 [2.0, -0.005, -0.5, 0.21, 1, 0.0, 0.0, 0.0, gripper_open],
                 # pinch: close gripper on duck
-                [2.0, -0.005, -0.5, 0.21, 1, 0.0, 0.0, 0.0, gripper_close],
+                [2.5, -0.005, -0.5, 0.21, 1, 0.0, 0.0, 0.0, gripper_close],
                 # lift: raise duck off table
                 [2.0, -0.005, -0.5, 0.35, 1, 0.0, 0.0, 0.0, gripper_close],
                 # hold: pause in air
@@ -280,93 +294,60 @@ class Example:
 
         self.robot_key_poses_time = np.cumsum(self.robot_key_poses[:, 0])
         self.endeffector_id = builder.body_count - 3
-        self.endeffector_offset = wp.transform([0.0, 0.0, 0.22], wp.quat_identity())
 
-    def compute_body_jacobian(
-        self,
-        model: Model,
-        joint_q: wp.array,
-        joint_qd: wp.array,
-        include_rotation: bool = False,
-    ):
-        joint_q.requires_grad = True
-        joint_qd.requires_grad = True
-
-        in_dim = model.joint_dof_count
-        out_dim = 6 if include_rotation else 3
-
-        tape = wp.Tape()
-        with tape:
-            eval_fk(model, joint_q, joint_qd, self.temp_state_for_jacobian)
-            wp.launch(
-                self.compute_body_out_kernel, 1, inputs=[self.temp_state_for_jacobian.body_qd], outputs=[self.body_out]
-            )
-
-        for i in range(out_dim):
-            tape.backward(grads={self.body_out: self.Jacobian_one_hots[i]})
-            wp.copy(self.J_flat[i * in_dim : (i + 1) * in_dim], joint_qd.grad)
-            tape.zero()
-
-    def generate_control_joint_qd(self, state_in: State):
+    def update_ik_targets(self):
+        """Interpolate keyframes and update IK target arrays (CPU, called before graph launch)."""
         if self.sim_time >= self.robot_key_poses_time[-1]:
-            self.target_joint_qd.zero_()
             return
 
         current_interval = np.searchsorted(self.robot_key_poses_time, self.sim_time)
-        self.target = self.targets[current_interval]
 
-        include_rotation = True
+        # Interpolate between previous and current keyframe target
+        t_start = self.robot_key_poses_time[current_interval - 1] if current_interval > 0 else 0.0
+        t_end = self.robot_key_poses_time[current_interval]
+        alpha = float(np.clip((self.sim_time - t_start) / (t_end - t_start), 0.0, 1.0))
 
-        wp.launch(
-            compute_ee_delta,
-            dim=1,
-            inputs=[
-                state_in.body_q,
-                self.endeffector_offset,
-                self.endeffector_id,
-                self.bodies_per_world,
-                wp.transform(*self.target[:7]),
-            ],
-            outputs=[self.ee_delta],
-        )
+        target_cur = self.targets[current_interval]
+        target_prev = self.targets[current_interval - 1] if current_interval > 0 else target_cur
+        target_interp = (1.0 - alpha) * target_prev + alpha * target_cur
 
-        self.compute_body_jacobian(
-            self.model,
-            state_in.joint_q,
-            state_in.joint_qd,
-            include_rotation=include_rotation,
-        )
-        J = self.J_flat.numpy().reshape(-1, self.model.joint_dof_count)
-        delta_target = self.ee_delta.numpy()[0]
-        J_inv = np.linalg.pinv(J)
+        # Update IK target arrays on GPU (read by IK solver inside captured graph)
+        self.pos_obj.set_target_position(0, wp.vec3(*target_interp[:3].tolist()))
+        self.rot_obj.set_target_rotation(0, wp.vec4(*target_interp[3:7].tolist()))
 
-        I = np.eye(J.shape[1], dtype=np.float32)
-        N = I - J_inv @ J
-
-        q = state_in.joint_q.numpy()
-        q_des = q.copy()
-        q_des[1:] = self.initial_pose[1:]
-
-        K_null = 1.0
-        delta_q_null = K_null * (q_des - q)
-        delta_q = J_inv @ delta_target + N @ delta_q_null
-
-        # gripper finger control
-        delta_q[-2] = self.target[-1] * 0.04 - q[-2]
-        delta_q[-1] = self.target[-1] * 0.04 - q[-1]
-
-        self.target_joint_qd.assign(delta_q)
+        # Update gripper finger position buffer
+        finger_pos = float(target_interp[-1]) * 0.04
+        self.finger_pos_buf.fill_(finger_pos)
 
     def step(self):
-        self.generate_control_joint_qd(self.state_0)
+        self.update_ik_targets()
         if self.graph:
             wp.capture_launch(self.graph)
+            self.sim_time += self.frame_dt
         else:
             self.simulate()
 
-        self.sim_time += self.frame_dt
-
     def simulate(self):
+        # IK solve once per frame (GPU, captured in graph)
+        self.ik_solver.step(self.ik_joint_q, self.ik_joint_q, iterations=self.ik_iters)
+
+        # Set gripper finger positions from buffer
+        wp.launch(
+            set_gripper_q,
+            dim=1,
+            inputs=[self.ik_joint_q, self.finger_pos_buf, self.finger_idx0, self.finger_idx1],
+        )
+
+        # Copy IK result to target buffer (2D -> 1D, contiguous memory)
+        wp.copy(self.target_joint_q, self.ik_joint_q, dest_offset=0, src_offset=0, count=self.n_coords)
+
+        # Compute joint velocity: qd = (target - current) / frame_dt
+        wp.launch(
+            compute_joint_qd,
+            dim=self.n_dofs,
+            inputs=[self.target_joint_q, self.state_0.joint_q, self.target_joint_qd, 1.0 / self.frame_dt],
+        )
+
         self.soft_solver.rebuild_bvh(self.state_0)
         for _step in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -374,7 +355,7 @@ class Example:
 
             self.viewer.apply_forces(self.state_0)
 
-            # robot sim (disable particles temporarily)
+            # Featherstone as kinematic integrator (disable particles + gravity)
             particle_count = self.model.particle_count
             self.model.particle_count = 0
             self.model.gravity.assign(self.gravity_zero)
