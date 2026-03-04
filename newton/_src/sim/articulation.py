@@ -415,7 +415,7 @@ def eval_fk(
     model: Model,
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
-    state: State | object,
+    state: State | Model | object,
     mask: wp.array(dtype=bool) | None = None,
     indices: wp.array(dtype=int) | None = None,
 ):
@@ -423,13 +423,13 @@ def eval_fk(
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
 
     Args:
-        model (Model): The model to evaluate.
-        joint_q (array): Generalized joint position coordinates, shape [joint_coord_count], float
-        joint_qd (array): Generalized joint velocity coordinates, shape [joint_dof_count], float
-        state (State): The state to update.
-        mask (array): The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
-        indices (array): Integer indices of articulations to update. If None, updates all articulations.
-                        Cannot be used together with mask parameter.
+        model: The model to evaluate.
+        joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
+        joint_qd: Generalized joint velocity coordinates, shape [joint_dof_count], float
+        state: The state-like target to update (e.g., :class:`State` or :class:`Model`).
+        mask: The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
+        indices: Integer indices of articulations to update. If None, updates all articulations.
+            Cannot be used together with mask parameter.
     """
     # Validate inputs
     if mask is not None and indices is not None:
@@ -751,17 +751,24 @@ def eval_articulation_ik(
 
 
 # given maximal coordinate model computes ik (closest point projection)
-def eval_ik(model, state, joint_q, joint_qd, mask=None, indices=None):
+def eval_ik(
+    model: Model,
+    state: State | Model | object,
+    joint_q: wp.array(dtype=float),
+    joint_qd: wp.array(dtype=float),
+    mask: wp.array(dtype=bool) | None = None,
+    indices: wp.array(dtype=int) | None = None,
+):
     """
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
 
     Args:
-        model (Model): The model to evaluate.
-        state (State): The state with the body's maximal coordinates (positions :attr:`State.body_q` and velocities :attr:`State.body_qd`) to use.
-        joint_q (array): Generalized joint position coordinates, shape [joint_coord_count], float
-        joint_qd (array): Generalized joint velocity coordinates, shape [joint_dof_count], float
-        mask (array): Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).
-        indices (array): Integer indices of articulations to update. If None, updates all articulations.
+        model: The model to evaluate.
+        state: The state-like object with the body's maximal coordinates (positions :attr:`State.body_q` and velocities :attr:`State.body_qd`) to use.
+        joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
+        joint_qd: Generalized joint velocity coordinates, shape [joint_dof_count], float
+        mask: Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).
+        indices: Integer indices of articulations to update. If None, updates all articulations.
 
     Note:
         The mask and indices parameters are mutually exclusive. If both are provided, a ValueError is raised.

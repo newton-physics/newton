@@ -283,7 +283,7 @@ class SolverMuJoCo(SolverBase):
         return parsed
 
     @staticmethod
-    def _is_mjc_actuator_prim(prim, _context: dict[str, Any]) -> bool:
+    def _is_mjc_actuator_prim(prim: Any, _context: dict[str, Any]) -> bool:
         """Filter for prims of type ``MjcActuator`` for USD parsing.
 
         This is used as the ``usd_prim_filter`` for the ``mujoco:actuator`` custom frequency.
@@ -300,7 +300,7 @@ class SolverMuJoCo(SolverBase):
         return prim.GetTypeName() == "MjcActuator"
 
     @staticmethod
-    def _is_mjc_tendon_prim(prim, _context: dict[str, Any]) -> bool:
+    def _is_mjc_tendon_prim(prim: Any, _context: dict[str, Any]) -> bool:
         """Filter for prims of type ``MjcTendon`` for USD parsing.
 
         This is used as the ``usd_prim_filter`` for the ``mujoco:tendon`` custom frequency.
@@ -1953,7 +1953,7 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-    def _init_pairs(self, model: Model, spec, shape_mapping: dict[int, str], template_world: int) -> None:
+    def _init_pairs(self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int) -> None:
         """
         Initialize MuJoCo contact pairs from custom attributes.
 
@@ -2148,7 +2148,7 @@ class SolverMuJoCo(SolverBase):
     def _init_tendons(
         self,
         model: Model,
-        spec,
+        spec: Any,
         joint_mapping: dict[int, str],
         shape_mapping: dict[int, str],
         site_mapping: dict[int, str],
@@ -2465,9 +2465,9 @@ class SolverMuJoCo(SolverBase):
     def _init_actuators(
         self,
         model: Model,
-        spec,
+        spec: Any,
         template_world: int,
-        actuator_args: dict,
+        actuator_args: dict[str, Any],
         mjc_actuator_ctrl_source_list: list[int],
         mjc_actuator_to_newton_idx_list: list[int],
         dof_to_mjc_joint: np.ndarray,
@@ -2784,35 +2784,35 @@ class SolverMuJoCo(SolverBase):
         3. **MuJoCo default** - Used if neither of the above is set.
 
         Args:
-            model (Model): the model to be simulated.
-            separate_worlds (bool | None): If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
-            njmax (int | None): Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            nconmax (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            iterations (int | None): Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
-            ls_iterations (int | None): Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
-            ccd_iterations (int | None): Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
-            sdf_iterations (int | None): Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
-            sdf_initpoints (int | None): Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
-            solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
-            integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
-            cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("pyramidal").
-            jacobian (int | str | None): Jacobian computation method. Can be "dense", "sparse", or "auto", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or MuJoCo's default ("auto").
-            impratio (float | None): Frictional-to-normal constraint impedance ratio. If None, uses model custom attribute or MuJoCo's default (1.0).
-            tolerance (float | None): Solver tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (1e-8).
-            ls_tolerance (float | None): Line search tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (0.01).
-            ccd_tolerance (float | None): Continuous collision detection tolerance. If None, uses model custom attribute or MuJoCo's default (1e-6).
-            density (float | None): Medium density for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
-            viscosity (float | None): Medium viscosity for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
-            wind (tuple | None): Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
-            magnetic (tuple | None): Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
-            use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
-            disable_contacts (bool): If True, disable contact computation in MuJoCo.
-            update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
-            save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
-            ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
-            use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
-            include_sites (bool): If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
-            skip_visual_only_geoms (bool): If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
+            model: The model to be simulated.
+            separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
+            njmax: Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            nconmax: Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
+            ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
+            ccd_iterations: Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
+            sdf_iterations: Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
+            sdf_initpoints: Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
+            solver: Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
+            integrator: Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
+            cone: The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("pyramidal").
+            jacobian: Jacobian computation method. Can be "dense", "sparse", or "auto", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or MuJoCo's default ("auto").
+            impratio: Frictional-to-normal constraint impedance ratio. If None, uses model custom attribute or MuJoCo's default (1.0).
+            tolerance: Solver tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (1e-8).
+            ls_tolerance: Line search tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (0.01).
+            ccd_tolerance: Continuous collision detection tolerance. If None, uses model custom attribute or MuJoCo's default (1e-6).
+            density: Medium density for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
+            viscosity: Medium viscosity for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
+            wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
+            magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
+            use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
+            disable_contacts: If True, disable contact computation in MuJoCo.
+            update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+            save_to_mjcf: Optional path to save the generated MJCF model file.
+            ls_parallel: If True, enable parallel line search in MuJoCo. Defaults to False.
+            use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
+            include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
+            skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
         """
         super().__init__(model)
 
@@ -3401,10 +3401,10 @@ class SolverMuJoCo(SolverBase):
         Shapes can only collide with shapes of different colors.
 
         Args:
-            model (Model): The model to color the collision shapes of.
-            selected_shapes (nparray): The indices of the collision shapes to color.
-            visualize_graph (bool): Whether to visualize the graph coloring.
-            shape_labels (list[str]): The labels of the shapes, only used for visualization.
+            model: The model to color the collision shapes of.
+            selected_shapes: The indices of the collision shapes to color.
+            visualize_graph: Whether to visualize the graph coloring.
+            shape_labels: The labels of the shapes, only used for visualization.
 
         Returns:
             nparray: An integer array of shape (num_shapes,), where each element is the color of the corresponding shape.

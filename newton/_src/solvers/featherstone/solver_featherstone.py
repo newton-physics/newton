@@ -105,12 +105,12 @@ class SolverFeatherstone(SolverBase):
     ):
         """
         Args:
-            model (Model): the model to be simulated.
-            angular_damping (float, optional): Angular damping factor. Defaults to 0.05.
-            update_mass_matrix_interval (int, optional): How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
-            friction_smoothing (float, optional): The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
-            use_tile_gemm (bool, optional): Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
-            fuse_cholesky (bool, optional): Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
+            model: The model to be simulated.
+            angular_damping: Angular damping factor. Defaults to 0.05.
+            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
+            friction_smoothing: The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
+            use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
+            fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
         """
         super().__init__(model)
 

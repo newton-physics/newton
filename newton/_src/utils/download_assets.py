@@ -239,36 +239,30 @@ def download_git_folder(
 
     # 3. Download if not cached (or if cache was just cleared)
     try:
-        # Clone the repository with sparse checkout
+        # Clone with sparse checkout and blob filter so only blobs for the
+        # requested folder are downloaded (instead of the entire repo).
         print(f"Cloning {git_url} (branch: {branch})...")
         repo = git.Repo.clone_from(
             git_url,
             cache_folder,
             branch=branch,
-            depth=1,  # Shallow clone for efficiency
+            depth=1,
+            no_checkout=True,
+            multi_options=["--filter=blob:none", "--sparse"],
         )
 
-        # Configure sparse checkout to only include the target folder
-        sparse_checkout_file = cache_folder / ".git" / "info" / "sparse-checkout"
-        sparse_checkout_file.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(sparse_checkout_file, "w") as f:
-            f.write(f"{folder_path}\n")
-
-        # Apply sparse checkout configuration
-        with repo.config_writer() as config:
-            config.set_value("core", "sparseCheckout", "true")
-
-        # Re-read the index to apply sparse checkout
-        repo.git.read_tree("-m", "-u", "HEAD")
+        try:
+            # Narrow sparse checkout to just the target folder, then checkout.
+            repo.git.sparse_checkout("set", folder_path)
+            repo.git.checkout(branch)
+        finally:
+            repo.close()
 
         # Verify the folder exists
         if not target_folder.exists():
             raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}")
 
         _touch(stamp_file)
-
-        repo.close()
 
         print(f"Successfully downloaded folder to: {target_folder}")
         return target_folder

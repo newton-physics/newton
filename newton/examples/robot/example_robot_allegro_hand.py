@@ -110,6 +110,8 @@ class Example:
             allegro_hand.joint_target_kd[i] = 5
             allegro_hand.joint_target_pos[i] = 0.0
             allegro_hand.joint_target_mode[i] = int(JointTargetMode.POSITION)
+            if allegro_hand.joint_type[i] == newton.JointType.REVOLUTE:
+                allegro_hand.joint_armature[i] = 1e-2
 
         builder = newton.ModelBuilder()
         builder.replicate(allegro_hand, self.world_count)

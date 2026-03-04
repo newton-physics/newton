@@ -1063,8 +1063,8 @@ def count_iso_voxels_block(
         X_ws_a = shape_transform[shape_a]
         X_ws_b = shape_transform[shape_b]
 
-        margin_a = shape_gap[shape_a]
-        margin_b = shape_gap[shape_b]
+        gap_a = shape_gap[shape_a]
+        gap_b = shape_gap[shape_b]
 
         voxel_radius = sdf_data_b.sparse_voxel_radius
         r = float(subblock_size) * voxel_radius
@@ -1092,8 +1092,8 @@ def count_iso_voxels_block(
                         sdf_data_b, sdf_data_a, X_ws_b, X_ws_a, k_eff_b, k_eff_a, x_center
                     )
 
-                    # check if bounding sphere contains the isosurface and the distance is within contact margin
-                    if wp.abs(diff_val) > r_eff or va > r + margin_a or vb > r + margin_b or not is_valid:
+                    # check if bounding sphere contains the isosurface and the distance is within contact gap
+                    if wp.abs(diff_val) > r_eff or va > r + gap_a or vb > r + gap_b or not is_valid:
                         continue
                     num_iso_subblocks += 1
                     subblock_idx |= encode_coords_8(x_local, y_local, z_local)
@@ -1148,11 +1148,11 @@ def mc_iterate_voxel_vertices(
     X_ws_other: wp.transform,
     k_eff: wp.float32,
     k_eff_other: wp.float32,
-    margin: wp.float32,
+    gap_sum: wp.float32,
 ) -> tuple[wp.uint8, vec8f, bool, bool]:
     """Iterate over the vertices of a voxel and return the cube index, corner values, and whether any vertices are inside the shape."""
     cube_idx = wp.uint8(0)
-    any_verts_inside_margin = False
+    any_verts_inside_gap = False
     corner_vals = vec8f()
 
     for i in range(8):
@@ -1173,10 +1173,10 @@ def mc_iterate_voxel_vertices(
         if v_diff < 0.0:
             cube_idx |= wp.uint8(1) << wp.uint8(i)
 
-        if v <= margin:
-            any_verts_inside_margin = True
+        if v <= gap_sum:
+            any_verts_inside_gap = True
 
-    return cube_idx, corner_vals, any_verts_inside_margin, True
+    return cube_idx, corner_vals, any_verts_inside_gap, True
 
 
 # =============================================================================
@@ -1254,10 +1254,10 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             normal_world = wp.transform_vector(transform_b, contact_normal)
             pos_world = wp.transform_point(transform_b, pos)
 
-            # Sum margins for consistency with thickness summing
-            margin_a = shape_gap[shape_a]
-            margin_b = shape_gap[shape_b]
-            margin = margin_a + margin_b
+            # Sum per-shape gaps for pairwise contact detection threshold
+            gap_a = shape_gap[shape_a]
+            gap_b = shape_gap[shape_b]
+            gap_sum = gap_a + gap_b
 
             k_a = shape_material_kh[shape_a]
             k_b = shape_material_kh[shape_b]
@@ -1283,7 +1283,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data.margin_b = 0.0
             contact_data.shape_a = shape_a
             contact_data.shape_b = shape_b
-            contact_data.margin = margin
+            contact_data.gap_sum = gap_sum
             contact_data.contact_stiffness = c_stiffness
 
             writer_func(contact_data, writer_data, output_index)
@@ -1366,9 +1366,9 @@ def get_generate_contacts_kernel(
 
             iso_coords = iso_voxel_coords[tid]
 
-            margin_a = shape_gap[shape_a]
-            margin_b = shape_gap[shape_b]
-            margin = margin_a + margin_b
+            gap_a = shape_gap[shape_a]
+            gap_b = shape_gap[shape_b]
+            gap_sum = gap_a + gap_b
 
             k_a = shape_material_kh[shape_a]
             k_b = shape_material_kh[shape_b]
@@ -1391,7 +1391,7 @@ def get_generate_contacts_kernel(
                 transform_a,
                 k_eff_b,
                 k_eff_a,
-                margin,
+                gap_sum,
             )
 
             range_idx = wp.int32(cube_idx)
