@@ -45,7 +45,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
-        self.world_count = 1000
+        self.world_count = 100
 
         # Set numpy random seed for reproducibility
         self.seed = 123
@@ -65,16 +65,12 @@ class Example:
         # Joint initial positions
         articulation_builder.joint_q[:7] = [0.0, 0.0, 1.5, *start_rot]
 
-        spacing = 3.0
-        sqn = int(wp.ceil(wp.sqrt(float(self.world_count))))
-
         builder = newton.ModelBuilder()
-        for i in range(self.world_count):
-            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0.0)
+        for _i in range(self.world_count):
             articulation_builder.joint_q[7:] = self.rng.uniform(
                 -1.0, 1.0, size=(len(articulation_builder.joint_q) - 7,)
             ).tolist()
-            builder.add_world(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+            builder.add_world(articulation_builder)
         builder.add_ground_plane()
 
         # Finalize model

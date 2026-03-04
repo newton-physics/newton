@@ -18,11 +18,11 @@
 import unittest
 
 import numpy as np
-from unittest_utils import USD_AVAILABLE
 
 from newton import JointTargetMode, ModelBuilder
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests import get_asset
+from newton.tests.unittest_utils import USD_AVAILABLE
 
 MJCF_ACTUATORS = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_actuators">

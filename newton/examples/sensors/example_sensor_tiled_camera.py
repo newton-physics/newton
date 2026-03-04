@@ -28,7 +28,6 @@ import ctypes
 import math
 import random
 
-import OpenGL.GL as gl
 import warp as wp
 from pxr import Usd
 
@@ -286,10 +285,14 @@ class Example:
         )
 
     def create_texture(self):
+        from pyglet import gl  # noqa: PLC0415
+
         width = self.sensor_render_width * self.worlds_per_row
         height = self.sensor_render_height * self.worlds_per_col
 
-        self.texture_id = gl.glGenTextures(1)
+        texture_id = gl.GLuint()
+        gl.glGenTextures(1, texture_id)
+        self.texture_id = texture_id.value
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
@@ -298,7 +301,9 @@ class Example:
         gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, width, height, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
-        self.pixel_buffer = gl.glGenBuffers(1)
+        pixel_buffer = gl.GLuint()
+        gl.glGenBuffers(1, pixel_buffer)
+        self.pixel_buffer = pixel_buffer.value
         gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pixel_buffer)
         gl.glBufferData(gl.GL_PIXEL_UNPACK_BUFFER, width * height * 4, None, gl.GL_DYNAMIC_DRAW)
         gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
@@ -308,6 +313,8 @@ class Example:
     def update_texture(self):
         if not self.texture_id:
             return
+
+        from pyglet import gl  # noqa: PLC0415
 
         texture_buffer = self.texture_buffer.map(
             dtype=wp.uint8,

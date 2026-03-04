@@ -68,6 +68,83 @@ def test_fk_ik(test, device):
     assert_np_equal(qd_fk, qd_ik.numpy(), tol=1e-6)
 
 
+def test_fk_ik_with_analytical_solution(test, device):
+    # Verify FK computes correct positions for a 2-link planar arm, and IK recovers joint angles.
+    # Test parameters: length of the two links
+    L1, L2 = 1.0, 0.8
+
+    # Add two dummy links with revolute joint
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    link0 = builder.add_link()
+    builder.add_shape_sphere(link0, radius=0.01)
+    link1 = builder.add_link()
+    builder.add_shape_sphere(link1, radius=0.01)
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=link0,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, L1, 0.0), wp.quat_identity()),
+    )
+    j1 = builder.add_joint_revolute(
+        parent=link0,
+        child=link1,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, L2, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1])
+    model = builder.finalize(device=device)
+
+    q_start = model.joint_q_start.numpy()
+    qi0 = q_start[0]
+    qi1 = q_start[1]
+
+    angle_configs = [(0.0, 0.0), (0.3, 0.0), (0.0, -0.5), (np.pi / 4, np.pi / 4), (0.3, -0.2)]
+    tol = 1e-4
+    for theta1, theta2 in angle_configs:
+        # Set desired angles
+        state = model.state()
+        q_init = state.joint_q.numpy()
+        q_init[qi0] = theta1
+        q_init[qi1] = theta2
+        state.joint_q.assign(q_init)
+
+        # Call Fk
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        pos0 = body_q[0][:3]
+        pos1 = body_q[1][:3]
+
+        # Calculate analytical pose
+        expected_pos0_x = L1 * np.sin(theta1)
+        expected_pos0_y = -L1 * np.cos(theta1)
+        expected_pos1_x = L1 * np.sin(theta1) + L2 * np.sin(theta1 + theta2)
+        expected_pos1_y = -L1 * np.cos(theta1) - L2 * np.cos(theta1 + theta2)
+
+        test.assertAlmostEqual(pos0[0], expected_pos0_x, delta=tol, msg=f"Link0 X @ ({theta1:.2f},{theta2:.2f})")
+        test.assertAlmostEqual(pos0[1], expected_pos0_y, delta=tol, msg=f"Link0 Y @ ({theta1:.2f},{theta2:.2f})")
+        test.assertAlmostEqual(pos0[2], 0.0, delta=tol, msg=f"Link0 Z @ ({theta1:.2f},{theta2:.2f})")
+
+        test.assertAlmostEqual(pos1[0], expected_pos1_x, delta=tol, msg=f"Link1 X @ ({theta1:.2f},{theta2:.2f})")
+        test.assertAlmostEqual(pos1[1], expected_pos1_y, delta=tol, msg=f"Link1 Y @ ({theta1:.2f},{theta2:.2f})")
+        test.assertAlmostEqual(pos1[2], 0.0, delta=tol, msg=f"Link1 Z @ ({theta1:.2f},{theta2:.2f})")
+
+        # Call IK to recover joint angles from body state
+        q_ik = wp.zeros_like(model.joint_q, device=device)
+        qd_ik = wp.zeros_like(model.joint_qd, device=device)
+        newton.eval_ik(model, state, q_ik, qd_ik)
+
+        q_recovered = q_ik.numpy()
+        test.assertAlmostEqual(
+            float(q_recovered[qi0]), theta1, delta=tol, msg=f"IK theta1 @ ({theta1:.2f},{theta2:.2f})"
+        )
+        test.assertAlmostEqual(
+            float(q_recovered[qi1]), theta2, delta=tol, msg=f"IK theta2 @ ({theta1:.2f},{theta2:.2f})"
+        )
+
+
 def test_fk_with_indices(test, device):
     """Test eval_fk with articulation indices parameter"""
     builder = newton.ModelBuilder()
@@ -407,6 +484,9 @@ class TestSimKinematics(unittest.TestCase):
 
 
 add_function_test(TestSimKinematics, "test_fk_ik", test_fk_ik, devices=devices)
+add_function_test(
+    TestSimKinematics, "test_fk_ik_with_analytical_solution", test_fk_ik_with_analytical_solution, devices=devices
+)
 add_function_test(TestSimKinematics, "test_fk_with_indices", test_fk_with_indices, devices=devices)
 add_function_test(TestSimKinematics, "test_ik_with_indices", test_ik_with_indices, devices=devices)
 add_function_test(TestSimKinematics, "test_fk_error_mask_and_indices", test_fk_error_mask_and_indices, devices=devices)
