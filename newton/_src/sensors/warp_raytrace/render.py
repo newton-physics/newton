@@ -269,7 +269,6 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
                 )
                 out_color = out_color + base_color * light_contribution
 
-        out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
         out_pixels[out_index] = tiling.pack_rgba_to_uint32(out_color, 1.0)
 
     return render_megakernel

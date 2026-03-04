@@ -83,8 +83,8 @@ def tid_to_coord_view_priority(tid: wp.int32, camera_count: wp.int32, width: wp.
 def pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
     """Pack RGBA values into a single uint32 for efficient memory access."""
     return (
-        (wp.uint32(alpha * 255.0) << wp.uint32(24))
-        | (wp.uint32(rgb[2] * 255.0) << wp.uint32(16))
-        | (wp.uint32(rgb[1] * 255.0) << wp.uint32(8))
-        | wp.uint32(rgb[0] * 255.0)
+        (wp.clamp(wp.uint32(alpha * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(24))
+        | (wp.clamp(wp.uint32(rgb[2] * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(16))
+        | (wp.clamp(wp.uint32(rgb[1] * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(8))
+        | wp.clamp(wp.uint32(rgb[0] * 255.0), wp.uint32(0), wp.uint32(255))
     )

@@ -684,6 +684,8 @@ class ViewerBase(ABC):
         if geo_type == newton.GeoType.GAUSSIAN:
             if geo_src is None:
                 raise ValueError(f"log_geo requires geo_src for GAUSSIAN (name={name})")
+            if not isinstance(geo_src, newton.Gaussian):
+                raise TypeError(f"log_geo expected newton.Gaussian for GAUSSIAN (name={name})")
             mesh = geo_src.compute_proxy_mesh()
             points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
             indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)

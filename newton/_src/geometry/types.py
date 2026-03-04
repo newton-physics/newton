@@ -1107,7 +1107,9 @@ class Gaussian:
             else None
         )
 
-        self._min_response = min_response
+        if not np.isfinite(min_response) or not (0.0 < min_response < 1.0):
+            raise ValueError("min_response must be finite and in (0, 1)")
+        self._min_response = float(min_response)
 
         self._cached_hash = None
 
@@ -1294,7 +1296,7 @@ class Gaussian:
     def create_from_usd(prim, min_response: float = 0.1) -> "Gaussian":
         """Load Gaussian splat data from a USD prim.
 
-        Reads positions from attributes: `positions`, `rotations`, `scales`, `opacities` and `shCoeffs`.
+        Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
 
         Args:
             prim: A USD prim containing Gaussian splat data.
