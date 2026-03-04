@@ -25,6 +25,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import warp as wp
 
@@ -235,6 +237,23 @@ def build_regular_grid_uvs(resolution: int) -> np.ndarray:
     return np.stack([uu.reshape(-1), vv.reshape(-1)], axis=-1)
 
 
+def build_mesh_edge_lines(mesh: newton.Mesh) -> tuple[np.ndarray, np.ndarray]:
+    """Create unique edge-line buffers from a triangle mesh."""
+    vertices = np.asarray(mesh.vertices, dtype=np.float32)
+    indices = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
+
+    edges: set[tuple[int, int]] = set()
+    for tri in indices:
+        i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
+        edges.add((min(i0, i1), max(i0, i1)))
+        edges.add((min(i1, i2), max(i1, i2)))
+        edges.add((min(i2, i0), max(i2, i0)))
+
+    starts = np.array([vertices[i] for i, _ in edges], dtype=np.float32)
+    ends = np.array([vertices[j] for _, j in edges], dtype=np.float32)
+    return starts, ends
+
+
 class Example:
     def __init__(self, viewer, args):
         if not wp.get_device().is_cuda:
@@ -250,13 +269,16 @@ class Example:
         self.sim_time = 0.0
 
         self.shape_name = args.shape
+        self.viewer_is_viser = self.viewer.__class__.__name__ == "ViewerViser"
         self.slice_axis = {"x": 0, "y": 1, "z": 2}[args.slice_axis]
         self.slice_position_normalized = float(args.slice_position)
         self.animate_slice = bool(args.animate_slice)
         self.slice_speed = float(args.slice_speed)
         self.plane_scale = float(args.plane_scale)
         self.resolution = int(args.resolution)
-        self.show_shape = False
+        self.shape_opacity = float(args.shape_opacity)
+        self.show_shape = self.viewer_is_viser
+        self.show_shape_wireframe = not self.viewer_is_viser
         self.show_slice = True
 
         self.mesh = self._create_shape_mesh(self.shape_name)
@@ -276,18 +298,105 @@ class Example:
         self.slice_indices = wp.array(build_regular_grid_indices(self.resolution), dtype=wp.int32, device=self.device)
         self.slice_uvs = wp.array(build_regular_grid_uvs(self.resolution), dtype=wp.vec2, device=self.device)
         self.slice_texture = np.zeros((self.resolution, self.resolution, 3), dtype=np.uint8)
+        self._slice_points_viser = np.zeros((0, 3), dtype=np.float32)
+        self._slice_colors_viser = np.zeros((0, 3), dtype=np.uint8)
+        self._viser_slice_handle = None
 
         self.shape_xforms = wp.array([wp.transform_identity()], dtype=wp.transform, device=self.device)
         self.shape_colors = wp.array([wp.vec3(0.72, 0.72, 0.76)], dtype=wp.vec3, device=self.device)
         self.shape_materials = wp.array([wp.vec4(0.75, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=self.device)
+        self._refresh_shape_materials()
+        line_starts, line_ends = build_mesh_edge_lines(self.mesh)
+        self.shape_line_starts = wp.array(line_starts, dtype=wp.vec3, device=self.device)
+        self.shape_line_ends = wp.array(line_ends, dtype=wp.vec3, device=self.device)
 
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(wp.vec3(2.5, -2.0, 1.6), -20.0, 145.0)
 
         if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
+        self._viser_controls: dict[str, Any] = {}
+        if self.viewer_is_viser:
+            self._setup_viser_controls()
 
         self._slice_dirty = True
+
+    def _refresh_shape_materials(self):
+        alpha = np.clip(self.shape_opacity, 0.0, 1.0) if self.viewer_is_viser else 0.0
+        self.shape_materials = wp.array([wp.vec4(0.75, 0.0, 0.0, float(alpha))], dtype=wp.vec4, device=self.device)
+
+    def _setup_viser_controls(self):
+        """Create native viser GUI controls when running with ViewerViser."""
+        server = getattr(self.viewer, "_server", None)
+        gui = getattr(server, "gui", None)
+        if gui is None:
+            return
+
+        axis_name = {0: "x", 1: "y", 2: "z"}[self.slice_axis]
+        with gui.add_folder("Hydro Pressure Slice"):
+            self._viser_controls["show_shape"] = gui.add_checkbox("Show Shape", self.show_shape)
+            self._viser_controls["show_shape_wireframe"] = gui.add_checkbox("Shape Wireframe", self.show_shape_wireframe)
+            self._viser_controls["show_slice"] = gui.add_checkbox("Show Slice", self.show_slice)
+            self._viser_controls["animate_slice"] = gui.add_checkbox("Animate Slice", self.animate_slice)
+            self._viser_controls["slice_position"] = gui.add_slider(
+                "Slice Position",
+                min=-1.0,
+                max=1.0,
+                step=0.001,
+                initial_value=float(self.slice_position_normalized),
+            )
+            self._viser_controls["slice_axis"] = gui.add_dropdown(
+                "Slice Axis",
+                options=("x", "y", "z"),
+                initial_value=axis_name,
+            )
+            self._viser_controls["shape_opacity"] = gui.add_slider(
+                "Shape Opacity",
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                initial_value=float(self.shape_opacity),
+            )
+
+    def _sync_viser_controls(self):
+        """Pull current values from viser controls into example state."""
+        if not self._viser_controls:
+            return
+
+        show_shape = bool(self._viser_controls["show_shape"].value)
+        show_shape_wireframe = bool(self._viser_controls["show_shape_wireframe"].value)
+        show_slice = bool(self._viser_controls["show_slice"].value)
+        animate_slice = bool(self._viser_controls["animate_slice"].value)
+        axis_name = str(self._viser_controls["slice_axis"].value).lower()
+        axis = {"x": 0, "y": 1, "z": 2}.get(axis_name, self.slice_axis)
+        shape_opacity = float(self._viser_controls["shape_opacity"].value)
+
+        if self.show_shape != show_shape:
+            self.show_shape = show_shape
+        if self.show_shape_wireframe != show_shape_wireframe:
+            self.show_shape_wireframe = show_shape_wireframe
+        if self.show_slice != show_slice:
+            self.show_slice = show_slice
+        if self.slice_axis != axis:
+            self.slice_axis = axis
+            self._slice_dirty = True
+        if self.shape_opacity != shape_opacity:
+            self.shape_opacity = shape_opacity
+            self._refresh_shape_materials()
+
+        # Disable manual slider while animating.
+        if hasattr(self._viser_controls["slice_position"], "disabled"):
+            self._viser_controls["slice_position"].disabled = animate_slice
+
+        if self.animate_slice != animate_slice:
+            self.animate_slice = animate_slice
+            self._slice_dirty = True
+
+        if not self.animate_slice:
+            slice_position = float(self._viser_controls["slice_position"].value)
+            if self.slice_position_normalized != slice_position:
+                self.slice_position_normalized = slice_position
+                self._slice_dirty = True
 
     def _build_hydroelastic_reference(self, args):
         """Build a tiny hydroelastic scene and fetch the exact immutable field volume."""
@@ -430,11 +539,62 @@ class Example:
             validate_slice_field(pressure_grid)
         )
         self.slice_texture = density_to_rgb_image(normalized)
+        if self.viewer_is_viser:
+            inside_mask = (self.slice_inside_flag.numpy() > 0.0).reshape(-1)
+            points_flat = self.slice_points.numpy().reshape((-1, 3))
+            colors_flat = self.slice_texture.reshape((-1, 3))
+            self._slice_points_viser = points_flat[inside_mask].astype(np.float32, copy=False)
+            self._slice_colors_viser = colors_flat[inside_mask].astype(np.uint8, copy=False)
         self._slice_dirty = False
 
+    def _render_slice_viser(self):
+        """Render slice as an in-place updated point cloud on ViewerViser."""
+        server = getattr(self.viewer, "_server", None)
+        scene = getattr(server, "scene", None)
+        if scene is None:
+            return
+
+        if (not self.show_slice) or (self._slice_points_viser.shape[0] == 0):
+            if self._viser_slice_handle is not None and hasattr(self._viser_slice_handle, "visible"):
+                self._viser_slice_handle.visible = False
+            return
+
+        axis = self.slice_axis
+        half = np.array([float(self.sdf_half_extents[0]), float(self.sdf_half_extents[1]), float(self.sdf_half_extents[2])])
+        plane_half = half * self.plane_scale
+        if axis == 0:
+            du = 2.0 * plane_half[1] / max(self.resolution - 1, 1)
+            dv = 2.0 * plane_half[2] / max(self.resolution - 1, 1)
+        elif axis == 1:
+            du = 2.0 * plane_half[0] / max(self.resolution - 1, 1)
+            dv = 2.0 * plane_half[2] / max(self.resolution - 1, 1)
+        else:
+            du = 2.0 * plane_half[0] / max(self.resolution - 1, 1)
+            dv = 2.0 * plane_half[1] / max(self.resolution - 1, 1)
+        point_size = float(1.2 * max(du, dv))
+
+        if self._viser_slice_handle is None:
+            self._viser_slice_handle = scene.add_point_cloud(
+                name="/slice/pressure_cloud",
+                points=self._slice_points_viser,
+                colors=self._slice_colors_viser,
+                point_size=point_size,
+                point_shape="circle",
+            )
+        else:
+            self._viser_slice_handle.points = self._slice_points_viser
+            self._viser_slice_handle.colors = self._slice_colors_viser
+            self._viser_slice_handle.point_size = point_size
+            if hasattr(self._viser_slice_handle, "visible"):
+                self._viser_slice_handle.visible = True
+
     def step(self):
+        if self.viewer_is_viser:
+            self._sync_viser_controls()
         if self.animate_slice:
             self.slice_position_normalized = float(np.sin(self.sim_time * self.slice_speed))
+            if self.viewer_is_viser and "slice_position" in self._viser_controls:
+                self._viser_controls["slice_position"].value = self.slice_position_normalized
             self._slice_dirty = True
         self.sim_time += self.frame_dt
 
@@ -450,30 +610,47 @@ class Example:
             colors=self.shape_colors,
             materials=self.shape_materials,
             geo_src=self.mesh,
-            hidden=not self.show_shape,
+            hidden=(not self.show_shape) or self.show_shape_wireframe,
         )
 
-        self.viewer.log_mesh(
-            name="/slice/pressure_heatmap",
-            points=self.slice_points,
-            indices=self.slice_indices,
-            uvs=self.slice_uvs,
-            texture=self.slice_texture,
-            hidden=not self.show_slice,
-            backface_culling=False,
+        self.viewer.log_lines(
+            name="/slice/shape_wireframe",
+            starts=self.shape_line_starts,
+            ends=self.shape_line_ends,
+            colors=(0.86, 0.86, 0.90),
+            width=0.0015,
+            hidden=(not self.show_shape) or (not self.show_shape_wireframe),
         )
+
+        if self.viewer_is_viser:
+            self._render_slice_viser()
+        else:
+            self.viewer.log_mesh(
+                name="/slice/pressure_heatmap",
+                points=self.slice_points,
+                indices=self.slice_indices,
+                uvs=self.slice_uvs,
+                texture=self.slice_texture,
+                hidden=not self.show_slice,
+                backface_culling=False,
+            )
 
         self.viewer.end_frame()
 
     def render_ui(self, imgui):
         imgui.text("Hydro Pressure Slice")
         imgui.text(f"Shape: {self.shape_name}")
+        imgui.text(f"Viewer: {'viser' if self.viewer_is_viser else 'gl-like'}")
         imgui.text("Source: Hydroelastic immutable pressure volume.")
         imgui.text("Color scale: normalized by immutable global max (not per-slice).")
         imgui.text("This is the same field used by contact isosurface extraction.")
         imgui.text("Validation: deep interior percentile, zero-fraction, interior-hole fraction.")
 
         _changed, self.show_shape = imgui.checkbox("Show Shape", self.show_shape)
+        _changed, self.show_shape_wireframe = imgui.checkbox("Shape Wireframe", self.show_shape_wireframe)
+        changed, self.shape_opacity = imgui.slider_float("Shape Opacity (viser)", self.shape_opacity, 0.0, 1.0)
+        if changed:
+            self._refresh_shape_materials()
         _changed, self.show_slice = imgui.checkbox("Show Slice", self.show_slice)
         changed, self.animate_slice = imgui.checkbox("Animate Slice", self.animate_slice)
         if changed:
@@ -521,6 +698,12 @@ if __name__ == "__main__":
         choices=["sphere", "box", "capsule", "cylinder", "cone", "ellipsoid"],
         default="box",
         help="Shape to section and visualize.",
+    )
+    parser.add_argument(
+        "--shape-opacity",
+        type=float,
+        default=0.22,
+        help="Shape opacity in [0, 1] when using --viewer viser.",
     )
     parser.add_argument(
         "--slice-axis",

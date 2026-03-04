@@ -550,6 +550,7 @@ class ViewerViser(ViewerBase):
         xforms_np = self._to_numpy(xforms)
         scales_np = self._to_numpy(scales) if scales is not None else None
         colors_np = self._to_numpy(colors) if colors is not None else None
+        materials_np = self._to_numpy(materials) if materials is not None else None
 
         num_instances = len(xforms_np)
 
@@ -576,6 +577,23 @@ class ViewerViser(ViewerBase):
             batched_colors = (colors_np * 255).astype(np.uint8)
         else:
             batched_colors = None  # Will use cached colors or default gray
+
+        # Interpret material alpha channel as per-instance opacity when available.
+        batched_opacities = None
+        if materials_np is not None:
+            materials_np = np.asarray(materials_np, dtype=np.float32)
+            if materials_np.ndim == 2 and materials_np.shape[1] >= 4:
+                alpha = np.clip(materials_np[:, 3], 0.0, 1.0).astype(np.float32)
+                if len(alpha) == 1 and num_instances > 1:
+                    alpha = np.full((num_instances,), float(alpha[0]), dtype=np.float32)
+                elif len(alpha) != num_instances:
+                    alpha = np.full((num_instances,), float(alpha[0]), dtype=np.float32)
+                batched_opacities = alpha
+
+        opacity_kwargs: dict[str, Any] = {}
+        if batched_opacities is not None:
+            opacity_kwargs["batched_opacities"] = batched_opacities
+            opacity_kwargs["opacity"] = float(np.mean(batched_opacities))
 
         # Check if we already have a batched mesh handle for this name
         use_trimesh = trimesh_mesh is not None and texture_image is not None and base_uvs is not None
@@ -605,6 +623,12 @@ class ViewerViser(ViewerBase):
                         handle.batched_colors = batched_colors
                         # Cache the colors for future reference
                         self._instances[name]["colors"] = batched_colors
+                    if batched_opacities is not None:
+                        if hasattr(handle, "batched_opacities"):
+                            handle.batched_opacities = batched_opacities
+                        elif hasattr(handle, "opacity"):
+                            handle.opacity = float(np.mean(batched_opacities))
+                        self._instances[name]["opacities"] = batched_opacities
                     return
                 except Exception:
                     # If update fails, recreate the mesh
@@ -631,6 +655,7 @@ class ViewerViser(ViewerBase):
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
                 lod="off",
+                **opacity_kwargs,
             )
         else:
             handle = self._call_scene_method(
@@ -643,6 +668,7 @@ class ViewerViser(ViewerBase):
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
                 lod="off",
+                **opacity_kwargs,
             )
 
         self._scene_handles[name] = handle
@@ -650,6 +676,7 @@ class ViewerViser(ViewerBase):
             "mesh": mesh,
             "count": num_instances,
             "colors": batched_colors,  # Cache the colors
+            "opacities": batched_opacities,
             "use_trimesh": use_trimesh,
         }
 
