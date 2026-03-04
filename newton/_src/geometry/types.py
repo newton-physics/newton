@@ -918,53 +918,6 @@ class Mesh:
         return Mesh(vertices=mesh_points, indices=mesh_indices, **kwargs)
 
 
-def compute_surface_triangles(tet_indices: nparray) -> np.ndarray:
-    """Extract boundary triangles from tetrahedral element indices.
-
-    Finds faces that belong to exactly one tetrahedron (boundary faces)
-    using a vectorized approach.
-
-    Args:
-        tet_indices: Flattened tetrahedral element indices (4 per tet).
-
-    Returns:
-        Flattened boundary triangle indices, 3 per triangle, int32.
-    """
-    tet_indices = np.asarray(tet_indices, dtype=np.int32).flatten()
-    tets = tet_indices.reshape(-1, 4)
-    n = len(tets)
-    if n == 0:
-        return np.array([], dtype=np.int32)
-
-    # Each tet contributes 4 faces with specific winding order:
-    #   face 0: (v0, v2, v1)
-    #   face 1: (v1, v2, v3)
-    #   face 2: (v0, v1, v3)
-    #   face 3: (v0, v3, v2)
-    # fmt: off
-    face_idx = np.array([
-        [0, 2, 1],
-        [1, 2, 3],
-        [0, 1, 3],
-        [0, 3, 2],
-    ])
-    # fmt: on
-
-    # Build all faces: shape (4*n, 3) with original winding
-    all_faces = tets[:, face_idx].reshape(-1, 3)
-
-    # Sort vertex indices per face to create canonical keys
-    sorted_faces = np.sort(all_faces, axis=1)
-
-    # Find unique sorted faces and their counts
-    _, inverse, counts = np.unique(sorted_faces, axis=0, return_inverse=True, return_counts=True)
-
-    # Boundary faces appear exactly once
-    boundary_mask = counts[inverse] == 1
-
-    return all_faces[boundary_mask].astype(np.int32).flatten()
-
-
 class TetMesh:
     """Represents a tetrahedral mesh for volumetric deformable simulation.
 
@@ -1039,6 +992,10 @@ class TetMesh:
         self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
         self._k_damp = self._broadcast_material(k_damp, tet_count, "k_damp")
         self._density = density
+        # Compute surface triangles from boundary faces (before custom attrs so tri_count is available)
+        self._surface_tri_indices = self._compute_surface_triangles()
+        tri_count = len(self._surface_tri_indices) // 3
+
         self.custom_attributes: dict[str, tuple[np.ndarray, int]] = {}
         for k, v in (custom_attributes or {}).items():
             if k in self._RESERVED_ATTR_KEYS:
@@ -1050,11 +1007,8 @@ class TetMesh:
                 self.custom_attributes[k] = (np.asarray(arr), freq)
             else:
                 arr = np.asarray(v)
-                freq = self._infer_frequency(arr, vertex_count, tet_count, k)
+                freq = self._infer_frequency(arr, vertex_count, tet_count, tri_count, k)
                 self.custom_attributes[k] = (arr, freq)
-
-        # Compute surface triangles from boundary faces
-        self._surface_tri_indices = self._compute_surface_triangles()
 
         self._cached_hash: int | None = None
 
@@ -1073,43 +1027,96 @@ class TetMesh:
         return arr
 
     @staticmethod
-    def _infer_frequency(arr: np.ndarray, vertex_count: int, tet_count: int, name: str) -> "Model.AttributeFrequency":
+    def _infer_frequency(
+        arr: np.ndarray, vertex_count: int, tet_count: int, tri_count: int, name: str
+    ) -> "Model.AttributeFrequency":
         """Infer :class:`~newton.Model.AttributeFrequency` from array length.
 
         Args:
             arr: The attribute array.
             vertex_count: Number of vertices in the mesh.
             tet_count: Number of tetrahedra in the mesh.
+            tri_count: Number of surface triangles in the mesh.
             name: Attribute name (for error messages).
 
         Returns:
             The inferred frequency.
 
         Raises:
-            ValueError: If the array length matches neither vertex_count nor
-                tet_count, or if both counts are equal and the mapping is
-                ambiguous.
+            ValueError: If the array length is ambiguous (matches multiple
+                counts) or matches none of the known counts.
         """
         from ..sim.model import Model  # noqa: PLC0415
 
         first_dim = arr.shape[0] if arr.ndim >= 1 else 1
-        if first_dim == vertex_count and first_dim == tet_count:
+        counts = {"vertex_count": vertex_count, "tet_count": tet_count, "tri_count": tri_count}
+        matches = [label for label, c in counts.items() if first_dim == c and c > 0]
+        if len(matches) > 1:
             raise ValueError(
-                f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches both "
-                f"vertex_count and tet_count. Pass an explicit (array, frequency) tuple instead."
+                f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches "
+                f"{', '.join(matches)}. Pass an explicit (array, frequency) tuple instead."
             )
-        if first_dim == vertex_count:
+        if first_dim == vertex_count and vertex_count > 0:
             return Model.AttributeFrequency.PARTICLE
-        if first_dim == tet_count:
+        if first_dim == tet_count and tet_count > 0:
             return Model.AttributeFrequency.TETRAHEDRON
+        if first_dim == tri_count and tri_count > 0:
+            return Model.AttributeFrequency.TRIANGLE
         raise ValueError(
-            f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches neither "
-            f"vertex_count ({vertex_count}) nor tet_count ({tet_count}). "
+            f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches none of "
+            f"vertex_count ({vertex_count}), tet_count ({tet_count}), tri_count ({tri_count}). "
             f"Pass an explicit (array, frequency) tuple instead."
         )
 
+    @staticmethod
+    def compute_surface_triangles(tet_indices: nparray) -> np.ndarray:
+        """Extract boundary triangles from tetrahedral element indices.
+
+        Finds faces that belong to exactly one tetrahedron (boundary faces)
+        using a vectorized approach.
+
+        Args:
+            tet_indices: Flattened tetrahedral element indices (4 per tet).
+
+        Returns:
+            Flattened boundary triangle indices, 3 per triangle, int32.
+        """
+        tet_indices = np.asarray(tet_indices, dtype=np.int32).flatten()
+        tets = tet_indices.reshape(-1, 4)
+        n = len(tets)
+        if n == 0:
+            return np.array([], dtype=np.int32)
+
+        # Each tet contributes 4 faces with specific winding order:
+        #   face 0: (v0, v2, v1)
+        #   face 1: (v1, v2, v3)
+        #   face 2: (v0, v1, v3)
+        #   face 3: (v0, v3, v2)
+        # fmt: off
+        face_idx = np.array([
+            [0, 2, 1],
+            [1, 2, 3],
+            [0, 1, 3],
+            [0, 3, 2],
+        ])
+        # fmt: on
+
+        # Build all faces: shape (4*n, 3) with original winding
+        all_faces = tets[:, face_idx].reshape(-1, 3)
+
+        # Sort vertex indices per face to create canonical keys
+        sorted_faces = np.sort(all_faces, axis=1)
+
+        # Find unique sorted faces and their counts
+        _, inverse, counts = np.unique(sorted_faces, axis=0, return_inverse=True, return_counts=True)
+
+        # Boundary faces appear exactly once
+        boundary_mask = counts[inverse] == 1
+
+        return all_faces[boundary_mask].astype(np.int32).flatten()
+
     def _compute_surface_triangles(self) -> np.ndarray:
-        return compute_surface_triangles(self._tet_indices)
+        return TetMesh.compute_surface_triangles(self._tet_indices)
 
     # ---- Properties --------------------------------------------------------
 
@@ -1166,16 +1173,36 @@ class TetMesh:
 
     @staticmethod
     def create_from_usd(prim) -> "TetMesh":
-        """Load a TetMesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
+        """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
-        This is a convenience wrapper around :func:`newton.usd.get_tetmesh`.
-        See that function for full documentation.
+        Reads vertex positions from the ``points`` attribute and tetrahedral
+        connectivity from ``tetVertexIndices``. If a physics material is bound
+        to the prim (via ``material:binding:physics``) and contains
+        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
+        (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+        those values are read and converted to Lame parameters (``k_mu``,
+        ``k_lambda``) and density on the returned TetMesh. Material properties
+        are set to ``None`` if not present.
+
+        Example:
+
+            .. code-block:: python
+
+                from pxr import Usd
+                import newton
+                import newton.usd
+
+                usd_stage = Usd.Stage.Open("tetmesh.usda")
+                tetmesh = newton.usd.get_tetmesh(usd_stage.GetPrimAtPath("/MyTetMesh"))
+
+                # tetmesh.vertices  -- np.ndarray, shape (N, 3)
+                # tetmesh.tet_indices -- np.ndarray, flattened (4 per tet)
 
         Args:
-            prim: The USD prim to load the tet mesh from.
+            prim: The USD prim to load the tetrahedral mesh from.
 
         Returns:
-            TetMesh: A new TetMesh instance.
+            TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
         """
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 

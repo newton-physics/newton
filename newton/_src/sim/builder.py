@@ -7551,12 +7551,24 @@ class ModelBuilder:
         k_lambda_arr = np.broadcast_to(np.asarray(k_lambda, dtype=np.float32).flatten(), num_tets)
         k_damp_arr = np.broadcast_to(np.asarray(k_damp, dtype=np.float32).flatten(), num_tets)
 
-        # Extract custom attributes grouped by frequency
+        # Extract custom attributes grouped by frequency, validating against builder registry
         particle_custom: dict[str, np.ndarray] = {}
         tet_custom: dict[str, np.ndarray] = {}
         tri_custom: dict[str, np.ndarray] = {}
         if mesh is not None and mesh.custom_attributes:
             for attr_name, (arr, freq) in mesh.custom_attributes.items():
+                registered = self.custom_attributes.get(attr_name)
+                if registered is None:
+                    raise ValueError(
+                        f"TetMesh custom attribute '{attr_name}' is not registered in ModelBuilder. "
+                        f"Register it first via add_custom_attribute()."
+                    )
+                if registered.frequency != freq:
+                    raise ValueError(
+                        f"Frequency mismatch for custom attribute '{attr_name}': TetMesh has "
+                        f"{Model.AttributeFrequency(freq).name} but ModelBuilder expects "
+                        f"{registered.frequency.name}."
+                    )
                 if freq == Model.AttributeFrequency.PARTICLE:
                     particle_custom[attr_name] = arr
                 elif freq == Model.AttributeFrequency.TETRAHEDRON:
@@ -7602,12 +7614,10 @@ class ModelBuilder:
 
         # Compute surface triangles — reuse pre-computed result from TetMesh
         # only when the caller did not override the indices.
-        from ..geometry.types import compute_surface_triangles  # noqa: PLC0415
-
         if mesh is not None and indices is mesh.tet_indices and len(mesh.surface_tri_indices) > 0:
             surface_tri_indices = mesh.surface_tri_indices
         else:
-            surface_tri_indices = compute_surface_triangles(indices)
+            surface_tri_indices = TetMesh.compute_surface_triangles(indices)
 
         # add surface triangles
         start_tri = len(self.tri_indices)
