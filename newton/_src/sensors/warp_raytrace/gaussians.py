@@ -164,8 +164,6 @@ def create_shade_function(config: RenderContext.Config, state: RenderContext.Sta
             if num_hits == 0:
                 break
 
-            result_hit.distance = wp.min(hit_distances[0], result_hit.distance)
-
             for hit in range(num_hits):
                 hit_index = hit_indices[hit]
 
@@ -178,6 +176,9 @@ def create_shade_function(config: RenderContext.Config, state: RenderContext.Sta
                 opacity = hit_alphas[hit]
                 result_color += color * opacity * ray_transmittance
                 ray_transmittance *= 1.0 - opacity
+
+                if ray_transmittance < wp.static(config.gaussians_min_transmittance):
+                    result_hit.distance = wp.min(hit_distances[hit], result_hit.distance)
 
             min_distance = hit_distances[-1] + wp.float32(1e-06)
 
