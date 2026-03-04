@@ -1175,14 +1175,14 @@ class TestImportUsdPhysics(unittest.TestCase):
         (mass < 0). The importer must fall back to the mass properties already
         accumulated by the builder during add_shape_*() calls.
         """
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
         # Create a prototype with a collision sphere (outside the body hierarchy).
-        proto = stage.OverridePrim("/Prototype_Collisions")
+        stage.OverridePrim("/Prototype_Collisions")
         sphere = UsdGeom.Sphere.Define(stage, "/Prototype_Collisions/sphere")
         sphere.CreateRadiusAttr().Set(0.5)
         UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
@@ -1202,7 +1202,9 @@ class TestImportUsdPhysics(unittest.TestCase):
         builder.add_usd(stage)
 
         self.assertEqual(builder.body_count, 1)
-        self.assertGreater(builder.body_mass[0], 0.0, "Body mass must be positive (not overwritten by failed ComputeMassProperties)")
+        self.assertGreater(
+            builder.body_mass[0], 0.0, "Body mass must be positive (not overwritten by failed ComputeMassProperties)"
+        )
         # Verify inertia is also positive (not garbage).
         inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
         self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
