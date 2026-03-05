@@ -133,7 +133,7 @@ Shape parameters
 Collision filtering
 -------------------
 
-Newton uses a bitmask-based ``shape_collision_group`` to control which shapes
+Newton uses integer ``shape_collision_group`` labels to control which shapes
 can collide.  MuJoCo uses ``contype``/``conaffinity`` bitmasks with a different
 semantic: two geoms collide when
 ``(contype_A & conaffinity_B) || (contype_B & conaffinity_A)`` is non-zero.
@@ -146,8 +146,8 @@ geoms never match.  Up to 32 colors are supported (one per ``contype`` bit).
 Non-colliding shapes (no ``COLLIDE_SHAPES`` flag, or ``collision_group == 0``)
 get ``contype = conaffinity = 0``.
 
-Additionally, parent–child body pairs that should not collide are registered
-as ``<exclude>`` elements.
+Additionally, body pairs for which all shape-shape combinations are filtered
+are registered as ``<exclude>`` elements.
 
 
 Mass and inertia
