@@ -381,8 +381,6 @@ class Example:
         for body_idx in range(2, 14):
             gravcomp_body.values[body_idx] = 1.0
 
-        # Finger contact: low solimp + high priority → weak normal forces
-        # at release so the gripper doesn't stick to bricks.
         solimp_attr = builder.custom_attributes.get("mujoco:geom_solimp")
         priority_attr = builder.custom_attributes.get("mujoco:geom_priority")
         if solimp_attr is not None and priority_attr is not None:
@@ -498,7 +496,6 @@ class Example:
         )
         target_pos = red_pos + np.array([0.0, 0.0, float(self.offset_approach[2])])
 
-        # ee_quat_down * quat_inverse(pick_quat) — Hamilton product (x,y,z,w)
         down = np.array([1.0, 0.0, 0.0, 0.0])
         inv_pick = np.array([0.0, 0.0, -sqrt2_2, sqrt2_2])
         x1, y1, z1, w1 = down
