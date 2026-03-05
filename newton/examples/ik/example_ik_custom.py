@@ -171,6 +171,15 @@ class Example:
         self.model = builder.finalize()
         self.viewer.set_model(self.model)
 
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(0.0, -2.0, 1.0),
+            pitch=0.0,
+            yaw=-270.0,
+        )
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 90.0
+
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
@@ -254,6 +263,8 @@ class Example:
             history_len=12,
             jacobian_mode=ik.IKJacobianType.MIXED,
         )
+
+
 
         self.capture()
 
