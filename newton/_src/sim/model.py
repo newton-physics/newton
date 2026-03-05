@@ -272,7 +272,11 @@ class Model:
         """
 
         # Gaussians
+        self.gaussians_count = 0
+        """Number of gaussians."""
+
         self.gaussians_data = None
+        """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
 
         # Heightfield collision data
         self.shape_heightfield_data = None

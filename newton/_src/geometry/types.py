@@ -1112,6 +1112,11 @@ class Gaussian:
         self._min_response = float(min_response)
 
         self._cached_hash = None
+        self._positions.setflags(write=False)
+        self._rotations.setflags(write=False)
+        self._scales.setflags(write=False)
+        self._opacities.setflags(write=False)
+        self._sh_coeffs.setflags(write=False)
 
         # GPU arrays populated by finalize()
         self.warp_bvh: wp.Bvh = None
@@ -1124,6 +1129,7 @@ class Gaussian:
         self.I = wp.mat33()
         self.is_solid = False
         self.show_in_viewer = True
+        self.max_points_in_viewer = 100_000
 
     # ---- Properties ----------------------------------------------------------
 
@@ -1313,8 +1319,12 @@ class Gaussian:
 
             return None
 
+        positions = _get_attr("positions")
+        if positions is None:
+            raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
+
         return Gaussian(
-            positions=_get_attr("positions"),
+            positions=positions,
             rotations=_get_attr("orientations"),
             scales=_get_attr("scales"),
             opacities=_get_attr("opacities"),

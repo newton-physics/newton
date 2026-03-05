@@ -783,7 +783,6 @@ class ViewerGL(ViewerBase):
         self.objects[name].hidden = hidden
 
     _SH_C0 = 0.28209479177387814
-    _GAUSSIAN_MAX_DISPLAY_POINTS = 100_000
 
     def _create_gaussian_mesh(self):
         """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
@@ -824,7 +823,7 @@ class ViewerGL(ViewerBase):
             n = gaussian.count
 
             # Subsample large Gaussians to keep rendering interactive.
-            max_pts = self._GAUSSIAN_MAX_DISPLAY_POINTS
+            max_pts = gaussian.max_points_in_viewer
             if n > max_pts:
                 idx = np.linspace(0, n - 1, max_pts, dtype=np.intp)
                 positions = np.ascontiguousarray(gaussian.positions[idx], dtype=np.float32)
