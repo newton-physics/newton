@@ -488,8 +488,8 @@ class ViewerGL(ViewerBase):
             yaw: The camera yaw.
         """
         self.camera.pos = pos
-        self.camera.pitch = pitch
-        self.camera.yaw = yaw
+        self.camera.pitch = max(min(pitch, 89.0), -89.0)
+        self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
 
     @override
     def log_mesh(
@@ -1289,8 +1289,8 @@ class ViewerGL(ViewerBase):
 
             # Map screen-space right drag to a right turn (clockwise),
             # independent of world up-axis convention.
-            self.camera.yaw -= dx
-            self.camera.pitch += dy
+            self.camera.yaw = (self.camera.yaw - dx + 180.0) % 360.0 - 180.0
+            self.camera.pitch = max(min(self.camera.pitch + dy, 89.0), -89.0)
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
