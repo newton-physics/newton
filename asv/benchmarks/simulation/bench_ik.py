@@ -72,9 +72,12 @@ class _IKBenchmark:
             self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
         self.solve_graph = cap.graph
 
+    NUM_SOLVES = 50
+
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_solve(self, batch_size):
-        wp.capture_launch(self.solve_graph)
+        for _ in range(self.NUM_SOLVES):
+            wp.capture_launch(self.solve_graph)
         wp.synchronize_device()
 
     def teardown(self, batch_size):
