@@ -101,7 +101,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "KpiIKSolve": KpiIKSolve,
+        "FastSolve": FastIKSolve,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
