@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -50,8 +50,8 @@ BRICK_MARGIN = 5.0e-5
 
 # SDF mesh parameters
 SDF_RESOLUTION = 256
-SDF_NARROW_BAND = 0.004
-SDF_MARGIN = 0.004
+SDF_NARROW_BAND = 0.001
+SDF_MARGIN = 0.002
 
 # Gripper finger positions [m]
 GRIPPER_OPEN = 0.5 * (2 * PITCH * BRICK_SCALE + 0.004)
@@ -449,6 +449,7 @@ class Example:
             kd=BRICK_KD,
             mu=1.0,
             margin=BRICK_MARGIN,
+            gap=SDF_MARGIN,
         )
         bh = 0.5 * self.brick_height_scaled
         sqrt2_2 = float(np.sqrt(2.0) / 2.0)
@@ -730,6 +731,39 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+    def test_final(self):
+        body_q = self.state_0.body_q.numpy()
+        bh = self.brick_height_scaled
+        red, green, blue = self.brick_bodies
+
+        blue_z = body_q[blue][2]
+        green_z = body_q[green][2]
+        red_z = body_q[red][2]
+
+        blue_xy = body_q[blue][:2]
+        green_xy = body_q[green][:2]
+        red_xy = body_q[red][:2]
+
+        errors = []
+        # All three bricks should be roughly aligned in XY
+        if np.linalg.norm(green_xy - blue_xy) > 0.01:
+            errors.append(f"Green brick XY offset from blue: {np.linalg.norm(green_xy - blue_xy):.4f} m (max 0.01)")
+        if np.linalg.norm(red_xy - blue_xy) > 0.01:
+            errors.append(f"Red brick XY offset from blue: {np.linalg.norm(red_xy - blue_xy):.4f} m (max 0.01)")
+
+        # Green should be ~1 brick height above blue
+        dz_green = green_z - blue_z
+        if abs(dz_green - bh) > 0.005:
+            errors.append(f"Green-Blue height gap: {dz_green:.4f} m, expected ~{bh:.4f} m")
+
+        # Red should be ~2 brick heights above blue
+        dz_red = red_z - blue_z
+        if abs(dz_red - 2.0 * bh) > 0.005:
+            errors.append(f"Red-Blue height gap: {dz_red:.4f} m, expected ~{2.0 * bh:.4f} m")
+
+        if errors:
+            raise ValueError("Brick stacking verification failed:\n  " + "\n  ".join(errors))
 
     def gui(self, ui):
         if ui.button("Reset"):
