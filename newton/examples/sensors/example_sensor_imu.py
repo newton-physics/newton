@@ -118,6 +118,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = self.model.contacts()
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
         self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)
@@ -159,6 +160,8 @@ class Example:
             self.imu.update(self.state_0)
             # average and compute color
             wp.launch(acc_to_color, dim=self.n_cubes, inputs=[0.025, self.imu.accelerometer, self.buffer, self.colors])
+
+        self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:

@@ -84,10 +84,8 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        if use_mujoco_contacts:
-            self.contacts = None
-        else:
-            self.contacts = self.model.contacts()
+        self.use_mujoco_contacts = use_mujoco_contacts
+        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -101,7 +99,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        if self.contacts is not None:
+        if not self.use_mujoco_contacts:
             self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -113,6 +111,9 @@ class Example:
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
+
+        if self.use_mujoco_contacts:
+            self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
