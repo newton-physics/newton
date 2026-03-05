@@ -2103,6 +2103,9 @@ class ModelBuilder:
             hide_collision_shapes: If True, collision shapes on bodies that already
                 have visual-only geometry are hidden. Collision shapes on bodies
                 without visual-only geometry remain visible as a rendering fallback.
+                Mesh colliders with authored PBR material data (texture,
+                roughness, or metallic) also remain visible so collision-only
+                render meshes are not lost.
                 Default is False.
             force_show_colliders: If True, collision shapes get the VISIBLE flag
                 regardless of whether visual shapes exist on the same body. Note that

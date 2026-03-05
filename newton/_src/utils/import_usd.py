@@ -176,6 +176,9 @@ def parse_usd(
         hide_collision_shapes: If True, collision shapes on bodies that already
             have visual-only geometry are hidden. Collision shapes on bodies
             without visual-only geometry remain visible as a rendering fallback.
+            Mesh colliders with authored PBR material data (texture,
+            roughness, or metallic) also remain visible so collision-only
+            render meshes are not lost.
             Default is False.
         force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
@@ -411,6 +414,10 @@ def parse_usd(
         if material_props.get("metallic") is not None:
             mesh.metallic = material_props["metallic"]
         return mesh
+
+    def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
+        # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
+        return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
 
     bodies_with_visual_shapes: set[int] = set()
 
@@ -1963,14 +1970,21 @@ def parse_usd(
                     gap_val = builder.default_shape_cfg.gap
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
-                hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
-                collider_is_visible = (
-                    should_show_collider(
-                        force_show_colliders,
-                        has_visual_shapes=has_body_visual_shapes,
-                    )
-                    and not hide_collider_for_body
+                collider_has_visual_material = (
+                    key == UsdPhysics.ObjectType.MeshShape
+                    and _has_visual_material_properties(_get_material_props_cached(prim))
                 )
+
+                hide_collider_for_body = (
+                    hide_collision_shapes and has_body_visual_shapes and not collider_has_visual_material
+                )
+                show_collider_by_policy = should_show_collider(
+                    force_show_colliders,
+                    has_visual_shapes=has_body_visual_shapes,
+                )
+                collider_is_visible = (
+                    show_collider_by_policy or collider_has_visual_material
+                ) and not hide_collider_for_body
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
