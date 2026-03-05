@@ -26,6 +26,7 @@
 ###########################################################################
 
 import enum
+
 import numpy as np
 import warp as wp
 
@@ -129,7 +130,6 @@ def _combine_meshes(mesh_list):
     return np.vstack(all_v).astype(np.float32), np.vstack(all_f).astype(np.int32)
 
 
-
 STUD_RADIUS = 0.0024
 STUD_HEIGHT = 0.0017
 WALL_THICKNESS = 0.0012
@@ -175,20 +175,34 @@ def _make_shell_mesh(nx, ny):
     )
     f = np.array(
         [
-            [4, 5, 6], [4, 6, 7],
-            [0, 1, 5], [0, 5, 4],
-            [2, 3, 7], [2, 7, 6],
-            [3, 0, 4], [3, 4, 7],
-            [1, 2, 6], [1, 6, 5],
-            [0, 8, 9], [0, 9, 1],
-            [1, 9, 10], [1, 10, 2],
-            [2, 10, 11], [2, 11, 3],
-            [3, 11, 8], [3, 8, 0],
-            [9, 8, 12], [9, 12, 13],
-            [11, 10, 14], [11, 14, 15],
-            [8, 11, 15], [8, 15, 12],
-            [10, 9, 13], [10, 13, 14],
-            [12, 15, 14], [12, 14, 13],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [3, 0, 4],
+            [3, 4, 7],
+            [1, 2, 6],
+            [1, 6, 5],
+            [0, 8, 9],
+            [0, 9, 1],
+            [1, 9, 10],
+            [1, 10, 2],
+            [2, 10, 11],
+            [2, 11, 3],
+            [3, 11, 8],
+            [3, 8, 0],
+            [9, 8, 12],
+            [9, 12, 13],
+            [11, 10, 14],
+            [11, 14, 15],
+            [8, 11, 15],
+            [8, 15, 12],
+            [10, 9, 13],
+            [10, 13, 14],
+            [12, 15, 14],
+            [12, 14, 13],
         ],
         dtype=np.int32,
     )
@@ -218,9 +232,7 @@ def _make_brick_mesh(nx=4, ny=2):
     if ny == 2:
         for i in range(nx - 1):
             tx = (i - (nx - 2) / 2.0) * PITCH
-            tube_meshes.append(
-                _cylinder_mesh(TUBE_OUTER_RADIUS, TUBE_HEIGHT, CYLINDER_SEGMENTS, cx=tx, cy=0.0, cz=0.0)
-            )
+            tube_meshes.append(_cylinder_mesh(TUBE_OUTER_RADIUS, TUBE_HEIGHT, CYLINDER_SEGMENTS, cx=tx, cy=0.0, cz=0.0))
 
     return _combine_meshes([(shell_v, shell_f), *stud_meshes, *tube_meshes])
 
