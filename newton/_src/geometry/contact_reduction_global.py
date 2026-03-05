@@ -944,10 +944,10 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
         position_depth: wp.array(dtype=wp.vec4),
         normal: wp.array(dtype=wp.vec2),  # Octahedral-encoded
         shape_pairs: wp.array(dtype=wp.vec2i),
-        # Shape data for extracting thickness and effective radius
+        # Shape data for extracting margin and effective radius
         shape_types: wp.array(dtype=int),
         shape_data: wp.array(dtype=wp.vec4),
-        # Per-shape contact margins
+        # Per-shape contact gaps
         shape_gap: wp.array(dtype=float),
         # Writer data (custom struct)
         writer_data: Any,
@@ -1015,9 +1015,9 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                 radius_eff_b = compute_effective_radius(shape_types[shape_b], shape_data[shape_b])
 
                 # Use additive per-shape contact gap (matching broad/narrow phase)
-                margin_a = shape_gap[shape_a]
-                margin_b = shape_gap[shape_b]
-                margin = margin_a + margin_b
+                gap_a = shape_gap[shape_a]
+                gap_b = shape_gap[shape_b]
+                gap_sum = gap_a + gap_b
 
                 # Create ContactData struct
                 contact_data = ContactData()
@@ -1030,7 +1030,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                 contact_data.margin_b = margin_offset_b
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
-                contact_data.margin = margin
+                contact_data.gap_sum = gap_sum
 
                 # Call the writer function
                 writer_func(contact_data, writer_data, -1)
@@ -1102,9 +1102,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
         margin_offset_a = shape_data[shape_a][3]
 
         # Use additive per-shape contact gap for detection threshold
-        margin_a = shape_gap[shape_a]
-        margin_b = shape_gap[shape_b]
-        margin = margin_a + margin_b
+        gap_a = shape_gap[shape_a]
+        gap_b = shape_gap[shape_b]
+        gap_sum = gap_a + gap_b
 
         # Compute and write contacts using GJK/MPR
         wp.static(create_compute_gjk_mpr_contacts(write_contact_to_reducer))(
@@ -1114,7 +1114,7 @@ def mesh_triangle_contacts_to_reducer_kernel(
             quat_b,
             pos_a,
             pos_b,
-            margin,
+            gap_sum,
             shape_a,
             shape_b,
             margin_offset_a,

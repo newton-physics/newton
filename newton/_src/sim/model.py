@@ -296,12 +296,12 @@ class Model:
         # computed once during finalization, not per-frame contact data.
         self.shape_collision_aabb_lower = None
         """Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
-        Computed from base geometry only (excludes thickness - thickness is added during contact
-        margin calculations). Used for voxel-based contact reduction."""
+        Computed from base geometry only (excludes shape margin; shape margin and gap are applied
+        during contact margin calculations). Used for voxel-based contact reduction."""
         self.shape_collision_aabb_upper = None
         """Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
-        Computed from base geometry only (excludes thickness - thickness is added during contact
-        margin calculations). Used for voxel-based contact reduction."""
+        Computed from base geometry only (excludes shape margin; shape margin and gap are applied
+        during contact margin calculations). Used for voxel-based contact reduction."""
         self._shape_voxel_resolution = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
