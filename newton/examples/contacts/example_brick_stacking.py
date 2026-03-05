@@ -45,12 +45,12 @@ BRICK_DENSITY = 565.0  # ABS plastic [kg/m³]
 BRICK_MASS = BRICK_DENSITY * (2 * PITCH) * (2 * PITCH) * 2.0 * BODY_HEIGHT
 BRICK_KE = 9.81 * BRICK_MASS / 1.25e-6
 BRICK_KD = 2.0 * np.sqrt(BRICK_KE)
-BRICK_MARGIN = 5.0e-5
+BRICK_MARGIN = 4.0e-5
 
 # SDF mesh parameters
 SDF_RESOLUTION = 256
-SDF_NARROW_BAND = 0.002
-SDF_MARGIN = 0.001
+SDF_NARROW_BAND = 0.004
+SDF_MARGIN = 0.002
 
 # Gripper finger positions [m]
 GRIPPER_OPEN = 0.5 * (2 * PITCH * BRICK_SCALE + 0.004)
@@ -405,7 +405,7 @@ class Example:
         self.sim_time = 0.0
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 8
+        self.sim_substeps = 16
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.ee_index = 11
         self.brick_count = 3
