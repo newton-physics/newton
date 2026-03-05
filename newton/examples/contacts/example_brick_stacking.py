@@ -36,15 +36,15 @@ import newton.ik as ik
 
 # Brick dimensions [m]
 PITCH = 0.008
-BODY_HEIGHT = 0.0096
+BRICK_HEIGHT = 0.0096
 
 BRICK_SCALE = 1.0
 BRICK_DENSITY = 565.0  # ABS plastic [kg/m³]
 
 
-BRICK_MASS = BRICK_DENSITY * (2 * PITCH) * (2 * PITCH) * 2.0 * BODY_HEIGHT
+BRICK_MASS = BRICK_DENSITY * (4 * PITCH) * (2 * PITCH) * BRICK_HEIGHT
 BRICK_KE = 9.81 * BRICK_MASS / 1.25e-6
-BRICK_KD = 2.0 * np.sqrt(BRICK_KE)
+BRICK_KD = 2.0 * np.sqrt(BRICK_KE * BRICK_MASS) * 2.0  # 2x critical damping for fast settling
 BRICK_MARGIN = 4.0e-5
 
 # SDF mesh parameters
@@ -135,7 +135,7 @@ STUD_HEIGHT = 0.0017
 WALL_THICKNESS = 0.0012
 TOP_THICKNESS = 0.001
 TUBE_OUTER_RADIUS = 0.003255
-TUBE_HEIGHT = BODY_HEIGHT - TOP_THICKNESS
+TUBE_HEIGHT = BRICK_HEIGHT - TOP_THICKNESS
 CYLINDER_SEGMENTS = 48
 
 
@@ -149,7 +149,7 @@ def _make_shell_mesh(nx, ny):
     oy = ny * PITCH / 2.0
     inx = ox - WALL_THICKNESS
     iny = oy - WALL_THICKNESS
-    H = BODY_HEIGHT
+    H = BRICK_HEIGHT
     T = TOP_THICKNESS
 
     v = np.array(
@@ -224,7 +224,7 @@ def _make_brick_mesh(nx=4, ny=2):
             sy = (j - (ny - 1) / 2.0) * PITCH
             stud_meshes.append(
                 _cylinder_mesh(
-                    STUD_RADIUS, STUD_HEIGHT, CYLINDER_SEGMENTS, cx=sx, cy=sy, cz=BODY_HEIGHT, bottom_cap=False
+                    STUD_RADIUS, STUD_HEIGHT, CYLINDER_SEGMENTS, cx=sx, cy=sy, cz=BRICK_HEIGHT, bottom_cap=False
                 )
             )
 
@@ -297,7 +297,7 @@ def set_target_pose_kernel(
 
     drop_pos = wp.transform_get_translation(task_init_body_q[drop_body])
     drop_quat = wp.transform_get_rotation(task_init_body_q[drop_body])
-    layer_offset = wp.float(drop_layer) * brick_stack_height * wp.vec3(0.0, 0.0, 1.0)
+    layer_offset = wp.float32(drop_layer) * brick_stack_height * wp.vec3(0.0, 0.0, 1.0)
     ee_quat_drop = ee_quat_down * wp.quat_inverse(drop_quat)
 
     t_gripper = 0.0
@@ -337,12 +337,11 @@ def set_target_pose_kernel(
     ee_pos_target[tid] = target_pos
     interp_pos = ee_pos_prev * (1.0 - t) + target_pos * t
 
-    # XY alignment correction: amplify horizontal error for IK convergence
-    align_gain = -4.0
+    # XY alignment correction for IK convergence
     ee_pos_actual = wp.transform_get_translation(body_q[ee_index])
     xy_err = wp.vec3(
-        align_gain * (ee_pos_actual[0] - interp_pos[0]),
-        align_gain * (ee_pos_actual[1] - interp_pos[1]),
+        interp_pos[0] - ee_pos_actual[0],
+        interp_pos[1] - ee_pos_actual[1],
         0.0,
     )
     use_align = 1.0
@@ -415,7 +414,7 @@ class Example:
         self.table_top_center = self.table_pos + wp.vec3(0.0, 0.0, 0.5 * self.table_height)
         self.robot_base_pos = self.table_top_center + wp.vec3(-0.5, 0.0, 0.0)
 
-        self.brick_height_scaled = BODY_HEIGHT * BRICK_SCALE
+        self.brick_height_scaled = BRICK_HEIGHT * BRICK_SCALE
         self.brick_width_scaled = 2 * PITCH * BRICK_SCALE
         self.brick_length_scaled = 4 * PITCH * BRICK_SCALE
 
@@ -470,7 +469,7 @@ class Example:
             nconmax=8000,
             njmax=16000,
             cone="elliptic",
-            impratio=1000.0,
+            impratio=50.0,
             use_mujoco_contacts=False,
         )
 
@@ -607,7 +606,7 @@ class Example:
             density=BRICK_DENSITY,
             ke=BRICK_KE,
             kd=BRICK_KD,
-            mu=0.5,
+            mu=0.75,
             margin=BRICK_MARGIN,
             gap=SDF_MARGIN,
         )
@@ -893,6 +892,11 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        task_idx = self.task_idx.numpy()[0]
+        total_tasks = len(self.task_schedule)
+        if task_idx < total_tasks - 1:
+            raise ValueError(f"Task sequence incomplete: reached step {task_idx}/{total_tasks - 1}")
+
         body_q = self.state_0.body_q.numpy()
         bh = self.brick_height_scaled
         red, green, blue = self.brick_bodies
@@ -906,6 +910,12 @@ class Example:
         red_xy = body_q[red][:2]
 
         errors = []
+        tol_z = 0.15 * bh
+
+        for name, idx in [("Blue", blue), ("Green", green), ("Red", red)]:
+            if not np.all(np.isfinite(body_q[idx])):
+                errors.append(f"{name} brick (body {idx}) has non-finite transform")
+
         # All three bricks should be roughly aligned in XY
         if np.linalg.norm(green_xy - blue_xy) > 0.01:
             errors.append(f"Green brick XY offset from blue: {np.linalg.norm(green_xy - blue_xy):.4f} m (max 0.01)")
@@ -914,12 +924,12 @@ class Example:
 
         # Green should be ~1 brick height above blue
         dz_green = green_z - blue_z
-        if abs(dz_green - bh) > 0.005:
+        if abs(dz_green - bh) > tol_z:
             errors.append(f"Green-Blue height gap: {dz_green:.4f} m, expected ~{bh:.4f} m")
 
         # Red should be ~2 brick heights above blue
         dz_red = red_z - blue_z
-        if abs(dz_red - 2.0 * bh) > 0.005:
+        if abs(dz_red - 2.0 * bh) > tol_z:
             errors.append(f"Red-Blue height gap: {dz_red:.4f} m, expected ~{2.0 * bh:.4f} m")
 
         if errors:
