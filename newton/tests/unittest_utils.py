@@ -508,5 +508,18 @@ class ParallelJunitTestResult(unittest.TextTestResult):
             # err is (class, error, traceback)
             self._record_test(test, "FAIL", str(err[1]), self._exc_info_to_string(err, test))
 
+    def stopTest(self, test):
+        super().stopTest(test)
+        # Release unused CUDA mempool memory back to the OS after each test
+        # to reduce peak host RSS in parallel test runs (see issue #1881).
+        import gc  # noqa: PLC0415
+
+        gc.collect()
+        import warp as wp  # noqa: PLC0415
+
+        for device_name in wp.get_cuda_devices():
+            if wp.is_mempool_enabled(device_name):
+                wp.set_mempool_release_threshold(device_name, 0)
+
     def printErrors(self):
         pass
