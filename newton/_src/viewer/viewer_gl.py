@@ -1967,74 +1967,62 @@ class ViewerGL(ViewerBase):
                 source = self._last_state
 
             # Get the attribute values
-            values = view.get_attribute(attribute_name, source).numpy()
+            # get_attribute returns shape (world_count, count_per_world, value_count, *trailing)
+            raw_values = view.get_attribute(attribute_name, source).numpy()
 
             imgui.separator()
             imgui.text(f"Attribute: {attribute_name}")
-            imgui.text(f"Shape: {values.shape}")
-            imgui.text(f"Dtype: {values.dtype}")
+            imgui.text(f"Shape: {raw_values.shape}")
+            imgui.text(f"Dtype: {raw_values.dtype}")
 
-            # Handle batch dimension selection for 2D arrays
-            if len(values.shape) == 2:
-                batch_size = values.shape[0]
+            # Reshape: (world_count, count_per_world, value_count, *trailing) →
+            #          (world_count, count_per_world * value_count * prod(trailing))
+            world_count = raw_values.shape[0]
+            values = raw_values.reshape(world_count, -1)
+
+            # World selector
+            if world_count > 1:
                 imgui.spacing()
-                imgui.text("Batch/World Selection:")
+                imgui.text("World Selection:")
                 imgui.push_item_width(100)
 
-                # Ensure selected batch index is valid
-                state["selected_batch_idx"] = max(0, min(state["selected_batch_idx"], batch_size - 1))
+                state["selected_batch_idx"] = max(0, min(state["selected_batch_idx"], world_count - 1))
 
                 _, state["selected_batch_idx"] = imgui.slider_int(
-                    "##batch", state["selected_batch_idx"], 0, batch_size - 1
+                    "##batch", state["selected_batch_idx"], 0, world_count - 1
                 )
                 imgui.pop_item_width()
                 imgui.same_line()
-                text = f"World {state['selected_batch_idx']} / {batch_size}"
-                imgui.text(text)
+                imgui.text(f"World {state['selected_batch_idx']} / {world_count}")
+
+            batch_idx = state["selected_batch_idx"] if world_count > 1 else 0
+            flat_values = values[batch_idx]
 
             # Display values as sliders in a scrollable region
             imgui.spacing()
             imgui.text("Values:")
 
             # Create a child window for scrollable content
-            if imgui.begin_child("values_scroll", 0, 300, border=True):
-                if len(values.shape) == 1:
-                    # 1D array - show as sliders with names if available
-                    names = self._get_attribute_names(view, attribute_name)
-                    self._render_value_sliders(values, names, attribute_name, state)
-
-                elif len(values.shape) == 2:
-                    # 2D array - show selected batch with joint names
-                    batch_idx = state["selected_batch_idx"]
-                    selected_batch = values[batch_idx]
-                    names = self._get_attribute_names(view, attribute_name)
-                    self._render_value_sliders(selected_batch, names, attribute_name, state)
-
-                else:
-                    # Higher dimensional - just show summary
-                    shape_str = str(values.shape)
-                    imgui.text(f"Multi-dimensional array with shape {shape_str}")
+            child_flags = int(imgui.ChildFlags_.borders)
+            if imgui.begin_child("values_scroll", imgui.ImVec2(0, 300), child_flags):
+                names = self._get_attribute_names(view, attribute_name)
+                self._render_value_sliders(flat_values, names, attribute_name, state)
 
             imgui.end_child()
 
             # Show some statistics for numeric data
-            if values.dtype.kind in "biufc":  # numeric types
+            if flat_values.dtype.kind in "biufc":  # numeric types
                 imgui.spacing()
-
-                # Calculate stats on the selected batch for 2D arrays
-                if len(values.shape) == 2:
-                    batch_idx = state["selected_batch_idx"]
-                    stats_data = values[batch_idx]
+                if world_count > 1:
                     imgui.text(f"Statistics for World {batch_idx}:")
                 else:
-                    stats_data = values
                     imgui.text("Statistics:")
 
-                imgui.text(f"  Min: {np.min(stats_data):.6f}")
-                imgui.text(f"  Max: {np.max(stats_data):.6f}")
-                imgui.text(f"  Mean: {np.mean(stats_data):.6f}")
-                if stats_data.size > 1:
-                    imgui.text(f"  Std: {np.std(stats_data):.6f}")
+                imgui.text(f"  Min: {np.min(flat_values):.6f}")
+                imgui.text(f"  Max: {np.max(flat_values):.6f}")
+                imgui.text(f"  Mean: {np.mean(flat_values):.6f}")
+                if flat_values.size > 1:
+                    imgui.text(f"  Std: {np.std(flat_values):.6f}")
 
         except Exception as e:
             imgui.text(f"Error getting attribute: {e!s}")
@@ -2123,7 +2111,8 @@ class ViewerGL(ViewerBase):
             if i < len(current_sliders):
                 current_sliders[i] = float(val)
 
-        # Render sliders
+        # Render sliders (read-only display)
+        imgui.begin_disabled()
         for i, val in enumerate(values):
             name = names[i] if names and i < len(names) else f"[{i}]"
 
@@ -2155,3 +2144,4 @@ class ViewerGL(ViewerBase):
             else:
                 # For non-numeric values, just show as text
                 imgui.text(f"{name}: {val}")
+        imgui.end_disabled()
