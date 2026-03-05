@@ -130,7 +130,7 @@ class SolverXPBD(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
-        if flags & SolverNotifyFlags.BODY_PROPERTIES:
+        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
             self._update_kinematic_state()
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):

@@ -2902,6 +2902,8 @@ class SolverMuJoCo(SolverBase):
             disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
         self.use_mujoco_cpu = use_mujoco_cpu
         self.kinematic_armature = float(kinematic_armature)
+        if not np.isfinite(self.kinematic_armature) or self.kinematic_armature < 0.0:
+            raise ValueError("kinematic_armature must be a finite, non-negative float.")
         if separate_worlds is None:
             separate_worlds = not use_mujoco_cpu and model.world_count > 1
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
@@ -3219,6 +3221,9 @@ class SolverMuJoCo(SolverBase):
             nworld = mj_data.nworld
         else:
             # we have an MjData object from Mujoco
+            assert len(mj_data.qpos) >= model.joint_coord_count, (
+                f"MuJoCo qpos size ({len(mj_data.qpos)}) < Newton joint_coord_count ({model.joint_coord_count})"
+            )
             qpos = wp.empty((1, len(mj_data.qpos)), dtype=wp.float32, device=model.device)
             qvel = wp.empty((1, len(mj_data.qvel)), dtype=wp.float32, device=model.device)
             nworld = 1

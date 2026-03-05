@@ -204,8 +204,9 @@ Velocity consistency for prescribed motion
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For prescribed motion, it is up to the user to keep position and velocity updates consistent across time.
-In particular, ``qd`` should be the finite-differenced velocity of ``q`` and the update convention
-``q_next = q + qd * dt`` should hold for both kinematic and dynamic bodies to ensure correct solver coupling.
+In particular, ``qd`` should be consistent with the finite-differenced motion implied by ``q``.
+For scalar coordinates, this is the familiar ``q_next = q + qd * dt`` relation; quaternion-based coordinates
+(for example FREE/BALL) require manifold-consistent quaternion integration instead of direct addition.
 
 When writing kinematic state values:
 

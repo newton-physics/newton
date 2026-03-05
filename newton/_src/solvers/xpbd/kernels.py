@@ -2212,15 +2212,18 @@ def solve_body_contact_positions(
 
         # Include tangential relative surface motion so moving kinematic
         # bodies (e.g. conveyor belts) can transmit traction to dynamics.
-        v_a = wp.vec3(0.0)
-        v_b = wp.vec3(0.0)
-        if body_a >= 0:
-            v_a = velocity_at_point(body_qd[body_a], r_a)
-        if body_b >= 0:
-            v_b = velocity_at_point(body_qd[body_b], r_b)
-        rel_v = v_b - v_a
-        rel_v_t = rel_v - wp.dot(n, rel_v) * n
-        friction_delta += rel_v_t * dt
+        # Only applied when at least one body is kinematic (inv_mass == 0)
+        # to avoid changing friction behavior for all-dynamic contacts.
+        if m_inv_a == 0.0 or m_inv_b == 0.0:
+            v_a = wp.vec3(0.0)
+            v_b = wp.vec3(0.0)
+            if body_a >= 0:
+                v_a = velocity_at_point(body_qd[body_a], r_a)
+            if body_b >= 0:
+                v_b = velocity_at_point(body_qd[body_b], r_b)
+            rel_v = v_b - v_a
+            rel_v_t = rel_v - wp.dot(n, rel_v) * n
+            friction_delta += rel_v_t * dt
 
         perp = wp.normalize(friction_delta)
 

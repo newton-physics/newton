@@ -1892,6 +1892,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         mjc_dof_to_newton_dof = solver.mjc_dof_to_newton_dof.numpy()
         dof_armature = solver.mjw_model.dof_armature.numpy()
 
+        checked_count = 0
         for world_idx in range(mjc_dof_to_newton_dof.shape[0]):
             for mjc_dof in range(mjc_dof_to_newton_dof.shape[1]):
                 newton_dof = int(mjc_dof_to_newton_dof[world_idx, mjc_dof])
@@ -1912,6 +1913,13 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                         f"body={body_idx}, is_kinematic={is_kinematic}"
                     ),
                 )
+                checked_count += 1
+
+        self.assertGreater(
+            checked_count,
+            0,
+            "No mapped DOFs were validated; armature checks may be passing vacuously.",
+        )
 
     def test_floating_kinematic_body_from_add_body_applies_high_armature(self):
         builder = newton.ModelBuilder()

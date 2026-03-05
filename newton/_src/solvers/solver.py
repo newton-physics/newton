@@ -131,6 +131,9 @@ def integrate_bodies(
 
     if (body_flags[tid] & BodyFlags.KINEMATIC) != 0:
         # Kinematic bodies are user-prescribed and pass through unchanged.
+        # NOTE: SemiImplicit does not zero inv_mass/inv_inertia for kinematic
+        # bodies in the contact solver, so contact responses may be weaker
+        # than XPBD or MuJoCo/Featherstone which treat them as infinite-mass.
         body_q_new[tid] = body_q[tid]
         body_qd_new[tid] = body_qd[tid]
         return

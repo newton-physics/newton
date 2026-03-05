@@ -173,7 +173,7 @@ class SolverFeatherstone(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
-        if flags & SolverNotifyFlags.BODY_PROPERTIES:
+        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
 
     def _compute_articulation_indices(self, model):
