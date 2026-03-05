@@ -992,7 +992,9 @@ def parse_usd(
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
                             effort_limit=effort_limit,
-                            velocity_limit=joint_velocity_limit * DegreesToRadian if joint_velocity_limit is not None else 1e6,
+                            velocity_limit=joint_velocity_limit * DegreesToRadian
+                            if joint_velocity_limit is not None
+                            else 1e6,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )

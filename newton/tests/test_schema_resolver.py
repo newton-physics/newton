@@ -44,6 +44,7 @@ and MuJoCo physics solvers when importing USD files. Tests cover:
 - `humanoid.usda`: mujoco humanoid with D6 joints and Newton state attributes
 """
 
+import math
 import unittest
 from pathlib import Path
 from typing import Any
@@ -164,8 +165,6 @@ class TestSchemaResolver(unittest.TestCase):
         Verifies that physxJoint:maxJointVelocity values (100.0 deg/s) are correctly
         resolved from ant_mixed.usda and converted to rad/s for revolute joints.
         """
-        import math
-
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
         ant_mixed_path = assets_dir / "ant_mixed.usda"
