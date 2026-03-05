@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import itertools
 import os
@@ -398,7 +399,7 @@ def parse_usd(
         material_props = _get_material_props_cached(prim)
         texture = material_props.get("texture")
         # Only load UVs if a texture is authored to avoid expensive faceVarying expansion.
-        mesh = _get_mesh_cached(prim, load_uvs=(texture is not None))
+        mesh = copy.copy(_get_mesh_cached(prim, load_uvs=(texture is not None)))
         if texture:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:

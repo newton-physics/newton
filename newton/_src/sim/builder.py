@@ -21,7 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -5775,20 +5775,18 @@ class ModelBuilder:
         # Hide approximated primitives on bodies that have other visible shapes.
         # Primitives (box, sphere) can't carry visual materials, so they should
         # not be visible when the body already has dedicated visual geometry.
+        visible_count_per_body = Counter(
+            self.shape_body[i] for i in range(len(self.shape_body)) if self.shape_flags[i] & ShapeFlags.VISIBLE
+        )
         for shape in remeshed_shapes:
-            if self.shape_type[shape] == GeoType.MESH or self.shape_type[shape] == GeoType.CONVEX_MESH:
+            if self.shape_type[shape] in (GeoType.MESH, GeoType.CONVEX_MESH):
                 continue
             if not (self.shape_flags[shape] & ShapeFlags.VISIBLE):
                 continue
             body = self.shape_body[shape]
-            has_other_visible = any(
-                i != shape
-                and self.shape_body[i] == body
-                and self.shape_flags[i] & ShapeFlags.VISIBLE
-                for i in range(len(self.shape_body))
-            )
-            if has_other_visible:
+            if visible_count_per_body.get(body, 0) > 1:
                 self.shape_flags[shape] &= ~ShapeFlags.VISIBLE
+                visible_count_per_body[body] -= 1
 
         return remeshed_shapes
 
