@@ -82,6 +82,7 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
+        use_mujoco_contacts = args.use_mujoco_contacts if args else False
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
@@ -90,7 +91,7 @@ class Example:
             ls_iterations=50,
             nconmax=45,
             njmax=100,
-            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
+            use_mujoco_contacts=use_mujoco_contacts,
         )
 
         self.state_0 = self.model.state()
@@ -100,7 +101,10 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.contacts()
+        if use_mujoco_contacts:
+            self.contacts = None
+        else:
+            self.contacts = self.model.contacts()
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
@@ -117,7 +121,8 @@ class Example:
 
     # simulate() performs one frame's worth of updates
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        if self.contacts is not None:
+            self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
