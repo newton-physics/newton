@@ -13,26 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .featherstone import SolverFeatherstone
-from .flags import SolverNotifyFlags
-from .implicit_mpm import SolverImplicitMPM
-from .mujoco import SolverMuJoCo
-from .semi_implicit import SolverSemiImplicit
-from .solver import SolverBase
-from .style3d.solver_style3d import SolverStyle3D
-from .vbd import SolverVBD
-from .xpbd import SolverXPBD
-from .xpbd_rod.solver_xpbd_rod import SolverXPBDRod
+"""Constants for XPBD Cosserat rod solver."""
 
-__all__ = [
-    "SolverBase",
-    "SolverFeatherstone",
-    "SolverImplicitMPM",
-    "SolverMuJoCo",
-    "SolverNotifyFlags",
-    "SolverSemiImplicit",
-    "SolverStyle3D",
-    "SolverVBD",
-    "SolverXPBD",
-    "SolverXPBDRod",
-]
+from __future__ import annotations
+
+# Warp tile configuration for direct solve
+BLOCK_DIM = 128
+TILE = 64
+
+# Banded Cholesky layout
+BAND_KD = 11
+BAND_LDAB = 34
+
+# Direct solve backend identifiers
+DIRECT_SOLVE_BLOCK_THOMAS = "block_thomas"
+DIRECT_SOLVE_SPLIT_THOMAS = "split_thomas"
+DIRECT_SOLVE_BLOCK_JACOBI = "block_jacobi"
+DIRECT_SOLVE_BANDED_CHOLESKY = "banded_cholesky"
+
+DIRECT_SOLVE_BACKENDS = (
+    DIRECT_SOLVE_BLOCK_THOMAS,
+    DIRECT_SOLVE_SPLIT_THOMAS,
+    DIRECT_SOLVE_BLOCK_JACOBI,
+    DIRECT_SOLVE_BANDED_CHOLESKY,
+)

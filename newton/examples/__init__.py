@@ -436,6 +436,7 @@ def main():
         "cloth",
         "contacts",
         "diffsim",
+        "elastic_rod",
         "ik",
         "mpm",
         "multiphysics",

@@ -120,7 +120,9 @@ from ._src.solvers import (
     SolverStyle3D,
     SolverVBD,
     SolverXPBD,
+    SolverXPBDRod,
     style3d,
+    xpbd_rod,
 )
 
 # solver flags
@@ -136,5 +138,7 @@ __all__ = [
     "SolverStyle3D",
     "SolverVBD",
     "SolverXPBD",
+    "SolverXPBDRod",
     "style3d",
+    "xpbd_rod",
 ]
