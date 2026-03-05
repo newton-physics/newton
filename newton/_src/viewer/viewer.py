@@ -392,13 +392,13 @@ class ViewerBase(ABC):
         if not self._gaussian_instances:
             return
 
+        if not self.show_gaussians:
+            return
+
         body_q_np = state.body_q.numpy()
         offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
 
         for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
-            if not self.show_gaussians:
-                continue
-
             visible = self._should_show_shape(flags, is_static)
             if not visible:
                 self.log_gaussian(gname, gaussian, hidden=True)
