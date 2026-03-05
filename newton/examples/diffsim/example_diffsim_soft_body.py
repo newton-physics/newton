@@ -338,6 +338,11 @@ class Example:
         assert most(np.diff(self.loss_history) < -0.0, min_ratio=0.8)
 
     def render(self):
+        if self.viewer.is_paused():
+            self.viewer.begin_frame(self.viewer.time)
+            self.viewer.end_frame()
+            return
+
         if self.frame > 0 and self.train_iter % 10 != 0:
             return
 
