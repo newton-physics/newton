@@ -31,6 +31,7 @@
 
 import numpy as np
 import warp as wp
+from pxr import Gf, Usd, UsdPhysics
 
 import newton
 import newton.examples
@@ -98,8 +99,20 @@ class Example:
 
         asset_path = newton.utils.download_asset("wonik_allegro")
         asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
+
+        # Author diagonal inertia on the DexCube to prevent USD from emitting
+        # a spurious "possibly invalid inertia tensor" warning during
+        # ComputeMassProperties (the cube's colliders are behind a composed
+        # reference that USD cannot discover).
+        # I = 1/6 * m * a^2, m=0.216 kg, a=0.072 m (0.06 * 1.2 parent scale).
+        stage = Usd.Stage.Open(asset_file)
+        cube_prim = stage.GetPrimAtPath("/World/envs/env_0/object/DexCube")
+        mass_api = UsdPhysics.MassAPI(cube_prim)
+        inertia = 1.0 / 6.0 * 0.216 * 0.072**2
+        mass_api.GetDiagonalInertiaAttr().Set(Gf.Vec3f(inertia, inertia, inertia))
+
         allegro_hand.add_usd(
-            asset_file,
+            stage,
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
             enable_self_collisions=False,
             ignore_paths=[".*Dummy", ".*CollisionPlane"],
