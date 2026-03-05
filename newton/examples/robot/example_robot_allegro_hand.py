@@ -63,9 +63,7 @@ def move_hand(
         joint_target_pos[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
-    q = wp.quat_identity()
-    q *= wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.sin(t) * 0.1)
-    q *= wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -t * 0.02)
+    q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.sin(t) * 0.1)
     root_xform = joint_parent_xform[root_joint_id]
     joint_parent_xform[root_joint_id] = wp.transform(root_xform.p, q * hand_rotation)
 
@@ -89,45 +87,49 @@ class Example:
         self.device = wp.get_device()
 
         self.hand_rotation = wp.normalize(wp.quat(0.21643, 0.706218, -0.648166, 0.185191))
-        contact_margin = 0.003
-        contact_gap = 0.05
         max_contacts_per_world = 300
 
         allegro_hand = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
         allegro_hand.default_shape_cfg.ke = 1.0e3
         allegro_hand.default_shape_cfg.kd = 1.0e2
-        # Increase contact envelope to reduce missed/late hand-cube contacts
-        # during fast finger/root motion.
-        # allegro_hand.default_shape_cfg.margin = contact_margin
-        # allegro_hand.default_shape_cfg.gap = contact_gap
+        allegro_hand.default_shape_cfg.margin = 0.005
+        allegro_hand.default_shape_cfg.gap = 0.015
 
         asset_path = newton.utils.download_asset("wonik_allegro")
         asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
         allegro_hand.add_usd(
             asset_file,
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
-            enable_self_collisions=True,
+            enable_self_collisions=False,
             ignore_paths=[".*Dummy", ".*CollisionPlane"],
             hide_collision_shapes=True,
         )
 
-        # set joint targets and joint drive gains
-        for i in range(allegro_hand.joint_dof_count):
+        # set joint targets and joint drive gains (only on hand, not the floating-body cube)
+        for i in range(allegro_hand.joint_dof_count - 6):
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
-            allegro_hand.joint_target_pos[i] = 0.0
+            allegro_hand.joint_q[i] = 0.3
+            allegro_hand.joint_target_pos[i] = 0.3
+            if allegro_hand.joint_label[i][-2:] == "_0":
+                allegro_hand.joint_q[i] = 0.6
+                allegro_hand.joint_target_pos[i] = 0.6
             allegro_hand.joint_target_mode[i] = int(JointTargetMode.POSITION)
             if allegro_hand.joint_type[i] == newton.JointType.REVOLUTE:
                 allegro_hand.joint_armature[i] = 1e-2
+
+        # Update root pose of the cube (free joint)
+        q = np.array(allegro_hand.joint_q)
+        q[-7:-4] += np.array([0.0, 0.0, 0.05])
+        q[-4:] = wp.quat_rpy(0.3, 0.5, 0.1)
+        allegro_hand.joint_q = q.tolist()
 
         builder = newton.ModelBuilder()
         builder.replicate(allegro_hand, self.world_count)
 
         builder.default_shape_cfg.ke = 1.0e3
         builder.default_shape_cfg.kd = 1.0e2
-        builder.default_shape_cfg.margin = contact_margin
-        builder.default_shape_cfg.gap = contact_gap
         builder.add_ground_plane()
 
         self.model = builder.finalize()
@@ -170,6 +172,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
+        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -193,9 +196,6 @@ class Example:
             # # update the solver since we have updated the joint parent transforms
             self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
 
-            # When using Newton contacts in SolverMuJoCo, refresh contacts every
-            # substep so the buffer is cleared/rebuilt from the current state.
-            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
