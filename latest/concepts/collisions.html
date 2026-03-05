@@ -48,6 +48,8 @@
     <script src="../_static/copybutton.js?v=f281be69"></script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true, "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]}, "displayMath": [["$$", "$$"], ["\\[", "\\]"]], "processEnvironments": true, "tags": "ams", "macros": {"RR": "{\\mathbb{R}}", "bold": ["{\\mathbf{#1}}", 1], "vec": ["{\\mathbf{#1}}", 1]}}, "options": {"ignoreHtmlClass": "annotation", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+    <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/collisions';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
@@ -842,36 +844,35 @@
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PLANE</span></code></p></td>
 <td><p>Infinite plane (ground)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SPHERE</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">HFIELD</span></code></p></td>
+<td><p>Heightfield terrain (2D elevation grid)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SPHERE</span></code></p></td>
 <td><p>Sphere primitive</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CAPSULE</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CAPSULE</span></code></p></td>
 <td><p>Cylinder with hemispherical ends</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BOX</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">BOX</span></code></p></td>
 <td><p>Axis-aligned box</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CYLINDER</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CYLINDER</span></code></p></td>
 <td><p>Cylinder</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CONE</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CONE</span></code></p></td>
 <td><p>Cone</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ELLIPSOID</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ELLIPSOID</span></code></p></td>
 <td><p>Ellipsoid</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MESH</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MESH</span></code></p></td>
 <td><p>Triangle mesh (arbitrary, including non-convex)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CONVEX_MESH</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CONVEX_MESH</span></code></p></td>
 <td><p>Convex hull mesh</p></td>
 </tr>
 </tbody>
 </table>
-</div>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><strong>Heightfields</strong> (<code class="docutils literal notranslate"><span class="pre">HFIELD</span></code>) are not implemented. Convert heightfield terrain to a triangle mesh.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -888,7 +889,8 @@ an SDF explicitly with <code class="docutils literal notranslate"><span class="p
 <li><p><strong>Body index</strong> (<code class="docutils literal notranslate"><span class="pre">shape_body</span></code>): The rigid body this shape is attached to. Use <code class="docutils literal notranslate"><span class="pre">body=-1</span></code> for static/world-fixed shapes.</p></li>
 <li><p><strong>Local transform</strong> (<code class="docutils literal notranslate"><span class="pre">shape_transform</span></code>): Position and orientation relative to the body frame.</p></li>
 <li><p><strong>Scale</strong> (<code class="docutils literal notranslate"><span class="pre">shape_scale</span></code>): 3D scale factors applied to the shape geometry.</p></li>
-<li><p><strong>Margin</strong> (<code class="docutils literal notranslate"><span class="pre">shape_margin</span></code>): Surface margin used in contact generation (see <a class="reference internal" href="#shape-configuration"><span class="std std-ref">Shape Configuration</span></a>).</p></li>
+<li><p><strong>Margin</strong> (<code class="docutils literal notranslate"><span class="pre">shape_margin</span></code>): Surface offset that shifts where contact points are placed. See <a class="reference internal" href="#margin-gap-semantics"><span class="std std-ref">Margin and gap semantics</span></a>.</p></li>
+<li><p><strong>Gap</strong> (<code class="docutils literal notranslate"><span class="pre">shape_gap</span></code>): Extra detection distance that shifts when contacts are generated. See <a class="reference internal" href="#margin-gap-semantics"><span class="std std-ref">Margin and gap semantics</span></a>.</p></li>
 <li><p><strong>Source geometry</strong> (<code class="docutils literal notranslate"><span class="pre">shape_source</span></code>): Reference to the underlying geometry object (e.g., <a class="reference internal" href="../api/_generated/newton.Mesh.html#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>).</p></li>
 </ul>
 <p>During collision detection, shapes are transformed to world space using their parent body’s pose:</p>
@@ -1153,28 +1155,34 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 </div>
 <section id="shape-compatibility">
 <span id="id6"></span><h3>Shape Compatibility<a class="headerlink" href="#shape-compatibility" title="Link to this heading">#</a></h3>
-<p>The collision pipeline supports collision detection between all shape type combinations:</p>
+<p>Shape compatibility summary (rigid + soft particle-shape):</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
-<col style="width: 12.9%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
+<col style="width: 11.6%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
 </colgroup>
 <thead>
 <tr class="row-odd"><th class="head"></th>
 <th class="head"><p>Plane</p></th>
+<th class="head"><p>HField</p></th>
 <th class="head"><p>Sphere</p></th>
 <th class="head"><p>Capsule</p></th>
 <th class="head"><p>Box</p></th>
 <th class="head"><p>Cylinder</p></th>
 <th class="head"><p>Cone</p></th>
+<th class="head"><p>Ellipsoid</p></th>
+<th class="head"><p>ConvexHull</p></th>
 <th class="head"><p>Mesh</p></th>
 <th class="head"><p>SDF</p></th>
 <th class="head"><p>Particle</p></th>
@@ -1182,7 +1190,8 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 </thead>
 <tbody>
 <tr class="row-even"><td><p><strong>Plane</strong></p></td>
-<td></td>
+<td><p>[1]</p></td>
+<td><p>[1]</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
@@ -1190,75 +1199,14 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
-<td></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
 </tr>
-<tr class="row-odd"><td><p><strong>Sphere</strong></p></td>
+<tr class="row-odd"><td><p><strong>HField</strong></p></td>
+<td><p>[1]</p></td>
+<td><p>[1]</p></td>
 <td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-</tr>
-<tr class="row-even"><td><p><strong>Capsule</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-</tr>
-<tr class="row-odd"><td><p><strong>Box</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-</tr>
-<tr class="row-even"><td><p><strong>Cylinder</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-</tr>
-<tr class="row-odd"><td><p><strong>Cone</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-</tr>
-<tr class="row-even"><td><p><strong>Mesh</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅⚠️</p></td>
-<td><p>✅⚠️</p></td>
-<td></td>
-</tr>
-<tr class="row-odd"><td><p><strong>SDF</strong></p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
@@ -1267,32 +1215,181 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 <td><p>✅</p></td>
 <td><p>✅⚠️</p></td>
 <td><p>✅</p></td>
-<td></td>
+<td><p>✅</p></td>
 </tr>
-<tr class="row-even"><td><p><strong>Particle</strong></p></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
+<tr class="row-even"><td><p><strong>Sphere</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Capsule</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Box</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Cylinder</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Cone</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Ellipsoid</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>ConvexHull</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Mesh</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅⚠️</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅⚠️</p></td>
+<td><p>✅⚠️</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>SDF</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅⚠️</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Particle</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>[2]</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p><strong>Legend:</strong> ⚠️ = Can be slow for meshes with high triangle counts</p>
-<p>Ellipsoid and ConvexMesh are also fully supported. The only unsupported type is <code class="docutils literal notranslate"><span class="pre">HFIELD</span></code> (heightfield) - convert to mesh instead.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><strong>SDF</strong> in this table refers to shapes with precomputed SDF data. Mesh SDFs are attached
-through <code class="docutils literal notranslate"><span class="pre">mesh.build_sdf(...)</span></code> and provide O(1) distance queries.</p>
+<p><strong>Legend:</strong> ⚠️ = Can be slow for meshes with high triangle counts; performance can
+often be improved by attaching a precomputed SDF to the mesh (<code class="docutils literal notranslate"><span class="pre">mesh.build_sdf(...)</span></code>).</p>
+<div class="line-block">
+<div class="line">[1] Plane and heightfield shapes are static (world-attached) in Newton; static-static pairs are filtered from rigid collision generation.</div>
+<div class="line">[2] Particle-particle interactions are handled by the particle/soft-body solver self-collision path, not by the shape compatibility pipeline in this table.</div>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Particle (soft body) collision support is available; see cloth and cable examples that use the collision pipeline for particle-shape contacts.</p>
+<p><code class="docutils literal notranslate"><span class="pre">Particle</span></code> in this table refers to soft particle-shape contacts generated by
+<code class="docutils literal notranslate"><span class="pre">create_soft_contacts</span></code>. These contacts additionally require the shape to have
+particle collision enabled (<code class="docutils literal notranslate"><span class="pre">ShapeFlags.COLLIDE_PARTICLES</span></code> /
+<code class="docutils literal notranslate"><span class="pre">ShapeConfig.has_particle_collision</span></code>). For examples, see cloth and cable
+scenes that use the collision pipeline for particle-shape contacts.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Heightfield representation:</strong> A heightfield (<code class="docutils literal notranslate"><span class="pre">HFIELD</span></code>) stores a regular 2D grid
+of elevation samples (<code class="docutils literal notranslate"><span class="pre">HeightfieldData</span></code> + normalized elevation values). For rigid
+contacts, Newton uses dedicated heightfield narrow-phase routes:
+heightfield-vs-convex uses per-cell triangle GJK/MPR, while mesh-vs-heightfield
+routes through the mesh/SDF path with on-the-fly triangle extraction from the grid.
+For soft contacts, <code class="docutils literal notranslate"><span class="pre">create_soft_contacts</span></code> samples the heightfield signed distance
+and normal directly.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>SDF</strong> in this table refers to shapes with precomputed SDF data. There is no
+<code class="docutils literal notranslate"><span class="pre">GeoType.SDF</span></code> enum value; this row is a conceptual collision mode for shapes
+carrying SDF resources. Mesh SDFs are attached through <code class="docutils literal notranslate"><span class="pre">mesh.build_sdf(...)</span></code>
+and provide O(1) distance queries.</p>
 </div>
 </section>
 </section>
@@ -1443,12 +1540,36 @@ geometric area. This provides a floor value so they still generate repulsive for
 </tbody>
 </table>
 </div>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><strong>Contact generation</strong>: A contact is created when <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">&lt;=</span> <span class="pre">(gap_a</span> <span class="pre">+</span> <span class="pre">gap_b)</span></code>, where
-<code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">=</span> <span class="pre">surface_distance</span> <span class="pre">-</span> <span class="pre">(margin_a</span> <span class="pre">+</span> <span class="pre">margin_b)</span></code>. The solver enforces <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code>,
-so objects at rest settle with surfaces separated by <code class="docutils literal notranslate"><span class="pre">margin_a</span> <span class="pre">+</span> <span class="pre">margin_b</span></code>.</p>
-</div>
+<p id="margin-gap-semantics"><strong>Margin and gap semantics (where vs when):</strong></p>
+<ul class="simple">
+<li><p><strong>Where contacts are placed</strong> is controlled by <code class="docutils literal notranslate"><span class="pre">margin</span></code>.</p></li>
+<li><p><strong>When contacts are generated</strong> is controlled by <code class="docutils literal notranslate"><span class="pre">gap</span></code>.</p></li>
+</ul>
+<p>For a shape pair <code class="docutils literal notranslate"><span class="pre">(a,</span> <span class="pre">b)</span></code>:</p>
+<ul class="simple">
+<li><p>Pair margin: <code class="docutils literal notranslate"><span class="pre">m</span> <span class="pre">=</span> <span class="pre">margin_a</span> <span class="pre">+</span> <span class="pre">margin_b</span></code></p></li>
+<li><p>Pair gap: <code class="docutils literal notranslate"><span class="pre">g</span> <span class="pre">=</span> <span class="pre">gap_a</span> <span class="pre">+</span> <span class="pre">gap_b</span></code></p></li>
+<li><p>Surface distance (true geometry, no offsets): <code class="docutils literal notranslate"><span class="pre">s</span></code></p></li>
+<li><p>Contact-space distance used by Newton: <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">=</span> <span class="pre">s</span> <span class="pre">-</span> <span class="pre">m</span></code></p></li>
+</ul>
+<p>Contacts are generated when:</p>
+<div class="math notranslate nohighlight">
+\[d \leq g \quad\Leftrightarrow\quad s \leq (m + g)\]</div>
+<p>Broad phase uses the same idea by expanding each shape AABB by:</p>
+<div class="math notranslate nohighlight">
+\[margin_i + gap_i\]</div>
+<p>This keeps broad-phase culling and narrow-phase contact generation consistent.
+The solver enforces <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code>, so objects at rest settle with surfaces separated
+by <code class="docutils literal notranslate"><span class="pre">margin_a</span> <span class="pre">+</span> <span class="pre">margin_b</span></code>.</p>
+<figure class="align-center" id="id12">
+<a class="reference internal image-reference" href="../_images/margin_and_gap.svg"><img alt="Margin and gap contact generation phases" src="../_images/margin_and_gap.svg" style="width: 90%;" />
+</a>
+<figcaption>
+<p><span class="caption-text">Margin sets contact location (surface offset), while gap adds speculative
+detection distance on top of margin. Left: no contact generated. Middle:
+contact generated but not yet active. Right: active contact support.</span><a class="headerlink" href="#id12" title="Link to this image">#</a></p>
+</figcaption>
+</figure>
 <p><strong>SDF configuration (primitive generation defaults):</strong></p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
@@ -1483,7 +1604,7 @@ so objects at rest settle with surfaces separated by <code class="docutils liter
 <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_mesh</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">my_mesh</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">cfg</span><span class="p">)</span>
 </pre></div>
 </div>
-<p><strong>Builder default margin:</strong></p>
+<p><strong>Builder default gap:</strong></p>
 <p>The builder’s <code class="docutils literal notranslate"><span class="pre">rigid_gap</span></code> (default 0.1) applies to shapes without explicit <code class="docutils literal notranslate"><span class="pre">gap</span></code>. Alternatively, use <code class="docutils literal notranslate"><span class="pre">builder.default_shape_cfg.gap</span></code>.</p>
 </section>
 <section id="common-patterns">
