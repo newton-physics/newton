@@ -272,7 +272,7 @@ class ImplicitMPMModel:
 
     Holds particle material parameters, collider parameters, and convenience
     arrays derived from the wrapped ``model`` and ``SolverImplicitMPM.Config``.
-    instance is consumed by ``SolverImplicitMPM`` during time stepping.
+    Consumed by ``SolverImplicitMPM`` during time stepping.
 
     Args:
         model: The base Newton model to augment.

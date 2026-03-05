@@ -274,13 +274,14 @@ def project_outside_collider(
     penetration at the end of the step, applies a Coulomb friction response
     against the collider velocity, projects positions outside by the required
     signed distance, and rigidifies the particle velocity gradient. Inactive
-    particles are passed through unchanged.
+    and kinematic (zero-mass) particles are passed through unchanged.
 
     Args:
         positions: Current particle positions.
         velocities: Current particle velocities.
         velocity_gradients: Current particle velocity gradients.
-        particle_flags: Per-particle flags (used to gate inactive particles).
+        particle_flags: Per-particle flags; particles without :attr:`ACTIVE` are skipped.
+        particle_mass: Per-particle mass; zero-mass (kinematic) particles are skipped.
         collider: Collider description and geometry.
         body_q: Rigid body transforms.
         body_qd: Rigid body velocities.
@@ -522,6 +523,30 @@ def rasterize_collider(
     collider_ids: wp.array(dtype=int),
     temporary_store: fem.TemporaryStore,
 ):
+    """Rasterize collider signed-distance, normals, velocity, and material onto grid nodes.
+
+    For each collision node, queries the nearest collider surface and writes the
+    signed distance, outward normal, collider velocity, friction, adhesion, and
+    collider id to the corresponding output arrays.
+
+    Args:
+        collider: Packed collider parameters and geometry.
+        body_q: Rigid body transforms.
+        body_qd: Rigid body velocities (spatial vectors).
+        body_q_prev: Previous rigid body transforms (for finite-difference velocity).
+        voxel_size: Grid voxel edge length [m].
+        dt: Timestep length [s].
+        collider_space_restriction: Space restriction for collision nodes.
+        collider_node_volume: Output per-node volume fractions.
+        collider_position_field: Output world-space node positions.
+        collider_distance_field: Output signed-distance values per node.
+        collider_normal_field: Output outward normals per node.
+        collider_velocity: Output collider velocity per node [m/s].
+        collider_friction: Output Coulomb friction coefficient per node.
+        collider_adhesion: Output adhesion per node [Pa].
+        collider_ids: Output collider index per node, or ``_NULL_COLLIDER_ID``.
+        temporary_store: Temporary storage for intermediate buffers.
+    """
     collision_node_count = collider_position_field.dof_values.shape[0]
 
     collider_position_field.dof_values.fill_(wp.vec3(fem.OUTSIDE))
@@ -566,7 +591,18 @@ def interpolate_collider_normals(
     collider_normal_field: fem.DiscreteField,
     temporary_store: fem.TemporaryStore,
 ):
-    # collider_distance_field.dof_values = corrected_distance
+    """Smooth collider normals by computing the gradient of the distance field.
+
+    Interpolates the gradient of ``collider_distance_field`` at each collision
+    node and normalizes the result to produce smoothed outward normals, which
+    are written back into ``collider_normal_field``.
+
+    Args:
+        collider_space_restriction: Space restriction for collision nodes.
+        collider_distance_field: Per-node signed-distance field.
+        collider_normal_field: Per-node normal field (updated in place).
+        temporary_store: Temporary storage for intermediate buffers.
+    """
     corrected_normal = wp.empty_like(collider_normal_field.dof_values)
     fem.interpolate(
         collider_gradient_field,

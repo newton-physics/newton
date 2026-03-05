@@ -207,8 +207,6 @@ def compute_delassus_diagonal(
 
     # symmetric_eigenvalues_qr may return nans for small coefficients
     if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(diag) < 1.0e16):
-        # wp.print(diag_block)
-        # wp.print(diag)
         diag = wp.get_diag(diag_block)
         ev = wp.identity(n=6, dtype=float)
 
@@ -298,7 +296,7 @@ def postprocess_stress_and_strain(
 
     # Make sure that all strain that does not comply with the yield surface is moved
     # to the elastic strain. That way, if the solver has not fully converged, we track
-    # the correct leastic strain.
+    # the correct elastic strain.
     rot = delassus_rotation[tau_i]
     diag = delassus_diagonal[tau_i]
 
@@ -310,18 +308,6 @@ def postprocess_stress_and_strain(
         diag, loc_plastic_strain - wp.cw_mul(loc_stress, diag), loc_stress, yp, strain_node_volume[tau_i]
     )
     loc_stress += wp.cw_div(loc_plastic_strain_new - loc_plastic_strain, diag)
-
-    # p_min, p_max = normal_yield_bounds(yp)
-    # mu = wp.where(p_max > 0.0, wp.max(0.0, yp[3] / p_max), 0.0)
-    # loc_plastic_strain_t = loc_plastic_strain_new
-    # loc_plastic_strain_t[0] = 0.0
-
-    # if loc_stress[0] < 0.5 * (p_max + p_min):
-    #     r = 1.0 - (loc_stress[0] - p_min) / (0.5 * (p_max - p_min))
-    #     loc_plastic_strain_new[0] += mu * r * wp.length(loc_plastic_strain_t)
-    # if loc_stress[0] > 0.5 * (p_max + p_min):
-    #     r = 1.0 - (p_max - loc_stress[0]) / (0.5 * (p_max - p_min))
-    #     loc_plastic_strain_new[0] -= mu * r * wp.length(loc_plastic_strain_t)
 
     world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot)
 
@@ -432,7 +418,6 @@ def solve_sliding_aniso(
     for _k in range(24):
         f_cur, df_dalpha = eval_sliding_residual(alpha_cur, Dmu_rn, b_T, gamma, target)
 
-        # wp.printf("alpha_cur: %f, f_cur: %f, df_dalpha: %f\n", alpha_cur, f_cur, df_dalpha)
         delta_alpha = wp.min(-f_cur / df_dalpha, alpha_max - alpha_cur)
 
         if delta_alpha < __SLIDING_NEWTON_TOL * alpha_max:
@@ -1308,8 +1293,6 @@ class ArraySquaredNorm:
     def compute_squared_norm(self, data: wp.array(dtype=Any)):
         # cast vector types to float
         if data.ndim != 2:
-            # data = wp.array(data, dtype=float).flatten()
-            # repeat on both columns times
             data = wp.array(
                 ptr=data.ptr,
                 shape=(2, data.shape[0]),

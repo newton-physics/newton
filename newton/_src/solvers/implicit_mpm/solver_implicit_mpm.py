@@ -198,9 +198,7 @@ def hardening_law(Jp: float, hardening: float):
     eps = wp.log(wp.clamp(Jp, MIN_HARDENING_JP, 1.0))
     h = wp.sinh(-hardening * eps)
 
-    return h  # wp.min(1.0, h)
-
-    # return wp.exp(hardening * (1.0 - wp.clamp(Jp, MIN_HARDENING_JP, MAX_HARDENING_JP)))
+    return h
 
 
 @wp.func
@@ -315,7 +313,7 @@ def average_elastic_strain_delta(
     i = wp.tid()
     pvol = particle_volume[i]
 
-    # The 2 factor is due to the SymTensorMapping being othonormal with (tau:sig)/2
+    # The 2 factor is due to the SymTensorMapping being orthonormal with (tau:sig)/2
     elastic_strain_delta_avg[i] = elastic_strain_delta_int[i] / wp.max(2.0 * pvol, _EPSILON)
 
 
@@ -395,7 +393,6 @@ def update_particle_strains(
     vel_grad = fem.grad(grid_vel, s)
     skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
     strain_delta = elastic_strain_delta(s) + skew
-    # strain_delta = fem.grad(grid_vel, s) * dt
     strain_new = prev_strain + strain_delta @ prev_strain
 
     elastic_parameters_vec = get_elastic_parameters(s.qp_index, material_parameters, particle_Jp)
@@ -431,7 +428,6 @@ def project_particle_strain(
     _U, xi, _V = wp.svd3(F)
 
     if wp.min(xi) < MIN_PRINCIPAL_STRAIN or wp.max(xi) > MAX_PRINCIPAL_STRAIN:
-        # wp.printf("minxi: %f, maxxi: %f\n", wp.min(xi), wp.max(xi))
         return F_prev  # non-recoverable, discard update
 
     return F
@@ -622,11 +618,6 @@ def _compute_eigenvalues(
 
             for j in range(scales.length):
                 ev[k, j] *= ev_s
-
-        # if row == 0:
-        #     wp.print(wp.transpose(ev) @ wp.diag(scales) @ ev)
-        #     wp.print(scales)
-        #     wp.print(ev @ diag_block)
 
     size = int(scales.length)
     for k in range(size):
@@ -819,7 +810,7 @@ def inverse_scale_sym_tensor(
 ):
     node = wp.tid()
 
-    # Symmetric tensor norm is othonormal to sig:tau/2
+    # Symmetric tensor norm is orthonormal to sig:tau/2
     scale = eigenvalues[node] * 2.0
 
     vector[node] = wp.where(scale == 0.0, vec6(0.0), vector[node] / scale)
@@ -1010,7 +1001,7 @@ class ImplicitMPMScratchpad:
         self._vel_space_restriction = vel_space_restriction
 
     def _create_collider_function_space(self, temporary_store: fem.TemporaryStore, max_cell_count: int = -1):
-        """Create velocity and fraction spaces and their partition/restriction."""
+        """Create collider function space and its partition/restriction."""
 
         if self._velocity_basis == self._collision_basis:
             self._collision_space = self._velocity_space
@@ -1593,9 +1584,6 @@ class SolverImplicitMPM(SolverBase):
     Args:
         model: The model to solve.
         config: The solver configuration.
-
-    Returns:
-        The solver.
     """
 
     @dataclass
@@ -2138,6 +2126,7 @@ class SolverImplicitMPM(SolverBase):
 
         Args:
             positions: Particle positions to bound.
+            particle_flags: Per-particle flags; inactive particles are excluded from bounds.
             voxel_size: Grid voxel edge length.
             temporary_store: Temporary storage for intermediate buffers.
             padding_voxels: Additional empty voxels to add around the bounds.
@@ -2260,10 +2249,7 @@ class SolverImplicitMPM(SolverBase):
         return scratch
 
     def _particles_to_cells(self, positions: wp.array) -> fem.PicQuadrature:
-        """
-        Rebuild the grid and grid partition around particles if required,
-        then assign particles to grid cells.
-        """
+        """Rebuild the grid and grid partition around particles, then assign particles to grid cells."""
 
         # Rebuild grid
 
@@ -2925,8 +2911,6 @@ class SolverImplicitMPM(SolverBase):
 
         return M_ev
 
-        # raise X
-
     def _apply_strain_eigenbasis(
         self,
         scratch: ImplicitMPMScratchpad,
@@ -3039,13 +3023,6 @@ class SolverImplicitMPM(SolverBase):
         M_ev = self._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
 
         self._apply_strain_eigenbasis(scratch, M_ev)
-        # print(scratch.strain_yield_parameters_field.dof_values[:10])
-        # print(scratch.strain_yield_parameters_field.dof_values[:10])
-        # print(scratch.strain_yield_parameters_field.dof_values[:10])
-
-        # print(M_diag)
-        # scratch.strain_yield_parameters_field.dof_values.fill_(YieldParamVec(1.0e12, 0.0e12, 0.0e12, 0.75e12))
-        # raise X
 
         with self._timer("Strain solve"):
             momentum_data = MomentumData(
@@ -3322,16 +3299,6 @@ class SolverImplicitMPM(SolverBase):
                     scratch.stress_field,
                     dest=last_step_data.ws_stress_field,
                 )
-
-                # wp.launch(
-                #     scatter_field_dof_values,
-                #     dim=last_step_data.ws_stress_field.space_partition.node_count(),
-                #     inputs=[
-                #         last_step_data.ws_stress_field.space_partition.space_node_indices(),
-                #         scratch.stress_field.dof_values,
-                #         last_step_data.ws_stress_field.dof_values,
-                #     ],
-                # )
 
     def _max_colors(self):
         if not self.coloring:

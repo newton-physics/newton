@@ -252,7 +252,7 @@ class Example:
 
         # Boundary particles: sides
         # Width L_x = 10. Boundary at +/- 5.
-        # Mark inactive if close to boundary, say within 20cm?
+        # Mark kinematic if close to boundary, say within 20cm?
         boundary_width = 0.2
         boundary_mask = np.logical_or(
             np.abs(q_np[:, 0]) > (self.L_x / 2 - boundary_width),
@@ -276,7 +276,7 @@ class Example:
         model.mpm.hardening.fill_(options.hardening)
         model.mpm.dilatancy.fill_(options.dilatancy)
 
-        # Flag boundary particles as inactive
+        # Set boundary particles as kinematic (zero mass)
         model.particle_mass[boundary_indices].fill_(0.0)
 
         self.boundary_indices = boundary_indices
