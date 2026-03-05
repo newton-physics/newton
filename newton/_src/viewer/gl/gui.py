@@ -55,6 +55,9 @@ class UI:
 
         self.io = self.imgui.get_io()
 
+        # Fix inverted scroll direction in the pyglet imgui backend
+        self.impl.on_mouse_scroll = self._on_mouse_scroll
+
         # Set up proper DPI scaling for high-DPI displays
         window_width, window_height = self.window.get_size()
         fb_width, fb_height = self.window.get_framebuffer_size()
@@ -255,6 +258,9 @@ class UI:
         style.set_color_(self.imgui.Col_.nav_windowing_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
         style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
         # fmt: on
+
+    def _on_mouse_scroll(self, x, y, scroll_x, scroll_y):
+        self.io.add_mouse_wheel_event(scroll_x, scroll_y)
 
     def begin_frame(self):
         """Renders a single frame of the UI. This should be called from the main render loop."""
