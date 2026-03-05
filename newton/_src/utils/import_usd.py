@@ -1955,16 +1955,29 @@ def parse_usd(
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
 
+                shape_ke = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="ke",
+                    verbose=verbose,
+                )
+                if shape_ke is None:
+                    shape_ke = builder.default_shape_cfg.ke
+                shape_kd = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="kd",
+                    verbose=verbose,
+                )
+                if shape_kd is None:
+                    shape_kd = builder.default_shape_cfg.kd
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
-                        ke=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_ke", builder.default_shape_cfg.ke
-                        ),
-                        kd=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_kd", builder.default_shape_cfg.kd
-                        ),
+                        ke=shape_ke,
+                        kd=shape_kd,
                         kf=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
                         ),

@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import re
 import unittest
-import warnings
 from collections import Counter
 from pathlib import Path
 from typing import Any, ClassVar
@@ -48,7 +47,6 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton
 from newton.solvers import SolverMuJoCo
 from newton.tests.test_menagerie_mujoco import (
     DEFAULT_MODEL_SKIP_FIELDS,
@@ -58,6 +56,7 @@ from newton.tests.test_menagerie_mujoco import (
     compare_inertia_tensors,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 # =============================================================================
 # USD Model Creation
@@ -374,7 +373,9 @@ def compare_geoms_subset(
 
     Newton's USD import with skip_visual_only_geoms=True produces fewer geoms
     than native MJCF. This function matches Newton geoms to native geoms by
-    (body_id, geom_type, geom_size) and compares physics-relevant properties.
+    (geom_type, geom_size) signature, then verifies that physics-relevant
+    properties (friction, condim, solref, priority, solimp) match within each
+    signature group (sorted to handle reordering).
     """
     newton_ngeom = newton_mjw.ngeom
     native_ngeom = native_mjw.ngeom
@@ -414,16 +415,48 @@ def compare_geoms_subset(
             f"Geom signature {sig} appears {count}x in Newton but only {native_count}x in native"
         )
 
-    newton_phys = sorted(s for s in newton_sigs if s[0] != GEOM_PLANE)
-    native_phys = sorted(s for s in native_sigs if s[0] != GEOM_PLANE)
+    # Group geom indices by signature for physics property comparison.
+    newton_groups: dict[tuple, list[int]] = {}
+    for i, sig in enumerate(newton_sigs):
+        newton_groups.setdefault(sig, []).append(i)
+    native_groups: dict[tuple, list[int]] = {}
+    for i, sig in enumerate(native_sigs):
+        native_groups.setdefault(sig, []).append(i)
 
-    newton_counter = Counter(newton_phys)
-    native_counter = Counter(native_phys)
-    missing = []
-    for sig, count in newton_counter.items():
-        if native_counter.get(sig, 0) < count:
-            missing.append(f"{sig}: newton={count}, native={native_counter.get(sig, 0)}")
-    assert not missing, "Physics geom multiset: Newton has geoms not in native:\n" + "\n".join(missing[:5])
+    # Collect physics fields available on both models.
+    physics_fields = []
+    for field in ("geom_friction", "geom_condim", "geom_solref", "geom_priority", "geom_solimp"):
+        nw_arr = getattr(newton_mjw, field, None)
+        nat_arr = getattr(native_mjw, field, None)
+        if nw_arr is not None and nat_arr is not None:
+            physics_fields.append((field, nw_arr.numpy(), nat_arr.numpy()))
+
+    # Compare physics properties within each signature group (sorted).
+    mismatches: list[str] = []
+    for sig, nw_indices in newton_groups.items():
+        nat_indices = native_groups.get(sig, [])
+
+        for field, nw_data, nat_data in physics_fields:
+            if nw_data.ndim == 1:
+                nw_scalars = sorted(float(nw_data[i]) for i in nw_indices)
+                nat_scalars = sorted(float(nat_data[i]) for i in nat_indices)
+                for k, (nv, natv) in enumerate(zip(nw_scalars, nat_scalars[: len(nw_scalars)], strict=True)):
+                    if abs(nv - natv) > tol:
+                        mismatches.append(f"sig={sig} {field}[{k}]: newton={nv} native={natv}")
+            else:
+                axis = 0 if nw_data.ndim == 2 else 1
+                nw_vecs = sorted(
+                    tuple(nw_data[0, i].tolist()) if axis == 1 else tuple(nw_data[i].tolist()) for i in nw_indices
+                )
+                nat_vecs = sorted(
+                    tuple(nat_data[0, i].tolist()) if axis == 1 else tuple(nat_data[i].tolist()) for i in nat_indices
+                )
+                for k, (nv, natv) in enumerate(zip(nw_vecs, nat_vecs[: len(nw_vecs)], strict=True)):
+                    err = max(abs(a - b) for a, b in zip(nv, natv, strict=True))
+                    if err > tol:
+                        mismatches.append(f"sig={sig} {field}[{k}]: newton={nv} native={natv} err={err:.2e}")
+
+    assert not mismatches, f"Geom physics property mismatches ({len(mismatches)}):\n" + "\n".join(mismatches[:10])
 
 
 # =============================================================================
@@ -657,10 +690,7 @@ def build_actuator_index_map(
 
     if len(act_map) < nu_native:
         unmapped = [native_act_names[i] for i in range(nu_native) if i not in act_map]
-        warnings.warn(
-            f"Could not map {len(unmapped)}/{nu_native} actuators: {unmapped[:5]}",
-            stacklevel=2,
-        )
+        raise ValueError(f"Could not map {len(unmapped)}/{nu_native} actuators: {unmapped[:5]}")
 
     return act_map
 
@@ -712,8 +742,7 @@ def compare_body_physics_mapped(
             continue
         nn = newton_arr.numpy()
         nat = native_arr.numpy()
-        if nn.shape != nat.shape:
-            continue
+        assert nn.shape == nat.shape, f"body field {field}: shape mismatch newton={nn.shape} vs native={nat.shape}"
         np.testing.assert_array_equal(_reindex(nn), nat, err_msg=f"body field {field} (reindexed)")
 
     for field in fields_remapped:
@@ -723,8 +752,7 @@ def compare_body_physics_mapped(
             continue
         nn = _reindex(newton_arr.numpy()).ravel()
         nat = native_arr.numpy().ravel()
-        if nn.shape != nat.shape:
-            continue
+        assert nn.shape == nat.shape, f"body field {field}: shape mismatch newton={nn.shape} vs native={nat.shape}"
         id_map: dict[int, int] = {}
         for newton_id, native_id in zip(nn, nat, strict=True):
             prev = id_map.setdefault(int(newton_id), int(native_id))
@@ -741,8 +769,7 @@ def compare_body_physics_mapped(
             continue
         nn = newton_arr.numpy()
         nat = native_arr.numpy()
-        if nn.shape != nat.shape:
-            continue
+        assert nn.shape == nat.shape, f"body field {field}: shape mismatch newton={nn.shape} vs native={nat.shape}"
         np.testing.assert_allclose(
             _reindex(nn),
             nat,
@@ -770,8 +797,7 @@ def compare_dof_physics_mapped(
             continue
         nn = newton_arr.numpy()
         nat = native_arr.numpy()
-        if nn.shape != nat.shape:
-            continue
+        assert nn.shape == nat.shape, f"dof field {field}: shape mismatch newton={nn.shape} vs native={nat.shape}"
         if len(nn.shape) == 1:
             reindexed = _reindex_1d(nn, dof_map, nv)
         elif len(nn.shape) >= 2:
@@ -884,8 +910,7 @@ def compare_actuator_physics_mapped(
             continue
         nn = newton_arr.numpy()
         nat = native_arr.numpy()
-        if nn.shape != nat.shape:
-            continue
+        assert nn.shape == nat.shape, f"actuator field {field}: shape mismatch newton={nn.shape} vs native={nat.shape}"
 
         # Determine which axis is the actuator axis based on shape.
         # (nworld, nu, ...) -> axis 1;  (nu, ...) -> axis 0
