@@ -97,6 +97,10 @@ class ViewerBase(ABC):
         # keyed by volume.id (uint64) to deduplicate when multiple shapes share the same SDF volume
         self._isomesh_cache: dict[int, newton.Mesh | None] = {}
 
+        # Gaussian shapes rendered as point clouds (skipped by the mesh instancing pipeline).
+        # Each entry is (name, gaussian, parent_body, shape_xform, world_index, flags, is_static).
+        self._gaussian_instances: list[tuple[str, newton.Gaussian, int, wp.transform, int, int, bool]] = []
+
         # SDF isomesh instances -- created on-demand for collision visualization
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         self._sdf_isomesh_populated: bool = False  # lazy flag for SDF isomesh population
@@ -376,8 +380,38 @@ class ViewerBase(ABC):
 
             shapes.colors_changed = False
 
+        self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
         self.model_changed = False
+
+    def _log_gaussian_shapes(self, state: newton.State):
+        """Render Gaussian shapes as point clouds with current body transforms."""
+        if not self._gaussian_instances:
+            return
+
+        body_q_np = state.body_q.numpy()
+        offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
+
+        for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
+            if not gaussian.show_in_viewer:
+                continue
+
+            visible = self._should_show_shape(flags, is_static)
+            if not visible:
+                self.log_gaussian(gname, gaussian, hidden=True)
+                continue
+            if parent >= 0:
+                body_xform = wp.transform_expand(body_q_np[parent])
+                world_xform = wp.transform_multiply(body_xform, shape_xform)
+            else:
+                world_xform = shape_xform
+            if offsets_np is not None and world_idx >= 0:
+                offset = offsets_np[world_idx]
+                world_xform = wp.transformf(
+                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
+                    world_xform.q,
+                )
+            self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
         """Log SDF isomeshes, inertia boxes, triangles, particles, joints, COM."""
@@ -678,18 +712,13 @@ class ViewerBase(ABC):
             hidden: Whether the created mesh should be hidden.
         """
 
-        # Gaussian splats are rendered via a dedicated splat renderer, not as meshes.
-        # Create a placeholder bounding-box mesh so the standard geometry/instancing
-        # pipeline has something to reference (avoids raising on unknown geo_type).
         if geo_type == newton.GeoType.GAUSSIAN:
             if geo_src is None:
                 raise ValueError(f"log_geo requires geo_src for GAUSSIAN (name={name})")
             if not isinstance(geo_src, newton.Gaussian):
                 raise TypeError(f"log_geo expected newton.Gaussian for GAUSSIAN (name={name})")
-            mesh = geo_src.compute_proxy_mesh()
-            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
-            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, hidden=hidden)
+            if geo_src.show_in_viewer:
+                self.log_gaussian(name, geo_src, hidden=hidden)
             return
 
         # Heightfield: convert to mesh for rendering
@@ -941,6 +970,31 @@ class ViewerBase(ABC):
         """
         pass
 
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """
+        Log a :class:`newton.Gaussian` splat asset as a point cloud of spheres.
+
+        Each Gaussian is rendered as a sphere positioned at its center, with
+        radius equal to the largest per-axis scale and color derived from the
+        DC spherical-harmonics coefficients.
+
+        The default implementation is a no-op.  Override in viewer backends
+        that support point-cloud rendering.
+
+        Args:
+            name: Unique path/name for the Gaussian point cloud.
+            gaussian: The :class:`newton.Gaussian` asset to visualize.
+            xform: Optional world-space transform applied to all splat centers.
+            hidden: Whether the point cloud should be hidden.
+        """
+        return
+
     @abstractmethod
     def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
         """
@@ -1161,7 +1215,6 @@ class ViewerBase(ABC):
             newton.GeoType.MESH: "mesh",
             newton.GeoType.CONVEX_MESH: "convex_hull",
             newton.GeoType.HFIELD: "heightfield",
-            newton.GeoType.GAUSSIAN: "gaussian",
         }.get(geo_type)
 
         if base_name is None:
@@ -1175,8 +1228,7 @@ class ViewerBase(ABC):
             float(thickness),
             bool(is_solid),
             geo_src=geo_src
-            if geo_type
-            in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD, newton.GeoType.GAUSSIAN)
+            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
             else None,
             hidden=True,
         )
@@ -1210,6 +1262,17 @@ class ViewerBase(ABC):
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
 
+            # Gaussians bypass the mesh instancing pipeline; render as point clouds.
+            if geo_type == newton.GeoType.GAUSSIAN:
+                if isinstance(geo_src, newton.Gaussian):
+                    parent = shape_body[s]
+                    xform = wp.transform_expand(shape_transform[s])
+                    gname = f"/model/gaussians/gaussian_{len(self._gaussian_instances)}"
+                    self._gaussian_instances.append(
+                        (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
+                    )
+                continue
+
             # check whether we can instance an already created shape with the same geometry
             geo_hash = self._hash_geometry(
                 int(geo_type),
@@ -1232,7 +1295,6 @@ class ViewerBase(ABC):
                         newton.GeoType.MESH,
                         newton.GeoType.CONVEX_MESH,
                         newton.GeoType.HFIELD,
-                        newton.GeoType.GAUSSIAN,
                     )
                     else None,
                 )

@@ -1123,6 +1123,7 @@ class Gaussian:
         self.com = wp.vec3()
         self.I = wp.mat33()
         self.is_solid = False
+        self.show_in_viewer = True
 
     # ---- Properties ----------------------------------------------------------
 
@@ -1337,7 +1338,7 @@ class Gaussian:
         """Generate a proxy collision :class:`Mesh` from Gaussian positions.
 
         Args:
-            method: ``"convex_hull"`` (default) or ``"alphashape"``.
+            method: ``"convex_hull"`` (default) or ``"alphashape"`` or ``"points"``.
 
         Returns:
             A :class:`Mesh` for use as collision proxy.
@@ -1353,7 +1354,31 @@ class Gaussian:
 
             hull_verts, hull_faces = remesh_alphashape(self._positions)
             return Mesh(hull_verts, hull_faces, compute_inertia=True)
+        elif method == "points":
+            return self.compute_points_mesh()
+
         raise ValueError(f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull', 'alphashape'.")
+
+    def compute_points_mesh(self) -> "Mesh":
+        from ..utils.mesh import create_mesh_box  # noqa: PLC0415
+
+        mesh_points, mesh_indices, _normals, _uvs = create_mesh_box(
+            1.0,
+            1.0,
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+        )
+
+        points = (
+            (self.positions[: self.count][:, None] + self.scales[: self.count][:, None] * mesh_points)
+            .flatten()
+            .reshape(-1, 3)
+        )
+        offsets = mesh_points.shape[0] * np.arange(self.count)
+        indices = (offsets[:, None] + mesh_indices).flatten()
+        return Mesh(vertices=points, indices=indices)
 
     @override
     def __hash__(self) -> int:

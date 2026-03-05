@@ -124,6 +124,7 @@ class Example:
         gaussian = None
         if args.ply:
             gaussian = newton.Gaussian.create_from_ply(args.ply, args.min_response)
+            gaussian.show_in_viewer = False
 
         builder = newton.ModelBuilder()
 
