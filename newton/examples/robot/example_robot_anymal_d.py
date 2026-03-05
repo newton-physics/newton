@@ -102,7 +102,10 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.use_mujoco_contacts = use_mujoco_contacts
-        self.contacts = self.model.contacts()
+        if use_mujoco_contacts:
+            self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        else:
+            self.contacts = self.model.contacts()
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)

@@ -126,6 +126,7 @@ class Example:
         self.state_0.clear_forces()
         self.viewer.apply_forces(self.state_0)
         self.solver.step(self.state_0, self.state_0, self.control, None, self.sim_dt)
+        self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.sim_time >= self.next_reset:
@@ -139,8 +140,6 @@ class Example:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
-
-        self.solver.update_contacts(self.contacts, self.state_0)
         self.plate_contact_sensor.update(self.state_0, self.contacts)
 
         net_force = self.plate_contact_sensor.net_force.numpy()
