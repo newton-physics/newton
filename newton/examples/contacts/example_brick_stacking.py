@@ -245,8 +245,7 @@ class TaskType(enum.IntEnum):
     MOVE_TO_DROP_OFF = 4
     REFINE_DROP_OFF = 5
     RELEASE = 6
-    RETRACT = 7
-    HOME = 8
+    HOME = 7
 
 
 @wp.kernel(enable_backward=False)
@@ -261,7 +260,6 @@ def set_target_pose_kernel(
     task_dt: float,
     offset_approach: wp.vec3,
     offset_lift: wp.vec3,
-    offset_retract: wp.vec3,
     grasp_z_offset: wp.vec3,
     drop_z_offset: wp.vec3,
     brick_stack_height: float,
@@ -332,10 +330,6 @@ def set_target_pose_kernel(
         target_pos = drop_pos + layer_offset + grasp_z_offset + drop_z_offset
         target_quat = ee_quat_drop
         t_gripper = 1.0 - t
-    elif task == TaskType.RETRACT.value:
-        target_pos = ee_pos_prev
-        target_quat = ee_quat_prev
-        t_gripper = t
     elif task == TaskType.HOME.value:
         target_pos = home_pos
         target_quat = ee_quat_down
@@ -360,7 +354,7 @@ def set_target_pose_kernel(
     ee_rot_interp[tid] = wp.quat_slerp(ee_quat_prev, target_quat, t)[:4]
 
     gripper_open = GRIPPER_OPEN
-    if task == TaskType.RELEASE.value or task == TaskType.RETRACT.value or task == TaskType.HOME.value:
+    if task == TaskType.RELEASE.value or task == TaskType.HOME.value:
         gripper_open = GRIPPER_RELEASE
     gripper_pos = gripper_open * (1.0 - t_gripper) + GRIPPER_CLOSED * t_gripper
     gripper_target[tid, 0] = gripper_pos
@@ -428,7 +422,6 @@ class Example:
         # Task offsets (TCP frame) [m]
         self.offset_approach = wp.vec3(0.0, 0.0, 0.025)
         self.offset_lift = wp.vec3(0.0, -0.001, 0.042)
-        self.offset_retract = wp.vec3(0.0, 0.0, 0.025)
         self.grasp_z_offset = wp.vec3(0.0, 0.0, 0.012)
         self.drop_z_offset = wp.vec3(0.0, 0.0, -0.001)
 
@@ -805,7 +798,6 @@ class Example:
                 self.frame_dt,
                 self.offset_approach,
                 self.offset_lift,
-                self.offset_retract,
                 self.grasp_z_offset,
                 self.drop_z_offset,
                 self.brick_height_scaled,
