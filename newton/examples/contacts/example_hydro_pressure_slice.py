@@ -150,6 +150,117 @@ def apply_pressure_axis_sine_modulation(
     pressure[tid] = p * modulation
 
 
+@wp.kernel
+def apply_pressure_foot_structure_modulation(
+    sdf_center: wp.vec3,
+    sdf_half_extents: wp.vec3,
+    structure_strength: float,
+    arch_depth: float,
+    medial_bias: float,
+    points: wp.array(dtype=wp.vec3),
+    inside_flag: wp.array(dtype=wp.float32),
+    pressure: wp.array(dtype=wp.float32),
+):
+    """Apply localized foot-like pressure modulation (bone lobes + arch trough)."""
+    tid = wp.tid()
+    if inside_flag[tid] <= 0.0:
+        return
+
+    p = pressure[tid]
+    if p <= 0.0:
+        return
+
+    sample = points[tid]
+    hx = wp.max(sdf_half_extents[0], 1.0e-8)
+    hy = wp.max(sdf_half_extents[1], 1.0e-8)
+    hz = wp.max(sdf_half_extents[2], 1.0e-8)
+    x = (sample[0] - sdf_center[0]) / hx
+    y = (sample[1] - sdf_center[1]) / hy
+    z = (sample[2] - sdf_center[2]) / hz
+
+    medial = wp.max(-1.0, wp.min(1.0, medial_bias))
+
+    # Heel pads are modeled as two side peaks plus one broader center lobe.
+    g_heel_medial = wp.exp(
+        -(
+            ((x + 0.62) * (x + 0.62)) / 0.12
+            + ((y - (0.19 + 0.10 * medial)) * (y - (0.19 + 0.10 * medial))) / 0.11
+            + ((z + 0.15) * (z + 0.15)) / 0.14
+        )
+    )
+    g_heel_lateral = wp.exp(
+        -(
+            ((x + 0.64) * (x + 0.64)) / 0.12
+            + ((y + 0.20 - 0.08 * medial) * (y + 0.20 - 0.08 * medial)) / 0.12
+            + ((z + 0.15) * (z + 0.15)) / 0.14
+        )
+    )
+    g_heel_center = wp.exp(-(((x + 0.56) * (x + 0.56)) / 0.16 + (y * y) / 0.22 + ((z + 0.10) * (z + 0.10)) / 0.18))
+
+    # Midfoot scaffold that keeps a smooth anatomical transition.
+    g_talus = wp.exp(
+        -(
+            ((x + 0.28) * (x + 0.28)) / 0.15
+            + ((y - 0.05 * medial) * (y - 0.05 * medial)) / 0.20
+            + ((z + 0.03) * (z + 0.03)) / 0.14
+        )
+    )
+    g_navicular = wp.exp(
+        -(
+            ((x + 0.02) * (x + 0.02)) / 0.12
+            + ((y - (0.26 + 0.10 * medial)) * (y - (0.26 + 0.10 * medial))) / 0.12
+            + ((z + 0.08) * (z + 0.08)) / 0.12
+        )
+    )
+    g_cuboid = wp.exp(
+        -(
+            ((x + 0.00) * (x + 0.00)) / 0.13
+            + ((y + 0.30 - 0.08 * medial) * (y + 0.30 - 0.08 * medial)) / 0.14
+            + ((z + 0.08) * (z + 0.08)) / 0.12
+        )
+    )
+
+    # Metatarsal heads are tightened to create clearer forefoot definition.
+    g_meta_lateral = wp.exp(
+        -(((x - 0.44) * (x - 0.44)) / 0.12 + ((y + 0.36) * (y + 0.36)) / 0.11 + ((z + 0.12) * (z + 0.12)) / 0.12)
+    )
+    g_meta_center = wp.exp(-(((x - 0.49) * (x - 0.49)) / 0.11 + (y * y) / 0.10 + ((z + 0.12) * (z + 0.12)) / 0.12))
+    g_meta_medial = wp.exp(
+        -(
+            ((x - 0.52) * (x - 0.52)) / 0.10
+            + ((y - (0.34 + 0.14 * medial)) * (y - (0.34 + 0.14 * medial))) / 0.10
+            + ((z + 0.12) * (z + 0.12)) / 0.12
+        )
+    )
+    g_meta_shelf = wp.exp(-(((x - 0.40) * (x - 0.40)) / 0.18 + (y * y) / 0.26 + ((z + 0.14) * (z + 0.14)) / 0.18))
+
+    # Arch and midfoot troughs split heel and forefoot into distinct regions.
+    g_arch = wp.exp(
+        -(
+            ((x - 0.02) * (x - 0.02)) / 0.28
+            + ((y - (0.26 + 0.14 * medial)) * (y - (0.26 + 0.14 * medial))) / 0.19
+            + ((z + 0.28) * (z + 0.28)) / 0.18
+        )
+    )
+    g_midfoot_split = wp.exp(
+        -(
+            ((x - 0.08) * (x - 0.08)) / 0.12
+            + ((y - (0.04 + 0.05 * medial)) * (y - (0.04 + 0.05 * medial))) / 0.28
+            + ((z + 0.18) * (z + 0.18)) / 0.16
+        )
+    )
+    g_toe_relief = wp.exp(-(((x - 0.85) * (x - 0.85)) / 0.12 + (y * y) / 0.24 + ((z + 0.08) * (z + 0.08)) / 0.16))
+
+    heel_field = 0.96 * g_heel_medial + 0.92 * g_heel_lateral + 0.74 * g_heel_center
+    midfoot_field = 0.44 * g_talus + 0.36 * g_navicular + 0.32 * g_cuboid
+    metatarsal_field = 0.86 * g_meta_lateral + 0.94 * g_meta_center + 1.06 * g_meta_medial + 0.34 * g_meta_shelf
+    positive_field = 0.82 * heel_field + 0.30 * midfoot_field + 0.98 * metatarsal_field
+    negative_field = 0.72 * arch_depth * g_arch + 0.46 * g_midfoot_split + 0.24 * g_toe_relief
+    structure = 0.50 * positive_field - negative_field
+    modulation = wp.max(0.0, wp.min(3.0, 1.0 + structure_strength * structure))
+    pressure[tid] = p * modulation
+
+
 def density_to_rgb_image(density_grid: np.ndarray) -> np.ndarray:
     """Map density [0, 1] to RGB with a monotonic perceptual colormap."""
     d = np.clip(density_grid.astype(np.float32), 0.0, 1.0)
@@ -326,6 +437,9 @@ class Example:
         self.pressure_z_sine_amplitude = float(args.pressure_z_sine_amplitude)
         self.pressure_z_sine_cycles = float(args.pressure_z_sine_cycles)
         self.pressure_z_sine_phase = float(args.pressure_z_sine_phase)
+        self.pressure_foot_structure_strength = float(args.pressure_foot_structure_strength)
+        self.pressure_foot_arch_depth = float(args.pressure_foot_arch_depth)
+        self.pressure_foot_medial_bias = float(args.pressure_foot_medial_bias)
         self.show_shape = self.viewer_is_viser
         self.show_shape_wireframe = not self.viewer_is_viser
         self.show_slice = True
@@ -469,6 +583,27 @@ class Example:
                 step=0.01,
                 initial_value=float(self.pressure_z_sine_phase),
             )
+            self._viser_controls["pressure_foot_structure_strength"] = gui.add_slider(
+                "Pressure Foot Strength",
+                min=0.0,
+                max=2.0,
+                step=0.01,
+                initial_value=float(self.pressure_foot_structure_strength),
+            )
+            self._viser_controls["pressure_foot_arch_depth"] = gui.add_slider(
+                "Pressure Foot Arch Depth",
+                min=0.0,
+                max=2.0,
+                step=0.01,
+                initial_value=float(self.pressure_foot_arch_depth),
+            )
+            self._viser_controls["pressure_foot_medial_bias"] = gui.add_slider(
+                "Pressure Foot Medial Bias",
+                min=-1.0,
+                max=1.0,
+                step=0.01,
+                initial_value=float(self.pressure_foot_medial_bias),
+            )
 
     def _sync_viser_controls(self):
         """Pull current values from viser controls into example state."""
@@ -491,6 +626,9 @@ class Example:
         pressure_z_sine_amplitude = float(self._viser_controls["pressure_z_sine_amplitude"].value)
         pressure_z_sine_cycles = float(self._viser_controls["pressure_z_sine_cycles"].value)
         pressure_z_sine_phase = float(self._viser_controls["pressure_z_sine_phase"].value)
+        pressure_foot_structure_strength = float(self._viser_controls["pressure_foot_structure_strength"].value)
+        pressure_foot_arch_depth = float(self._viser_controls["pressure_foot_arch_depth"].value)
+        pressure_foot_medial_bias = float(self._viser_controls["pressure_foot_medial_bias"].value)
 
         if self.show_shape != show_shape:
             self.show_shape = show_shape
@@ -530,6 +668,15 @@ class Example:
             self._slice_dirty = True
         if self.pressure_z_sine_phase != pressure_z_sine_phase:
             self.pressure_z_sine_phase = pressure_z_sine_phase
+            self._slice_dirty = True
+        if self.pressure_foot_structure_strength != pressure_foot_structure_strength:
+            self.pressure_foot_structure_strength = pressure_foot_structure_strength
+            self._slice_dirty = True
+        if self.pressure_foot_arch_depth != pressure_foot_arch_depth:
+            self.pressure_foot_arch_depth = pressure_foot_arch_depth
+            self._slice_dirty = True
+        if self.pressure_foot_medial_bias != pressure_foot_medial_bias:
+            self.pressure_foot_medial_bias = pressure_foot_medial_bias
             self._slice_dirty = True
 
         # Disable manual slider while animating.
@@ -658,6 +805,26 @@ class Example:
             device=self.device,
         )
 
+    def _apply_foot_structure_modulation(self):
+        if self.pressure_foot_structure_strength <= 1.0e-8:
+            return
+
+        wp.launch(
+            kernel=apply_pressure_foot_structure_modulation,
+            dim=self.capacity,
+            inputs=[
+                self.sdf_center,
+                self.sdf_half_extents,
+                self.pressure_foot_structure_strength,
+                self.pressure_foot_arch_depth,
+                self.pressure_foot_medial_bias,
+                self.slice_points,
+                self.slice_inside_flag,
+            ],
+            outputs=[self.slice_pressure],
+            device=self.device,
+        )
+
     def _update_slice(self):
         if not self._slice_dirty:
             return
@@ -695,6 +862,7 @@ class Example:
         self._apply_axis_sine_modulation(0, self.pressure_x_sine_amplitude, self.pressure_x_sine_cycles, self.pressure_x_sine_phase)
         self._apply_axis_sine_modulation(1, self.pressure_y_sine_amplitude, self.pressure_y_sine_cycles, self.pressure_y_sine_phase)
         self._apply_axis_sine_modulation(2, self.pressure_z_sine_amplitude, self.pressure_z_sine_cycles, self.pressure_z_sine_phase)
+        self._apply_foot_structure_modulation()
 
         self.last_slice_count = int(self.slice_inside_count.numpy()[0])
         pressure_grid = self.slice_pressure.numpy().reshape(self.resolution, self.resolution)
@@ -817,7 +985,7 @@ class Example:
         imgui.text("Source: Hydroelastic immutable pressure volume.")
         imgui.text("Color scale: normalized by immutable global max (not per-slice).")
         imgui.text("This is the same field used by contact isosurface extraction.")
-        imgui.text("Optional: pressure can be modulated by sine waves along X/Y/Z.")
+        imgui.text("Optional: pressure can be modulated by sine waves and a foot-structure field.")
         imgui.text("Validation: deep interior percentile, zero-fraction, interior-hole fraction.")
 
         _changed, self.show_shape = imgui.checkbox("Show Shape", self.show_shape)
@@ -894,6 +1062,30 @@ class Example:
             self.pressure_z_sine_phase,
             -np.pi,
             np.pi,
+        )
+        if changed:
+            self._slice_dirty = True
+        changed, self.pressure_foot_structure_strength = imgui.slider_float(
+            "Pressure Foot Strength",
+            self.pressure_foot_structure_strength,
+            0.0,
+            2.0,
+        )
+        if changed:
+            self._slice_dirty = True
+        changed, self.pressure_foot_arch_depth = imgui.slider_float(
+            "Pressure Foot Arch Depth",
+            self.pressure_foot_arch_depth,
+            0.0,
+            2.0,
+        )
+        if changed:
+            self._slice_dirty = True
+        changed, self.pressure_foot_medial_bias = imgui.slider_float(
+            "Pressure Foot Medial Bias",
+            self.pressure_foot_medial_bias,
+            -1.0,
+            1.0,
         )
         if changed:
             self._slice_dirty = True
@@ -1004,6 +1196,24 @@ if __name__ == "__main__":
         type=float,
         default=0.0,
         help="Phase offset [rad] for pressure z sine modulation.",
+    )
+    parser.add_argument(
+        "--pressure-foot-structure-strength",
+        type=float,
+        default=0.0,
+        help="Overall strength for localized foot-bone/arch pressure modulation (0 disables).",
+    )
+    parser.add_argument(
+        "--pressure-foot-arch-depth",
+        type=float,
+        default=1.0,
+        help="Arch trough depth multiplier for foot-structure modulation.",
+    )
+    parser.add_argument(
+        "--pressure-foot-medial-bias",
+        type=float,
+        default=0.3,
+        help="Medial (+) / lateral (-) bias for the foot-structure modulation in normalized y.",
     )
     parser.add_argument(
         "--slice-axis",

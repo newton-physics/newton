@@ -1,0 +1,6 @@
+uv run -m newton.examples.contacts.example_hydro_pressure_slice --pressure-x-sine-amplitude 0.45 --pressure-x-sine-cycles 1.0 --pressure-x-sine-phase 1.5708 --pressure-y-sine-amplitude 0.22 --pressure-y-sine-cycles 0.5 --pressure-y-sine-phase -1.5708 --pressure-z-sine-amplitude 0.20 --pressure-z-sine-cycles 1.0 --pressure-z-sine-phase 1.5708
+coarse foot
+
+
+uv run -m newton.examples.contacts.example_hydro_pressure_slice
+
