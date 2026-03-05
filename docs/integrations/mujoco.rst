@@ -185,8 +185,9 @@ actuators are created:
    * - ``NONE``
      - No actuator created for this DOF.
 
-``joint_effort_limit`` is forwarded as ``actfrcrange`` on the joint, clamping
-the total actuator force.
+``joint_effort_limit`` is forwarded as ``actfrcrange`` on the joint (for
+prismatic, revolute, and D6 joints) or as ``forcerange`` on the actuator (for
+ball joints).
 
 Additional MuJoCo general actuators (motors, etc.) can be attached through
 custom attributes and are appended after the joint-target actuators.
@@ -226,8 +227,8 @@ Solver parameters follow a three-level resolution priority:
 
 1. **Constructor argument** — value passed to :class:`~newton.solvers.SolverMuJoCo`.
 2. **Custom attribute** (``model.mujoco.<option>``) — supports per-world values.
-3. **Default** — the table below lists Newton's defaults where they differ from
-   MuJoCo's.
+3. **Default** — the table below lists Newton defaults alongside MuJoCo
+   defaults for reference.
 
 .. list-table::
    :header-rows: 1
