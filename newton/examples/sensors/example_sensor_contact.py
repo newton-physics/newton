@@ -167,6 +167,7 @@ class Example:
         self.next_reset = self.sim_time + self.reset_interval
         self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
         self.plates_touched = 2 * [False]
+        self.plot_window.reset()
 
         print("Resetting")
         # Restore initial joint positions and velocities in-place.
@@ -221,6 +222,10 @@ class ViewerPlot:
             self.data[0] = sum(self.cache) / self.avg
             self.data = np.roll(self.data, -1)
             self.cache.clear()
+
+    def reset(self):
+        self.data.fill(0)
+        self.cache.clear()
 
     def render(self, imgui):
         """
