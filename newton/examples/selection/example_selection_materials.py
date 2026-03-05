@@ -148,6 +148,13 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(18.0, 0.0, 2.0),
+            pitch=0.0,
+            yaw=-180.0,
+        )
+
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
