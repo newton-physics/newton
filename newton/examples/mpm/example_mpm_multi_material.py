@@ -115,14 +115,14 @@ class Example:
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, voxel_size: float):
-        # inactive particles
+        # kinematic particles (mass=0, density=0 triggers infinite-mass BC)
         Example._spawn_particles(
             builder,
             voxel_size,
             bounds_lo=np.array([-0.5, -0.5, 0.0]),
             bounds_hi=np.array([0.5, 0.5, 0.25]),
-            density=1000.0,
-            flags=0,
+            density=0.0,
+            flags=newton.ParticleFlags.ACTIVE,
         )
 
         # sand particles

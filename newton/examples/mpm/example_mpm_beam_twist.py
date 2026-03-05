@@ -101,7 +101,7 @@ class Example:
 
         all_fixed = np.logical_or(fixed_mask, twist_mask)
         fixed_indices = wp.array(np.flatnonzero(all_fixed), dtype=int, device=self.model.device)
-        self.model.particle_flags[fixed_indices].fill_(0)
+        self.model.particle_mass[fixed_indices].fill_(0.0)
 
         # Setup twist
         self.twist_indices = wp.array(np.flatnonzero(twist_mask), dtype=int, device=self.model.device)

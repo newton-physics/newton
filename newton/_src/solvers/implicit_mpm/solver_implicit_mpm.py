@@ -123,11 +123,8 @@ def integrate_mass(
     domain: fem.Domain,
     inv_cell_volume: float,
     particle_density: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
 ):
-    density = wp.where(
-        particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE, particle_density[s.qp_index], _INFINITY
-    )
+    density = wp.where(particle_density[s.qp_index] > 0.0, particle_density[s.qp_index], _INFINITY)
     return phi(s) * density * inv_cell_volume
 
 
@@ -142,15 +139,15 @@ def integrate_velocity(
     particle_world: wp.array(dtype=wp.int32),
     inv_cell_volume: float,
     particle_density: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
 ):
     vel_adv = velocities[s.qp_index]
     world_idx = particle_world[s.qp_index]
     world_g = gravity[wp.max(world_idx, 0)]
 
+    rho = particle_density[s.qp_index]
     vel_adv = wp.where(
-        particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE,
-        particle_density[s.qp_index] * (vel_adv + dt * world_g),
+        rho > 0.0,
+        rho * (vel_adv + dt * world_g),
         _INFINITY * vel_adv,
     )
     return wp.dot(u(s), vel_adv) * inv_cell_volume
@@ -164,16 +161,13 @@ def integrate_velocity_apic(
     velocity_gradients: wp.array(dtype=wp.mat33),
     inv_cell_volume: float,
     particle_density: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
 ):
     # APIC velocity prediction
     node_offset = domain(fem.at_node(u, s)) - domain(s)
     vel_apic = velocity_gradients[s.qp_index] * node_offset
 
-    vel_adv = (
-        wp.where(particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE, particle_density[s.qp_index], _INFINITY)
-        * vel_apic
-    )
+    rho = particle_density[s.qp_index]
+    vel_adv = wp.where(rho > 0.0, rho, _INFINITY) * vel_apic
     return wp.dot(u(s), vel_adv) * inv_cell_volume
 
 
@@ -366,6 +360,7 @@ def update_particle_strains(
     stress: fem.Field,
     dt: float,
     particle_flags: wp.array(dtype=wp.int32),
+    particle_density: wp.array(dtype=float),
     particle_volume: wp.array(dtype=float),
     material_parameters: MaterialParameters,
     elastic_strain_prev: wp.array(dtype=wp.mat33),
@@ -375,6 +370,10 @@ def update_particle_strains(
     particle_stress: wp.array(dtype=wp.mat33),
 ):
     if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        elastic_strain[s.qp_index] = elastic_strain_prev[s.qp_index]
+        particle_Jp[s.qp_index] = particle_Jp_prev[s.qp_index]
+        return
+    if particle_density[s.qp_index] == 0.0:
         elastic_strain[s.qp_index] = elastic_strain_prev[s.qp_index]
         particle_Jp[s.qp_index] = particle_Jp_prev[s.qp_index]
         return
@@ -2014,6 +2013,7 @@ class SolverImplicitMPM(SolverBase):
                 state_in.particle_qd,
                 state_in.mpm.particle_qd_grad,
                 self.model.particle_flags,
+                self.model.particle_mass,
                 self._mpm_model.collider,
                 state_in.body_q,
                 state_in.body_qd if self.collider_velocity_mode == "forward" else None,
@@ -2542,7 +2542,6 @@ class SolverImplicitMPM(SolverBase):
                     "gravity": model.gravity,
                     "particle_world": model.particle_world,
                     "particle_density": mpm_model.particle_density,
-                    "particle_flags": model.particle_flags,
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output_dtype=wp.vec3,
@@ -2557,7 +2556,6 @@ class SolverImplicitMPM(SolverBase):
                     values={
                         "velocity_gradients": state_in.mpm.particle_qd_grad,
                         "particle_density": mpm_model.particle_density,
-                        "particle_flags": model.particle_flags,
                         "inv_cell_volume": inv_cell_volume,
                     },
                     output=velocity_int,
@@ -2572,7 +2570,6 @@ class SolverImplicitMPM(SolverBase):
                 values={
                     "inv_cell_volume": inv_cell_volume,
                     "particle_density": mpm_model.particle_density,
-                    "particle_flags": model.particle_flags,
                 },
                 output_dtype=float,
                 temporary_store=self.temporary_store,
@@ -3133,6 +3130,7 @@ class SolverImplicitMPM(SolverBase):
                     values={
                         "dt": dt,
                         "particle_flags": model.particle_flags,
+                        "particle_density": mpm_model.particle_density,
                         "particle_volume": mpm_model.particle_volume,
                         "elastic_strain_prev": elastic_strain_prev,
                         "elastic_strain": state_out.mpm.particle_elastic_strain,

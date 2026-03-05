@@ -18,8 +18,8 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.solvers import SolverImplicitMPM
 from newton._src.geometry import create_mesh_heightfield
+from newton.solvers import SolverImplicitMPM
 
 
 class Example:
@@ -277,7 +277,7 @@ class Example:
         model.mpm.dilatancy.fill_(options.dilatancy)
 
         # Flag boundary particles as inactive
-        model.particle_flags[boundary_indices].fill_(0)
+        model.particle_mass[boundary_indices].fill_(0.0)
 
         self.boundary_indices = boundary_indices
 

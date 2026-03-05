@@ -258,6 +258,7 @@ def project_outside_collider(
     velocities: wp.array(dtype=wp.vec3),
     velocity_gradients: wp.array(dtype=wp.mat33),
     particle_flags: wp.array(dtype=wp.int32),
+    particle_mass: wp.array(dtype=float),
     collider: Collider,
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -295,7 +296,7 @@ def project_outside_collider(
     p_vel = velocities[i]
     vel_grad = velocity_gradients[i]
 
-    if ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
+    if (~particle_flags[i] & newton.ParticleFlags.ACTIVE) or particle_mass[i] == 0.0:
         positions_out[i] = positions[i]
         velocities_out[i] = p_vel
         velocity_gradients_out[i] = vel_grad
