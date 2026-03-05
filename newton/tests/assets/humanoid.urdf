@@ -1,6 +1,9 @@
 <?xml version="1.0" ?>
-<!-- Thanks to the Bullet project for providing this humanoid asset:
-     https://github.com/bulletphysics/bullet3/blob/master/data/humanoid.urdf -->
+<!-- Humanoid URDF asset sourced from the Bullet Physics project.
+     Original file: https://github.com/bulletphysics/bullet3/blob/master/data/humanoid.urdf
+     Copyright (c) the Bullet Physics developers.
+     License: zlib (see https://github.com/bulletphysics/bullet3/blob/master/LICENSE.txt).
+     This copy is used unmodified, solely for testing / interoperability purposes. -->
 <robot name="humanoid">
 	<link name="torso">
 		<inertial>
