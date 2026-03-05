@@ -142,6 +142,9 @@ The solver bridges the two systems with **graph coloring**.  Shapes that must
 *not* collide are assigned the same color; each color maps to one bit in
 ``contype``.  ``conaffinity`` is set to the complement so that same-color
 geoms never match.  Up to 32 colors are supported (one per ``contype`` bit).
+If the graph requires more than 32 colors, shapes with color index ≥ 32 fall
+back to MuJoCo defaults (``contype=1``, ``conaffinity=1``) and will collide
+with all other shapes, silently bypassing the intended filtering.
 
 Non-colliding shapes (no ``COLLIDE_SHAPES`` flag, or ``collision_group == 0``)
 get ``contype = conaffinity = 0``.
