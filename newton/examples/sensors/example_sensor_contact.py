@@ -166,6 +166,7 @@ class Example:
         self.next_reset = self.sim_time + self.reset_interval
         self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
         self.plates_touched = 2 * [False]
+        self.plot_window.reset()
 
         print("Resetting")
         # Restore initial joint positions and velocities in-place.
@@ -221,6 +222,10 @@ class ViewerPlot:
             self.data = np.roll(self.data, -1)
             self.cache.clear()
 
+    def reset(self):
+        self.data.fill(0)
+        self.cache.clear()
+
     def render(self, imgui):
         """
         Render the replay UI controls.
@@ -244,7 +249,10 @@ class ViewerPlot:
 
         if imgui.begin(self.title, flags=flags):
             imgui.text("Flap contact force")
-            imgui.plot_lines("Force", self.data, **self.plot_kwargs)
+            avail = imgui.get_content_region_avail()
+            plot_kwargs = dict(self.plot_kwargs)
+            plot_kwargs["graph_size"] = (avail.x, plot_kwargs.get("graph_size", (0, 0))[1])
+            imgui.plot_lines("##force", self.data, **plot_kwargs)
         imgui.end()
 
 
