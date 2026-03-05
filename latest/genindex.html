@@ -841,6 +841,7 @@ window.addEventListener("load", () => mermaid.run());
             <dt><a href="api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.__init__">(newton.solvers.SolverVBD method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD.__init__">(newton.solvers.SolverXPBD method)</a></dt>
             <dt><a href="api/_generated/newton.State.html#newton.State.__init__">(newton.State method)</a></dt>
+            <dt><a href="api/_generated/newton.TetMesh.html#newton.TetMesh.__init__">(newton.TetMesh method)</a></dt>
             <dt><a href="api/_generated/newton.usd.SchemaResolver.html#newton.usd.SchemaResolver.__init__">(newton.usd.SchemaResolver method)</a></dt>
             <dt><a href="api/_generated/newton.usd.SchemaResolver.html#newton.usd.SchemaResolver.SchemaAttribute.__init__">(newton.usd.SchemaResolver.SchemaAttribute method)</a></dt>
             <dt><a href="api/_generated/newton.utils.EventTracer.html#newton.utils.EventTracer.__init__">(newton.utils.EventTracer method)</a></dt>
@@ -1563,6 +1564,9 @@ window.addEventListener("load", () => mermaid.run());
     <td style="width: 33%; vertical-align: top;">
       <dl>
         <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.compute_surface_triangles">compute_surface_triangles() (newton.TetMesh static method)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.utils.compute_world_offsets.html#newton.utils.compute_world_offsets">compute_world_offsets() (in module newton.utils)</a>
         </dt>
         <dt>
@@ -1691,11 +1695,27 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.SDF.html#newton.SDF.create_from_data">create_from_data() (newton.SDF static method)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.Mesh.html#newton.Mesh.create_from_file">create_from_file() (newton.Mesh static method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.TetMesh.html#newton.TetMesh.create_from_file">(newton.TetMesh static method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
           <a href="api/_generated/newton.SDF.html#newton.SDF.create_from_mesh">create_from_mesh() (newton.SDF static method)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.SDF.html#newton.SDF.create_from_points">create_from_points() (newton.SDF static method)</a>
         </dt>
+        <dt>
+          <a href="api/_generated/newton.Mesh.html#newton.Mesh.create_from_usd">create_from_usd() (newton.Mesh static method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.TetMesh.html#newton.TetMesh.create_from_usd">(newton.TetMesh static method)</a></dt>
+          </dl>
+        </dd>
         <dt>
           <a href="api/_generated/newton.Mesh.html#newton.Mesh.create_heightfield">create_heightfield() (newton.Mesh static method)</a>
         </dt>
@@ -1788,12 +1808,24 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.default_spring_ke">default_spring_ke (newton.ModelBuilder attribute)</a>
         </dt>
         <dt>
-          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.default_tri_drag">default_tri_drag (newton.ModelBuilder attribute)</a>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.default_tet_density">default_tet_density (newton.ModelBuilder attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.default_tet_k_damp">default_tet_k_damp (newton.ModelBuilder attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.default_tet_k_lambda">default_tet_k_lambda (newton.ModelBuilder attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.default_tet_k_mu">default_tet_k_mu (newton.ModelBuilder attribute)</a>
         </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.default_tri_drag">default_tri_drag (newton.ModelBuilder attribute)</a>
+        </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.default_tri_ka">default_tri_ka (newton.ModelBuilder attribute)</a>
         </dt>
@@ -1809,6 +1841,11 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.density">density (newton.ModelBuilder.ShapeConfig attribute)</a>
         </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.TetMesh.html#newton.TetMesh.density">(newton.TetMesh property)</a></dt>
+          </dl>
+        </dd>
         <dt>
           <a href="api/_generated/newton.sensors.SensorRaycast.html#newton.sensors.SensorRaycast.depth_image">depth_image (newton.sensors.SensorRaycast attribute)</a>
         </dt>
@@ -2033,18 +2070,21 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.find_shape_contact_pairs">find_shape_contact_pairs() (newton.ModelBuilder method)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.usd.find_tetmesh_prims.html#newton.usd.find_tetmesh_prims">find_tetmesh_prims() (in module newton.usd)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.JointType.html#newton.JointType.FIXED">FIXED (newton.JointType attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.flags">flags (newton.ModelBuilder.ShapeConfig property)</a>
         </dt>
-        <dt>
-          <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba">flatten_color_image_to_rgba() (newton.sensors.SensorTiledCamera method)</a>
-        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
+        <dt>
+          <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba">flatten_color_image_to_rgba() (newton.sensors.SensorTiledCamera method)</a>
+        </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba">flatten_depth_image_to_rgba() (newton.sensors.SensorTiledCamera method)</a>
         </dt>
@@ -2147,13 +2187,13 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.usd.get_float.html#newton.usd.get_float">get_float() (in module newton.usd)</a>
         </dt>
+        <dt>
+          <a href="api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL.get_frame">get_frame() (newton.viewer.ViewerGL method)</a>
+        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
-        <dt>
-          <a href="api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL.get_frame">get_frame() (newton.viewer.ViewerGL method)</a>
-        </dt>
         <dt>
           <a href="api/_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile.get_frame_count">get_frame_count() (newton.viewer.ViewerFile method)</a>
         </dt>
@@ -2192,6 +2232,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.usd.get_scale.html#newton.usd.get_scale">get_scale() (in module newton.usd)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.usd.get_tetmesh.html#newton.usd.get_tetmesh">get_tetmesh() (in module newton.usd)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.usd.get_transform.html#newton.usd.get_transform">get_transform() (in module newton.usd)</a>
@@ -2607,18 +2650,27 @@ window.addEventListener("load", () => mermaid.run());
     <td style="width: 33%; vertical-align: top;">
       <dl>
         <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.k_damp">k_damp (newton.TetMesh property)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.k_lambda">k_lambda (newton.TetMesh property)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.k_mu">k_mu (newton.TetMesh property)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ka">ka (newton.ModelBuilder.ShapeConfig attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kd">kd (newton.ModelBuilder.ShapeConfig attribute)</a>
         </dt>
-        <dt>
-          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke">ke (newton.ModelBuilder.ShapeConfig attribute)</a>
-        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke">ke (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomAttribute.key">key (newton.ModelBuilder.CustomAttribute property)</a>
         </dt>
@@ -3424,6 +3476,9 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.sample_render_grains">sample_render_grains() (newton.solvers.SolverImplicitMPM method)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.save">save() (newton.TetMesh method)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile.save_recording">save_recording() (newton.viewer.ViewerFile method)</a>
         </dt>
         <dd>
@@ -3881,6 +3936,9 @@ window.addEventListener("load", () => mermaid.run());
           </dl>
         </dd>
         <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.surface_tri_indices">surface_tri_indices (newton.TetMesh property)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.sync_transforms">sync_transforms() (newton.sensors.SensorTiledCamera method)</a>
         </dt>
       </dl>
@@ -3925,16 +3983,25 @@ window.addEventListener("load", () => mermaid.run());
         <dd>
           <dl>
             <dt><a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.tet_count">(newton.ModelBuilder property)</a></dt>
+            <dt><a href="api/_generated/newton.TetMesh.html#newton.TetMesh.tet_count">(newton.TetMesh property)</a></dt>
           </dl>
         </dd>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.tet_indices">tet_indices (newton.Model attribute)</a>
         </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.TetMesh.html#newton.TetMesh.tet_indices">(newton.TetMesh property)</a></dt>
+          </dl>
+        </dd>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.tet_materials">tet_materials (newton.Model attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.tet_poses">tet_poses (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh">TetMesh (class in newton)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.AttributeFrequency.TETRAHEDRON">TETRAHEDRON (newton.Model.AttributeFrequency attribute)</a>
@@ -3945,16 +4012,16 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.SDF.html#newton.SDF.to_kernel_data">to_kernel_data() (newton.SDF method)</a>
         </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
         <dt>
           <a href="api/_generated/newton.Axis.html#newton.Axis.to_vec3">to_vec3() (newton.Axis method)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.Axis.html#newton.Axis.to_vector">to_vector() (newton.Axis method)</a>
         </dt>
-      </dl>
-    </td>
-    <td style="width: 33%; vertical-align: top;">
-      <dl>
         <dt>
           <a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.Config.tolerance">tolerance (newton.solvers.SolverImplicitMPM.Config attribute)</a>
         </dt>
@@ -4131,13 +4198,13 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.math.vec_leaky_min.html#newton.math.vec_leaky_min">vec_leaky_min() (in module newton.math)</a>
         </dt>
+        <dt>
+          <a href="api/_generated/newton.math.vec_max.html#newton.math.vec_max">vec_max() (in module newton.math)</a>
+        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
-        <dt>
-          <a href="api/_generated/newton.math.vec_max.html#newton.math.vec_max">vec_max() (in module newton.math)</a>
-        </dt>
         <dt>
           <a href="api/_generated/newton.math.vec_min.html#newton.math.vec_min">vec_min() (in module newton.math)</a>
         </dt>
@@ -4154,6 +4221,12 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.velocity_limit">velocity_limit (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.vertex_count">vertex_count (newton.TetMesh property)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.vertices">vertices (newton.TetMesh property)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.RenderOrder.VIEW_PRIORITY">VIEW_PRIORITY (newton.sensors.SensorTiledCamera.RenderOrder attribute)</a>

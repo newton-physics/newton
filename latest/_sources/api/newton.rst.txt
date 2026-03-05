@@ -53,6 +53,7 @@ newton
    SDF
    ShapeFlags
    State
+   TetMesh
 
 .. rubric:: Functions
 
