@@ -41,7 +41,8 @@ class UI:
         self.window = window
         self.imgui.create_context()
         try:
-            self.impl = pyglet_backend.create_renderer(self.window)
+            # Create without callbacks so we can fix the scroll handler first
+            self.impl = pyglet_backend.create_renderer(self.window, attach_callbacks=False)
         except Exception as e:
             # Unlikely to happen since RendererGL already sets PYOPENGL_PLATFORM=glx
             # on Wayland, but just in case the auto-detection missed the session type.
@@ -55,8 +56,10 @@ class UI:
 
         self.io = self.imgui.get_io()
 
-        # Fix inverted scroll direction in the pyglet imgui backend
+        # Fix inverted scroll direction in the pyglet imgui backend before
+        # attaching callbacks so pyglet captures the corrected handler.
         self.impl.on_mouse_scroll = self._on_mouse_scroll
+        self.impl._attach_callbacks(self.window)
 
         # Set up proper DPI scaling for high-DPI displays
         window_width, window_height = self.window.get_size()
