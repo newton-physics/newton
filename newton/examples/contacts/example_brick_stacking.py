@@ -384,7 +384,7 @@ def advance_task_kernel(
 
     ee_quat_tgt = wp.quaternion(ee_rot_target[tid][:3], ee_rot_target[tid][3])
     quat_rel = ee_quat_current * wp.quat_inverse(ee_quat_tgt)
-    rot_err = wp.abs(wp.degrees(2.0 * wp.atan2(wp.length(quat_rel[:3]), quat_rel[3])))
+    rot_err = wp.degrees(2.0 * wp.acos(wp.clamp(wp.abs(quat_rel[3]), 0.0, 1.0)))
 
     if (
         task_time_elapsed[tid] >= time_limit
