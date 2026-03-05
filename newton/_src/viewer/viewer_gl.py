@@ -823,7 +823,7 @@ class ViewerGL(ViewerBase):
             n = gaussian.count
 
             # Subsample large Gaussians to keep rendering interactive.
-            max_pts = gaussian.max_points_in_viewer
+            max_pts = self.gaussians_max_points
             if n > max_pts:
                 idx = np.linspace(0, n - 1, max_pts, dtype=np.intp)
                 positions = np.ascontiguousarray(gaussian.positions[idx], dtype=np.float32)

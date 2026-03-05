@@ -78,8 +78,11 @@ class ViewerBase(ABC):
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
         self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
+        self.show_gaussians = True
         """Whether to show the hydroelastic contact surface wireframe."""
         self.picking_enabled = True  # enable interactive picking via mouse
+
+        self.gaussians_max_points = 100_000  # Max number of points to visualize per gaussian
 
         # cache for hydroelastic contact surface line rendering (lazily allocated)
         self._hydro_surface_line_starts: wp.array | None = None
@@ -393,7 +396,7 @@ class ViewerBase(ABC):
         offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
 
         for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
-            if not gaussian.show_in_viewer:
+            if not self.show_gaussians:
                 continue
 
             visible = self._should_show_shape(flags, is_static)
@@ -717,7 +720,7 @@ class ViewerBase(ABC):
                 raise ValueError(f"log_geo requires geo_src for GAUSSIAN (name={name})")
             if not isinstance(geo_src, newton.Gaussian):
                 raise TypeError(f"log_geo expected newton.Gaussian for GAUSSIAN (name={name})")
-            if geo_src.show_in_viewer:
+            if self.show_gaussians:
                 self.log_gaussian(name, geo_src, hidden=hidden)
             return
 
