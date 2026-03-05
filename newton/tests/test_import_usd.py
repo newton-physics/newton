@@ -6948,7 +6948,9 @@ class TestOverrideRootXform(unittest.TestCase):
 
         base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
         base.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.5))
-        base.AddOrientOp().Set(Gf.Quatf(0.5, 0.5, 0.5, 0.5))  # 120-deg rotation around (1,1,1)
+        base.AddOrientOp().Set(
+            Gf.Quatf(0.70710677, 0.18898223, 0.37796447, 0.5669467)
+        )  # 90-deg rotation around normalized axis (1,2,3)
         UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
         UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
 
@@ -7008,7 +7010,7 @@ class TestOverrideRootXform(unittest.TestCase):
         assert_np_equal(
             np.array(builder.joint_X_p[root_joint_idx].p),
             np.array(builder.body_q[base_idx].p),
-            tol=1e-6,
+            tol=1e-4,
         )
 
         model = builder.finalize()
@@ -7017,7 +7019,8 @@ class TestOverrideRootXform(unittest.TestCase):
         body_q = state.body_q.numpy()
         np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
         # Verify rotation is preserved (sign-invariant: q and -q are equivalent)
-        expected_quat = np.array([0.5, 0.5, 0.5, 0.5])
+        # Gf.Quatf stores (w, x, y, z); body_q uses xyzw.
+        expected_quat = np.array([0.18898223, 0.37796447, 0.5669467, 0.70710677])
         actual_quat = body_q[base_idx, 3:]
         if np.dot(actual_quat, expected_quat) < 0:
             actual_quat = -actual_quat

@@ -1590,7 +1590,18 @@ def parse_usd(
                         root_joint_desc = joint_descriptions[joint_names[i]]
                         b0 = str(root_joint_desc.body0)
                         b1 = str(root_joint_desc.body1)
-                        world_body_path = b0 if path_body_map.get(b0, -1) == -1 else b1
+                        # Determine the world-facing side from this articulation's body set.
+                        # path_body_map includes previously imported articulations, so using
+                        # it here can misidentify the world-side path for the current root
+                        # joint when b0 references an external rigid body.
+                        if b0 not in body_ids:
+                            world_body_path = b0
+                        elif b1 not in body_ids:
+                            world_body_path = b1
+                        else:
+                            # Defensive fallback; root joints should have exactly one side
+                            # outside the articulation.
+                            world_body_path = b0
                         world_body_prim = stage.GetPrimAtPath(world_body_path) if world_body_path else None
                         if world_body_prim is not None and world_body_prim.IsValid():
                             world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
