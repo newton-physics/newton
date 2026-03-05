@@ -104,7 +104,7 @@ class Example:
         )
 
         # Variables the solver will update
-        self.joint_q = wp.array(self.model.joint_q, shape=(1, self.model.joint_coord_count))
+        self.joint_q = self.model.joint_q.reshape((1, self.model.joint_coord_count))
 
         self.ik_iters = 24
         self.solver = ik.IKSolver(
@@ -129,7 +129,6 @@ class Example:
 
     def simulate(self):
         self.solver.step(self.joint_q, self.joint_q, iterations=self.ik_iters)
-        wp.copy(self.model.joint_q, self.joint_q)
 
     def _push_targets_from_gizmos(self):
         """Read gizmo-updated transform and push into IK objectives."""
