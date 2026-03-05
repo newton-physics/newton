@@ -44,7 +44,7 @@ BRICK_DENSITY = 565.0  # ABS plastic [kg/m³]
 
 BRICK_MASS = BRICK_DENSITY * (4 * PITCH) * (2 * PITCH) * BRICK_HEIGHT
 BRICK_KE = 9.81 * BRICK_MASS / 1.25e-6
-BRICK_KD = 2.0 * np.sqrt(BRICK_KE * BRICK_MASS) * 2.0  # 2x critical damping for fast settling
+BRICK_KD = 2.0 * np.sqrt(BRICK_KE * BRICK_MASS) * 10.0  # 10x critical damping for fast settling
 BRICK_MARGIN = 4.0e-5
 
 # SDF mesh parameters
@@ -469,7 +469,7 @@ class Example:
             nconmax=8000,
             njmax=16000,
             cone="elliptic",
-            impratio=50.0,
+            impratio=10.0,
             use_mujoco_contacts=False,
         )
 
