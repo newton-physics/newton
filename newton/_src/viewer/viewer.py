@@ -790,6 +790,7 @@ class ViewerBase(ABC):
         self,
         name: str,
         transform: wp.transform,
+        snap_to: wp.transform | None = None,
     ):
         """
         Log a gizmo GUI element for the given name and transform.
@@ -797,6 +798,8 @@ class ViewerBase(ABC):
         Args:
             name: The name of the gizmo.
             transform: The transform of the gizmo.
+            snap_to: Optional world transform to snap to when user interaction
+                with this gizmo ends.
         """
         return
 

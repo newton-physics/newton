@@ -248,6 +248,7 @@ class ViewerGL(ViewerBase):
         else:
             self.ui = None
         self._gizmo_log = None
+        self._gizmo_active = {}
 
         # Performance tracking
         self._fps_history = []
@@ -333,15 +334,18 @@ class ViewerGL(ViewerBase):
         self,
         name: str,
         transform: wp.transform,
+        snap_to: wp.transform | None = None,
     ):
         """Log or update a transform gizmo for the current frame.
 
         Args:
             name: Unique gizmo path/name.
             transform: Gizmo world transform.
+            snap_to: Optional world transform to snap to when this gizmo is
+                released by the user.
         """
         # Store for this frame; call this every frame you want it drawn/active
-        self._gizmo_log[name] = transform
+        self._gizmo_log[name] = {"transform": transform, "snap_to": snap_to}
 
     @override
     def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
@@ -1485,7 +1489,10 @@ class ViewerGL(ViewerBase):
             self._frame_count = 0
 
     def _render_gizmos(self):
-        if not self._gizmo_log or not self.ui:
+        if not self._gizmo_log:
+            self._gizmo_active.clear()
+            return
+        if not self.ui:
             return
 
         giz = self.ui.giz
@@ -1502,28 +1509,61 @@ class ViewerGL(ViewerBase):
         view = self.camera.get_view_matrix().reshape(4, 4).transpose()
         proj = self.camera.get_projection_matrix().reshape(4, 4).transpose()
 
+        def m44_to_mat16(m):
+            """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
+            m = np.asarray(m, dtype=np.float32).reshape(4, 4)
+            return giz.Matrix16(m.flatten(order="F").tolist())
+
+        def safe_bool(value) -> bool:
+            try:
+                return bool(value)
+            except Exception:
+                return False
+
         # Draw & mutate each gizmo
-        for gid, transform in self._gizmo_log.items():
+        logged_ids = set()
+        for gid, gizmo_data in self._gizmo_log.items():
+            logged_ids.add(gid)
+            transform = gizmo_data["transform"]
+            snap_to = gizmo_data["snap_to"]
             giz.push_id(str(gid))
 
             M = wp.transform_to_matrix(transform)
-
-            def m44_to_mat16(m):
-                """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
-                m = np.asarray(m, dtype=np.float32).reshape(4, 4)
-                return giz.Matrix16(m.flatten(order="F").tolist())
 
             view_ = m44_to_mat16(view)
             proj_ = m44_to_mat16(proj)
             M_ = m44_to_mat16(M)
 
-            giz.manipulate(view_, proj_, giz.OPERATION.rotate, giz.MODE.world, M_, None, None)
-            giz.manipulate(view_, proj_, giz.OPERATION.translate, giz.MODE.world, M_, None, None)
+            before_values = np.asarray(M_.values, dtype=np.float32).copy()
 
-            M[:] = M_.values.reshape(4, 4, order="F")
-            transform[:] = wp.transform_from_matrix(M)
+            rotate_active = giz.manipulate(view_, proj_, giz.OPERATION.rotate, giz.MODE.world, M_, None, None)
+            translate_active = giz.manipulate(view_, proj_, giz.OPERATION.translate, giz.MODE.world, M_, None, None)
+
+            after_values = np.asarray(M_.values, dtype=np.float32)
+            moved_this_frame = bool(np.any(np.abs(after_values - before_values) > 1.0e-8))
+
+            is_active = moved_this_frame or safe_bool(rotate_active) or safe_bool(translate_active)
+            try:
+                if hasattr(giz, "is_using"):
+                    is_active = is_active or bool(giz.is_using())
+            except Exception:
+                pass
+
+            was_active = self._gizmo_active.get(gid, False)
+            if was_active and not is_active and snap_to is not None:
+                transform[:] = snap_to
+            else:
+                M[:] = M_.values.reshape(4, 4, order="F")
+                transform[:] = wp.transform_from_matrix(M)
+
+            self._gizmo_active[gid] = is_active
 
             giz.pop_id()
+
+        # Drop stale interaction state for gizmos that are no longer logged.
+        for gid in tuple(self._gizmo_active):
+            if gid not in logged_ids:
+                del self._gizmo_active[gid]
 
     def _render_ui(self):
         """
