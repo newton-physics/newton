@@ -31,9 +31,9 @@ class FastExampleClothManipulation:
 
     def setup(self):
         self.num_frames = 30
-        try:
+        if hasattr(newton.examples, "default_args"):
             args = newton.examples.default_args()
-        except AttributeError:
+        else:
             args = None
         self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames), args)
 
@@ -50,9 +50,9 @@ class FastExampleClothTwist:
 
     def setup(self):
         self.num_frames = 100
-        try:
+        if hasattr(newton.examples, "default_args"):
             args = newton.examples.default_args()
-        except AttributeError:
+        else:
             args = None
         self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames), args)
 

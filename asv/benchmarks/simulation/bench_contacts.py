@@ -72,10 +72,10 @@ class FastExampleContactSdfDefaults:
             ]
         )
         self.num_frames = 20
-        try:
+        if hasattr(newton.examples, "default_args") and hasattr(example_cls, "create_parser"):
             args = newton.examples.default_args(example_cls.create_parser())
             self.example = example_cls(ViewerNull(num_frames=self.num_frames), args)
-        except AttributeError:
+        else:
             self.example = example_cls(
                 viewer=ViewerNull(num_frames=self.num_frames),
                 world_count=100,
@@ -109,10 +109,10 @@ class FastExampleContactHydroWorkingDefaults:
             ]
         )
         self.num_frames = 20
-        try:
+        if hasattr(newton.examples, "default_args") and hasattr(example_cls, "create_parser"):
             args = newton.examples.default_args(example_cls.create_parser())
             self.example = example_cls(ViewerNull(num_frames=self.num_frames), args)
-        except AttributeError:
+        else:
             self.example = example_cls(
                 viewer=ViewerNull(num_frames=self.num_frames),
                 world_count=20,

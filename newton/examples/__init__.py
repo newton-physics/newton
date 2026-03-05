@@ -222,31 +222,22 @@ class _ExampleBrowser:
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
-    def switch(self, fallback_class):
-        """Switch to the selected example. Returns (example, example_class) or (None, fallback_class)."""
+    def switch(self, example_class):
+        """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
         module_path, self.switch_target = self.switch_target, None
+        self.viewer.clear_model()
         try:
             mod = importlib.import_module(module_path)
             parser = getattr(mod.Example, "create_parser", create_parser)()
-            switch_args = default_args(parser)
-            self.viewer.clear_model()
-            example = mod.Example(self.viewer, switch_args)
-            example_class = type(example)
+            example = mod.Example(self.viewer, default_args(parser))
         except Exception as e:
             warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
-            try:
-                self.viewer.clear_model()
-                fallback_parser = getattr(fallback_class, "create_parser", create_parser)()
-                example = fallback_class(self.viewer, default_args(fallback_parser))
-                example_class = fallback_class
-            except Exception as e2:
-                warnings.warn(f"Failed to restore fallback example: {e2}", stacklevel=2)
-                return None, fallback_class
+            return None, example_class
         self._register_ui(example)
-        return example, example_class
+        return example, type(example)
 
-    def reset(self, example_class, example):
-        """Reset the current example by re-creating it. Returns the new example."""
+    def reset(self, example_class):
+        """Reset the current example by re-creating it. Returns the new example or None."""
         self._reset_requested = False
         self.viewer.clear_model()
         try:
@@ -254,12 +245,9 @@ class _ExampleBrowser:
             new_example = example_class(self.viewer, default_args(parser))
         except Exception as e:
             warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
-            if hasattr(example, "model") and example.model is not None:
-                self.viewer.set_model(example.model, getattr(example, "max_worlds", None))
-        else:
-            self._register_ui(new_example)
-            return new_example
-        return example
+            return None
+        self._register_ui(new_example)
+        return new_example
 
 
 def run(example, args):
@@ -277,13 +265,16 @@ def run(example, args):
 
     while viewer.is_running():
         if browser is not None and browser.switch_target is not None:
-            new_example, example_class = browser.switch(example_class)
-            if new_example is not None:
-                example = new_example
+            example, example_class = browser.switch(example_class)
             continue
 
         if browser is not None and browser._reset_requested:
-            example = browser.reset(example_class, example)
+            example = browser.reset(example_class)
+            continue
+
+        if example is None:
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
             continue
 
         if not viewer.is_paused():
@@ -415,7 +406,7 @@ def create_parser():
         type=str,
         default="gl",
         choices=["gl", "usd", "rerun", "null", "viser"],
-        help="Viewer to use (gl, usd, rerun, or null).",
+        help="Viewer to use (gl, usd, rerun, null, or viser).",
     )
     parser.add_argument(
         "--rerun-address",
@@ -490,8 +481,8 @@ def init(parser=None):
     """Initialize Newton example components from parsed arguments.
 
     Args:
-        parser: Parsed arguments from argparse (should include arguments from
-              create_parser())
+        parser: An argparse.ArgumentParser instance (should include arguments from
+              create_parser()). If None, a default parser is created.
 
     Returns:
         tuple: (viewer, args) where viewer is configured based on args.viewer

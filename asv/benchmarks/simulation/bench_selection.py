@@ -30,10 +30,10 @@ class FastExampleSelectionCartpoleMuJoCo:
 
     def setup(self):
         self.num_frames = 200
-        try:
+        if hasattr(newton.examples, "default_args") and hasattr(Example, "create_parser"):
             args = newton.examples.default_args(Example.create_parser())
             self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), args)
-        except AttributeError:
+        else:
             self.example = Example(
                 viewer=newton.viewer.ViewerNull(num_frames=self.num_frames), world_count=16, verbose=False
             )

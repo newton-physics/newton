@@ -14,18 +14,18 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Integrated Viewer
+# Example Replay Viewer
 #
 # Shows how to use the replay UI with ViewerGL to load and
 # display previously recorded simulation data.
 #
-# Recording is done automatically using ViewerFile (like ViewerUSD):
-#   viewer = newton.viewer.ViewerFile("my_recording.json")
+# Recording is done automatically using ViewerFile:
+#   viewer = newton.viewer.ViewerFile("my_recording.bin")
 #   viewer.set_model(model)
 #   viewer.log_state(state)  # Records automatically
 #   viewer.close()  # Saves automatically
 #
-# Command: python -m newton.examples.example_replay_viewer
+# Command: python -m newton.examples replay_viewer
 #
 ###########################################################################
 

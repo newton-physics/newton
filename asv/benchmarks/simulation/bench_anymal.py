@@ -29,9 +29,9 @@ class FastExampleAnymalPretrained:
 
     def setup(self):
         self.num_frames = 50
-        try:
+        if hasattr(newton.examples, "default_args"):
             args = newton.examples.default_args()
-        except AttributeError:
+        else:
             args = None
         self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), args)
 
