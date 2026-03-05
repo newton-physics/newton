@@ -68,24 +68,16 @@ class _IKBenchmark:
             )
 
         # Capture CUDA graph
-        self.solve_graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as cap:
-                self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
-            self.solve_graph = cap.graph
+        with wp.ScopedCapture() as cap:
+            self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
+        self.solve_graph = cap.graph
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_solve(self, batch_size):
-        self.solver.reset()
-
-        if self.solve_graph is not None:
-            wp.capture_launch(self.solve_graph)
-        else:
-            self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
-
+        wp.capture_launch(self.solve_graph)
         wp.synchronize_device()
 
-        # Validate 100% success rate
+    def teardown(self, batch_size):
         q_best = self.winners_d.numpy()
         success = eval_success(
             self.solver, self.model, q_best, self.tgt_p, self.tgt_r,
