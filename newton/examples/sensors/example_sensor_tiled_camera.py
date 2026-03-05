@@ -109,6 +109,7 @@ class Example:
         self.time_delta = 0.005
         self.image_output = 0
         self.texture_id = 0
+        self.show_sensor_output = True
 
         self.viewer = viewer
         if isinstance(self.viewer, ViewerGL):
@@ -262,7 +263,8 @@ class Example:
         self.time += self.time_delta
 
     def render(self):
-        self.render_sensors()
+        if self.show_sensor_output:
+            self.render_sensors()
         self.viewer.begin_frame(0.0)
         self.viewer.log_state(self.state)
         self.viewer.end_frame()
@@ -420,6 +422,11 @@ class Example:
     def gui(self, ui):
         show_compile_kernel_info = False
 
+        _, self.show_sensor_output = ui.checkbox("Show Sensor Output", self.show_sensor_output)
+        self.viewer.show_gaussians = not self.show_sensor_output
+
+        ui.separator()
+
         if ui.radio_button("Show Color Output", self.image_output == 0):
             self.image_output = 0
         if ui.radio_button("Show Albedo Output", self.image_output == 1):
@@ -510,6 +517,9 @@ class Example:
             ui.end()
 
     def display(self, imgui):
+        if not self.show_sensor_output:
+            return
+
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
 
         width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
