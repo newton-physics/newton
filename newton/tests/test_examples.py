@@ -325,6 +325,20 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_d6_joints",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_d6_drives",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_joint_force",
     devices=test_devices,
     use_viewer=True,
