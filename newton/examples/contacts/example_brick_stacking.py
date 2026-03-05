@@ -26,8 +26,6 @@
 ###########################################################################
 
 import enum
-from pathlib import Path
-
 import numpy as np
 import warp as wp
 
@@ -70,10 +68,164 @@ def _build_mesh_with_sdf(verts, faces, color, scale=1.0):
     return mesh
 
 
-def _load_brick_mesh():
-    """Load the 2x4 brick mesh (Omniverse TwoByFourSI asset)."""
-    data = np.load(Path(__file__).parent.parent / "assets" / "brick_2x4_mesh.npz")
-    return data["vertices"], data["faces"]
+def _cylinder_mesh(radius, height, segments, cx=0.0, cy=0.0, cz=0.0, bottom_cap=True):
+    """Cylinder with split vertices at rims for sharp edges.
+
+    Separate vertex rings for side walls and caps prevent normal averaging
+    across the sharp rim, giving crisp cylindrical edges.
+    """
+    n = segments
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    cos_a, sin_a = np.cos(angles), np.sin(angles)
+
+    ring_x = cx + radius * cos_a
+    ring_y = cy + radius * sin_a
+
+    verts = []
+    faces = []
+
+    # Side wall: own bottom ring [0..n) and top ring [n..2n)
+    side_bot = np.column_stack([ring_x, ring_y, np.full(n, cz)]).astype(np.float32)
+    side_top = np.column_stack([ring_x, ring_y, np.full(n, cz + height)]).astype(np.float32)
+    verts.append(side_bot)
+    verts.append(side_top)
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append([i, n + j, n + i])
+        faces.append([i, j, n + j])
+
+    # Top cap: separate ring + center vertex
+    off_top = 2 * n
+    cap_top_ring = np.column_stack([ring_x, ring_y, np.full(n, cz + height)]).astype(np.float32)
+    cap_top_center = np.array([[cx, cy, cz + height]], dtype=np.float32)
+    verts.append(cap_top_ring)
+    verts.append(cap_top_center)
+    tc = off_top + n
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append([tc, off_top + i, off_top + j])
+
+    # Bottom cap (optional): separate ring + center vertex
+    if bottom_cap:
+        off_bot = off_top + n + 1
+        cap_bot_ring = np.column_stack([ring_x, ring_y, np.full(n, cz)]).astype(np.float32)
+        cap_bot_center = np.array([[cx, cy, cz]], dtype=np.float32)
+        verts.append(cap_bot_ring)
+        verts.append(cap_bot_center)
+        bc = off_bot + n
+        for i in range(n):
+            j = (i + 1) % n
+            faces.append([bc, off_bot + j, off_bot + i])
+
+    return np.vstack(verts), np.array(faces, dtype=np.int32)
+
+
+def _combine_meshes(mesh_list):
+    all_v, all_f, off = [], [], 0
+    for v, f in mesh_list:
+        all_v.append(v)
+        all_f.append(f + off)
+        off += len(v)
+    return np.vstack(all_v).astype(np.float32), np.vstack(all_f).astype(np.int32)
+
+
+
+CLEARANCE = 0.00004
+STUD_RADIUS = 0.0024
+STUD_HEIGHT = 0.00182
+WALL_THICKNESS = 0.0012
+TOP_THICKNESS = 0.001
+TUBE_OUTER_RADIUS = 0.003255
+TUBE_HEIGHT = BODY_HEIGHT - TOP_THICKNESS
+CYLINDER_SEGMENTS = 48
+
+
+def _make_shell_mesh(nx, ny):
+    """Watertight hollow box shell for an *nx* x *ny* brick.
+
+    Origin at the centre-bottom (z=0).  Inner cavity is open at the
+    bottom and sealed by a top plate.
+    """
+    ox = nx * PITCH / 2.0 - CLEARANCE
+    oy = ny * PITCH / 2.0 - CLEARANCE
+    inx = ox - WALL_THICKNESS
+    iny = oy - WALL_THICKNESS
+    H = BODY_HEIGHT - CLEARANCE
+    T = TOP_THICKNESS
+
+    v = np.array(
+        [
+            [-ox, -oy, 0],
+            [+ox, -oy, 0],
+            [+ox, +oy, 0],
+            [-ox, +oy, 0],
+            [-ox, -oy, H],
+            [+ox, -oy, H],
+            [+ox, +oy, H],
+            [-ox, +oy, H],
+            [-inx, -iny, 0],
+            [+inx, -iny, 0],
+            [+inx, +iny, 0],
+            [-inx, +iny, 0],
+            [-inx, -iny, H - T],
+            [+inx, -iny, H - T],
+            [+inx, +iny, H - T],
+            [-inx, +iny, H - T],
+        ],
+        dtype=np.float32,
+    )
+    f = np.array(
+        [
+            [4, 5, 6], [4, 6, 7],
+            [0, 1, 5], [0, 5, 4],
+            [2, 3, 7], [2, 7, 6],
+            [3, 0, 4], [3, 4, 7],
+            [1, 2, 6], [1, 6, 5],
+            [0, 8, 9], [0, 9, 1],
+            [1, 9, 10], [1, 10, 2],
+            [2, 10, 11], [2, 11, 3],
+            [3, 11, 8], [3, 8, 0],
+            [9, 8, 12], [9, 12, 13],
+            [11, 10, 14], [11, 14, 15],
+            [8, 11, 15], [8, 15, 12],
+            [10, 9, 13], [10, 13, 14],
+            [12, 15, 14], [12, 14, 13],
+        ],
+        dtype=np.int32,
+    )
+    return v, f
+
+
+def _make_brick_mesh(nx=4, ny=2):
+    """Full brick mesh (shell + studs + interior tubes) for an *nx* x *ny* brick.
+
+    Each sub-component is a closed surface with consistent outward normals.
+    Dimensions follow the standard 8mm pitch system. The mesh is centered
+    at the origin in XY with the bottom at Z=0.
+    """
+    shell_v, shell_f = _make_shell_mesh(nx, ny)
+    shell_top = BODY_HEIGHT - CLEARANCE
+
+    stud_meshes = []
+    for i in range(nx):
+        for j in range(ny):
+            sx = (i - (nx - 1) / 2.0) * PITCH
+            sy = (j - (ny - 1) / 2.0) * PITCH
+            stud_meshes.append(
+                _cylinder_mesh(
+                    STUD_RADIUS, STUD_HEIGHT, CYLINDER_SEGMENTS, cx=sx, cy=sy, cz=shell_top, bottom_cap=False
+                )
+            )
+
+    tube_meshes = []
+    if ny == 2:
+        for i in range(nx - 1):
+            tx = (i - (nx - 2) / 2.0) * PITCH
+            tube_meshes.append(
+                _cylinder_mesh(TUBE_OUTER_RADIUS, TUBE_HEIGHT, CYLINDER_SEGMENTS, cx=tx, cy=0.0, cz=0.0)
+            )
+
+    return _combine_meshes([(shell_v, shell_f), *stud_meshes, *tube_meshes])
 
 
 class TaskType(enum.IntEnum):
@@ -271,8 +423,8 @@ class Example:
         self.grasp_z_offset = wp.vec3(0.0, 0.0, 0.012)
         self.drop_z_offset = wp.vec3(0.0, 0.0, -0.001)
 
-        # Load brick mesh
-        self.v_2x4, self.f_2x4 = _load_brick_mesh()
+        # Generate brick mesh procedurally
+        self.v_2x4, self.f_2x4 = _make_brick_mesh()
 
         # Build Franka + table, finalize IK model from default pose
         franka_builder = self.build_franka_with_table()
