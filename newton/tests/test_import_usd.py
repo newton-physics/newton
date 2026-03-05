@@ -6931,6 +6931,52 @@ class TestOverrideRootXform(unittest.TestCase):
 
         return stage
 
+    @staticmethod
+    def _make_stage_with_empty_world_body0_joint():
+        """Create a USD stage where a root fixed joint leaves physics:body0 empty."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
+        base.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.5))
+        base.AddOrientOp().Set(
+            Gf.Quatf(0.70710677, 0.18898223, 0.37796447, 0.5669467)
+        )  # 90-deg rotation around normalized axis (1,2,3)
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/env/Robot/WorldJointEmpty")
+        fixed.CreateBody1Rel().SetTargets(["/World/env/Robot/Base"])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        rev = UsdPhysics.RevoluteJoint.Define(stage, "/World/env/Robot/RevJoint")
+        rev.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        rev.CreateBody1Rel().SetTargets(["/World/env/Robot/Link"])
+        rev.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        rev.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        rev.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateAxisAttr().Set("Z")
+
+        return stage
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_default_xform(self):
         """Root joint from non-body prim: default xform composes with ancestor transforms."""
@@ -6949,6 +6995,41 @@ class TestOverrideRootXform(unittest.TestCase):
         base_idx = builder.body_label.index("/World/env/Robot/Base")
         # xform (5,0,0) composed with Ground world xform (100,200,0.5) => (105, 200, 0.5)
         np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_empty_body0_uses_child_pose(self):
+        """Root fixed joint with empty body0 keeps joint_X_p aligned with imported root pose."""
+        stage = self._make_stage_with_empty_world_body0_joint()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertIn("/World/env/Robot/WorldJointEmpty", builder.joint_label)
+        root_joint_idx = builder.joint_label.index("/World/env/Robot/WorldJointEmpty")
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        assert_np_equal(
+            np.array(builder.joint_X_p[root_joint_idx].p),
+            np.array(builder.body_q[base_idx].p),
+            tol=1e-4,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        body_q = state.body_q.numpy()
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
+        # Verify rotation is preserved (sign-invariant: q and -q are equivalent)
+        # Gf.Quatf stores (w, x, y, z); body_q uses xyzw.
+        expected_quat = np.array([0.18898223, 0.37796447, 0.5669467, 0.70710677])
+        actual_quat = body_q[base_idx, 3:]
+        if np.dot(actual_quat, expected_quat) < 0:
+            actual_quat = -actual_quat
+        np.testing.assert_allclose(
+            actual_quat,
+            expected_quat,
+            atol=1e-4,
+            err_msg="Root body rotation must match USD prim orientation",
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_override_root_xform(self):
