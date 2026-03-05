@@ -1,26 +1,48 @@
-<!--
-Thank you for contributing to Newton!
-
-Please fill the relevant sections.
-
-Checkboxes can also be marked after you submit the PR.
--->
-
 ## Description
-<!--
-Please add a description of what this PR aims to accomplish. 
-Existing issues may be reference using a special keyword, e.g. Closes #10
-Include any limitations or non-handled areas in the changes.
--->
 
-## Newton Migration Guide
+<!-- What does this PR change and why?
+     Reference any issues closed by this PR with "Closes #1234". -->
 
-Please ensure the migration guide for **warp.sim** users is up-to-date with the changes made in this PR.
+## Checklist
 
-- [ ] The migration guide in ``docs/migration.rst`` is up-to date
+- [ ] New or existing tests cover these changes
+- [ ] The documentation is up to date with these changes
+- [ ] `CHANGELOG.md` has been updated (if user-facing change)
 
-## Before your PR is "Ready for review"
+## Test plan
 
-- [ ] Necessary tests have been added and new examples are tested (see `newton/tests/test_examples.py`)
-- [ ] Documentation is up-to-date
-- [ ] Code passes formatting and linting checks with `pre-commit run -a`
+<!-- How were these changes verified? Include commands, test names,
+     or manual steps. Example:
+     ```
+     uv run --extra dev -m newton.tests -k test_relevant_test
+     ``` -->
+
+## Bug fix
+
+<!-- DELETE this section if not a bug fix.
+     Describe how to reproduce the issue WITHOUT this PR applied. -->
+
+**Steps to reproduce:**
+
+<!-- 1. Step one
+     2. Step two
+     3. Observe incorrect behavior -->
+
+**Minimal reproduction:**
+
+```python
+import newton
+
+# Code that demonstrates the bug
+```
+
+## New feature / API change
+
+<!-- DELETE this section if not applicable.
+     Provide a code example showing what this PR enables. -->
+
+```python
+import newton
+
+# Code that demonstrates the new capability
+```

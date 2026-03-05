@@ -112,7 +112,14 @@ class Example:
             self.cartpoles.eval_fk(self.state_0)
 
         self.viewer.set_model(self.model, max_worlds=max_worlds)
-        self.viewer.set_world_offsets((2.0, 0.0, 0.0))
+        self.viewer.set_world_offsets((1.0, 0.0, 0.0))
+
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(-15.0, 1.0, 3.0),
+            pitch=-15.0,
+            yaw=0.0,
+        )
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(

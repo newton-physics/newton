@@ -194,15 +194,15 @@ def parse_mjcf(
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
-        xform (Transform): The transform to apply to the imported mechanism.
-        override_root_xform (bool): If ``True``, the articulation root's world-space
+        source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
+        xform: The transform to apply to the imported mechanism.
+        override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
             for cloning articulations at explicit positions. Not intended for sources
             containing multiple articulations, as all roots would be placed at the
             same ``xform``. Defaults to ``False``.
-        floating (bool or None): Controls the base joint type for the root body.
+        floating: Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
               otherwise creates a FIXED joint).
@@ -211,13 +211,13 @@ def parse_mjcf(
             - ``False``: Creates a FIXED joint (0 DOF).
 
             Cannot be specified together with ``base_joint``.
-        base_joint (dict): Custom joint specification for connecting the root body to the world
+        base_joint: Custom joint specification for connecting the root body to the world
             (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
             custom mobility. Dictionary with joint parameters as accepted by
             :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
             Cannot be specified together with ``floating``.
-        parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+        parent_body: Parent body index for hierarchical composition. If specified, attaches the
             imported root body to this existing body, making them part of the same kinematic articulation.
             The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
             the root connects to the world frame. **Restriction**: Only the most recently added
@@ -268,34 +268,34 @@ def parse_mjcf(
                     - ``body_idx``
                     - ❌ Error: FREE joints require world frame
 
-        armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
-        scale (float): The scaling factor to apply to the imported mechanism.
-        hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
-        parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
-        parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
-        parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
-        parse_visuals (bool): Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
-        parse_mujoco_options (bool): Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
-        up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
-        ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
-        ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
-        visual_classes (Sequence[str]): A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
-        collider_classes (Sequence[str]): A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
+        armature_scale: Scaling factor to apply to the MJCF-defined joint armature values.
+        scale: The scaling factor to apply to the imported mechanism.
+        hide_visuals: If True, hide visual shapes after loading them (affects visibility, not loading).
+        parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
+        parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
+        parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
+        parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        up_axis: The up axis of the MuJoCo scene. The default is Z up.
+        ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
+        ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
+        visual_classes: A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
+        collider_classes: A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
         no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
-        force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
-        enable_self_collisions (bool): If True, self-collisions are enabled.
-        ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
-        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
-        verbose (bool): If True, print additional information about parsing the MJCF.
-        skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
-        convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
-        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        ctrl_direct (bool): If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
+        force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
+        enable_self_collisions: If True, self-collisions are enabled.
+        ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
+        collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+        verbose: If True, print additional information about parsing the MJCF.
+        skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+        convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
+        mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
+        ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
             where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
-        path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+        path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)

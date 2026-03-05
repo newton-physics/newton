@@ -7,7 +7,7 @@ name = "newton"
 dynamic = ["version"]
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
-authors = [{ name = "Newton Developers", email = "warp-python@nvidia.com" }]
+authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
