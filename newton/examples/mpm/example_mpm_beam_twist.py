@@ -53,6 +53,8 @@ def apply_twist(
 
 
 class Example:
+    """Elastic beam twisted at one end using kinematic MPM boundary particles."""
+
     def __init__(self, viewer, options):
         # setup simulation parameters first
         self.fps = options.fps
@@ -109,7 +111,7 @@ class Example:
         self.twist_center = np.mean(twist_pos, axis=0)
         self.twist_rel_pos = wp.array(twist_pos - self.twist_center, dtype=wp.vec3, device=self.model.device)
 
-        # Rotate 90 degrees over 100 frames
+        # Rotate 360 degrees over 1000 frames
         self.twist_frames = 1000
         self.twist_speed = (2.0 * np.pi) / (self.twist_frames * self.frame_dt)
 
@@ -267,7 +269,7 @@ class Example:
         cell_volume = np.prod(cell_size)
 
         radius = np.cbrt(cell_volume) * 0.5
-        mass = np.prod(cell_volume) * density
+        mass = cell_volume * density
 
         builder.add_particle_grid(
             pos=wp.vec3(particle_lo),

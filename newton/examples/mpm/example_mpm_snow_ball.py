@@ -23,6 +23,8 @@ from newton.solvers import SolverImplicitMPM
 
 
 class Example:
+    """Snow ball rolling down a heightfield slope with per-particle snow rheology."""
+
     def __init__(self, viewer, options):
         # setup simulation parameters first
         self.fps = options.fps
@@ -189,8 +191,8 @@ class Example:
 
         all_pos = []
 
-        for l in range(num_layers):
-            z_offset = (l + 0.5) * spacing
+        for layer in range(num_layers):
+            z_offset = (layer + 0.5) * spacing
             pz = PZ_base + z_offset
 
             # Stack into (N, 3)
@@ -251,8 +253,7 @@ class Example:
         q_np = self.state_0.particle_q.numpy()
 
         # Boundary particles: sides
-        # Width L_x = 10. Boundary at +/- 5.
-        # Mark kinematic if close to boundary, say within 20cm?
+        # Boundary particles: mark kinematic if close to domain edge
         boundary_width = 0.2
         boundary_mask = np.logical_or(
             np.abs(q_np[:, 0]) > (self.L_x / 2 - boundary_width),
@@ -358,13 +359,6 @@ class Example:
 
     def render_ui(self, imgui):
         _changed, self.show_compression = imgui.checkbox("Show Compression", self.show_compression)
-
-
-@wp.kernel
-def zero_selected_velocities(velocities: wp.array(dtype=wp.vec3), indices: wp.array(dtype=int)):
-    tid = wp.tid()
-    idx = indices[tid]
-    velocities[idx] = wp.vec3(0.0, 0.0, 0.0)
 
 
 if __name__ == "__main__":

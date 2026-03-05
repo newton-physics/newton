@@ -207,7 +207,7 @@ def get_elastic_parameters(
     material_parameters: MaterialParameters,
     particle_Jp: wp.array(dtype=float),
 ):
-    E = material_parameters.young_modulus[i]  # * hardening_law(particle_Jp[i], material_parameters.hardening[i])
+    E = material_parameters.young_modulus[i]
     nu = material_parameters.poisson_ratio[i]
     d = material_parameters.damping[i]
 

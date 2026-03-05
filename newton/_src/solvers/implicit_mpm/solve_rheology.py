@@ -27,14 +27,16 @@ from warp.optim.linear import LinearOperator, cg
 _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
 
-__SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
+_SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
 
 _INCLUDE_LEFTOVER_STRAIN = wp.constant(False)
-"Whether to include leftover strain (due to not fully-converged implicit solve) in the elastic strain. More accurate, but less stable for stiff materials"
+"""Whether to include leftover strain (due to not fully-converged implicit solve) in the elastic strain.
+
+More accurate, but less stable for stiff materials. Development toggle for experimentation."""
 
 _USE_CAM_CLAY = wp.constant(False)
-"""Use Modified Cam-Clay flow rule instead of our custom one"""
+"""Use Modified Cam-Clay flow rule instead of the piecewise-linear anisotropic one. Development toggle for experimentation."""
 
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 
@@ -42,7 +44,6 @@ mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 mat55 = wp.types.matrix(shape=(5, 5), dtype=wp.float32)
 
 mat13 = wp.vec3
-mat31 = wp.vec3
 
 wp.set_module_options({"enable_backward": False})
 
@@ -420,7 +421,7 @@ def solve_sliding_aniso(
 
         delta_alpha = wp.min(-f_cur / df_dalpha, alpha_max - alpha_cur)
 
-        if delta_alpha < __SLIDING_NEWTON_TOL * alpha_max:
+        if delta_alpha < _SLIDING_NEWTON_TOL * alpha_max:
             break
 
         alpha_cur += delta_alpha
@@ -2208,7 +2209,7 @@ def solve_rheology(
     jacobi_warmstart_smoother_iterations: int = 0,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph: bool = True,
-    verbose: bool = True,
+    verbose: bool = wp.config.verbose,
 ):
     """Solve coupled plasticity and collider contact to compute grid velocities.
 
