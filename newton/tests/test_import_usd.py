@@ -27,9 +27,9 @@ import newton.usd as usd
 from newton import JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
+from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
-from newton.utils import quat_between_axes
 
 devices = get_test_devices()
 
@@ -1166,6 +1166,54 @@ class TestImportUsdPhysics(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mass_fallback_instanced_colliders(self):
+        """Regression test: bodies with PhysicsMassAPI but no authored mass properties
+        and instanceable collision shapes must get positive mass from shape accumulation.
+
+        When collision shapes live inside instanceable prims, USD's
+        ComputeMassProperties cannot traverse into them and returns invalid results
+        (mass < 0). The importer must fall back to the mass properties already
+        accumulated by the builder during add_shape_*() calls, and respect the
+        body-level authored density instead of the builder's default shape density.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create a prototype with a collision sphere (outside the body hierarchy).
+        stage.OverridePrim("/Prototype_Collisions")
+        radius = 0.5
+        sphere = UsdGeom.Sphere.Define(stage, "/Prototype_Collisions/sphere")
+        sphere.CreateRadiusAttr().Set(radius)
+        UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+
+        # Create a rigid body with MassAPI applied and only density authored.
+        body_density = 5.0
+        body_xform = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body_xform.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+        mass_api.CreateDensityAttr().Set(body_density)
+
+        # Reference the collision prototype as an instanceable prim.
+        collisions = stage.DefinePrim("/World/Body/collisions")
+        collisions.GetReferences().AddInternalReference("/Prototype_Collisions")
+        collisions.SetInstanceable(True)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 1)
+        # Expected mass = body_density * sphere_volume = 5 * (4/3 * pi * 0.5^3).
+        expected_mass = body_density * (4.0 / 3.0 * np.pi * radius**3)
+        np.testing.assert_allclose(builder.body_mass[0], expected_mass, rtol=1e-5)
+        # Verify inertia is also positive (not garbage).
+        inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
+        self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_cube_cylinder_joint_count(self):
         builder = newton.ModelBuilder()
         import_results = builder.add_usd(
@@ -1990,8 +2038,8 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertTrue(found_explicit_2, f"Expected solmix {expected_explicit_2} not found in model")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_geom_gap_parsing(self):
-        """Test that geom_gap attribute is parsed correctly from USD."""
+    def test_shape_gap_from_usd(self):
+        """Test that mjc:gap attribute is parsed into shape_gap from USD."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -2079,32 +2127,90 @@ def PhysicsRevoluteJoint "Joint2"
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
 
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
-        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
-
-        geom_gap = model.mujoco.geom_gap.numpy()
+        shape_gap = model.shape_gap.numpy()
 
         def floats_match(arr, expected, tol=1e-4):
             return abs(arr - expected) < tol
 
         # Check that we have shapes with expected values
         expected_explicit_1 = 0.8
-        expected_default = 0.0  # default
         expected_explicit_2 = 0.7
 
         # Find shapes matching each expected value
-        found_explicit_1 = any(floats_match(geom_gap[i], expected_explicit_1) for i in range(model.shape_count))
-        found_default = any(floats_match(geom_gap[i], expected_default) for i in range(model.shape_count))
-        found_explicit_2 = any(floats_match(geom_gap[i], expected_explicit_2) for i in range(model.shape_count))
+        found_explicit_1 = any(floats_match(shape_gap[i], expected_explicit_1) for i in range(model.shape_count))
+        found_explicit_2 = any(floats_match(shape_gap[i], expected_explicit_2) for i in range(model.shape_count))
 
         self.assertTrue(found_explicit_1, f"Expected gap {expected_explicit_1} not found in model")
-        self.assertTrue(found_default, f"Expected default gap {expected_default} not found in model")
         self.assertTrue(found_explicit_2, f"Expected gap {expected_explicit_2} not found in model")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_margin_gap_combined_conversion(self):
+        """Test MuJoCo->Newton conversion when both mjc:margin and mjc:gap are authored.
+
+        Verifies that newton_margin = mjc_margin - mjc_gap when mjc:margin is
+        explicitly authored. Also tests the case where only mjc:margin is authored
+        (gap defaults to 0, so no conversion effect).
+        """
+        from pxr import Sdf, Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Body 1: both mjc:margin and mjc:gap authored
+        prim1 = stage.DefinePrim("/Body1", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim1)
+        UsdPhysics.ArticulationRootAPI.Apply(prim1)
+        col1 = stage.DefinePrim("/Body1/Collision1", "Cube")
+        UsdPhysics.CollisionAPI.Apply(col1)
+        col1.GetAttribute("size").Set(0.2)
+        col1.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.5)
+        col1.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Double).Set(0.2)
+
+        # Body 2: only mjc:margin authored (gap defaults to 0)
+        prim2 = stage.DefinePrim("/Body2", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim2)
+        col2 = stage.DefinePrim("/Body2/Collision2", "Sphere")
+        UsdPhysics.CollisionAPI.Apply(col2)
+        col2.GetAttribute("radius").Set(0.1)
+        col2.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.4)
+
+        # Joint connecting them
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/Joint1")
+        joint.GetBody0Rel().SetTargets(["/Body1"])
+        joint.GetBody1Rel().SetTargets(["/Body2"])
+        joint.GetAxisAttr().Set("Z")
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+
+        # Body 1: mjc_margin=0.5, mjc_gap=0.2 -> newton_margin = 0.5 - 0.2 = 0.3
+        found_combined = any(
+            abs(float(shape_margin[i]) - 0.3) < 1e-4 and abs(float(shape_gap[i]) - 0.2) < 1e-4
+            for i in range(model.shape_count)
+        )
+        self.assertTrue(found_combined, "Expected margin=0.3, gap=0.2 from combined conversion")
+
+        # Body 2: mjc_margin=0.4, mjc_gap not authored -> gap defaults to 0.0
+        # from SchemaResolverMjc, so newton_margin = 0.4 - 0 = 0.4, gap = 0.0
+        found_margin_only = any(
+            abs(float(shape_margin[i]) - 0.4) < 1e-4 and abs(float(shape_gap[i])) < 1e-4
+            for i in range(model.shape_count)
+        )
+        self.assertTrue(found_margin_only, "Expected margin=0.4 with gap=0.0 when only margin authored")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_actuator_mode_inference_from_drive(self):
@@ -6186,6 +6292,134 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
 
+class TestImportUsdMimicJoint(unittest.TestCase):
+    """Tests for PhysxMimicJointAPI parsing during USD import."""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_mimic_joint_basic(self):
+        """PhysxMimicJointAPI on a revolute joint creates a mimic constraint."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+        root = stage.DefinePrim("/Root", "Xform")
+        stage.SetDefaultPrim(root)
+
+        art = stage.DefinePrim("/Root/Robot", "Xform")
+        UsdPhysics.ArticulationRootAPI.Apply(art)
+
+        # base body
+        base = stage.DefinePrim("/Root/Robot/base", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(base)
+        UsdPhysics.MassAPI.Apply(base).CreateMassAttr(1.0)
+
+        # link1
+        link1 = stage.DefinePrim("/Root/Robot/link1", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(link1)
+        UsdPhysics.MassAPI.Apply(link1).CreateMassAttr(1.0)
+
+        # link2
+        link2 = stage.DefinePrim("/Root/Robot/link2", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(link2)
+        UsdPhysics.MassAPI.Apply(link2).CreateMassAttr(1.0)
+
+        # leader joint: base -> link1
+        leader = UsdPhysics.RevoluteJoint.Define(stage, "/Root/Robot/Joints/leader")
+        leader.CreateAxisAttr("Z")
+        leader.CreateBody0Rel().SetTargets(["/Root/Robot/base"])
+        leader.CreateBody1Rel().SetTargets(["/Root/Robot/link1"])
+        leader.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0.5))
+        leader.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -0.5))
+        leader.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        leader.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        # follower joint: base -> link2
+        follower = UsdPhysics.RevoluteJoint.Define(stage, "/Root/Robot/Joints/follower")
+        follower.CreateAxisAttr("Z")
+        follower.CreateBody0Rel().SetTargets(["/Root/Robot/base"])
+        follower.CreateBody1Rel().SetTargets(["/Root/Robot/link2"])
+        follower.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0.5))
+        follower.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -0.5))
+        follower.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        follower.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        # Apply PhysxMimicJointAPI:rotZ to follower via metadata
+        # (PhysxMimicJointAPI is not in usd-core, so use raw metadata)
+        follower_prim = follower.GetPrim()
+        from pxr import Sdf
+
+        follower_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["PhysxMimicJointAPI:rotZ"]))
+        follower_prim.CreateRelationship("physxMimicJoint:rotZ:referenceJoint").SetTargets(
+            ["/Root/Robot/Joints/leader"]
+        )
+        follower_prim.CreateAttribute("physxMimicJoint:rotZ:gearing", Sdf.ValueTypeNames.Float).Set(-2.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(len(builder.constraint_mimic_joint0), 1)
+
+        model = builder.finalize()
+        self.assertEqual(model.constraint_mimic_count, 1)
+
+        joint0 = model.constraint_mimic_joint0.numpy()[0]
+        joint1 = model.constraint_mimic_joint1.numpy()[0]
+        coef0 = model.constraint_mimic_coef0.numpy()[0]
+        coef1 = model.constraint_mimic_coef1.numpy()[0]
+
+        follower_idx = model.joint_label.index("/Root/Robot/Joints/follower")
+        leader_idx = model.joint_label.index("/Root/Robot/Joints/leader")
+
+        self.assertEqual(joint0, follower_idx)
+        self.assertEqual(joint1, leader_idx)
+        # PhysX: jointPos + gearing * refPos + offset = 0
+        # Newton: joint0 = coef0 + coef1 * joint1
+        # So coef1 = -gearing = -(-2.0) = 2.0, coef0 = -offset = 0.0
+        self.assertAlmostEqual(coef0, 0.0, places=5)
+        self.assertAlmostEqual(coef1, 2.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_mimic_joint_no_api_no_constraint(self):
+        """Joints without PhysxMimicJointAPI produce no mimic constraints."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+        root = stage.DefinePrim("/Root", "Xform")
+        stage.SetDefaultPrim(root)
+
+        art = stage.DefinePrim("/Root/Robot", "Xform")
+        UsdPhysics.ArticulationRootAPI.Apply(art)
+
+        base = stage.DefinePrim("/Root/Robot/base", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(base)
+        UsdPhysics.MassAPI.Apply(base).CreateMassAttr(1.0)
+
+        link1 = stage.DefinePrim("/Root/Robot/link1", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(link1)
+        UsdPhysics.MassAPI.Apply(link1).CreateMassAttr(1.0)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/Root/Robot/Joints/joint1")
+        joint.CreateAxisAttr("Z")
+        joint.CreateBody0Rel().SetTargets(["/Root/Robot/base"])
+        joint.CreateBody1Rel().SetTargets(["/Root/Robot/link1"])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0.5))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -0.5))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
+
+
 class TestHasAppliedApiSchema(unittest.TestCase):
     """Test the has_applied_api_schema helper in newton.usd.utils."""
 
@@ -6246,6 +6480,715 @@ def Sphere "AppendedSchema" (
 
         prim = stage.GetPrimAtPath("/AppendedSchema")
         self.assertTrue(usd.has_applied_api_schema(prim, "MjcSiteAPI"))
+
+
+class TestOverrideRootXform(unittest.TestCase):
+    """Tests for override_root_xform parameter in the USD importer."""
+
+    @staticmethod
+    def _make_stage_with_root_offset():
+        """Create a USD stage with an articulation under a translated ancestor."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/env/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        joint.CreateBody1Rel().SetTargets(["/World/env/Robot/Link"])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_default_xform_is_relative(self):
+        """With override_root_xform=False (default), xform composes with ancestor transforms."""
+        stage = self._make_stage_with_root_offset()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()), floating=False)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        # xform (5,0,0) composed with ancestor (100,200,0) => (105, 200, 0)
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.0], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_places_at_xform(self):
+        """With override_root_xform=True, root body is placed at exactly xform."""
+        stage = self._make_stage_with_root_offset()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            floating=False,
+            override_root_xform=True,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_preserves_child_offset(self):
+        """With override_root_xform=True, child body keeps its relative offset from root."""
+        stage = self._make_stage_with_root_offset()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            floating=False,
+            override_root_xform=True,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        link_idx = builder.body_label.index("/World/env/Robot/Link")
+        np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_with_rotation(self):
+        """override_root_xform=True with a non-identity rotation correctly rotates the articulation."""
+        stage = self._make_stage_with_root_offset()
+        angle = np.pi / 2
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), quat),
+            floating=False,
+            override_root_xform=True,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        link_idx = builder.body_label.index("/World/env/Robot/Link")
+
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[base_idx, 3:], [*quat], atol=1e-4)
+        # Link is at (0,0,1) relative to root; Z-rotation doesn't affect Z offset
+        np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_cloning(self):
+        """Cloning the same articulation at multiple positions with override_root_xform=True."""
+        stage = self._make_stage_with_root_offset()
+
+        builder = newton.ModelBuilder()
+        clone_positions = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (4.0, 0.0, 0.0)]
+        for pos in clone_positions:
+            builder.add_usd(
+                stage, xform=wp.transform(pos, wp.quat_identity()), floating=False, override_root_xform=True
+            )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_indices = [j for j, lbl in enumerate(builder.body_label) if lbl.endswith("/Robot/Base")]
+        for i, expected_pos in enumerate(clone_positions):
+            np.testing.assert_allclose(
+                body_q[base_indices[i], :3],
+                list(expected_pos),
+                atol=1e-4,
+                err_msg=f"Clone {i} not at expected position",
+            )
+
+    @staticmethod
+    def _make_two_articulation_stage():
+        """Create a USD stage with two articulations at different positions."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        for name, offset in [("RobotA", (10.0, 0.0, 0.0)), ("RobotB", (0.0, 20.0, 0.0))]:
+            root_path = f"/World/{name}"
+            root = UsdGeom.Xform.Define(stage, root_path)
+            root.AddTranslateOp().Set(Gf.Vec3d(*offset))
+            UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+            base = UsdGeom.Xform.Define(stage, f"{root_path}/Base")
+            UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+            UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+            link = UsdGeom.Xform.Define(stage, f"{root_path}/Link")
+            link.AddTranslateOp().Set(Gf.Vec3d(offset[0], offset[1], offset[2] + 1.0))
+            UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+            UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+            joint = UsdPhysics.RevoluteJoint.Define(stage, f"{root_path}/Joint")
+            joint.CreateBody0Rel().SetTargets([f"{root_path}/Base"])
+            joint.CreateBody1Rel().SetTargets([f"{root_path}/Link"])
+            joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+            joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            joint.CreateAxisAttr().Set("Z")
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_multiple_articulations_default_keeps_relative(self):
+        """Without override, multiple articulations keep their relative positions shifted by xform."""
+        stage = self._make_two_articulation_stage()
+
+        shift = (1.0, 2.0, 3.0)
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform(shift, wp.quat_identity()), floating=False)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        offsets = {"RobotA": (10.0, 0.0, 0.0), "RobotB": (0.0, 20.0, 0.0)}
+        for name, offset in offsets.items():
+            idx = next(j for j, lbl in enumerate(builder.body_label) if f"{name}/Base" in lbl)
+            expected = [shift[k] + offset[k] for k in range(3)]
+            np.testing.assert_allclose(
+                body_q[idx, :3],
+                expected,
+                atol=1e-4,
+                err_msg=f"{name} should be at xform + original offset",
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_without_xform_raises(self):
+        """override_root_xform=True without providing xform should raise a ValueError."""
+        stage = self._make_stage_with_root_offset()
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_usd(stage, floating=False, override_root_xform=True)
+
+    @staticmethod
+    def _make_stage_with_visual():
+        """Create a USD stage with a visual-only cube under a rigid body beneath a translated ancestor."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        UsdGeom.Cube.Define(stage, "/World/env/Robot/Base/Visual").GetSizeAttr().Set(0.1)
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/env/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        joint.CreateBody1Rel().SetTargets(["/World/env/Robot/Link"])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_shape_aligned_with_body(self):
+        """Visual shapes stay aligned with their rigid body with default override_root_xform=False."""
+        stage = self._make_stage_with_visual()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            floating=False,
+        )
+
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        visual_shapes = [i for i, b in enumerate(builder.shape_body) if b == base_idx]
+        self.assertGreater(len(visual_shapes), 0, "Expected at least one visual shape on Base")
+
+        for sid in visual_shapes:
+            shape_tf = builder.shape_transform[sid]
+            np.testing.assert_allclose(
+                shape_tf.p, [0.0, 0.0, 0.0], atol=1e-4, err_msg="Visual shape position should be at body origin"
+            )
+            np.testing.assert_allclose(
+                shape_tf.q, [0.0, 0.0, 0.0, 1.0], atol=1e-4, err_msg="Visual shape rotation should be identity"
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_override_visual_shape_aligned_with_body(self):
+        """Visual shapes stay aligned with their rigid body when override_root_xform=True
+        strips a non-identity ancestor transform."""
+        stage = self._make_stage_with_visual()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            floating=False,
+            override_root_xform=True,
+        )
+
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        visual_shapes = [i for i, b in enumerate(builder.shape_body) if b == base_idx]
+        self.assertGreater(len(visual_shapes), 0, "Expected at least one visual shape on Base")
+
+        for sid in visual_shapes:
+            shape_tf = builder.shape_transform[sid]
+            np.testing.assert_allclose(
+                shape_tf.p, [0.0, 0.0, 0.0], atol=1e-4, err_msg="Visual shape position should be at body origin"
+            )
+            np.testing.assert_allclose(
+                shape_tf.q, [0.0, 0.0, 0.0, 1.0], atol=1e-4, err_msg="Visual shape rotation should be identity"
+            )
+
+    @staticmethod
+    def _make_stage_with_loop_joint():
+        """Create a USD stage with a 3-body chain and an excludeFromArticulation loop joint."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        for name, pos in [("Base", (0, 0, 0)), ("Mid", (0, 0, 1)), ("Tip", (0, 0, 2))]:
+            body = UsdGeom.Xform.Define(stage, f"/World/env/Robot/{name}")
+            body.AddTranslateOp().Set(Gf.Vec3d(*pos))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).GetMassAttr().Set(1.0)
+
+        for jname, b0, b1 in [("J1", "Base", "Mid"), ("J2", "Mid", "Tip")]:
+            j = UsdPhysics.RevoluteJoint.Define(stage, f"/World/env/Robot/{jname}")
+            j.CreateBody0Rel().SetTargets([f"/World/env/Robot/{b0}"])
+            j.CreateBody1Rel().SetTargets([f"/World/env/Robot/{b1}"])
+            j.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 1))
+            j.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+            j.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+            j.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+            j.CreateAxisAttr().Set("Z")
+
+        loop = UsdPhysics.FixedJoint.Define(stage, "/World/env/Robot/LoopJoint")
+        loop.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        loop.CreateBody1Rel().SetTargets(["/World/env/Robot/Tip"])
+        loop.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 2))
+        loop.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+        loop.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        loop.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        from pxr import Sdf
+
+        loop.GetPrim().CreateAttribute("physics:excludeFromArticulation", Sdf.ValueTypeNames.Bool).Set(True)
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_loop_joint_default(self):
+        """Loop joint body positions are correct with default xform (relative)."""
+        stage = self._make_stage_with_loop_joint()
+        shift = (5.0, 0.0, 0.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform(shift, wp.quat_identity()), floating=False)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        # Default: xform composes with ancestor (100,200,0)
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        tip_idx = builder.body_label.index("/World/env/Robot/Tip")
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[tip_idx, :3], [105.0, 200.0, 2.0], atol=1e-4)
+
+        # Loop joint should exist and not be part of the articulation
+        loop_idx = builder.joint_label.index("/World/env/Robot/LoopJoint")
+        self.assertEqual(builder.joint_articulation[loop_idx], -1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_loop_joint_override(self):
+        """Loop joint body positions are correct with override_root_xform=True."""
+        stage = self._make_stage_with_loop_joint()
+        shift = (5.0, 0.0, 0.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform(shift, wp.quat_identity()), floating=False, override_root_xform=True)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        # Override: ancestor stripped, bodies at xform + internal offsets
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        tip_idx = builder.body_label.index("/World/env/Robot/Tip")
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[tip_idx, :3], [5.0, 0.0, 2.0], atol=1e-4)
+
+        loop_idx = builder.joint_label.index("/World/env/Robot/LoopJoint")
+        self.assertEqual(builder.joint_articulation[loop_idx], -1)
+
+    @staticmethod
+    def _make_stage_with_world_joint():
+        """Create a USD stage where a fixed joint connects a non-body prim to the root body.
+
+        This exercises the root-joint code path (first_joint_parent == -1) where
+        ``world_body_xform`` is derived from the non-body side of the joint.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        ground = UsdGeom.Xform.Define(stage, "/World/env/Ground")
+        ground.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.5))
+
+        base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/env/Robot/WorldJoint")
+        fixed.CreateBody0Rel().SetTargets(["/World/env/Ground"])
+        fixed.CreateBody1Rel().SetTargets(["/World/env/Robot/Base"])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        rev = UsdPhysics.RevoluteJoint.Define(stage, "/World/env/Robot/RevJoint")
+        rev.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        rev.CreateBody1Rel().SetTargets(["/World/env/Robot/Link"])
+        rev.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        rev.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        rev.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateAxisAttr().Set("Z")
+
+        return stage
+
+    @staticmethod
+    def _make_stage_with_empty_world_body0_joint():
+        """Create a USD stage where a root fixed joint leaves physics:body0 empty."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
+        base.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.5))
+        base.AddOrientOp().Set(
+            Gf.Quatf(0.70710677, 0.18898223, 0.37796447, 0.5669467)
+        )  # 90-deg rotation around normalized axis (1,2,3)
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/env/Robot/WorldJointEmpty")
+        fixed.CreateBody1Rel().SetTargets(["/World/env/Robot/Base"])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        rev = UsdPhysics.RevoluteJoint.Define(stage, "/World/env/Robot/RevJoint")
+        rev.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        rev.CreateBody1Rel().SetTargets(["/World/env/Robot/Link"])
+        rev.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        rev.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        rev.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateAxisAttr().Set("Z")
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_default_xform(self):
+        """Root joint from non-body prim: default xform composes with ancestor transforms."""
+        stage = self._make_stage_with_world_joint()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        # xform (5,0,0) composed with Ground world xform (100,200,0.5) => (105, 200, 0.5)
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_empty_body0_uses_child_pose(self):
+        """Root fixed joint with empty body0 keeps joint_X_p aligned with imported root pose."""
+        stage = self._make_stage_with_empty_world_body0_joint()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertIn("/World/env/Robot/WorldJointEmpty", builder.joint_label)
+        root_joint_idx = builder.joint_label.index("/World/env/Robot/WorldJointEmpty")
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        assert_np_equal(
+            np.array(builder.joint_X_p[root_joint_idx].p),
+            np.array(builder.body_q[base_idx].p),
+            tol=1e-4,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        body_q = state.body_q.numpy()
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
+        # Verify rotation is preserved (sign-invariant: q and -q are equivalent)
+        # Gf.Quatf stores (w, x, y, z); body_q uses xyzw.
+        expected_quat = np.array([0.18898223, 0.37796447, 0.5669467, 0.70710677])
+        actual_quat = body_q[base_idx, 3:]
+        if np.dot(actual_quat, expected_quat) < 0:
+            actual_quat = -actual_quat
+        np.testing.assert_allclose(
+            actual_quat,
+            expected_quat,
+            atol=1e-4,
+            err_msg="Root body rotation must match USD prim orientation",
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_override_root_xform(self):
+        """Root joint from non-body prim: override_root_xform places root at xform."""
+        stage = self._make_stage_with_world_joint()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            override_root_xform=True,
+        )
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        # override rebases at xform; Ground z=0.5 offset from articulation root is preserved
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.5], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_override_with_rotation(self):
+        """Root joint from non-body prim: override with rotation rebases correctly."""
+        stage = self._make_stage_with_world_joint()
+        angle = np.pi / 2
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform((5.0, 0.0, 0.0), quat),
+            override_root_xform=True,
+        )
+
+        self.assertIn("/World/env/Robot/WorldJoint", builder.joint_label)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        # override rebases at xform; Ground z=0.5 offset preserved
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.5], atol=1e-4)
+
+        link_idx = builder.body_label.index("/World/env/Robot/Link")
+        # Link at Z+1 from Base; 90° Z-rotation doesn't affect Z offset
+        np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.5], atol=1e-4)
+
+
+class TestImportUsdMeshNormals(unittest.TestCase):
+    """Tests for loading mesh normals from USD files."""
+
+    # A simple quad (two triangles) with faceVarying normals that should be
+    # smoothed across shared positions after vertex splitting.
+    QUAD_WITH_FACEVARYING_NORMALS = """#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Mesh "quad"
+{
+    int[] faceVertexCounts = [3, 3]
+    int[] faceVertexIndices = [0, 1, 2, 2, 1, 3]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)]
+    normal3f[] primvars:normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+        interpolation = "faceVarying"
+    )
+}
+"""
+
+    # A cube with faceVarying normals — each face has its own flat normal,
+    # but vertices at the same position should be clustered by the vertex
+    # splitting algorithm where normals are within the angle threshold.
+    CUBE_WITH_FACEVARYING_NORMALS = """#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Mesh "cube"
+{
+    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+    int[] faceVertexIndices = [0,1,3,2, 4,6,7,5, 0,4,5,1, 2,3,7,6, 0,2,6,4, 1,5,7,3]
+    point3f[] points = [
+        (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5),
+        (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5),
+        (-0.5, -0.5, 0.5), (0.5, -0.5, 0.5),
+        (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
+    ]
+    normal3f[] primvars:normals = [
+        (0,0,-1),(0,0,-1),(0,0,-1),(0,0,-1),
+        (0,0,1),(0,0,1),(0,0,1),(0,0,1),
+        (0,-1,0),(0,-1,0),(0,-1,0),(0,-1,0),
+        (0,1,0),(0,1,0),(0,1,0),(0,1,0),
+        (-1,0,0),(-1,0,0),(-1,0,0),(-1,0,0),
+        (1,0,0),(1,0,0),(1,0,0),(1,0,0)
+    ] (
+        interpolation = "faceVarying"
+    )
+}
+"""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_loads_normals_when_requested(self):
+        """get_mesh with load_normals=True produces a Mesh with non-None normals."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(self.QUAD_WITH_FACEVARYING_NORMALS)
+        prim = stage.GetPrimAtPath("/quad")
+
+        mesh_with = usd.get_mesh(prim, load_normals=True)
+        self.assertIsNotNone(mesh_with.normals, "Normals should be loaded when load_normals=True")
+
+        mesh_without = usd.get_mesh(prim, load_normals=False)
+        self.assertIsNone(mesh_without.normals, "Normals should be None when load_normals=False")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_facevarying_normals_produce_correct_directions(self):
+        """faceVarying normals on a flat quad should all point in +Z."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(self.QUAD_WITH_FACEVARYING_NORMALS)
+        prim = stage.GetPrimAtPath("/quad")
+
+        mesh = usd.get_mesh(prim, load_normals=True)
+        normals = np.asarray(mesh.normals)
+        expected_z = np.array([0.0, 0.0, 1.0])
+        for i, n in enumerate(normals):
+            np.testing.assert_allclose(
+                n,
+                expected_z,
+                atol=1e-5,
+                err_msg=f"Normal {i} should point in +Z for a flat quad",
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_cube_facevarying_normals_vertex_splitting(self):
+        """Cube with 90-degree face angles should be split (hard edges)."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(self.CUBE_WITH_FACEVARYING_NORMALS)
+        prim = stage.GetPrimAtPath("/cube")
+
+        mesh = usd.get_mesh(prim, load_normals=True)
+        # The default 25-degree threshold should split all cube edges (90 degrees).
+        # Each of the 6 faces has 4 corners, triangulated to 6 indices.
+        # With all edges split, we expect 6*4=24 unique vertices.
+        self.assertEqual(len(mesh.vertices), 24)
+        # Each normal should be unit-length and axis-aligned
+        normals = np.asarray(mesh.normals)
+        lengths = np.linalg.norm(normals, axis=1)
+        np.testing.assert_allclose(lengths, 1.0, atol=1e-5)
 
 
 if __name__ == "__main__":

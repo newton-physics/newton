@@ -17,6 +17,16 @@ from typing import Any
 
 import warp as wp
 
+from .spatial import (
+    quat_between_axes,
+    quat_between_vectors_robust,
+    quat_decompose,
+    quat_velocity,
+    transform_twist,
+    transform_wrench,
+    velocity_at_point,
+)
+
 
 @wp.func
 def boltzmann(a: float, b: float, alpha: float):
@@ -28,9 +38,9 @@ def boltzmann(a: float, b: float, alpha: float):
     as `alpha` decreases, the result approaches the mean of `a` and `b`.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
-        alpha (float): The sharpness parameter. Higher values make the function more "max-like".
+        a: The first value.
+        b: The second value.
+        alpha: The sharpness parameter. Higher values make the function more "max-like".
 
     Returns:
         float: The Boltzmann-weighted average of `a` and `b`.
@@ -49,9 +59,9 @@ def smooth_max(a: float, b: float, eps: float):
     The `eps` parameter controls the smoothness: larger values make the transition smoother.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
-        eps (float): Smoothing parameter (should be small and positive).
+        a: The first value.
+        b: The second value.
+        eps: Smoothing parameter (should be small and positive).
 
     Returns:
         float: A smooth approximation of `max(a, b)`.
@@ -69,9 +79,9 @@ def smooth_min(a: float, b: float, eps: float):
     The `eps` parameter controls the smoothness: larger values make the transition smoother.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
-        eps (float): Smoothing parameter (should be small and positive).
+        a: The first value.
+        b: The second value.
+        eps: Smoothing parameter (should be small and positive).
 
     Returns:
         float: A smooth approximation of `min(a, b)`.
@@ -88,8 +98,8 @@ def leaky_max(a: float, b: float):
     This is equivalent to `smooth_max(a, b, 1e-5)`.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
+        a: The first value.
+        b: The second value.
 
     Returns:
         float: A smooth, "leaky" maximum of `a` and `b`.
@@ -105,8 +115,8 @@ def leaky_min(a: float, b: float):
     This is equivalent to `smooth_min(a, b, 1e-5)`.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
+        a: The first value.
+        b: The second value.
 
     Returns:
         float: A smooth, "leaky" minimum of `a` and `b`.
@@ -120,8 +130,8 @@ def vec_min(a: wp.vec3, b: wp.vec3):
     Compute the elementwise minimum of two 3D vectors.
 
     Args:
-        a (wp.vec3): The first vector.
-        b (wp.vec3): The second vector.
+        a: The first vector.
+        b: The second vector.
 
     Returns:
         wp.vec3: The elementwise minimum.
@@ -135,8 +145,8 @@ def vec_max(a: wp.vec3, b: wp.vec3):
     Compute the elementwise maximum of two 3D vectors.
 
     Args:
-        a (wp.vec3): The first vector.
-        b (wp.vec3): The second vector.
+        a: The first vector.
+        b: The second vector.
 
     Returns:
         wp.vec3: The elementwise maximum.
@@ -152,8 +162,8 @@ def vec_leaky_min(a: wp.vec3, b: wp.vec3):
     This uses `leaky_min` for each component.
 
     Args:
-        a (wp.vec3): The first vector.
-        b (wp.vec3): The second vector.
+        a: The first vector.
+        b: The second vector.
 
     Returns:
         wp.vec3: The elementwise leaky minimum.
@@ -169,8 +179,8 @@ def vec_leaky_max(a: wp.vec3, b: wp.vec3):
     This uses `leaky_max` for each component.
 
     Args:
-        a (wp.vec3): The first vector.
-        b (wp.vec3): The second vector.
+        a: The first vector.
+        b: The second vector.
 
     Returns:
         wp.vec3: The elementwise leaky maximum.
@@ -184,7 +194,7 @@ def vec_abs(a: wp.vec3):
     Compute the elementwise absolute value of a 3D vector.
 
     Args:
-        a (wp.vec3): The input vector.
+        a: The input vector.
 
     Returns:
         wp.vec3: The elementwise absolute value.
@@ -281,9 +291,15 @@ __all__ = [
     "leaky_min",
     "normalize_with_norm",
     "orthonormal_basis",
+    "quat_between_axes",
+    "quat_between_vectors_robust",
+    "quat_decompose",
+    "quat_velocity",
     "safe_div",
     "smooth_max",
     "smooth_min",
+    "transform_twist",
+    "transform_wrench",
     "vec_abs",
     "vec_allclose",
     "vec_inside_limits",
@@ -291,4 +307,5 @@ __all__ = [
     "vec_leaky_min",
     "vec_max",
     "vec_min",
+    "velocity_at_point",
 ]

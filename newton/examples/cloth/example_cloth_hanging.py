@@ -140,7 +140,7 @@ class Example:
                 model=self.model,
                 iterations=self.iterations,
             )
-            self.solver.precompute(builder)
+            self.solver._precompute(builder)
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(
                 model=self.model,

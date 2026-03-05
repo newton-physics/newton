@@ -15,8 +15,8 @@
 
 import warp as wp
 
+from ...core import MAXVAL
 from ...geometry import GeoType
-from .ray import MAXVAL
 
 
 @wp.func

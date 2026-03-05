@@ -17,10 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...core import (
-    quat_decompose,
-    quat_twist,
-)
+from ...math import quat_decompose
 from ...sim import (
     Control,
     JointType,
@@ -212,7 +209,7 @@ def eval_body_joints(
         axis_c = wp.transform_vector(X_wc, axis)
 
         # swing twist decomposition
-        twist = quat_twist(axis, r_err)
+        twist = wp.quat_twist(axis, r_err)
 
         q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
         qd = wp.dot(w_err, axis_p)
@@ -343,7 +340,7 @@ def eval_body_joints(
             axis_c = wp.transform_vector(X_wc, axis)
 
             # swing twist decomposition
-            twist = quat_twist(axis, r_err)
+            twist = wp.quat_twist(axis, r_err)
 
             q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
             qd = wp.dot(w_err, axis_p)

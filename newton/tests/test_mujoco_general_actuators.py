@@ -18,11 +18,11 @@
 import unittest
 
 import numpy as np
-from unittest_utils import USD_AVAILABLE
 
 from newton import JointTargetMode, ModelBuilder
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests import get_asset
+from newton.tests.unittest_utils import USD_AVAILABLE
 
 MJCF_ACTUATORS = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_actuators">
@@ -523,9 +523,8 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         np.testing.assert_allclose(updated_gainprm[1, 5, 0], 200.0, atol=1e-5)
         np.testing.assert_allclose(updated_biasprm[1, 5, 1], -200.0, atol=1e-5)
-        # biasprm[2] is resolved from dampratio at compile time and sourced from
-        # world 0 for all worlds (no per-world dampratio variation).
-        np.testing.assert_allclose(updated_biasprm[1, 5, 2], -15.0, atol=1e-5)
+        # biasprm[2] is set per-world from user custom attributes.
+        np.testing.assert_allclose(updated_biasprm[1, 5, 2], -20.0, atol=1e-5)
         np.testing.assert_allclose(updated_gainprm[1, 6, 0], 120.0, atol=1e-5)
 
         for world in range(2):

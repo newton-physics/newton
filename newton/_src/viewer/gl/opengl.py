@@ -898,6 +898,17 @@ class RendererGL:
         self.sky_upper = self.background_color
         self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
+        # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
+        # that pyglet creates via XWayland. Force GLX so both libraries agree.
+        # Must be set before PyOpenGL is first imported (platform is selected
+        # once at import time).
+        if "PYOPENGL_PLATFORM" not in os.environ:
+            # WAYLAND_DISPLAY is the primary indicator; XDG_SESSION_TYPE is
+            # checked as a fallback for sessions where the socket is not yet set.
+            is_wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or os.environ.get("XDG_SESSION_TYPE") == "wayland"
+            if is_wayland:
+                os.environ["PYOPENGL_PLATFORM"] = "glx"
+
         try:
             import pyglet
 
@@ -990,8 +1001,7 @@ class RendererGL:
         self._frame_fbo = None
         self._frame_pbo = None
 
-        self._sun_direction = np.array((0.2, -0.3, 0.8))
-        self._sun_direction /= np.linalg.norm(self._sun_direction)
+        self._sun_direction = None  # set on first render based on camera up_axis
 
         self._light_color = (1.0, 1.0, 1.0)
 
@@ -1054,6 +1064,16 @@ class RendererGL:
         gl.glDepthRange(0.0, 1.0)
 
         self.camera = camera
+
+        # Lazy-init sun direction based on camera up axis
+        if self._sun_direction is None:
+            _sun_dirs = {
+                0: np.array((0.8, 0.2, -0.3)),  # X-up
+                1: np.array((0.2, 0.8, -0.3)),  # Y-up
+                2: np.array((0.2, -0.3, 0.8)),  # Z-up
+            }
+            d = _sun_dirs.get(camera.up_axis, _sun_dirs[2])
+            self._sun_direction = d / np.linalg.norm(d)
 
         # Store matrices for other methods
         self._view_matrix = self.camera.get_view_matrix()
@@ -1690,6 +1710,7 @@ class RendererGL:
             sky_upper=self.sky_upper,
             sky_lower=self.sky_lower,
             sun_direction=self._sun_direction,
+            up_axis=self.camera.up_axis,
         )
 
         gl.glBindVertexArray(self._sky_vao)

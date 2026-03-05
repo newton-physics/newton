@@ -175,7 +175,14 @@ def write_module_page(mod_name: str) -> None:
     title = mod_name
     underline = "=" * len(title)
 
-    lines: list[str] = [title, underline, ""]
+    lines: list[str] = [
+        ".. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers",
+        ".. SPDX-License-Identifier: CC-BY-4.0",
+        "",
+        title,
+        underline,
+        "",
+    ]
 
     # Module docstring if available
     doc = (module.__doc__ or "").strip()

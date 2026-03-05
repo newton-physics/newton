@@ -100,7 +100,7 @@ class SensorTiledCamera:
 
     Args:
         model: The Newton Model containing shapes to render.
-        options: Render Options.
+        config: Render Config.
     """
 
     RenderContext = RenderContext
@@ -108,7 +108,7 @@ class SensorTiledCamera:
     RenderOrder = RenderOrder
 
     @dataclass
-    class Options:
+    class Config:
         checkerboard_texture: bool = False
         default_light: bool = False
         default_light_shadows: bool = False
@@ -116,12 +116,12 @@ class SensorTiledCamera:
         colors_per_shape: bool = False
         backface_culling: bool = True
 
-    def __init__(self, model: Model, *, options: Options | None = None):
+    def __init__(self, model: Model, *, config: Config | None = None):
         self.model = model
 
         self.render_context = RenderContext(
             world_count=self.model.world_count,
-            options=RenderContext.Options(
+            config=RenderContext.Config(
                 enable_global_world=True,
                 enable_textures=False,
                 enable_shadows=False,
@@ -146,7 +146,7 @@ class SensorTiledCamera:
             if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.render_context.triangle_points = model.particle_q
                 self.render_context.triangle_indices = model.tri_indices.flatten()
-                self.render_context.options.enable_particles = False
+                self.render_context.config.enable_particles = False
 
         self.render_context.shape_enabled = wp.empty(
             self.model.shape_count, dtype=wp.uint32, device=self.render_context.device
@@ -188,15 +188,15 @@ class SensorTiledCamera:
 
         self.render_context.utils.compute_mesh_bounds()
 
-        if options is not None:
-            self.render_context.options.enable_backface_culling = options.backface_culling
-            if options.checkerboard_texture:
+        if config is not None:
+            self.render_context.config.enable_backface_culling = config.backface_culling
+            if config.checkerboard_texture:
                 self.assign_checkerboard_material_to_all_shapes()
-            if options.default_light:
-                self.create_default_light(options.default_light_shadows)
-            if options.colors_per_world:
+            if config.default_light:
+                self.create_default_light(config.default_light_shadows)
+            if config.colors_per_world:
                 self.assign_random_colors_per_world()
-            elif options.colors_per_shape:
+            elif config.colors_per_shape:
                 self.assign_random_colors_per_shape()
 
     def sync_transforms(self, state: State):

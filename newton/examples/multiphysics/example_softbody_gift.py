@@ -14,13 +14,13 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Falling Gift
+# Softbody Gift
 #
 # This simulation demonstrates four stacked soft body blocks with two cloth
 # straps wrapped around them. The blocks fall under gravity, and the cloth
 # straps hold them together.
 #
-# Command: uv run -m newton.examples.multiphysics.example_falling_gift
+# Command: uv run -m newton.examples softbody_gift
 #
 ###########################################################################
 

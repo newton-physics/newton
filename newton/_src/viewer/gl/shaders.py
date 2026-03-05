@@ -313,9 +313,10 @@ void main()
     // Blinn-Phong terms
     float NdotL = max(dot(N, L), 0.0);
     float NdotH = max(dot(N, H), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
 
     // Derive Blinn-Phong exponent from perceptual roughness.
-    // roughness 0 → very rough, 1 → perfectly smooth
+    // roughness 0 → perfectly smooth, 1 → very rough
     float gloss = clamp(1.0 - roughness, 0.0, 1.0);
     // Map gloss to exponent range ~[2, 1024]
     float shininess = 1.0 + pow(gloss, 4.0) * 1023.0;
@@ -349,8 +350,11 @@ void main()
     diffuse *= 1.0 - metallic;
     vec3 color = ambient + (1.0 - shadow) * spotlightAttenuation * (diffuse + spec);
 
+    // Fresnel darkening: reduce brightness at glancing angles for metals
+    color *= mix(1.0, pow(NdotV, 2.0), metallic);
+
     // environment reflection for metallic look (fade with roughness)
-    float env_lod = clamp(roughness * 4.0, 0.0, 4.0);
+    float env_lod = clamp(pow(roughness, 1.0/4.0), 0.0, 1.0) * 8.0;
     vec3 R = reflect(-V, N);
     vec3 env_color = sample_env_map(R, env_lod);
     env_color = pow(env_color, vec3(2.2)); // to linear
@@ -413,10 +417,12 @@ uniform vec3 sky_lower;
 uniform float far_plane;
 
 uniform vec3 sun_direction;
+uniform int up_axis;
 
 void main()
 {
-    float height = max(0.0, (FragPos.z/far_plane));//*0.5 + 0.5);
+    float h = up_axis == 0 ? FragPos.x : (up_axis == 1 ? FragPos.y : FragPos.z);
+    float height = max(0.0, h / far_plane);
     vec3 sky = mix(sky_lower, sky_upper, height);
 
     float diff = max(dot(sun_direction, normalize(FragPos)), 0.0);
@@ -594,6 +600,7 @@ class ShaderSky(ShaderGL):
             self.loc_far_plane = self._get_uniform_location("far_plane")
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_sun_direction = self._get_uniform_location("sun_direction")
+            self.loc_up_axis = self._get_uniform_location("up_axis")
 
     def update(
         self,
@@ -604,6 +611,7 @@ class ShaderSky(ShaderGL):
         sky_upper: tuple[float, float, float],
         sky_lower: tuple[float, float, float],
         sun_direction: tuple[float, float, float],
+        up_axis: int = 2,
     ):
         """Update all shader uniforms."""
         with self:
@@ -617,6 +625,7 @@ class ShaderSky(ShaderGL):
             self._gl.glUniform3f(self.loc_sky_upper, *sky_upper)
             self._gl.glUniform3f(self.loc_sky_lower, *sky_lower)
             self._gl.glUniform3f(self.loc_sun_direction, *sun_direction)
+            self._gl.glUniform1i(self.loc_up_axis, up_axis)
 
 
 class ShadowShader(ShaderGL):

@@ -31,7 +31,7 @@ Organization:
 
 import warp as wp
 
-from newton._src.core.spatial import quat_velocity
+from newton._src.math import quat_velocity
 from newton._src.sim import JointType
 from newton._src.solvers.solver import integrate_rigid_body
 

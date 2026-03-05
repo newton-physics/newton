@@ -110,7 +110,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         tiled_camera_sensor = SensorTiledCamera(
             model=model,
-            options=SensorTiledCamera.Options(
+            config=SensorTiledCamera.Config(
                 default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
             ),
         )

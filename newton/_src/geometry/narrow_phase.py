@@ -44,7 +44,7 @@ from ..geometry.collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
-from ..geometry.contact_data import ContactData, contact_passes_margin_check
+from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData, contact_passes_gap_check
 from ..geometry.contact_reduction import (
     ContactReductionFunctions,
     ContactStruct,
@@ -66,7 +66,7 @@ from ..geometry.support_function import (
     extract_shape_data,
 )
 from ..geometry.types import GeoType
-from ..utils.heightfield import HeightfieldData, get_triangle_from_heightfield_cell
+from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data, get_triangle_from_heightfield_cell
 
 
 @wp.struct
@@ -92,7 +92,7 @@ def write_contact_simple(
     Args:
         contact_data: ContactData struct containing contact information
         writer_data: ContactWriterData struct containing output arrays
-        output_index: If -1, use atomic_add to get the next available index if contact distance is less than margin. If >= 0, use this index directly and skip margin check.
+        output_index: If -1, use atomic_add to get the next available index if contact distance is less than gap_sum. If >= 0, use this index directly and skip gap check.
     """
     total_separation_needed = (
         contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
@@ -112,7 +112,7 @@ def write_contact_simple(
     d = distance - total_separation_needed
 
     if output_index < 0:
-        if d >= contact_data.margin:
+        if d >= contact_data.gap_sum:
             return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
     else:
@@ -240,31 +240,53 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             pos_b = wp.transform_get_translation(X_b)
             quat_a = wp.transform_get_rotation(X_a)
             quat_b = wp.transform_get_rotation(X_b)
-
-            # Calculate contact margin
-            margin_a = shape_gap[shape_a]
-            margin_b = shape_gap[shape_b]
-            margin = margin_a + margin_b
+            gap_a = shape_gap[shape_a]
+            gap_b = shape_gap[shape_b]
+            gap_sum = gap_a + gap_b
 
             # =====================================================================
-            # Route heightfield pairs to specialized buffer
+            # Route heightfield pairs.
+            # Heightfield-vs-mesh and heightfield-vs-heightfield go through the
+            # mesh-mesh SDF kernel (on-the-fly triangle + SDF evaluation).
+            # Other heightfield combinations (convex, plane) use the dedicated
+            # heightfield midphase with GJK/MPR per cell.
             # =====================================================================
             is_hfield_a = type_a == GeoType.HFIELD
             is_hfield_b = type_b == GeoType.HFIELD
 
-            # Skip unsupported heightfield combinations
-            if is_hfield_a and is_hfield_b:
-                continue
-            if type_a == GeoType.PLANE and is_hfield_b:
-                continue
-            if is_hfield_a and type_b == GeoType.MESH:
-                continue
+            if is_hfield_a or is_hfield_b:
+                is_mesh_like_a = type_a == GeoType.MESH or is_hfield_a
+                is_mesh_like_b = type_b == GeoType.MESH or is_hfield_b
 
-            # Route heightfield-convex to dedicated buffer
-            if is_hfield_a:
+                if is_mesh_like_a and is_mesh_like_b:
+                    # Heightfield-vs-heightfield is unsupported in this path.
+                    if is_hfield_a and is_hfield_b:
+                        continue
+                    # Normalize order so heightfield (if present) is always pair[0],
+                    # and mark pair[0] with a high-bit flag consumed by the SDF kernel.
+                    if is_hfield_b:
+                        encoded_a = shape_b | SHAPE_PAIR_HFIELD_BIT
+                        encoded_b = shape_a
+                    elif is_hfield_a:
+                        encoded_a = shape_a | SHAPE_PAIR_HFIELD_BIT
+                        encoded_b = shape_b
+                    else:
+                        encoded_a = shape_a
+                        encoded_b = shape_b
+                    idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
+                    if idx < shape_pairs_mesh_mesh.shape[0]:
+                        shape_pairs_mesh_mesh[idx] = wp.vec2i(encoded_a, encoded_b)
+                    continue
+
+                # All other heightfield pairs: midphase + GJK/MPR
+                # Normalize so the heightfield is always pair[0].
+                if is_hfield_a:
+                    hf_pair = wp.vec2i(shape_a, shape_b)
+                else:
+                    hf_pair = wp.vec2i(shape_b, shape_a)
                 idx = wp.atomic_add(shape_pairs_heightfield_count, 0, 1)
                 if idx < shape_pairs_heightfield.shape[0]:
-                    shape_pairs_heightfield[idx] = wp.vec2i(shape_a, shape_b)
+                    shape_pairs_heightfield[idx] = hf_pair
                 continue
 
             # =====================================================================
@@ -323,12 +345,13 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             if is_sphere_b or is_capsule_b:
                 radius_eff_b = scale_b[0]
 
-            # Initialize contact result storage (supports up to 2 contacts)
-            num_contacts = 0
-            contact_dist_0 = float(0.0)
-            contact_dist_1 = float(0.0)
-            contact_dist_2 = float(0.0)
-            contact_dist_3 = float(0.0)
+            # Initialize contact result storage (up to 4 contacts).
+            # Distances default to MAXVAL so unused slots are automatically
+            # excluded by the unified num_contacts count after the if/elif chain.
+            contact_dist_0 = float(MAXVAL)
+            contact_dist_1 = float(MAXVAL)
+            contact_dist_2 = float(MAXVAL)
+            contact_dist_3 = float(MAXVAL)
             contact_pos_0 = wp.vec3()
             contact_pos_1 = wp.vec3()
             contact_pos_2 = wp.vec3()
@@ -343,7 +366,6 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 sphere_radius = scale_b[0]
                 contact_dist_0, contact_pos_0 = collide_plane_sphere(plane_normal, pos_a, pos_b, sphere_radius)
                 contact_normal = plane_normal
-                num_contacts = 1
 
             # -----------------------------------------------------------------
             # Plane-Ellipsoid collision (type_a=PLANE=0, type_b=ELLIPSOID=4)
@@ -356,7 +378,6 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_dist_0, contact_pos_0, contact_normal = collide_plane_ellipsoid(
                     plane_normal, pos_a, pos_b, ellipsoid_rot, ellipsoid_size
                 )
-                num_contacts = 1
 
             # -----------------------------------------------------------------
             # Plane-Box collision (type_a=PLANE=0, type_b=BOX=6)
@@ -368,7 +389,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 box_size = scale_b
 
                 dists4_box, positions4_box, contact_normal = collide_plane_box(
-                    plane_normal, pos_a, pos_b, box_rot, box_size, margin
+                    plane_normal, pos_a, pos_b, box_rot, box_size, gap_sum
                 )
 
                 contact_dist_0 = dists4_box[0]
@@ -379,7 +400,6 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_pos_1 = wp.vec3(positions4_box[1, 0], positions4_box[1, 1], positions4_box[1, 2])
                 contact_pos_2 = wp.vec3(positions4_box[2, 0], positions4_box[2, 1], positions4_box[2, 2])
                 contact_pos_3 = wp.vec3(positions4_box[3, 0], positions4_box[3, 1], positions4_box[3, 2])
-                num_contacts = 4
 
             # -----------------------------------------------------------------
             # Sphere-Sphere collision (type_a=SPHERE=2, type_b=SPHERE=2)
@@ -388,7 +408,6 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 radius_a = scale_a[0]
                 radius_b = scale_b[0]
                 contact_dist_0, contact_pos_0, contact_normal = collide_sphere_sphere(pos_a, radius_a, pos_b, radius_b)
-                num_contacts = 1
 
             # -----------------------------------------------------------------
             # Plane-Capsule collision (type_a=PLANE=0, type_b=CAPSULE=3)
@@ -409,7 +428,6 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_pos_0 = wp.vec3(positions[0, 0], positions[0, 1], positions[0, 2])
                 contact_pos_1 = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
                 contact_normal = plane_normal
-                num_contacts = 2
 
             # -----------------------------------------------------------------
             # Plane-Cylinder collision (type_a=PLANE=0, type_b=CYLINDER=5)
@@ -433,7 +451,6 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_pos_1 = wp.vec3(positions4[1, 0], positions4[1, 1], positions4[1, 2])
                 contact_pos_2 = wp.vec3(positions4[2, 0], positions4[2, 1], positions4[2, 2])
                 contact_pos_3 = wp.vec3(positions4[3, 0], positions4[3, 1], positions4[3, 2])
-                num_contacts = 4
 
             # -----------------------------------------------------------------
             # Sphere-Capsule collision (type_a=SPHERE=2, type_b=CAPSULE=3)
@@ -446,7 +463,6 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_dist_0, contact_pos_0, contact_normal = collide_sphere_capsule(
                     pos_a, sphere_radius, pos_b, capsule_axis, capsule_radius, capsule_half_length
                 )
-                num_contacts = 1
 
             # -----------------------------------------------------------------
             # Capsule-Capsule collision (type_a=CAPSULE=3, type_b=CAPSULE=3)
@@ -466,14 +482,8 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
 
                 contact_dist_0 = dists[0]
                 contact_pos_0 = wp.vec3(positions[0, 0], positions[0, 1], positions[0, 2])
-
-                # Check if second contact is valid (parallel axes case)
-                if dists[1] < MAXVAL:
-                    contact_dist_1 = dists[1]
-                    contact_pos_1 = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
-                    num_contacts = 2
-                else:
-                    num_contacts = 1
+                contact_dist_1 = dists[1]
+                contact_pos_1 = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
 
             # -----------------------------------------------------------------
             # Sphere-Cylinder collision (type_a=SPHERE=2, type_b=CYLINDER=5)
@@ -486,7 +496,6 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_dist_0, contact_pos_0, contact_normal = collide_sphere_cylinder(
                     pos_a, sphere_radius, pos_b, cylinder_axis, cylinder_radius, cylinder_half_height
                 )
-                num_contacts = 1
 
             # -----------------------------------------------------------------
             # Sphere-Box collision (type_a=SPHERE=2, type_b=BOX=6)
@@ -498,11 +507,16 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_dist_0, contact_pos_0, contact_normal = collide_sphere_box(
                     pos_a, sphere_radius, pos_b, box_rot, box_size
                 )
-                num_contacts = 1
 
             # =====================================================================
             # Write all contacts (single write block for 0 to 4 contacts)
             # =====================================================================
+            num_contacts = (
+                int(contact_dist_0 < MAXVAL)
+                + int(contact_dist_1 < MAXVAL)
+                + int(contact_dist_2 < MAXVAL)
+                + int(contact_dist_3 < MAXVAL)
+            )
             if num_contacts > 0:
                 # Prepare contact data (shared fields for both contacts)
                 contact_data = ContactData()
@@ -513,32 +527,32 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_data.margin_b = margin_offset_b
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
-                contact_data.margin = margin
+                contact_data.gap_sum = gap_sum
 
                 # Check margin for all possible contacts
                 contact_0_valid = False
                 if contact_dist_0 < MAXVAL:
                     contact_data.contact_point_center = contact_pos_0
                     contact_data.contact_distance = contact_dist_0
-                    contact_0_valid = contact_passes_margin_check(contact_data)
+                    contact_0_valid = contact_passes_gap_check(contact_data)
 
                 contact_1_valid = False
-                if num_contacts > 1 and contact_dist_1 < MAXVAL:
+                if contact_dist_1 < MAXVAL:
                     contact_data.contact_point_center = contact_pos_1
                     contact_data.contact_distance = contact_dist_1
-                    contact_1_valid = contact_passes_margin_check(contact_data)
+                    contact_1_valid = contact_passes_gap_check(contact_data)
 
                 contact_2_valid = False
-                if num_contacts > 2 and contact_dist_2 < MAXVAL:
+                if contact_dist_2 < MAXVAL:
                     contact_data.contact_point_center = contact_pos_2
                     contact_data.contact_distance = contact_dist_2
-                    contact_2_valid = contact_passes_margin_check(contact_data)
+                    contact_2_valid = contact_passes_gap_check(contact_data)
 
                 contact_3_valid = False
-                if num_contacts > 3 and contact_dist_3 < MAXVAL:
+                if contact_dist_3 < MAXVAL:
                     contact_data.contact_point_center = contact_pos_3
                     contact_data.contact_distance = contact_dist_3
-                    contact_3_valid = contact_passes_margin_check(contact_data)
+                    contact_3_valid = contact_passes_gap_check(contact_data)
 
                 # Count valid contacts and allocate consecutive indices
                 num_valid = int(contact_0_valid) + int(contact_1_valid) + int(contact_2_valid) + int(contact_3_valid)
@@ -669,38 +683,38 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 aabb_b_lower = shape_aabb_lower[shape_b]
                 aabb_b_upper = shape_aabb_upper[shape_b]
             if wp.static(not external_aabb):
-                margin_a = shape_gap[shape_a]
-                margin_b = shape_gap[shape_b]
-                margin_vec_a = wp.vec3(margin_a, margin_a, margin_a)
-                margin_vec_b = wp.vec3(margin_b, margin_b, margin_b)
+                gap_a = shape_gap[shape_a]
+                gap_b = shape_gap[shape_b]
+                gap_vec_a = wp.vec3(gap_a, gap_a, gap_a)
+                gap_vec_b = wp.vec3(gap_b, gap_b, gap_b)
 
                 # Shape A AABB
                 if is_infinite_plane_a:
                     radius_a = shape_collision_radius[shape_a]
                     half_extents_a = wp.vec3(radius_a, radius_a, radius_a)
-                    aabb_a_lower = pos_a - half_extents_a - margin_vec_a
-                    aabb_a_upper = pos_a + half_extents_a + margin_vec_a
+                    aabb_a_lower = pos_a - half_extents_a - gap_vec_a
+                    aabb_a_upper = pos_a + half_extents_a + gap_vec_a
                 else:
                     data_provider = SupportMapDataProvider()
                     aabb_a_lower, aabb_a_upper = compute_tight_aabb_from_support(
                         shape_data_a, quat_a, pos_a, data_provider
                     )
-                    aabb_a_lower = aabb_a_lower - margin_vec_a
-                    aabb_a_upper = aabb_a_upper + margin_vec_a
+                    aabb_a_lower = aabb_a_lower - gap_vec_a
+                    aabb_a_upper = aabb_a_upper + gap_vec_a
 
                 # Shape B AABB
                 if is_infinite_plane_b:
                     radius_b = shape_collision_radius[shape_b]
                     half_extents_b = wp.vec3(radius_b, radius_b, radius_b)
-                    aabb_b_lower = pos_b - half_extents_b - margin_vec_b
-                    aabb_b_upper = pos_b + half_extents_b + margin_vec_b
+                    aabb_b_lower = pos_b - half_extents_b - gap_vec_b
+                    aabb_b_upper = pos_b + half_extents_b + gap_vec_b
                 else:
                     data_provider = SupportMapDataProvider()
                     aabb_b_lower, aabb_b_upper = compute_tight_aabb_from_support(
                         shape_data_b, quat_b, pos_b, data_provider
                     )
-                    aabb_b_lower = aabb_b_lower - margin_vec_b
-                    aabb_b_upper = aabb_b_upper + margin_vec_b
+                    aabb_b_lower = aabb_b_lower - gap_vec_b
+                    aabb_b_upper = aabb_b_upper + gap_vec_b
 
             # Compute bounding spheres and check for overlap (early rejection)
             bsphere_center_a, bsphere_radius_a = compute_bounding_sphere_from_aabb(aabb_a_lower, aabb_a_upper)
@@ -720,10 +734,10 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
             ):
                 continue
 
-            # Compute contact margin
-            margin_a = shape_gap[shape_a]
-            margin_b = shape_gap[shape_b]
-            margin = margin_a + margin_b
+            # Compute pairwise gap sum for contact detection
+            gap_a = shape_gap[shape_a]
+            gap_b = shape_gap[shape_b]
+            gap_sum = gap_a + gap_b
 
             # Find and write contacts using GJK/MPR
             wp.static(create_find_contacts(writer_func))(
@@ -737,7 +751,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 is_infinite_plane_b,
                 bsphere_radius_a,
                 bsphere_radius_b,
-                margin,
+                gap_sum,
                 shape_a,
                 shape_b,
                 margin_offset_a,
@@ -805,13 +819,12 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         # Get non-mesh shape world transform
         X_ws = shape_transform[non_mesh_shape]
 
-        # Use per-shape contact margin for the non-mesh shape
-        # Sum per-shape contact gaps for consistent pairwise thresholding
-        margin_non_mesh = shape_gap[non_mesh_shape]
-        margin_mesh = shape_gap[mesh_shape]
-        margin = margin_non_mesh + margin_mesh
+        # Use per-shape contact gaps for consistent pairwise thresholding.
+        gap_non_mesh = shape_gap[non_mesh_shape]
+        gap_mesh = shape_gap[mesh_shape]
+        gap_sum = gap_non_mesh + gap_mesh
 
-        # Call mesh_vs_convex_midphase with the shape_data and margin
+        # Call mesh_vs_convex_midphase with the shape_data and pair gap sum.
         mesh_vs_convex_midphase(
             j,
             mesh_shape,
@@ -822,7 +835,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             shape_types,
             shape_data,
             shape_source,
-            margin,
+            gap_sum,
             triangle_pairs,
             triangle_pairs_count,
         )
@@ -887,11 +900,10 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             # Extract margin offset for shape A (signed distance padding)
             margin_offset_a = shape_data[shape_a][3]
 
-            # Use per-shape contact margin for contact detection
             # Sum per-shape contact gaps for consistent pairwise thresholding
-            margin_a = shape_gap[shape_a]
-            margin_b = shape_gap[shape_b]
-            margin = margin_a + margin_b
+            gap_a = shape_gap[shape_a]
+            gap_b = shape_gap[shape_b]
+            gap_sum = gap_a + gap_b
 
             # Compute and write contacts using GJK/MPR with standard post-processing
             wp.static(create_compute_gjk_mpr_contacts(writer_func))(
@@ -901,7 +913,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
                 quat_b,
                 pos_a,
                 pos_b,
-                margin,
+                gap_sum,
                 shape_a,
                 shape_b,
                 margin_offset_a,
@@ -986,7 +998,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Use per-shape contact gap for contact detection threshold
             gap_mesh = shape_gap[mesh_shape]
             gap_plane = shape_gap[plane_shape]
-            margin = gap_mesh + gap_plane
+            gap_sum = gap_mesh + gap_plane
 
             # Strided loop over vertices across all threads in the launch
             total_num_threads = total_num_blocks * wp.block_dim()
@@ -1005,7 +1017,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                 distance = wp.dot(diff, plane_normal)
 
                 # Check if this vertex generates a contact
-                if distance < margin + total_margin_offset:
+                if distance < gap_sum + total_margin_offset:
                     # Contact position is the midpoint
                     contact_pos = (vertex_world + point_on_plane) * 0.5
 
@@ -1023,7 +1035,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                     contact_data.margin_b = margin_offset_plane
                     contact_data.shape_a = mesh_shape
                     contact_data.shape_b = plane_shape
-                    contact_data.margin = margin
+                    contact_data.gap_sum = gap_sum
 
                     if writer_data.contact_count[0] < writer_data.contact_max:
                         writer_func(contact_data, writer_data, -1)
@@ -1121,7 +1133,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Use per-shape contact gap for contact detection threshold
             gap_mesh = shape_gap[mesh_shape]
             gap_plane = shape_gap[plane_shape]
-            margin = gap_mesh + gap_plane
+            gap_sum = gap_mesh + gap_plane
 
             # Reset contact buffer for this pair
             for i in range(t, wp.static(reduction_slot_count), wp.block_dim()):
@@ -1155,7 +1167,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                     distance = wp.dot(diff, plane_normal)
 
                     # Check if this vertex generates a contact
-                    if distance < margin + total_margin_offset:
+                    if distance < gap_sum + total_margin_offset:
                         has_contact = True
 
                         # Contact position is the midpoint
@@ -1201,7 +1213,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                 contact_data.margin_b = margin_offset_plane
                 contact_data.shape_a = mesh_shape
                 contact_data.shape_b = plane_shape
-                contact_data.margin = margin
+                contact_data.gap_sum = gap_sum
 
                 if writer_data.contact_count[0] < writer_data.contact_max:
                     writer_func(contact_data, writer_data, -1)
@@ -1263,8 +1275,8 @@ def heightfield_midphase_kernel(
 
         # Use bounding sphere radius for conservative AABB in heightfield-local space
         radius = shape_collision_radius[other_shape]
-        margin = shape_gap[hfield_shape] + shape_gap[other_shape]
-        extent = radius + margin
+        gap_sum = shape_gap[hfield_shape] + shape_gap[other_shape]
+        extent = radius + gap_sum
 
         aabb_lower = pos_in_hfield - wp.vec3(extent, extent, extent)
         aabb_upper = pos_in_hfield + wp.vec3(extent, extent, extent)
@@ -1335,9 +1347,9 @@ def create_heightfield_triangle_contacts_kernel(writer_func: Any):
             )
 
             margin_offset_a = shape_data[hfield_shape][3]
-            margin_a = shape_gap[hfield_shape]
-            margin_b = shape_gap[convex_shape]
-            margin = margin_a + margin_b
+            gap_a = shape_gap[hfield_shape]
+            gap_b = shape_gap[convex_shape]
+            gap_sum = gap_a + gap_b
 
             # Process 2 triangles per cell
             for tri_sub in range(2):
@@ -1352,7 +1364,7 @@ def create_heightfield_triangle_contacts_kernel(writer_func: Any):
                     quat_b,
                     v0_world,
                     pos_b,
-                    margin,
+                    gap_sum,
                     hfield_shape,
                     convex_shape,
                     margin_offset_a,
@@ -1440,7 +1452,8 @@ def verify_narrow_phase_buffers(
         )
     if hf_cells_count[0] > max_hf_cells:
         wp.printf(
-            "Warning: Heightfield cell pair buffer overflowed %d > %d.\n",
+            "Warning: Heightfield cell pair buffer overflowed %d > %d. "
+            "Increase max_heightfield_cell_pairs when constructing NarrowPhase/CollisionPipeline.\n",
             hf_cells_count[0],
             max_hf_cells,
         )
@@ -1460,11 +1473,21 @@ def verify_narrow_phase_buffers(
 
 
 class NarrowPhase:
+    """Resolve broad-phase shape pairs into simulation contacts.
+
+    This class orchestrates the narrow-phase collision pipeline by launching the
+    appropriate Warp kernels for primitive, mesh, heightfield, and SDF shape
+    pairs. It owns the intermediate counters and pair buffers used while
+    processing candidate pairs, then writes final contacts through a configurable
+    contact writer function.
+    """
+
     def __init__(
         self,
         *,
         max_candidate_pairs: int,
         max_triangle_pairs: int = 1000000,
+        max_heightfield_cell_pairs: int = 1000000,
         reduce_contacts: bool = True,
         device: Devicelike | None = None,
         shape_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
@@ -1474,13 +1497,16 @@ class NarrowPhase:
         hydroelastic_sdf: HydroelasticSDF | None = None,
         has_meshes: bool = True,
         has_heightfields: bool = False,
-    ):
+    ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
 
         Args:
             max_candidate_pairs: Maximum number of candidate pairs from broad phase
             max_triangle_pairs: Maximum number of mesh triangle pairs (conservative estimate)
+            max_heightfield_cell_pairs:
+                Maximum number of heightfield cell pairs generated by the heightfield
+                midphase.
             reduce_contacts: Whether to reduce contacts for mesh-mesh and mesh-plane collisions.
                 When True, uses shared memory contact reduction to select representative contacts.
                 This improves performance and stability for meshes with many vertices. Defaults to True.
@@ -1499,6 +1525,9 @@ class NarrowPhase:
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
+        if max_heightfield_cell_pairs <= 0:
+            raise ValueError("max_heightfield_cell_pairs must be > 0")
+        self.max_heightfield_cell_pairs = max_heightfield_cell_pairs
         self.device = device
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
@@ -1569,6 +1598,7 @@ class NarrowPhase:
                 self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     writer_func,
                     contact_reduction_funcs=self.contact_reduction_funcs,
+                    enable_heightfields=has_heightfields,
                 )
             else:
                 self.mesh_mesh_contacts_kernel = None
@@ -1642,7 +1672,14 @@ class NarrowPhase:
 
             hf_n = max_candidate_pairs if has_heightfields else 1
             self.shape_pairs_heightfield = wp.zeros(hf_n, dtype=wp.vec2i, device=device)
-            self.heightfield_cell_pairs = wp.zeros(hf_n * 20 if has_heightfields else 1, dtype=wp.vec4i, device=device)
+            hf_cells_capacity = int(max_heightfield_cell_pairs) if has_heightfields else 1
+            self.heightfield_cell_pairs = wp.zeros(hf_cells_capacity, dtype=wp.vec4i, device=device)
+
+            # Empty fallback arrays so the mesh-mesh SDF kernel can always receive
+            # HeightfieldData / elevation arrays even when no heightfields exist.
+            empty_hfield = create_empty_heightfield_data()
+            self._empty_heightfield_data = wp.array([empty_hfield], dtype=HeightfieldData, device=device)
+            self._empty_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
 
             self.empty_tangent = None
 
@@ -1679,7 +1716,7 @@ class NarrowPhase:
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
         candidate_pair_count: wp.array(dtype=wp.int32, ndim=1),  # Size one array
         shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
-        shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
+        shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, margin w)
         shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
         shape_source: wp.array(dtype=wp.uint64, ndim=1),  # The index into the source array, type define by shape_types
         sdf_data: wp.array(dtype=SDFData, ndim=1),  # Compact SDF data table
@@ -1693,8 +1730,8 @@ class NarrowPhase:
         shape_heightfield_data: wp.array(dtype=HeightfieldData, ndim=1) | None = None,
         heightfield_elevation_data: wp.array(dtype=wp.float32, ndim=1) | None = None,
         writer_data: Any,
-        device=None,  # Device to launch on
-    ):
+        device: Devicelike | None = None,  # Device to launch on
+    ) -> None:
         """
         Launch narrow phase collision detection with a custom contact writer struct.
 
@@ -1702,7 +1739,7 @@ class NarrowPhase:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
             candidate_pair_count: Single-element array containing the number of candidate pairs
             shape_types: Array of geometry types for all shapes
-            shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
+            shape_data: Array of vec4 containing scale (xyz) and margin (w) for each shape
             shape_transform: Array of world-space transforms for each shape
             shape_source: Array of source pointers (mesh IDs, etc.) for each shape
             sdf_data: Compact array of SDFData structs
@@ -1928,8 +1965,13 @@ class NarrowPhase:
                 )
 
             # Launch mesh-mesh contact processing kernel on CUDA.
-            # The kernel supports both SDF-backed and BVH fallback paths via shape_sdf_index.
+            # The kernel supports both SDF-backed and BVH fallback paths via shape_sdf_index,
+            # as well as on-the-fly heightfield evaluation via shape_heightfield_data.
             if wp.get_device(device).is_cuda:
+                hf_data = shape_heightfield_data if shape_heightfield_data is not None else self._empty_heightfield_data
+                hf_elev = (
+                    heightfield_elevation_data if heightfield_elevation_data is not None else self._empty_elevation_data
+                )
                 wp.launch_tiled(
                     kernel=self.mesh_mesh_contacts_kernel,
                     dim=(self.num_tile_blocks,),
@@ -1945,6 +1987,8 @@ class NarrowPhase:
                         shape_voxel_resolution,
                         self.shape_pairs_mesh_mesh,
                         self.shape_pairs_mesh_mesh_count,
+                        hf_data,
+                        hf_elev,
                         writer_data,
                         self.num_tile_blocks,
                     ],
@@ -2046,7 +2090,7 @@ class NarrowPhase:
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
         candidate_pair_count: wp.array(dtype=wp.int32, ndim=1),  # Size one array
         shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
-        shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
+        shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, margin w)
         shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
         shape_source: wp.array(dtype=wp.uint64, ndim=1),  # The index into the source array, type define by shape_types
         sdf_data: wp.array(dtype=SDFData, ndim=1) | None = None,  # Compact SDF data table
@@ -2067,9 +2111,9 @@ class NarrowPhase:
         contact_count: wp.array(dtype=int),  # Number of active contacts after narrow
         contact_tangent: wp.array(dtype=wp.vec3)
         | None = None,  # Represents x axis of local contact frame (None to disable)
-        device=None,  # Device to launch on
-        **kwargs,
-    ):
+        device: Devicelike | None = None,  # Device to launch on
+        **kwargs: Any,
+    ) -> None:
         """
         Launch narrow phase collision detection on candidate pairs from broad phase.
 
@@ -2077,7 +2121,7 @@ class NarrowPhase:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
             candidate_pair_count: Single-element array containing the number of candidate pairs
             shape_types: Array of geometry types for all shapes
-            shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
+            shape_data: Array of vec4 containing scale (xyz) and margin (w) for each shape
             shape_transform: Array of world-space transforms for each shape
             shape_source: Array of source pointers (mesh IDs, etc.) for each shape
             sdf_data: Compact array of SDFData structs
