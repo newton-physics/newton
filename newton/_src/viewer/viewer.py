@@ -704,6 +704,20 @@ class ViewerBase(ABC):
 
         # Get depth range for colormap
         depths = contact_surface_data.contact_surface_depth[:num_contacts]
+        depths_np = depths.numpy()
+        if penetrating_only:
+            pen = depths_np[depths_np < 0.0]
+            if pen.size > 0:
+                min_depth = 0.0
+                max_depth = float(-pen.min())  # deepest penetration magnitude
+            else:
+                min_depth = 0.0
+                max_depth = 0.0005
+        else:
+            min_depth = float(depths_np.min())
+            max_depth = float(depths_np.max())
+        if max_depth <= min_depth + 1.0e-10:
+            max_depth = min_depth + 0.0005
 
         # Convert triangles to line segments with depth-based colors
         vertices = contact_surface_data.contact_surface_point
@@ -719,8 +733,8 @@ class ViewerBase(ABC):
                 self.world_offsets,
                 self._visible_worlds_mask,
                 num_contacts,
-                0.0,
-                0.0005,
+                min_depth,
+                max_depth,
                 penetrating_only,
             ],
             outputs=[self._hydro_surface_line_starts, self._hydro_surface_line_ends, self._hydro_surface_line_colors],

@@ -270,10 +270,11 @@ class MeshGL:
 
         self._points = points
 
-        # only update indices the first time (no topology changes)
-        if self.indices is None:
+        # Re-upload indices when they change (supports dynamic topology).
+        new_num = int(len(indices))
+        if self.indices is None or new_num != self.num_indices:
             self.indices = wp.clone(indices).view(dtype=wp.uint32)
-            self.num_indices = int(len(self.indices))
+            self.num_indices = new_num
 
             host_indices = self.indices.numpy()
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)

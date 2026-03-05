@@ -511,10 +511,11 @@ class Example:
         if self.display_percentile_high <= self.display_percentile_low + 1.0:
             self.display_percentile_high = min(100.0, self.display_percentile_low + 1.0)
 
-        self.show_shape = self.viewer_is_viser
+        self.show_shape = True
         self.show_shape_wireframe = not self.viewer_is_viser
         self.show_slice = True
         self.show_contact_surface = True
+        self.cross_section = not self.viewer_is_viser
 
         self.mesh = self._create_shape_mesh(args)
         self._build_hydroelastic_reference(args)
@@ -536,7 +537,8 @@ class Example:
         self.last_contact_face_count = 0
         self.last_penetrating_face_count = 0
 
-        self.slice_indices = wp.array(build_regular_grid_indices(self.resolution), dtype=wp.int32, device=self.device)
+        self._full_grid_indices = build_regular_grid_indices(self.resolution)
+        self.slice_indices = wp.array(self._full_grid_indices, dtype=wp.int32, device=self.device)
         self.slice_uvs = wp.array(build_regular_grid_uvs(self.resolution), dtype=wp.vec2, device=self.device)
         self.slice_texture = np.zeros((self.resolution, self.resolution, 3), dtype=np.uint8)
         self._slice_points_viser = np.zeros((0, 3), dtype=np.float32)
@@ -555,11 +557,13 @@ class Example:
         self.support_materials = wp.array([wp.vec4(0.55, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=self.device)
         self._refresh_shape_materials()
         line_starts, line_ends = build_mesh_edge_lines(self.mesh)
+        self._original_line_starts_np = line_starts
+        self._original_line_ends_np = line_ends
         self.shape_line_starts = wp.array(line_starts, dtype=wp.vec3, device=self.device)
         self.shape_line_ends = wp.array(line_ends, dtype=wp.vec3, device=self.device)
 
         if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(wp.vec3(2.5, -2.0, 1.6), -20.0, 145.0)
+            self.viewer.set_camera(wp.vec3(2.5, 2.0, 1.6), -30.0, 225.0)
 
         if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
@@ -676,6 +680,7 @@ class Example:
             self._viser_controls["show_contact_surface"] = gui.add_checkbox(
                 "Show Contact Surface", self.show_contact_surface
             )
+            self._viser_controls["cross_section"] = gui.add_checkbox("Cross Section", self.cross_section)
             self._viser_controls["animate_slice"] = gui.add_checkbox("Animate Slice", self.animate_slice)
             self._viser_controls["slice_position"] = gui.add_slider(
                 "Slice Position",
@@ -751,6 +756,10 @@ class Example:
             self.show_contact_surface = show_contact_surface
             if hasattr(self.viewer, "show_hydro_contact_surface"):
                 self.viewer.show_hydro_contact_surface = self.show_contact_surface
+        cross_section = bool(self._viser_controls["cross_section"].value)
+        if self.cross_section != cross_section:
+            self.cross_section = cross_section
+            self._slice_dirty = True
         if self.slice_axis != axis:
             self.slice_axis = axis
             self._slice_dirty = True
@@ -804,7 +813,7 @@ class Example:
         support_hx = max(0.20, 0.75 * float(extents[0]))
         support_hy = max(0.20, 0.75 * float(extents[1]))
         support_hz = max(0.05, 0.20 * float(extents[2]))
-        overlap = max(0.003, 0.02 * float(extents[2]))
+        overlap = max(0.01, 0.15 * float(extents[2]))
         support_center_xy = 0.5 * (v_min[:2] + v_max[:2])
         support_top = float(v_min[2]) + overlap
         support_center = wp.vec3(
@@ -1040,12 +1049,42 @@ class Example:
             clipped_mesh_slice=self.clip_slice_to_sdf,
         )
         self.slice_texture = density_to_rgb_image(normalized)
+
+        # Filter triangles to only include those where at least one vertex is
+        # inside the shape so the slice mesh conforms to the shape boundary.
+        inside_flat = self.slice_inside_flag.numpy().reshape(-1) > 0.0
+        tri_indices = self._full_grid_indices.reshape(-1, 3)
+        keep_tris = inside_flat[tri_indices[:, 0]] | inside_flat[tri_indices[:, 1]] | inside_flat[tri_indices[:, 2]]
+        filtered = tri_indices[keep_tris].reshape(-1)
+        if filtered.size > 0:
+            self.slice_indices = wp.array(filtered, dtype=wp.int32, device=self.device)
+        else:
+            self.slice_indices = wp.array(np.zeros(3, dtype=np.int32), dtype=wp.int32, device=self.device)
+
         if self.viewer_is_viser:
             inside_mask = (self.slice_inside_flag.numpy() > 0.0).reshape(-1)
             points_flat = self.slice_points.numpy().reshape((-1, 3))
             colors_flat = self.slice_texture.reshape((-1, 3))
             self._slice_points_viser = points_flat[inside_mask].astype(np.float32, copy=False)
             self._slice_colors_viser = colors_flat[inside_mask].astype(np.uint8, copy=False)
+
+        # Cross-section: clip wireframe edges at the slice plane so the
+        # interior heatmap is visible alongside the shape.
+        if self.cross_section:
+            slice_world = float(self.sdf_center[self.slice_axis]) + axis_position
+            starts = self._original_line_starts_np
+            ends = self._original_line_ends_np
+            keep = (starts[:, self.slice_axis] <= slice_world) | (ends[:, self.slice_axis] <= slice_world)
+            if np.any(keep):
+                self.shape_line_starts = wp.array(starts[keep], dtype=wp.vec3, device=self.device)
+                self.shape_line_ends = wp.array(ends[keep], dtype=wp.vec3, device=self.device)
+            else:
+                self.shape_line_starts = wp.array(starts[:1], dtype=wp.vec3, device=self.device)
+                self.shape_line_ends = wp.array(ends[:1], dtype=wp.vec3, device=self.device)
+        elif len(self.shape_line_starts) != len(self._original_line_starts_np):
+            self.shape_line_starts = wp.array(self._original_line_starts_np, dtype=wp.vec3, device=self.device)
+            self.shape_line_ends = wp.array(self._original_line_ends_np, dtype=wp.vec3, device=self.device)
+
         self._slice_dirty = False
 
     def _render_slice_viser(self):
@@ -1192,6 +1231,9 @@ class Example:
 
         _changed, self.show_shape = imgui.checkbox("Show Shape", self.show_shape)
         _changed, self.show_shape_wireframe = imgui.checkbox("Shape Wireframe", self.show_shape_wireframe)
+        changed, self.cross_section = imgui.checkbox("Cross Section", self.cross_section)
+        if changed:
+            self._slice_dirty = True
         _changed, self.show_slice = imgui.checkbox("Show Slice", self.show_slice)
         changed, self.show_contact_surface = imgui.checkbox("Show Contact Surface", self.show_contact_surface)
         if changed and hasattr(self.viewer, "show_hydro_contact_surface"):
@@ -1376,7 +1418,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--slice-speed",
         type=float,
-        default=1.5,
+        default=0.5,
         help="Animation speed [rad/s] for --animate-slice.",
     )
     parser.add_argument(
