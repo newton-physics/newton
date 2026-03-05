@@ -1128,7 +1128,12 @@ class Gaussian:
         self.com = wp.vec3()
         self.I = wp.mat33()
         self.is_solid = False
+
+        # Viewer Options
+        # Show/hide the gaussian in the viewer
         self.show_in_viewer = True
+
+        # Max number of points to represent in the viewer
         self.max_points_in_viewer = 100_000
 
     # ---- Properties ----------------------------------------------------------
