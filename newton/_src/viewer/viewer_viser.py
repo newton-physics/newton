@@ -13,16 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import inspect
+import os
+import warnings
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton.utils import create_plane_mesh
 
-from ..core.types import override
+from ..core.types import nparray, override
+from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -48,7 +53,7 @@ class ViewerViser(ViewerBase):
         """Lazily import and return the viser module."""
         if cls._viser_module is None:
             try:
-                import viser  # noqa: PLC0415
+                import viser
 
                 cls._viser_module = viser
             except ImportError as e:
@@ -63,6 +68,44 @@ class ViewerViser(ViewerBase):
         if hasattr(x, "numpy"):
             return x.numpy()
         return np.asarray(x)
+
+    @staticmethod
+    def _prepare_texture(texture: np.ndarray | str | None) -> np.ndarray | None:
+        """Load and normalize texture data for viser/glTF usage."""
+        return normalize_texture(
+            load_texture(texture),
+            flip_vertical=False,
+            require_channels=True,
+            scale_unit_range=True,
+        )
+
+    @staticmethod
+    def _build_trimesh_mesh(points: np.ndarray, indices: np.ndarray, uvs: np.ndarray, texture: np.ndarray):
+        """Create a trimesh object with texture visuals (if trimesh is available)."""
+        try:
+            import trimesh
+        except Exception:
+            return None
+
+        if len(uvs) != len(points):
+            return None
+
+        faces = indices.astype(np.int64)
+        mesh = trimesh.Trimesh(vertices=points, faces=faces, process=False)
+
+        try:
+            from PIL import Image
+            from trimesh.visual.texture import TextureVisuals
+
+            image = Image.fromarray(texture)
+            mesh.visual = TextureVisuals(uv=uvs, image=image)
+        except Exception:
+            visual_mod = getattr(trimesh, "visual", None)
+            TextureVisuals = getattr(visual_mod, "TextureVisuals", None) if visual_mod is not None else None
+            if TextureVisuals is not None:
+                mesh.visual = TextureVisuals(uv=uvs, image=texture)
+
+        return mesh
 
     def __init__(
         self,
@@ -80,11 +123,11 @@ class ViewerViser(ViewerBase):
         It launches a web server that serves an interactive 3D visualization.
 
         Args:
-            port (int): Port number for the web server. Defaults to 8080.
-            label (str | None): Optional label for the viser server window title.
-            verbose (bool): If True, print the server URL when starting. Defaults to True.
-            share (bool): If True, create a publicly accessible URL via viser's share feature.
-            record_to_viser (str | None): Path to record the viewer to a ``*.viser`` recording file
+            port: Port number for the web server. Defaults to 8080.
+            label: Optional label for the viser server window title.
+            verbose: If True, print the server URL when starting. Defaults to True.
+            share: If True, create a publicly accessible URL via viser's share feature.
+            record_to_viser: Path to record the viewer to a ``*.viser`` recording file
                 (e.g. "my_recording.viser"). If None, the viewer will not record to a file.
         """
         viser = self._get_viser()
@@ -101,6 +144,10 @@ class ViewerViser(ViewerBase):
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
+        self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._pending_camera_clients: set[int] = set()
+        self._server.on_client_connect(self._handle_client_connect)
+        self._server.on_client_disconnect(self._handle_client_disconnect)
 
         if share:
             self._share_url = self._server.request_share_url()
@@ -137,33 +184,216 @@ class ViewerViser(ViewerBase):
         # remove HDR map
         self._server.scene.configure_environment_map(hdri=None)
 
+    @staticmethod
+    def _call_scene_method(method, **kwargs):
+        """Call a viser scene method with only supported keyword args."""
+        try:
+            signature = inspect.signature(method)
+            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
+            return method(**allowed)
+        except Exception:
+            return method(**kwargs)
+
     @property
     def url(self) -> str:
-        """Get the URL of the viser server."""
+        """Get the URL of the viser server.
+
+        Returns:
+            str: Local HTTP URL for the running viser server.
+        """
         return f"http://localhost:{self._port}"
+
+    @staticmethod
+    def _is_client_camera_ready(client: Any) -> bool:
+        """Return True if the client has reported an initial camera state."""
+        try:
+            update_timestamp = float(client.camera.update_timestamp)
+        except Exception:
+            # Older viser versions may not expose update_timestamp.
+            try:
+                _ = client.camera.position
+            except Exception:
+                return False
+            return True
+        return update_timestamp > 0.0
+
+    def _handle_client_connect(self, client: Any):
+        """Apply cached camera settings to newly connected clients."""
+        self._pending_camera_clients.discard(int(client.client_id))
+        self._apply_camera_to_client(client)
+
+    def _handle_client_disconnect(self, client: Any):
+        """Clear pending camera state for disconnected clients."""
+        self._pending_camera_clients.discard(int(client.client_id))
+
+    def _get_camera_up_axis(self) -> int:
+        """Resolve the model up-axis as an integer index (0, 1, 2)."""
+        if self.model is None:
+            return 2
+        up_axis = self.model.up_axis
+        if isinstance(up_axis, str):
+            return "XYZ".index(up_axis.upper())
+        return int(up_axis)
+
+    def _compute_camera_front_up(self, pitch: float, yaw: float) -> tuple[np.ndarray, np.ndarray]:
+        """Compute camera front and up vectors from pitch/yaw angles."""
+        pitch = float(np.clip(pitch, -89.0, 89.0))
+        yaw = float(yaw)
+        pitch_rad = np.deg2rad(pitch)
+        yaw_rad = np.deg2rad(yaw)
+        up_axis = self._get_camera_up_axis()
+
+        if up_axis == 0:  # X up
+            front = np.array(
+                [
+                    np.sin(pitch_rad),
+                    np.cos(yaw_rad) * np.cos(pitch_rad),
+                    np.sin(yaw_rad) * np.cos(pitch_rad),
+                ],
+                dtype=np.float64,
+            )
+            world_up = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        elif up_axis == 2:  # Z up
+            front = np.array(
+                [
+                    np.cos(yaw_rad) * np.cos(pitch_rad),
+                    np.sin(yaw_rad) * np.cos(pitch_rad),
+                    np.sin(pitch_rad),
+                ],
+                dtype=np.float64,
+            )
+            world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        else:  # Y up
+            front = np.array(
+                [
+                    np.cos(yaw_rad) * np.cos(pitch_rad),
+                    np.sin(pitch_rad),
+                    np.sin(yaw_rad) * np.cos(pitch_rad),
+                ],
+                dtype=np.float64,
+            )
+            world_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+
+        front /= np.linalg.norm(front)
+        right = np.cross(front, world_up)
+        right_norm = np.linalg.norm(right)
+        if right_norm < 1.0e-8:
+            fallback_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            if np.linalg.norm(np.cross(front, fallback_up)) < 1.0e-8:
+                fallback_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+            right = np.cross(front, fallback_up)
+            right_norm = np.linalg.norm(right)
+        right /= right_norm
+
+        up = np.cross(right, front)
+        up /= np.linalg.norm(up)
+        return front, up
+
+    def _apply_camera_to_client(self, client: Any):
+        """Apply the cached camera request to a connected client if ready."""
+        if self._camera_request is None:
+            return
+
+        client_id = int(client.client_id)
+        if not self._is_client_camera_ready(client):
+            if client_id in self._pending_camera_clients:
+                return
+
+            self._pending_camera_clients.add(client_id)
+
+            def _on_camera_update(_camera: Any):
+                if client_id not in self._pending_camera_clients:
+                    return
+                self._pending_camera_clients.discard(client_id)
+                self._apply_camera_to_client(client)
+
+            client.camera.on_update(_on_camera_update)
+            return
+
+        self._pending_camera_clients.discard(client_id)
+        position, look_at, up_direction = self._camera_request
+
+        # Keep camera updates synchronized to avoid transient jitter.
+        if hasattr(client, "atomic"):
+            with client.atomic():
+                client.camera.position = tuple(position.tolist())
+                client.camera.look_at = tuple(look_at.tolist())
+                client.camera.up_direction = tuple(up_direction.tolist())
+        else:
+            client.camera.position = tuple(position.tolist())
+            client.camera.look_at = tuple(look_at.tolist())
+            client.camera.up_direction = tuple(up_direction.tolist())
+
+    @override
+    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+        """Set camera position and orientation for connected Viser clients.
+
+        The requested view is also cached so that newly connected clients receive
+        the same camera setup as soon as they report camera state.
+
+        Args:
+            pos: Requested camera position.
+            pitch: Requested camera pitch angle.
+            yaw: Requested camera yaw angle.
+        """
+        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
+        front, up_direction = self._compute_camera_front_up(pitch, yaw)
+        look_at = position + front
+        self._camera_request = (position, look_at, up_direction)
+
+        if hasattr(self._server, "initial_camera"):
+            self._server.initial_camera.position = tuple(position.tolist())
+            self._server.initial_camera.look_at = tuple(look_at.tolist())
+            if hasattr(self._server.initial_camera, "up"):
+                self._server.initial_camera.up = tuple(up_direction.tolist())
+            elif hasattr(self._server.initial_camera, "up_direction"):
+                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
+
+        for client in self._server.get_clients().values():
+            self._apply_camera_to_client(client)
+
+    @staticmethod
+    def _camera_query_from_request(camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None) -> str:
+        """Build URL query parameters for playback initial camera overrides."""
+        if camera_request is None:
+            return ""
+
+        position, look_at, up_direction = camera_request
+
+        def _format_vec3(values: np.ndarray) -> str:
+            values = np.asarray(values, dtype=np.float64).reshape(3)
+            return ",".join(f"{float(v):.9g}" for v in values)
+
+        return (
+            f"&initialCameraPosition={_format_vec3(position)}"
+            f"&initialCameraLookAt={_format_vec3(look_at)}"
+            f"&initialCameraUp={_format_vec3(up_direction)}"
+        )
 
     @override
     def log_mesh(
         self,
-        name,
-        points: wp.array,
-        indices: wp.array,
-        normals: wp.array | None = None,
-        uvs: wp.array | None = None,
-        hidden=False,
-        backface_culling=True,
+        name: str,
+        points: wp.array(dtype=wp.vec3),
+        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
+        normals: wp.array(dtype=wp.vec3) | None = None,
+        uvs: wp.array(dtype=wp.vec2) | None = None,
+        texture: np.ndarray | str | None = None,
+        hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """
         Log a mesh to viser for visualization.
 
         Args:
-            name (str): Entity path for the mesh.
-            points (wp.array): Vertex positions (wp.vec3).
-            indices (wp.array): Triangle indices (wp.uint32).
-            normals (wp.array, optional): Vertex normals, unused in viser (wp.vec3).
-            uvs (wp.array, optional): UV coordinates, unused in viser (wp.vec2).
-            hidden (bool): Whether the mesh is hidden.
-            backface_culling (bool): Whether to enable backface culling.
+            name: Entity path for the mesh.
+            points: Vertex positions.
+            indices: Triangle indices.
+            normals: Vertex normals, unused in viser.
+            uvs: UV coordinates, used for textures if supported.
+            texture: Texture path/URL or image array (H, W, C).
+            hidden: Whether the mesh is hidden.
+            backface_culling: Whether to enable backface culling.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -171,15 +401,39 @@ class ViewerViser(ViewerBase):
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
         indices_np = self._to_numpy(indices).astype(np.uint32)
+        uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        texture_image = self._prepare_texture(texture)
+
+        if texture_image is not None and uvs_np is None:
+            warnings.warn(f"Mesh {name} has a texture but no UVs; texture will be ignored.", stacklevel=2)
+            texture_image = None
+        if texture_image is not None and uvs_np is not None and len(uvs_np) != len(points_np):
+            warnings.warn(
+                f"Mesh {name} has {len(uvs_np)} UVs for {len(points_np)} vertices; texture will be ignored.",
+                stacklevel=2,
+            )
+            texture_image = None
 
         # Viser expects indices as (N, 3) for triangles
         if indices_np.ndim == 1:
             indices_np = indices_np.reshape(-1, 3)
 
+        trimesh_mesh = None
+        if texture_image is not None and uvs_np is not None:
+            trimesh_mesh = self._build_trimesh_mesh(points_np, indices_np, uvs_np, texture_image)
+            if trimesh_mesh is None:
+                warnings.warn(
+                    "Viser textured meshes require trimesh; falling back to untextured rendering.",
+                    stacklevel=2,
+                )
+
         # Store mesh data for instancing
         self._meshes[name] = {
             "points": points_np,
             "indices": indices_np,
+            "uvs": uvs_np,
+            "texture": texture_image,
+            "trimesh": trimesh_mesh,
         }
 
         # Remove existing mesh if present
@@ -193,18 +447,35 @@ class ViewerViser(ViewerBase):
             return
 
         # Add mesh to viser scene
-        handle = self._server.scene.add_mesh_simple(
-            name=name,
-            vertices=points_np,
-            faces=indices_np,
-            color=(180, 180, 180),  # Default gray color
-            wireframe=False,
-            side="double" if not backface_culling else "front",
-        )
+        if trimesh_mesh is not None:
+            handle = self._call_scene_method(
+                self._server.scene.add_mesh_trimesh,
+                name=name,
+                mesh=trimesh_mesh,
+            )
+        else:
+            handle = self._call_scene_method(
+                self._server.scene.add_mesh_simple,
+                name=name,
+                vertices=points_np,
+                faces=indices_np,
+                color=(180, 180, 180),  # Default gray color
+                wireframe=False,
+                side="double" if not backface_culling else "front",
+            )
         self._scene_handles[name] = handle
 
     @override
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
         """
         Log instanced mesh data to viser using efficient batched rendering.
 
@@ -212,13 +483,13 @@ class ViewerViser(ViewerBase):
         Supports in-place updates of transforms for real-time animation.
 
         Args:
-            name (str): Entity path for the instances.
-            mesh (str): Name of the mesh asset to instance.
-            xforms (wp.array): Instance transforms (wp.transform).
-            scales (wp.array): Instance scales (wp.vec3).
-            colors (wp.array): Instance colors (wp.vec3).
-            materials (wp.array): Instance materials (wp.vec4).
-            hidden (bool): Whether the instances are hidden.
+            name: Entity path for the instances.
+            mesh: Name of the mesh asset to instance.
+            xforms: Instance transforms.
+            scales: Instance scales.
+            colors: Instance colors.
+            materials: Instance materials.
+            hidden: Whether the instances are hidden.
         """
         # Check that mesh exists
         if mesh not in self._meshes:
@@ -227,6 +498,9 @@ class ViewerViser(ViewerBase):
         mesh_data = self._meshes[mesh]
         base_points = mesh_data["points"]
         base_indices = mesh_data["indices"]
+        base_uvs = mesh_data.get("uvs")
+        texture_image = self._prepare_texture(mesh_data.get("texture"))
+        trimesh_mesh = mesh_data.get("trimesh")
 
         if hidden:
             # Remove existing instances if present
@@ -275,13 +549,15 @@ class ViewerViser(ViewerBase):
             batched_colors = None  # Will use cached colors or default gray
 
         # Check if we already have a batched mesh handle for this name
+        use_trimesh = trimesh_mesh is not None and texture_image is not None and base_uvs is not None
         if name in self._instances and name in self._scene_handles:
             # Update existing batched mesh in-place (much faster)
             handle = self._scene_handles[name]
             prev_count = self._instances[name]["count"]
+            prev_use_trimesh = self._instances[name].get("use_trimesh", False)
 
             # If instance count changed, we need to recreate the mesh
-            if prev_count != num_instances:
+            if prev_count != num_instances or prev_use_trimesh != use_trimesh:
                 try:
                     handle.remove()
                 except Exception:
@@ -293,9 +569,10 @@ class ViewerViser(ViewerBase):
                 try:
                     handle.batched_positions = positions
                     handle.batched_wxyzs = quats_wxyz
-                    handle.batched_scales = batched_scales
+                    if hasattr(handle, "batched_scales"):
+                        handle.batched_scales = batched_scales
                     # Only update colors if they were explicitly provided
-                    if batched_colors is not None:
+                    if batched_colors is not None and hasattr(handle, "batched_colors"):
                         handle.batched_colors = batched_colors
                         # Cache the colors for future reference
                         self._instances[name]["colors"] = batched_colors
@@ -314,31 +591,44 @@ class ViewerViser(ViewerBase):
             batched_colors = np.full((num_instances, 3), 180, dtype=np.uint8)
 
         # Create new batched mesh
-        handle = self._server.scene.add_batched_meshes_simple(
-            name=name,
-            vertices=base_points,
-            faces=base_indices,
-            batched_positions=positions,
-            batched_wxyzs=quats_wxyz,
-            batched_scales=batched_scales,
-            batched_colors=batched_colors,
-            lod="auto",
-        )
+        if use_trimesh:
+            handle = self._call_scene_method(
+                self._server.scene.add_batched_meshes_trimesh,
+                name=name,
+                mesh=trimesh_mesh,
+                batched_positions=positions,
+                batched_wxyzs=quats_wxyz,
+                batched_scales=batched_scales,
+                lod="auto",
+            )
+        else:
+            handle = self._call_scene_method(
+                self._server.scene.add_batched_meshes_simple,
+                name=name,
+                vertices=base_points,
+                faces=base_indices,
+                batched_positions=positions,
+                batched_wxyzs=quats_wxyz,
+                batched_scales=batched_scales,
+                batched_colors=batched_colors,
+                lod="auto",
+            )
 
         self._scene_handles[name] = handle
         self._instances[name] = {
             "mesh": mesh,
             "count": num_instances,
             "colors": batched_colors,  # Cache the colors
+            "use_trimesh": use_trimesh,
         }
 
     @override
-    def begin_frame(self, time):
+    def begin_frame(self, time: float):
         """
         Begin a new frame.
 
         Args:
-            time (float): The current simulation time.
+            time: The current simulation time.
         """
         self._frame_dt = time - self.time
         self.time = time
@@ -377,6 +667,15 @@ class ViewerViser(ViewerBase):
         except Exception:
             pass
 
+    @override
+    def apply_forces(self, state: newton.State):
+        """Viser backend does not apply interactive forces.
+
+        Args:
+            state: Current simulation state.
+        """
+        pass
+
     def save_recording(self):
         """
         Save the current recording to a .viser file.
@@ -409,17 +708,27 @@ class ViewerViser(ViewerBase):
             print(f"Recording saved to: {self._record_to_viser}")
 
     @override
-    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
+    def log_lines(
+        self,
+        name: str,
+        starts: wp.array(dtype=wp.vec3) | None,
+        ends: wp.array(dtype=wp.vec3) | None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ),
+        width: float = 0.01,
+        hidden: bool = False,
+    ):
         """
         Log lines for visualization.
 
         Args:
-            name (str): Name of the line batch.
+            name: Name of the line batch.
             starts: Line start points.
             ends: Line end points.
             colors: Line colors.
-            width (float): Line width.
-            hidden (bool): Whether the lines are hidden.
+            width: Line width.
+            hidden: Whether the lines are hidden.
         """
         # Remove existing lines if present
         if name in self._scene_handles:
@@ -440,27 +749,36 @@ class ViewerViser(ViewerBase):
         if starts_np is None or ends_np is None or len(starts_np) == 0:
             return
 
-        # Viser expects line segments as (N, 2, 3) or we can use points format
-        # Build line points array: interleave starts and ends
+        starts_np = np.asarray(starts_np, dtype=np.float32)
+        ends_np = np.asarray(ends_np, dtype=np.float32)
         num_lines = len(starts_np)
-        line_points = np.zeros((num_lines * 2, 3), dtype=np.float32)
-        line_points[0::2] = starts_np
-        line_points[1::2] = ends_np
+
+        # Viser requires points with shape (N, 2, 3): [start, end] per segment.
+        line_points = np.stack((starts_np, ends_np), axis=1)
+
+        def _rgb_to_uint8_array(rgb: np.ndarray) -> np.ndarray:
+            rgb = np.asarray(rgb, dtype=np.float32)
+            max_val = float(np.max(rgb)) if rgb.size > 0 else 0.0
+            if max_val <= 1.0:
+                rgb = rgb * 255.0
+            return np.clip(rgb, 0, 255).astype(np.uint8)
 
         # Process colors
+        color_rgb: tuple[int, int, int] | np.ndarray = (0, 255, 0)
         if colors is not None:
             colors_np = self._to_numpy(colors)
             if colors_np is not None:
-                if colors_np.ndim == 1 and len(colors_np) == 3:
-                    # Single color for all lines
-                    color_rgb = tuple((colors_np * 255).astype(np.uint8).tolist())
-                else:
-                    # Per-line colors - expand to per-point
-                    color_rgb = (0, 255, 0)  # Default green
-            else:
-                color_rgb = (0, 255, 0)
-        else:
-            color_rgb = (0, 255, 0)
+                colors_np = np.asarray(colors_np)
+                if colors_np.ndim == 1 and colors_np.shape[0] == 3:
+                    # Single color for all lines.
+                    color_rgb = tuple(_rgb_to_uint8_array(colors_np).tolist())
+                elif colors_np.ndim == 2 and colors_np.shape == (num_lines, 3):
+                    # Per-line colors: repeat each line color for [start, end].
+                    line_colors = _rgb_to_uint8_array(colors_np)
+                    color_rgb = np.repeat(line_colors[:, None, :], 2, axis=1)
+                elif colors_np.ndim == 3 and colors_np.shape == (num_lines, 2, 3):
+                    # Already per-point-per-segment colors.
+                    color_rgb = _rgb_to_uint8_array(colors_np)
 
         # Add line segments to viser
         handle = self._server.scene.add_line_segments(
@@ -474,15 +792,25 @@ class ViewerViser(ViewerBase):
     @override
     def log_geo(
         self,
-        name,
+        name: str,
         geo_type: int,
         geo_scale: tuple[float, ...],
         geo_thickness: float,
         geo_is_solid: bool,
-        geo_src=None,
-        hidden=False,
+        geo_src: newton.Mesh | newton.Heightfield | None = None,
+        hidden: bool = False,
     ):
-        """Log geometry primitives."""
+        """Log a geometry primitive, with plane expansion for infinite planes.
+
+        Args:
+            name: Unique path/name for the geometry asset.
+            geo_type: Geometry type value from `newton.GeoType`.
+            geo_scale: Geometry scale tuple interpreted by `geo_type`.
+            geo_thickness: Shell thickness for mesh-like geometry.
+            geo_is_solid: Whether mesh geometry is treated as solid.
+            geo_src: Optional source geometry for mesh-backed types.
+            hidden: Whether the resulting geometry is hidden.
+        """
         if geo_type == newton.GeoType.PLANE:
             # Handle "infinite" planes encoded with non-positive scales
             if geo_scale[0] == 0.0 or geo_scale[1] == 0.0:
@@ -496,26 +824,35 @@ class ViewerViser(ViewerBase):
             else:
                 width = geo_scale[0]
                 length = geo_scale[1] if len(geo_scale) > 1 else 10.0
-            vertices, indices = create_plane_mesh(width, length)
-            points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
-            normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
-            uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-            indices = wp.array(indices, dtype=wp.int32, device=self.device)
+            mesh = newton.Mesh.create_plane(width, length, compute_inertia=False)
+            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+            normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+            uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
             self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
 
     @override
-    def log_points(self, name, points, radii=None, colors=None, hidden=False):
+    def log_points(
+        self,
+        name: str,
+        points: wp.array(dtype=wp.vec3) | None,
+        radii: wp.array(dtype=wp.float32) | float | None = None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ) = None,
+        hidden: bool = False,
+    ):
         """
         Log points for visualization.
 
         Args:
-            name (str): Name of the point batch.
+            name: Name of the point batch.
             points: Point positions (can be a wp.array or a numpy array).
             radii: Point radii (can be a wp.array or a numpy array).
             colors: Point colors (can be a wp.array or a numpy array).
-            hidden (bool): Whether the points are hidden.
+            hidden: Whether the points are hidden.
         """
         # Remove existing points if present
         if name in self._scene_handles:
@@ -571,6 +908,26 @@ class ViewerViser(ViewerBase):
         )
         self._scene_handles[name] = handle
 
+    @override
+    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+        """Viser viewer does not visualize generic arrays.
+
+        Args:
+            name: Unique path/name for the array signal.
+            array: Array data to visualize.
+        """
+        pass
+
+    @override
+    def log_scalar(self, name: str, value: int | float | bool | np.number):
+        """Viser viewer does not visualize scalar signals.
+
+        Args:
+            name: Unique path/name for the scalar signal.
+            value: Scalar value to visualize.
+        """
+        pass
+
     def show_notebook(self, width: int | str = "100%", height: int | str = 400):
         """
         Show the viewer in a Jupyter notebook.
@@ -595,7 +952,7 @@ class ViewerViser(ViewerBase):
                 viewer.show_notebook()  # Saves recording and displays with timeline
         """
 
-        from IPython.display import HTML, IFrame, display  # noqa: PLC0415
+        from IPython.display import HTML, IFrame, display
 
         from .viewer import is_sphinx_build  # noqa: PLC0415
 
@@ -631,10 +988,12 @@ class ViewerViser(ViewerBase):
                 # Remove the "_static/" prefix and prepend "../"
                 playback_path = "../" + static_relative[len("_static/") :]
 
+            camera_query = self._camera_query_from_request(self._camera_request)
+
             embed_html = f"""
 <div class="viser-player-container" style="margin: 20px 0;">
 <iframe
-    src="../_static/viser/index.html?playbackPath={playback_path}"
+    src="../_static/viser/index.html?playbackPath={playback_path}{camera_query}"
     width="{width}"
     height="{height}"
     frameborder="0"
@@ -645,7 +1004,10 @@ class ViewerViser(ViewerBase):
             return display(HTML(embed_html))
         else:
             # Regular Jupyter - use local HTTP server with viser client
-            player_url = self._serve_viser_recording(self._record_to_viser)
+            player_url = self._serve_viser_recording(
+                self._record_to_viser,
+                camera_request=self._camera_request,
+            )
             return display(IFrame(src=player_url, width=width, height=height))
 
     def _ipython_display_(self):
@@ -655,13 +1017,17 @@ class ViewerViser(ViewerBase):
         self.show_notebook()
 
     @staticmethod
-    def _serve_viser_recording(recording_path: str) -> str:
+    def _serve_viser_recording(
+        recording_path: str, camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ) -> str:
         """
         Hosts a simple HTTP server to serve the viser recording file with the viser client
         and returns the URL of the player.
 
         Args:
             recording_path: Path to the .viser recording file.
+            camera_request: Optional `(position, look_at, up_direction)` triple used
+                to append initial camera URL overrides for playback.
 
         Returns:
             URL of the player.
@@ -750,9 +1116,50 @@ class ViewerViser(ViewerBase):
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
 
+        # Keep playbackPath relative so notebook proxy prefixes (e.g. /lab/proxy/<port>/)
+        # are preserved. Each viewer instance uses a different port, so paths stay distinct.
+        playback_path = "recording.viser"
         base_url = f"http://127.0.0.1:{port}"
+        player_url = f"{base_url}/?playbackPath={playback_path}"
 
-        # Create URL with playback path pointing to the served recording
-        player_url = f"{base_url}/?playbackPath=/recording.viser"
+        # Route through Jupyter's proxy only when jupyter-server-proxy is installed.
+        # Without that package, proxy URLs may be unavailable and break playback.
+        jupyter_base_url = None
+        try:
+            from importlib.util import find_spec  # noqa: PLC0415
 
-        return player_url
+            has_jupyter_server_proxy = find_spec("jupyter_server_proxy") is not None
+        except Exception:
+            has_jupyter_server_proxy = False
+
+        if has_jupyter_server_proxy:
+            # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
+            # In that case, fall back to common env vars and running server metadata.
+            for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
+                candidate = os.environ.get(env_name)
+                if candidate:
+                    jupyter_base_url = candidate
+                    break
+
+            if not jupyter_base_url:
+                try:
+                    from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
+
+                    for server in list_running_servers():
+                        candidate = server.get("base_url")
+                        if candidate:
+                            jupyter_base_url = candidate
+                            break
+                except Exception:
+                    pass
+
+            if jupyter_base_url:
+                if not jupyter_base_url.startswith("/"):
+                    jupyter_base_url = "/" + jupyter_base_url
+                if jupyter_base_url != "/":
+                    jupyter_base_url = jupyter_base_url.rstrip("/")
+                else:
+                    jupyter_base_url = ""
+                player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
+
+        return player_url + ViewerViser._camera_query_from_request(camera_request)

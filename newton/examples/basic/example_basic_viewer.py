@@ -46,8 +46,9 @@ class Example:
         self.col_bunny = wp.array([wp.vec3(0.5, 0.2, 0.8)], dtype=wp.vec3)
         self.col_plane = wp.array([wp.vec3(0.125, 0.125, 0.15)], dtype=wp.vec3)
 
-        # material = (metallic, roughness, checker, unused)
+        # material = (roughness, metallic, checker, texture_enable)
         self.mat_default = wp.array([wp.vec4(0.0, 0.7, 0.0, 0.0)], dtype=wp.vec4)
+        self.mat_diffuse = wp.array([wp.vec4(0.8, 0.0, 1.0, 0.0)], dtype=wp.vec4)
         self.mat_plane = wp.array([wp.vec4(0.5, 0.5, 1.0, 0.0)], dtype=wp.vec4)
 
         # MESH (bunny)
@@ -126,7 +127,7 @@ class Example:
         x_cone_anim = wp.array([wp.transform([0.0, base_left, base_height], qy_slow)], dtype=wp.transform)
         base_left += self.spacing
 
-        # Cylinder: spinning on different axis at y = 2
+        # Cylinder: spinning about its local Z axis at y = 2
         x_cyl_anim = wp.array([wp.transform([0.0, base_left, base_height], qz_slow)], dtype=wp.transform)
         base_left += self.spacing
 
@@ -170,7 +171,7 @@ class Example:
             (0.35, 1.0),
             x_cyl_anim,
             self.col_cylinder,
-            self.mat_default,
+            self.mat_diffuse,
         )
         self.viewer.log_shapes(
             "/capsule_instance",

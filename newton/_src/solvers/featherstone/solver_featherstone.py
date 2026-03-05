@@ -105,12 +105,12 @@ class SolverFeatherstone(SolverBase):
     ):
         """
         Args:
-            model (Model): the model to be simulated.
-            angular_damping (float, optional): Angular damping factor. Defaults to 0.05.
-            update_mass_matrix_interval (int, optional): How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
-            friction_smoothing (float, optional): The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
-            use_tile_gemm (bool, optional): Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
-            fuse_cholesky (bool, optional): Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
+            model: The model to be simulated.
+            angular_damping: Angular damping factor. Defaults to 0.05.
+            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
+            friction_smoothing: The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
+            use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
+            fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
         """
         super().__init__(model)
 
@@ -122,8 +122,8 @@ class SolverFeatherstone(SolverBase):
 
         self._step = 0
 
-        self.compute_articulation_indices(model)
-        self.allocate_model_aux_vars(model)
+        self._compute_articulation_indices(model)
+        self._allocate_model_aux_vars(model)
 
         if self.use_tile_gemm:
             # create a custom kernel to evaluate the system matrix for this type
@@ -140,7 +140,7 @@ class SolverFeatherstone(SolverBase):
             # todo: should not be necessary?
             wp.load_module(device=wp.get_device())
 
-    def compute_articulation_indices(self, model):
+    def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
         if model.joint_count:
             self.J_size = 0
@@ -210,7 +210,7 @@ class SolverFeatherstone(SolverBase):
             self.articulation_dof_start = wp.array(articulation_dof_start, dtype=wp.int32, device=model.device)
             self.articulation_coord_start = wp.array(articulation_coord_start, dtype=wp.int32, device=model.device)
 
-    def allocate_model_aux_vars(self, model):
+    def _allocate_model_aux_vars(self, model):
         # allocate mass, Jacobian matrices, and other auxiliary variables pertaining to the model
         if model.joint_count:
             # system matrices
@@ -244,7 +244,7 @@ class SolverFeatherstone(SolverBase):
                 device=model.device,
             )
 
-    def allocate_state_aux_vars(self, model, target, requires_grad):
+    def _allocate_state_aux_vars(self, model, target, requires_grad):
         # allocate auxiliary variables that vary with state
         if model.body_count:
             # joints
@@ -302,7 +302,7 @@ class SolverFeatherstone(SolverBase):
         model = self.model
 
         if not getattr(state_aug, "_featherstone_augmented", False):
-            self.allocate_state_aux_vars(model, state_aug, requires_grad)
+            self._allocate_state_aux_vars(model, state_aug, requires_grad)
         if control is None:
             control = model.control(clone_variables=False)
 
@@ -426,8 +426,8 @@ class SolverFeatherstone(SolverBase):
                             contacts.rigid_contact_normal,
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
-                            contacts.rigid_contact_thickness0,
-                            contacts.rigid_contact_thickness1,
+                            contacts.rigid_contact_margin0,
+                            contacts.rigid_contact_margin1,
                             contacts.rigid_contact_stiffness,
                             contacts.rigid_contact_damping,
                             contacts.rigid_contact_friction,

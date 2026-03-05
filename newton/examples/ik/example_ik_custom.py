@@ -171,6 +171,15 @@ class Example:
         self.model = builder.finalize()
         self.viewer.set_model(self.model)
 
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(0.0, -2.0, 1.0),
+            pitch=0.0,
+            yaw=90.0,
+        )
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 90.0
+
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
@@ -203,13 +212,13 @@ class Example:
             return wp.vec4(q[0], q[1], q[2], q[3])
 
         # Position & rotation objectives ------------------------------------
-        self.pos_obj = ik.IKPositionObjective(
+        self.pos_obj = ik.IKObjectivePosition(
             link_index=self.ee_index,
             link_offset=wp.vec3(0.0, 0.0, 0.0),
             target_positions=wp.array([wp.transform_get_translation(self.ee_tf)], dtype=wp.vec3),
         )
 
-        self.rot_obj = ik.IKRotationObjective(
+        self.rot_obj = ik.IKObjectiveRotation(
             link_index=self.ee_index,
             link_offset_rotation=wp.quat_identity(),
             target_rotations=wp.array([_q2v4(wp.transform_get_rotation(self.ee_tf))], dtype=wp.vec4),
@@ -234,7 +243,7 @@ class Example:
             )
 
         # Joint limit objective (starts after collisions)
-        self.obj_joint_limits = ik.IKJointLimitObjective(
+        self.obj_joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.model.joint_limit_lower,
             joint_limit_upper=self.model.joint_limit_upper,
             weight=10.0,
@@ -252,7 +261,7 @@ class Example:
             h0_scale=1.0,
             line_search_alphas=[0.01, 0.1, 0.5, 0.75, 1.0],
             history_len=12,
-            jacobian_mode=ik.IKJacobianMode.MIXED,
+            jacobian_mode=ik.IKJacobianType.MIXED,
         )
 
         self.capture()

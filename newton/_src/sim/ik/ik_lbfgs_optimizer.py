@@ -23,7 +23,7 @@ from typing import ClassVar
 import numpy as np
 import warp as wp
 
-from .ik_common import IKJacobianMode, _compute_costs, _eval_fk_batched, _fk_accum
+from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
 
 
 @wp.kernel
@@ -111,7 +111,7 @@ class BatchCtx:
     autodiff_seed: wp.array2d | None = None
 
 
-class IKLBFGSOptimizer:
+class IKOptimizerLBFGS:
     """
     L-BFGS inverse-kinematics solver with a parallel Wolfe-conditions line search.
 
@@ -131,7 +131,7 @@ class IKLBFGSOptimizer:
         Number of rows processed in parallel (e.g., `n_problems * n_seeds`).
     objectives : Sequence[IKObjective]
         Ordered list of objectives shared by _all_ problems.
-    jacobian_mode : IKJacobianMode, default IKJacobianMode.AUTODIFF
+    jacobian_mode : IKJacobianType, default IKJacobianType.AUTODIFF
         Backend used in `compute_jacobian`.
     history_len : int, default 10
         L-BFGS memory length (number of {s,y} pairs to remember).
@@ -177,7 +177,7 @@ class IKLBFGSOptimizer:
         model,
         n_batch,
         objectives,
-        jacobian_mode=IKJacobianMode.AUTODIFF,
+        jacobian_mode=IKJacobianType.AUTODIFF,
         history_len=10,
         h0_scale=1.0,
         line_search_alphas=None,
@@ -213,7 +213,7 @@ class IKLBFGSOptimizer:
         if self.TILE_N_LINE_STEPS is not None:
             assert self.n_line_search == self.TILE_N_LINE_STEPS
 
-        grad = jacobian_mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED)
+        grad = jacobian_mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED)
 
         self.has_analytic_objective = any(o.supports_analytic() for o in objectives)
         self.has_autodiff_objective = any(not o.supports_analytic() for o in objectives)
@@ -226,14 +226,14 @@ class IKLBFGSOptimizer:
 
         self._build_residual_offsets()
 
-        if self.jacobian_mode != IKJacobianMode.AUTODIFF:
+        if self.jacobian_mode != IKJacobianType.AUTODIFF:
             self._alloc_line_search_analytic_buffers()
         else:
             self.candidate_jacobians = None
             self.cand_joint_S_s = None
             self.cand_X_local = None
 
-        if self.jacobian_mode == IKJacobianMode.MIXED:
+        if self.jacobian_mode == IKJacobianType.MIXED:
             self._alloc_mixed_buffers()
         else:
             self.gradient_tmp = None
@@ -278,7 +278,7 @@ class IKLBFGSOptimizer:
         self.problem_idx_identity = wp.array(np.arange(self.n_batch, dtype=np.int32), dtype=wp.int32, device=device)
         self.X_local = wp.zeros((self.n_batch, model.joint_count), dtype=wp.transform, device=device)
 
-        if self.jacobian_mode != IKJacobianMode.AUTODIFF and self.has_analytic_objective:
+        if self.jacobian_mode != IKJacobianType.AUTODIFF and self.has_analytic_objective:
             self.joint_S_s = wp.zeros((self.n_batch, self.n_dofs), dtype=wp.spatial_vector, device=device)
         else:
             self.joint_S_s = None
@@ -381,7 +381,7 @@ class IKLBFGSOptimizer:
         else:
             self.cand_joint_S_s = None
 
-        if self.jacobian_mode == IKJacobianMode.ANALYTIC and self.n_line_search > 0:
+        if self.jacobian_mode == IKJacobianType.ANALYTIC and self.n_line_search > 0:
             self.cand_X_local = wp.zeros(
                 (self.n_batch, self.n_line_search, self.model.joint_count),
                 dtype=wp.transform,
@@ -460,12 +460,12 @@ class IKLBFGSOptimizer:
         self._validate_ctx(
             ctx,
             label="solver",
-            require_autodiff=self.jacobian_mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED),
+            require_autodiff=self.jacobian_mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED),
             require_analytic=(
-                self.jacobian_mode == IKJacobianMode.ANALYTIC
-                or (self.jacobian_mode == IKJacobianMode.MIXED and self.has_analytic_objective)
+                self.jacobian_mode == IKJacobianType.ANALYTIC
+                or (self.jacobian_mode == IKJacobianType.MIXED and self.has_analytic_objective)
             ),
-            require_fk_x_local=self.jacobian_mode == IKJacobianMode.ANALYTIC,
+            require_fk_x_local=self.jacobian_mode == IKJacobianType.ANALYTIC,
         )
         return ctx
 
@@ -519,12 +519,12 @@ class IKLBFGSOptimizer:
         self._validate_ctx(
             ctx,
             label="candidates",
-            require_autodiff=self.jacobian_mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED),
+            require_autodiff=self.jacobian_mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED),
             require_analytic=(
-                self.jacobian_mode == IKJacobianMode.ANALYTIC
-                or (self.jacobian_mode == IKJacobianMode.MIXED and self.has_analytic_objective)
+                self.jacobian_mode == IKJacobianType.ANALYTIC
+                or (self.jacobian_mode == IKJacobianType.MIXED and self.has_analytic_objective)
             ),
-            require_fk_x_local=self.jacobian_mode == IKJacobianMode.ANALYTIC,
+            require_fk_x_local=self.jacobian_mode == IKJacobianType.ANALYTIC,
         )
         return ctx
 
@@ -557,9 +557,9 @@ class IKLBFGSOptimizer:
                 missing.append("joint_q_proposed")
             if ctx.joint_qd is None:
                 missing.append("joint_qd")
-            if self.jacobian_mode == IKJacobianMode.MIXED and ctx.autodiff_mask is None:
+            if self.jacobian_mode == IKJacobianType.MIXED and ctx.autodiff_mask is None:
                 missing.append("autodiff_mask")
-            if self.jacobian_mode == IKJacobianMode.MIXED and ctx.autodiff_seed is None:
+            if self.jacobian_mode == IKJacobianType.MIXED and ctx.autodiff_seed is None:
                 missing.append("autodiff_seed")
 
         if require_analytic:
@@ -569,7 +569,7 @@ class IKLBFGSOptimizer:
                 missing.append("motion_subspace")
             if ctx.fk_qd_zero is None:
                 missing.append("fk_qd_zero")
-            if self.jacobian_mode == IKJacobianMode.MIXED and self.has_analytic_objective and ctx.gradient_tmp is None:
+            if self.jacobian_mode == IKJacobianType.MIXED and self.has_analytic_objective and ctx.gradient_tmp is None:
                 missing.append("gradient_tmp")
             if require_fk_x_local and ctx.fk_X_local is None:
                 missing.append("fk_X_local")
@@ -581,12 +581,12 @@ class IKLBFGSOptimizer:
     def _gradient_at(self, ctx: BatchCtx, out_grad: wp.array2d):
         mode = self.jacobian_mode
 
-        if mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED):
+        if mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED):
             self._grad_autodiff(ctx, out_grad)
 
-        if mode == IKJacobianMode.ANALYTIC:
+        if mode == IKJacobianType.ANALYTIC:
             self._grad_analytic(ctx, out_grad, accumulate=False)
-        elif mode == IKJacobianMode.MIXED and self.has_analytic_objective:
+        elif mode == IKJacobianType.MIXED and self.has_analytic_objective:
             self._grad_analytic(ctx, out_grad, accumulate=True)
 
     def _grad_autodiff(self, ctx: BatchCtx, out_grad: wp.array2d):
@@ -703,7 +703,7 @@ class IKLBFGSOptimizer:
         )
 
     def _residuals_autodiff(self, ctx: BatchCtx):
-        _eval_fk_batched(
+        eval_fk_batched(
             self.model,
             ctx.joint_q,
             ctx.joint_qd,
@@ -731,8 +731,8 @@ class IKLBFGSOptimizer:
         for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
             obj.set_batch_layout(self.n_residuals, offset, self.n_batch)
             obj.bind_device(self.device)
-            if self.jacobian_mode == IKJacobianMode.MIXED:
-                mode = IKJacobianMode.ANALYTIC if obj.supports_analytic() else IKJacobianMode.AUTODIFF
+            if self.jacobian_mode == IKJacobianType.MIXED:
+                mode = IKJacobianType.ANALYTIC if obj.supports_analytic() else IKJacobianType.AUTODIFF
             else:
                 mode = self.jacobian_mode
             obj.init_buffers(model=self.model, jacobian_mode=mode)
@@ -804,7 +804,7 @@ class IKLBFGSOptimizer:
     def compute_costs(self, joint_q):
         self._compute_residuals(joint_q)
         wp.launch(
-            _compute_costs,
+            compute_costs,
             dim=self.n_batch,
             inputs=[self.residuals, self.n_residuals],
             outputs=[self.costs],
@@ -816,7 +816,7 @@ class IKLBFGSOptimizer:
         residuals = residuals_out if residuals_out is not None else self.residuals
         ctx = self._ctx_solver(joint_q, residuals=residuals)
 
-        if self.jacobian_mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED):
+        if self.jacobian_mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED):
             self._residuals_autodiff(ctx)
         else:
             self._residuals_analytic(ctx)
@@ -1009,7 +1009,7 @@ class IKLBFGSOptimizer:
         self._gradient_at(cand_ctx, candidate_gradients_flat)
 
         wp.launch(
-            _compute_costs,
+            compute_costs,
             dim=B,
             inputs=[cand_ctx.residuals, self.n_residuals],
             outputs=[self.candidate_costs.flatten()],
@@ -1068,7 +1068,7 @@ class IKLBFGSOptimizer:
 
     @classmethod
     def _build_specialized(cls, key):
-        """Build a specialized IKLBFGSOptimizer subclass with tiled kernels for given dimensions."""
+        """Build a specialized IKOptimizerLBFGS subclass with tiled kernels for given dimensions."""
         C, R, M_HIST, N_LINE_SEARCH, _ARCH = key
 
         def _compute_slope_template(
@@ -1491,7 +1491,7 @@ class IKLBFGSOptimizer:
             )
 
             wp.launch(
-                _fk_accum,
+                fk_accum,
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_parent,
@@ -1503,7 +1503,7 @@ class IKLBFGSOptimizer:
                 device=model.device,
             )
 
-        class _Specialized(IKLBFGSOptimizer):
+        class _Specialized(IKOptimizerLBFGS):
             TILE_N_DOFS = wp.constant(C)
             TILE_N_RESIDUALS = wp.constant(R)
             TILE_HISTORY_LEN = wp.constant(M_HIST)

@@ -34,7 +34,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_worlds, args=None):
+    def __init__(self, viewer, world_count, args=None):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -42,7 +42,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         self.viewer = viewer
 
@@ -64,6 +64,7 @@ class Example:
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.7), wp.quat_identity()),
             floating=True,
             enable_self_collisions=False,
+            ignore_inertial_definitions=True,  # Use geometry-based inertia for stability
         )
 
         # set initial joint positions
@@ -74,7 +75,7 @@ class Example:
         scene = newton.ModelBuilder()
 
         # use the builder.replicate() function to create N copies of the world
-        scene.replicate(quadruped, self.num_worlds)
+        scene.replicate(quadruped, self.world_count)
         scene.add_ground_plane()
 
         # finalize model
@@ -89,17 +90,7 @@ class Example:
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Create collision pipeline from command-line args
-        # This example uses the standard pipeline by default (unlike other examples that default to unified)
-        # Users can override with --collision-pipeline unified if desired
-        # If no args provided or no collision_pipeline arg, defaults to "standard" for this example
-        if args is None or not hasattr(args, "collision_pipeline"):
-            self.collision_pipeline = newton.examples.create_collision_pipeline(
-                self.model, collision_pipeline_type="standard"
-            )
-        else:
-            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -121,7 +112,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -143,14 +134,14 @@ class Example:
             lambda q, qd: max(abs(qd)) < 0.15,
         )
 
-        bodies_per_world = self.model.body_count // self.num_worlds
+        bodies_per_world = self.model.body_count // self.world_count
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "quadrupeds have reached the terminal height",
             lambda q, qd: wp.abs(q[2] - 0.46) < 0.01,
             # only select the root body of each world
-            indices=[i * bodies_per_world for i in range(self.num_worlds)],
+            indices=[i * bodies_per_world for i in range(self.world_count)],
         )
 
     def render(self):
@@ -163,12 +154,12 @@ class Example:
 if __name__ == "__main__":
     # Create parser that inherits common arguments and adds example-specific ones
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=100, help="Total number of simulated worlds.")
+    parser.add_argument("--world-count", type=int, default=100, help="Total number of simulated worlds.")
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
-    example = Example(viewer, args.num_worlds, args)
+    example = Example(viewer, args.world_count, args)
 
     newton.examples.run(example, args)

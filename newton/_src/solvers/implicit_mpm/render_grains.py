@@ -197,7 +197,7 @@ def update_render_grains(
             dt,
             state_prev.particle_q,
             state.particle_q,
-            state.particle_qd_grad,
+            state.mpm.particle_qd_grad,
             grains,
         ],
         device=grains.device,
@@ -222,7 +222,7 @@ def update_render_grains(
         inputs=[
             particle_radius,
             state.particle_q,
-            state.particle_transform,
+            state.mpm.particle_transform,
             grains,
         ],
         device=grains.device,

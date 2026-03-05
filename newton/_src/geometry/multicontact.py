@@ -30,8 +30,9 @@ from typing import Any
 
 import warp as wp
 
+from newton._src.math import orthonormal_basis
+
 from .contact_data import ContactData
-from .kernels import build_orthonormal_basis
 
 # Constants
 EPS = 0.00001
@@ -936,7 +937,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         b_count = int(0)
 
         # Create an orthonormal basis from the collision normal.
-        tangent_a, tangent_b = build_orthonormal_basis(normal)
+        tangent_a, tangent_b = orthonormal_basis(normal)
 
         plane_tracker_a = IncrementalPlaneTracker()
         plane_tracker_b = IncrementalPlaneTracker()

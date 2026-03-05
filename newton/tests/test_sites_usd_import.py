@@ -19,7 +19,6 @@ import unittest
 
 import numpy as np
 import warp as wp
-from pxr import Usd
 
 import newton
 from newton import GeoType, ShapeFlags
@@ -28,12 +27,14 @@ from newton import GeoType, ShapeFlags
 class TestUSDSiteImport(unittest.TestCase):
     """Test parsing sites from USD files."""
 
-    def _create_usd_stage(self, usd_content: str) -> Usd.Stage:
+    def _create_usd_stage(self, usd_content: str):
         """Create a USD stage in memory from the given content.
 
         Uses ImportFromString() instead of programmatic stage construction to allow
         applying unregistered API schemas (like MjcSiteAPI) without requiring schema plugins.
         """
+        from pxr import Usd
+
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
         return stage
@@ -80,7 +81,7 @@ def Xform "World"
 
         # Find site
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_types = model.shape_type.numpy()
 
         site_idx = None
@@ -158,7 +159,7 @@ def Xform "World"
         found_sites = []
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
 
         for i in range(model.shape_count):
             if shape_flags[i] & ShapeFlags.SITE:
@@ -236,7 +237,7 @@ def Xform "World"
         }
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_types = model.shape_type.numpy()
 
         for i in range(model.shape_count):
@@ -285,7 +286,7 @@ def Xform "World"
         model = builder.finalize()
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_transforms = model.shape_transform.numpy()
 
         # Find sites and check orientations
@@ -354,7 +355,7 @@ def Xform "World"
         model = builder.finalize()
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
 
         # Count sites
         site_count = 0

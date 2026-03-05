@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 Development
 ===========
 
@@ -22,13 +25,15 @@ When using uv, the `lockfile <https://docs.astral.sh/uv/concepts/projects/layout
 We maintain a lockfile in the root of the repository that pins exact versions of all dependencies and their transitive dependencies.
 
 Sometimes, a dependency in the lockfile needs to be updated to a newer version.
-This can be done by running ``uv lock --upgrade-package <package-name>``:
+This can be done by running ``uv lock -P <package-name>``:
 
 .. code-block:: console
 
-    uv lock --upgrade-package warp-lang
+    uv lock -P warp-lang --prerelease allow
 
-    uv lock --upgrade-package mujoco-warp
+    uv lock -P mujoco-warp
+
+The ``--prerelease allow`` flag is needed for dependencies that use pre-release versions (e.g. ``warp-lang``).
 
 uv also provides a command to update all dependencies in the lockfile:
 
@@ -234,7 +239,7 @@ To build the documentation locally, ensure you have the documentation dependenci
         .. code-block:: console
 
             rm -rf docs/_build
-            uv run --extra docs --extra sim sphinx-build -W -b html docs docs/_build/html
+            uv run --extra docs --extra sim sphinx-build -j auto -W -b html docs docs/_build/html
 
     .. tab-item:: venv
         :sync: venv
@@ -292,6 +297,67 @@ Then open http://localhost:8000 in your browser. You can specify a custom port w
     will not work correctly for the interactive Viser visualizations, as they require
     specific CORS headers and MIME types that ``serve.py`` provides.
 
+Documentation Versioning
+------------------------
+
+Newton's documentation is versioned and hosted on GitHub Pages. Multiple versions
+are available simultaneously, with a version switcher dropdown in the navigation bar.
+
+**Published documentation URLs:**
+
+- **Latest stable release**: https://newton-physics.github.io/newton/stable/
+- **Development (main branch)**: https://newton-physics.github.io/newton/latest/
+- **Specific versions**: https://newton-physics.github.io/newton/1.0.0/ (etc.)
+
+How It Works
+^^^^^^^^^^^^
+
+The ``gh-pages`` branch contains versioned documentation in subdirectories:
+
+.. code-block:: text
+
+    /
+    ├── index.html      # Redirects to /stable/
+    ├── switcher.json   # Version manifest for dropdown
+    ├── stable/         # Copy of latest release
+    ├── latest/         # Dev docs from main branch
+    ├── 1.1.0/          # Release versions
+    └── 1.0.0/
+
+Two GitHub Actions workflows manage deployment:
+
+- **docs-dev.yml**: Deploys to ``/latest/`` on every push to ``main``
+- **docs-release.yml**: Deploys to ``/X.Y.Z/`` and updates ``/stable/`` on version tags
+
+Deploying Documentation
+^^^^^^^^^^^^^^^^^^^^^^^
+
+**Dev docs** are deployed automatically when changes are pushed to ``main``.
+
+**Release docs** are deployed when a version tag is pushed:
+
+.. code-block:: bash
+
+    git tag v1.0.0
+    git push origin v1.0.0
+
+Only strict semver tags (``vX.Y.Z``) trigger release deployments. Pre-release tags
+like ``v1.0.0-rc.1`` are ignored.
+
+Manual Operations
+^^^^^^^^^^^^^^^^^
+
+**Removing a version** (rare):
+
+1. Check out the ``gh-pages`` branch
+2. Delete the version directory (e.g., ``rm -rf 1.0.0``)
+3. Edit ``switcher.json`` to remove the entry
+4. Commit and push
+
+**Rebuilding all docs** (disaster recovery): Check out each version tag, build its
+docs with Sphinx, and deploy to the corresponding directory on ``gh-pages``. Update
+``switcher.json`` after each version using ``scripts/ci/update_docs_switcher.py``.
+
 Testing documentation code snippets
 -----------------------------------
 
@@ -307,14 +373,14 @@ The doctests can be run with:
 
         .. code-block:: console
 
-            uv run --extra docs --extra sim sphinx-build -W -b doctest docs docs/_build/doctest
+            uv run --extra docs --extra sim sphinx-build -j auto -W -b doctest docs docs/_build/doctest
 
     .. tab-item:: venv
         :sync: venv
 
         .. code:: console
 
-            python -m sphinx -W -b doctest docs docs/_build/doctest
+            python -m sphinx -j auto -W -b doctest docs docs/_build/doctest
 
 For more information, see the `sphinx.ext.doctest <https://www.sphinx-doc.org/en/master/usage/extensions/doctest.html>`__
 documentation.

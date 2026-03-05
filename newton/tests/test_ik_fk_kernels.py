@@ -79,7 +79,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
     child = builder.add_link(
         xform=wp.transform_identity(),
         mass=0.1,
-        key=f"body_{jt}",
+        label=f"body_{jt}",
     )
     builder.add_shape_box(
         body=child,
@@ -225,7 +225,7 @@ def _fk_parity_for_joint(test, device, jt):
             model,
             1,
             objectives=[_NoopObjective()],
-            jacobian_mode=ik.IKJacobianMode.AUTODIFF,
+            jacobian_mode=ik.IKJacobianType.AUTODIFF,
         )
         ik_solver._fk_two_pass(model, joint_q, ik_solver.body_q, ik_solver.X_local, ik_solver.n_problems)
 

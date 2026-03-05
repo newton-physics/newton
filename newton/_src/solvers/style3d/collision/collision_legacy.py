@@ -18,7 +18,8 @@ import warnings
 import warp as wp
 
 from newton import Contacts, Model, State
-from newton._src.solvers.vbd.solver_vbd import NUM_THREADS_PER_COLLISION_PRIMITIVE, accumulate_contact_force_and_hessian
+from newton._src.solvers.vbd.particle_vbd_kernels import accumulate_contact_force_and_hessian
+from newton._src.solvers.vbd.solver_vbd import NUM_THREADS_PER_COLLISION_PRIMITIVE
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
 
 ########################################################################################################################
@@ -77,11 +78,13 @@ def hessian_multiply_kernel(
 
 
 class CollisionHandler:
-    """Handles collision detection and response for cloth simulation.
-    Note:
+    """
+    Legacy collision handler for cloth simulation.
+
+    .. note::
         This class is currently deprecated. Its functionality has been migrated
-        to the `Collision` class. The code is kept temporarily for comparison
-        and experimentation with new approaches.
+        to the :class:`newton.solvers.style3d.Collision` class. The code is kept
+        temporarily for comparison and experimentation with new approaches.
     """
 
     def __init__(

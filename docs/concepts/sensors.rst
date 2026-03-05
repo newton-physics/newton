@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 Sensors
 =======
 
@@ -13,6 +16,31 @@ Newton sensors follow a consistent pattern:
 3. **Access**: Read results from sensor attributes (typically as Warp arrays)
 
 Sensors are designed to be efficient and GPU-friendly, computing results in parallel where possible.
+
+.. _label-matching:
+
+Label Matching
+--------------
+
+Several Newton APIs accept **label patterns** to select bodies, shapes, joints,
+etc. by name. Parameters that support label matching accept one of the following:
+
+- A **list of integer indices** — selects directly by index.
+- A **single string pattern** — selects all entries whose label matches the
+  pattern via :func:`fnmatch.fnmatch` (supports ``*`` and ``?`` wildcards).
+- A **list of string patterns** — selects all entries whose label matches at
+  least one of the patterns.
+
+Examples::
+
+   # single pattern: all shapes whose label starts with "foot_"
+   SensorIMU(model, sites="foot_*")
+
+   # list of patterns: union of two groups
+   SensorContact(model, sensing_obj_shapes=["*Plate*", "*Flap*"])
+
+   # list of indices: explicit selection
+   SensorFrameTransform(model, shapes=[0, 3, 7], reference_sites=[1])
 
 Available Sensors
 -----------------
@@ -48,12 +76,12 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    # Create model with sites
    builder = newton.ModelBuilder()
    
-   base = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
-   ref_site = builder.add_site(base, key="reference")
+   base = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+   ref_site = builder.add_site(base, label="reference")
    j_free = builder.add_joint_free(base)
    
-   end_effector = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
-   ee_site = builder.add_site(end_effector, key="end_effector")
+   end_effector = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+   ee_site = builder.add_site(end_effector, label="end_effector")
    
    # Add a revolute joint to connect bodies
    j_revolute = builder.add_joint_revolute(
@@ -77,7 +105,7 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    
    # In simulation loop (after eval_fk)
    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-   sensor.update(model, state)
+   sensor.update(state)
    transforms = sensor.transforms.numpy()  # Array of relative transforms
 
 Transform Computation
@@ -103,19 +131,19 @@ The sensor supports measuring multiple objects, optionally with different refere
    
    # Setup model with multiple sites
    builder = newton.ModelBuilder()
-   body1 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
-   site1 = builder.add_site(body1, key="site1")
-   body2 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
-   site2 = builder.add_site(body2, key="site2")
-   body3 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
-   site3 = builder.add_site(body3, key="site3")
-   ref_body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
-   ref_site = builder.add_site(ref_body, key="ref_site")
+   body1 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+   site1 = builder.add_site(body1, label="site1")
+   body2 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+   site2 = builder.add_site(body2, label="site2")
+   body3 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+   site3 = builder.add_site(body3, label="site3")
+   ref_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+   ref_site = builder.add_site(ref_body, label="ref_site")
 
    # Multiple objects, multiple references (must match in count) for sensor 2
-   ref1 = builder.add_site(body1, key="ref1")
-   ref2 = builder.add_site(body2, key="ref2")
-   ref3 = builder.add_site(body3, key="ref3")
+   ref1 = builder.add_site(body1, label="ref1")
+   ref2 = builder.add_site(body2, label="ref2")
+   ref3 = builder.add_site(body3, label="ref3")
    
    model = builder.finalize()
    state = model.state()
@@ -134,7 +162,7 @@ The sensor supports measuring multiple objects, optionally with different refere
    )
    
    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-   sensor2.update(model, state)
+   sensor2.update(state)
    transforms = sensor2.transforms.numpy()  # Shape: (num_objects, 7)
    
    # Extract position and rotation for first object
@@ -175,7 +203,7 @@ SensorIMU
 Basic Usage
 ~~~~~~~~~~~
 
-``SensorIMU`` takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the :doc:`extended state attribute <extended_state_attributes>` :attr:`State.body_qdd <newton.State.body_qdd>`.
+``SensorIMU`` takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the :doc:`extended attribute <extended_attributes>` :attr:`State.body_qdd <newton.State.body_qdd>`.
 
 By default, the sensor requests ``body_qdd`` from the model during construction, so that subsequent calls to :meth:`Model.state() <newton.Model.state>` allocate it.
 If you need to allocate the State before constructing the sensor, you must request ``body_qdd`` on the model yourself before calling :meth:`Model.state() <newton.Model.state>`.
@@ -187,9 +215,9 @@ If you need to allocate the State before constructing the sensor, you must reque
    import newton
 
    builder = newton.ModelBuilder()
-   body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
-   s1 = builder.add_site(body, key="imu1")
-   s2 = builder.add_site(body, key="imu2")
+   body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+   s1 = builder.add_site(body, label="imu1")
+   s2 = builder.add_site(body, label="imu2")
    model = builder.finalize()
 
    imu = SensorIMU(model, sites=[s1, s2])
@@ -212,7 +240,7 @@ See Also
 
 * :doc:`sites` — Using sites as reference frames
 * :doc:`../api/newton_sensors` — Full sensor API reference
-* :doc:`extended_state_attributes` — Optional State arrays (e.g., ``body_qdd``) required by some sensors.
+* :doc:`extended_attributes` — Optional State/Contacts arrays (e.g., ``State.body_qdd``, ``Contacts.force``) required by some sensors.
 * ``newton.examples.sensors.example_sensor_contact`` — SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` — SensorIMU example
 * ``newton.examples.sensors.example_sensor_tiled_camera`` — SensorTiledCamera example

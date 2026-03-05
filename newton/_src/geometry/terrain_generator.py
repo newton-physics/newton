@@ -443,8 +443,7 @@ def _heightfield_terrain(
     if center_y is None:
         center_y = size[1] / 2
 
-    # Use heightfield_to_mesh to convert heightfield to mesh
-    vertices, indices = heightfield_to_mesh(
+    vertices, indices = create_mesh_heightfield(
         heightfield=heightfield,
         extent_x=size[0],
         extent_y=size[1],
@@ -456,7 +455,7 @@ def _heightfield_terrain(
     return vertices, indices
 
 
-def generate_terrain_grid(
+def create_mesh_terrain(
     grid_size: tuple[int, int] = (4, 4),
     block_size: tuple[float, float] = (5.0, 5.0),
     terrain_types: list[str] | str | object | None = None,
@@ -602,7 +601,7 @@ def _to_newton_mesh(vertices: np.ndarray, indices: np.ndarray) -> tuple[np.ndarr
     return vertices.astype(np.float32), indices.astype(np.int32)
 
 
-def heightfield_to_mesh(
+def create_mesh_heightfield(
     heightfield: np.ndarray,
     extent_x: float,
     extent_y: float,

@@ -1,36 +1,5 @@
 #usda 1.0
 (
-    customLayerData = {
-        dictionary cameraSettings = {
-            dictionary Front = {
-                double3 position = (5, 0, 0)
-                double radius = 5
-            }
-            dictionary Perspective = {
-                double3 position = (16.80149001837726, 16.292536730703223, 12.15674610942522)
-                double3 target = (-1.0506333334532236, -0.6875546629243452, 2.2628484879940807)
-            }
-            dictionary Right = {
-                double3 position = (0, -5, 0)
-                double radius = 5
-            }
-            dictionary Top = {
-                double3 position = (0, 0, 5)
-                double radius = 5
-            }
-            string boundCamera = "/OmniverseKit_Persp"
-        }
-        dictionary omni_layer = {
-            string authoring_layer = "./ant_multi.usda"
-            dictionary locked = {
-            }
-            dictionary muteness = {
-            }
-        }
-        dictionary renderSettings = {
-            double "rtx:translucency:worldEps" = 0.005
-        }
-    }
     endTimeCode = 100
     metersPerUnit = 1
     startTimeCode = 0
@@ -38,24 +7,13 @@
     upAxis = "Z"
 )
 
-over "Render" (
-    hide_in_stage_window = true
+def PhysicsScene "physicsScene" (
+    prepend apiSchemas = ["NewtonSceneAPI"]
 )
 {
-}
-
-def PhysicsScene "physicsScene"
-{
-    custom bool Fabric:update_joint_applied_forces = 0
-    custom bool Fabric:update_joint_position_targets = 0
-    custom bool Fabric:update_joint_positions = 0
-    custom bool Fabric:update_joint_velocities = 0
-    custom bool Fabric:update_joint_velocity_targets = 0
-    custom bool Fabric:update_root_transforms = 0
-    custom bool Fabric:update_root_velocities = 0
     vector3f physics:gravityDirection = (0, 0, -1)
     float physics:gravityMagnitude = 9.81
-    custom float TimeStepsPerSecond = 60
+    int newton:timeStepsPerSecond = 60
 
     def Material "defaultMaterial" (
         prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]

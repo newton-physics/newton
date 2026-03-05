@@ -14,6 +14,15 @@ reviews:
   tools:
     github-checks:
       timeout_ms: 900000
+  path_instructions:
+    - path: "**"
+      instructions: |
+        Check that any user-facing change includes a corresponding entry in
+        CHANGELOG.md under the [Unreleased] section. Entries should use
+        imperative present tense ("Add X", not "Added X") and be placed under
+        the correct category (Added, Changed, Deprecated, Removed, or Fixed).
+        For Deprecated, Changed, and Removed entries, verify the entry includes
+        migration guidance telling users what replaces the old behavior.
 chat:
   auto_reply: true
 issue_enrichment:

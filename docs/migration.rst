@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 ``warp.sim`` Migration Guide
 ============================
 
@@ -155,6 +158,21 @@ per-joint compliance settings and have decided to remove this feature for memory
 The :meth:`newton.ModelBuilder.add_joint_free()` method now initializes the positional dofs of the free joint with the child body's transform (``body_q``).
 
 The universal and compound joints have been removed in favor of the more general D6 joint.
+
+
+Collisions
+----------
+
++-----------------------------------------------+--------------------------------------------------------------+
+| **warp.sim**                                  | **Newton**                                                   |
++-----------------------------------------------+--------------------------------------------------------------+
+| ``contacts = model.collide(state)``           | ``contacts = model.contacts()``                              |
+|                                               |                                                              |
+|                                               | ``model.collide(state, contacts)``                           |
++-----------------------------------------------+--------------------------------------------------------------+
+
+:meth:`~newton.Model.contacts` allocates the contacts buffer and :meth:`~newton.Model.collide` populates it in place.
+The buffer can be reused across steps. For more control, create a :class:`~newton.CollisionPipeline` directly.
 
 
 Renderers

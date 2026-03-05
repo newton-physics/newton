@@ -30,6 +30,10 @@ from newton._src.solvers.style3d.collision.kernels import (
 
 
 class Collision:
+    """
+    Collision handler for cloth simulation.
+    """
+
     def __init__(self, model: Model):
         """
         Initialize the collision handler, including BVHs and buffers.

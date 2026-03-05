@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 .. _Collisions:
 
 Collisions
@@ -7,34 +10,30 @@ Newton provides a flexible collision detection system for rigid-rigid and soft-r
 
 Newton's collision system is also compatible with MuJoCo-imported models via MJWarp, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes. See ``examples/mjwarp/`` for usage.
 
-.. _Collision Pipelines Overview:
+.. _Collision Pipeline:
 
-Collision Pipelines
--------------------
+Collision Pipeline
+------------------
 
-Newton provides two collision pipeline implementations:
-
-**CollisionPipeline** (Standard)
-  Uses precomputed shape pairs determined during model finalization. Efficient when the number of potentially colliding pairs is limited (NxN minus filtering rules). For scenes with many shapes where most pairs are filtered out, this avoids runtime broad phase overhead.
-
-**CollisionPipelineUnified**
-  Supports multiple broad phase algorithms. Use this when the number of potential collision pairs would be large (e.g., hundreds of shapes that could all collide). Also required for advanced contact models like SDF-based and hydroelastic contacts. See :ref:`Unified Pipeline` for details.
+Newton's collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See :ref:`Collision Pipeline Details` for details.
 
 Basic usage:
 
 .. code-block:: python
 
-    # Default: uses CollisionPipeline with precomputed pairs
-    contacts = model.collide(state)
+    # Default: creates CollisionPipeline with EXPLICIT broad phase (precomputed pairs)
+    contacts = model.contacts()
+    model.collide(state, contacts)
 
-    # Or explicitly create a pipeline
-    from newton import CollisionPipelineUnified, BroadPhaseMode
-    
-    pipeline = CollisionPipelineUnified.from_model(
+    # Or create a pipeline explicitly to choose broad phase mode
+    from newton import CollisionPipeline
+
+    pipeline = CollisionPipeline(
         model,
-        broad_phase_mode=BroadPhaseMode.SAP,
+        broad_phase="sap",
     )
-    contacts = model.collide(state, collision_pipeline=pipeline)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Supported Shape Types:
 
@@ -72,11 +71,10 @@ Newton supports the following geometry types via :class:`~newton.GeoType`:
    **Heightfields** (``HFIELD``) are not implemented. Convert heightfield terrain to a triangle mesh.
 
 .. note::
-   **SDF is a collision option**, not a standalone shape type. Enable SDF generation on any shape 
-   via ``sdf_max_resolution`` or ``sdf_target_voxel_size`` to precompute a signed distance field 
-   from the shape's geometry. The SDF provides O(1) distance queries that accelerate collision 
-   detection, especially for mesh-mesh pairs. The collision pipeline decides when to use SDF data 
-   based on efficiency.
+   **SDF is collision data, not a standalone shape type.** For mesh shapes, build and attach
+   an SDF explicitly with ``mesh.build_sdf(...)`` and then pass that mesh to
+   ``builder.add_shape_mesh(...)``. For primitive hydroelastic workflows, SDF generation uses
+   ``ShapeConfig`` SDF parameters.
 
 .. _Shapes and Bodies:
 
@@ -88,8 +86,8 @@ Collision shapes are attached to rigid bodies. Each shape has:
 - **Body index** (``shape_body``): The rigid body this shape is attached to. Use ``body=-1`` for static/world-fixed shapes.
 - **Local transform** (``shape_transform``): Position and orientation relative to the body frame.
 - **Scale** (``shape_scale``): 3D scale factors applied to the shape geometry.
-- **Thickness** (``shape_thickness``): Surface thickness used in contact generation (see :ref:`Shape Configuration`).
-- **Source geometry** (``shape_source``): Reference to the underlying geometry object (e.g., :class:`~newton.Mesh`, :class:`~newton.SDF`).
+- **Margin** (``shape_margin``): Surface margin used in contact generation (see :ref:`Shape Configuration`).
+- **Source geometry** (``shape_source``): Reference to the underlying geometry object (e.g., :class:`~newton.Mesh`).
 
 During collision detection, shapes are transformed to world space using their parent body's pose:
 
@@ -105,7 +103,7 @@ Contacts are generated between shapes, not bodies. Depending on the type of solv
 Collision Filtering
 -------------------
 
-Both pipelines use the same filtering rules based on world indices and collision groups.
+The collision pipeline uses filtering rules based on world indices and collision groups.
 
 .. _World IDs:
 
@@ -299,9 +297,9 @@ UsdPhysics ``physics:filteredPairs`` relationships).
     body = builder.add_body()
     shape_a = builder.add_shape_sphere(body, radius=0.5)
     shape_b = builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
-    
+
     # Exclude this specific pair from collision detection
-    builder.shape_collision_filter_pairs.append((shape_a, shape_b))
+    builder.add_shape_collision_filter_pair(shape_a, shape_b)
 
 Filter pairs are automatically populated in several cases:
 
@@ -328,153 +326,12 @@ The resulting filter pairs are stored in :attr:`~newton.Model.shape_collision_fi
     
     model = builder.finalize()
 
-.. _Standard Pipeline:
+.. _Collision Pipeline Details:
 
-Standard Pipeline
------------------
+Broad Phase and Shape Compatibility
+-----------------------------------
 
-:class:`~newton.CollisionPipeline` is the default implementation. Shape pairs are precomputed during :meth:`~newton.ModelBuilder.finalize` based on filtering rules.
-
-**When to use:**
-
-- Limited number of potential collision pairs (filtering rules eliminate most NxN combinations)
-- Static collision topology (pairs don't change at runtime)
-- Scenes with <100 potentially colliding shapes
-
-**Limitations:**
-
-- Does not support advanced contact models (SDF-based, hydroelastic, cylinder, cone primitives)
-- Pairs fixed at finalization - inefficient if NxN minus filtering is still large
-
-.. note::
-   Development is focused on ``CollisionPipelineUnified``, which will replace the standard 
-   ``CollisionPipeline`` in the future once feature and performance parity is achieved. 
-   New contact models (SDF, hydroelastic, cylinder/cone primitives) are only being added to 
-   the unified pipeline. Consider using ``CollisionPipelineUnified`` with 
-   ``BroadPhaseMode.EXPLICIT`` if you need static pairs with advanced contact models.
-
-Standard Pipeline Shape Compatibility
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. list-table::
-   :header-rows: 1
-   :widths: 12 9 9 9 9 9 9 9 9 9
-
-   * - 
-     - Plane
-     - Sphere
-     - Capsule
-     - Box
-     - Cylinder
-     - Cone
-     - Mesh
-     - SDF
-     - Particle
-   * - **Plane**
-     - 
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **Sphere**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **Capsule**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **Box**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **Cylinder**
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - ✅
-   * - **Cone**
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - ✅
-   * - **Mesh**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **SDF**
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - ✅
-   * - **Particle**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-
-Empty cells indicate unsupported pairs. Use :class:`~newton.CollisionPipelineUnified` for cylinder, cone, SDF, and hydroelastic contact generation.
-
-The pipeline is created automatically when calling :meth:`~newton.Model.collide` without arguments:
-
-.. code-block:: python
-
-    contacts = model.collide(state)  # Uses CollisionPipeline internally
-
-.. _Unified Pipeline:
-
-Unified Pipeline
-----------------
-
-:class:`~newton.CollisionPipelineUnified` provides configurable broad phase algorithms:
+:class:`~newton.CollisionPipeline` provides configurable broad phase algorithms:
 
 .. list-table::
    :header-rows: 1
@@ -487,26 +344,30 @@ Unified Pipeline
    * - **SAP**
      - Sweep-and-prune AABB broad phase. O(N log N), better for larger scenes with spatial coherence.
    * - **EXPLICIT**
-     - Uses precomputed shape pairs like standard pipeline, but with unified pipeline's contact algorithms. Combines static pair efficiency with advanced contact models.
+     - Uses precomputed shape pairs (default). Combines static pair efficiency with advanced contact algorithms.
 
 .. code-block:: python
 
-    from newton import CollisionPipelineUnified, BroadPhaseMode
-    
+    from newton import CollisionPipeline
+
+    # Default: EXPLICIT (precomputed pairs)
+    pipeline = CollisionPipeline(model)
+
     # NxN for small scenes
-    pipeline = CollisionPipelineUnified.from_model(model, broad_phase_mode=BroadPhaseMode.NXN)
-    
+    pipeline = CollisionPipeline(model, broad_phase="nxn")
+
     # SAP for larger scenes
-    pipeline = CollisionPipelineUnified.from_model(model, broad_phase_mode=BroadPhaseMode.SAP)
-    
-    contacts = model.collide(state, collision_pipeline=pipeline)
+    pipeline = CollisionPipeline(model, broad_phase="sap")
+
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Shape Compatibility:
 
-Unified Pipeline Shape Compatibility
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Shape Compatibility
+^^^^^^^^^^^^^^^^^^^
 
-The unified pipeline supports collision detection between all shape type combinations:
+The collision pipeline supports collision detection between all shape type combinations:
 
 .. list-table::
    :header-rows: 1
@@ -618,10 +479,11 @@ The unified pipeline supports collision detection between all shape type combina
 Ellipsoid and ConvexMesh are also fully supported. The only unsupported type is ``HFIELD`` (heightfield) - convert to mesh instead.
 
 .. note::
-   **SDF** in this table refers to shapes with precomputed SDF data (via ``sdf_max_resolution`` or ``sdf_target_voxel_size``). SDFs are generated from a shape's primary geometry and provide O(1) distance queries.
+   **SDF** in this table refers to shapes with precomputed SDF data. Mesh SDFs are attached
+   through ``mesh.build_sdf(...)`` and provide O(1) distance queries.
 
 .. note::
-   ``CollisionPipelineUnified`` does not currently support particle (soft body) collisions. Use the standard pipeline for particle-shape contacts. The unified pipeline is under active development.
+   Particle (soft body) collision support is available; see cloth and cable examples that use the collision pipeline for particle-shape contacts.
 
 .. _Narrow Phase:
 
@@ -636,7 +498,7 @@ The primary algorithm for convex shape pairs. Uses support mapping functions to 
 
 **Multi-contact Generation**
 
-For shape pairs, multiple contact points are generated for stable stacking and resting contacts. For the standard collision pipeline, the maximum contacts per shape pair is controlled by ``rigid_contact_max_per_pair`` in :meth:`Model.collide`. The unified collision pipeline automatically estimates buffer sizes based on the model.
+For shape pairs, multiple contact points are generated for stable stacking and resting contacts. The collision pipeline estimates buffer sizes based on the model; you can override this value with ``rigid_contact_max`` when instantiating the pipeline.
 
 .. _Mesh Collisions:
 
@@ -660,20 +522,18 @@ Two approaches available:
 1. **BVH-based** (default when no SDF configured): Iterates mesh vertices against the other mesh's BVH. 
    Performance scales with triangle count - can be very slow for complex meshes.
 
-2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries. 
-   Enable by setting ``sdf_max_resolution`` or ``sdf_target_voxel_size`` on shapes.
+2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
+   For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
 .. warning::
-   If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries 
-   which are **significantly slower**. For production use with complex meshes, configure SDF 
-   via ``sdf_max_resolution`` or ``sdf_target_voxel_size``:
+   If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
+   which are **significantly slower**. For production use with complex meshes, precompute and
+   attach SDF data on meshes:
 
    .. code-block:: python
 
-       cfg = builder.ShapeConfig(
-           sdf_max_resolution=64,  # Precompute SDF for fast mesh-mesh collision
-       )
-       builder.add_shape_mesh(body, mesh=my_mesh, cfg=cfg)
+       my_mesh.build_sdf(max_resolution=64)
+       builder.add_shape_mesh(body, mesh=my_mesh)
 
 .. _Contact Reduction:
 
@@ -686,42 +546,26 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 1. Contacts are binned by normal direction (20 icosahedron face directions)
 2. Within each bin, contacts are scored by spatial distribution and penetration depth
-3. Representative contacts are selected using configurable depth thresholds (betas)
+3. Representative contacts are selected to preserve coverage and depth cues
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
-**Configuring contact reduction (SDFHydroelasticConfig):**
+**Configuring contact reduction (HydroelasticSDF.Config):**
 
-For hydroelastic and SDF-based contacts, use :class:`~newton.SDFHydroelasticConfig` to tune reduction behavior:
+For hydroelastic and SDF-based contacts, use :class:`~newton.geometry.HydroelasticSDF.Config` to tune reduction behavior:
 
 .. code-block:: python
 
-    from newton import SDFHydroelasticConfig
+    from newton.geometry import HydroelasticSDF
 
-    config = SDFHydroelasticConfig(
+    config = HydroelasticSDF.Config(
         reduce_contacts=True,           # Enable contact reduction
-        betas=(10.0, -0.5),             # Scoring thresholds (default)
-        sticky_contacts=0.0,            # Temporal persistence (0 = disabled)
+        buffer_fraction=0.2,            # Reduce hydroelastic GPU buffer allocations
         normal_matching=True,           # Align reduced normals with aggregate force
-        moment_matching=False,          # Match friction moments (experimental)
+        anchor_contact=False,           # Optional center-of-pressure anchor contact
     )
 
-    pipeline = CollisionPipelineUnified.from_model(model, sdf_hydroelastic_config=config)
-
-**Understanding betas:**
-
-The ``betas`` tuple controls how contacts are scored for selection. Each beta value (first element, second element, etc.) produces a separate set of representative contacts per normal bin:
-
-- **Positive beta** (e.g., ``10.0``): Score = ``spatial_position + depth * beta``. Higher values favor deeper contacts.
-- **Negative beta** (e.g., ``-0.5``): Score = ``spatial_position * depth^(-beta)`` for penetrating contacts.
-  This weighs spatial distribution more heavily for shallow contacts.
-
-The default ``(10.0, -0.5)`` provides a balance: one set prioritizes penetration depth,
-another prioritizes spatial coverage. More betas = more contacts retained but better coverage.
-
-.. note::
-   The beta scoring behavior is subject to refinement. The unified collision pipeline 
-   is under active development and these parameters may change in future releases.
+    pipeline = CollisionPipeline(model, sdf_hydroelastic_config=config)
 
 **Other reduction options:**
 
@@ -731,15 +575,12 @@ another prioritizes spatial coverage. More betas = more contacts retained but be
 
    * - Parameter
      - Description
-   * - ``sticky_contacts``
-     - Temporal persistence threshold. When > 0, contacts from previous frames within this distance are preserved to prevent jittering. Default: 0.0 (disabled).
    * - ``normal_matching``
      - Rotates selected contact normals so their weighted sum aligns with the aggregate force direction 
        from all unreduced contacts. Preserves net force direction after reduction. Default: True.
-   * - ``moment_matching``
-     - Preserves torsional friction by adding an anchor contact at the depth-weighted centroid and 
-       scaling friction coefficients. This ensures the reduced contact set produces similar resistance 
-       to rotational sliding as the original contacts. Experimental. Default: False.
+   * - ``anchor_contact``
+     - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
+       Default: False.
    * - ``margin_contact_area``
      - Lower bound on contact area. Hydroelastic stiffness is ``area * k_eff``, but contacts 
        within the contact margin that are not yet penetrating (speculative contacts) have zero 
@@ -777,23 +618,23 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
 
    * - Parameter
      - Description
-   * - ``thickness``
-     - Surface thickness. Pairwise: summed (``t_a + t_b``). Creates visible gap at rest. Essential for thin shells and cloth to improve simulation stability and reduce self-intersections. Default: 1e-5.
-   * - ``contact_margin``
-     - AABB expansion for early contact detection. Pairwise: max. The margin only affects contact generation; effective rest distance is not affected and is only governed by ``thickness``. Increasing the margin can help avoid tunneling of fast-moving objects because contacts are detected at a greater distance between objects. Must be >= ``thickness``. Default: None (uses ``builder.rigid_contact_margin``, which defaults to 0.1).
+   * - ``margin``
+     - Surface offset used by narrow phase. Pairwise effect is additive (``m_a + m_b``): contacts are evaluated against the signed distance to the margin-shifted surfaces, so resting separation is ``m_a + m_b``. Helps thin shells/cloth stability and reduces self-intersections. Default: 1e-5.
+   * - ``gap``
+     - Additional detection threshold. Pairwise effect is additive (``g_a + g_b``). Broad phase expands each shape AABB by ``(margin + gap)`` per shape; narrow phase then keeps a candidate contact when ``d <= g_a + g_b`` (with ``d`` measured relative to margin-shifted surfaces). Increasing gap detects contacts earlier and helps reduce tunneling. Default: None (uses ``builder.rigid_gap``, which defaults to 0.1).
    * - ``is_solid``
      - Whether shape is solid or hollow. Affects inertia and SDF sign. Default: True.
    * - ``is_hydroelastic``
      - Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See :ref:`Hydroelastic Contacts`. Default: False.
-   * - ``k_hydro``
+   * - ``kh``
      - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
 
 .. note::
-   **Contact generation**: A contact is created when ``d < max(margin_a, margin_b)``, where 
-   ``d = surface_distance - (thickness_a + thickness_b)``. The solver enforces ``d >= 0``, 
-   so objects at rest settle with surfaces separated by ``thickness_a + thickness_b``.
+   **Contact generation**: A contact is created when ``d <= (gap_a + gap_b)``, where
+   ``d = surface_distance - (margin_a + margin_b)``. The solver enforces ``d >= 0``, 
+   so objects at rest settle with surfaces separated by ``margin_a + margin_b``.
 
-**SDF configuration (generates SDF from shape geometry):**
+**SDF configuration (primitive generation defaults):**
 
 .. list-table::
    :header-rows: 1
@@ -802,27 +643,27 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
    * - Parameter
      - Description
    * - ``sdf_max_resolution``
-     - Maximum SDF grid dimension (must be divisible by 8). Either this or ``sdf_target_voxel_size`` enables SDF.
+     - Maximum SDF grid dimension (must be divisible by 8) for primitive SDF generation.
    * - ``sdf_target_voxel_size``
-     - Target voxel size for SDF. Takes precedence over ``sdf_max_resolution``.
+     - Target voxel size for primitive SDF generation. Takes precedence over ``sdf_max_resolution``.
    * - ``sdf_narrow_band_range``
      - SDF narrow band distance range (inner, outer). Default: (-0.1, 0.1).
 
-Example:
+Example (mesh SDF workflow):
 
 .. code-block:: python
 
     cfg = builder.ShapeConfig(
         collision_group=-1,           # Collide with everything
-        thickness=0.001,              # 1mm thickness
-        contact_margin=0.01,          # 1cm margin
-        sdf_max_resolution=64,        # Enable SDF for mesh
+        margin=0.001,                 # 1mm margin
+        gap=0.01,                     # 1cm detection gap
     )
+    my_mesh.build_sdf(max_resolution=64)
     builder.add_shape_mesh(body, mesh=my_mesh, cfg=cfg)
 
 **Builder default margin:**
 
-The builder's ``rigid_contact_margin`` (default 0.1) applies to shapes without explicit ``contact_margin``. Alternatively, use ``builder.default_shape_cfg.contact_margin``.
+The builder's ``rigid_gap`` (default 0.1) applies to shapes without explicit ``gap``. Alternatively, use ``builder.default_shape_cfg.gap``.
 
 .. _Common Patterns:
 
@@ -858,7 +699,7 @@ Use ``builder.default_shape_cfg`` to set defaults for all shapes:
     builder.default_shape_cfg.kd = 1000.0
     builder.default_shape_cfg.mu = 0.5
     builder.default_shape_cfg.is_hydroelastic = True
-    builder.default_shape_cfg.sdf_max_resolution = 64
+    builder.default_shape_cfg.sdf_max_resolution = 64  # Primitive SDF defaults
 
 **Running collision less frequently**
 
@@ -871,7 +712,7 @@ For performance, you can run collision detection less often than simulation subs
     for frame in range(num_frames):
         for substep in range(sim_substeps):
             if substep % collide_every_n_substeps == 0:
-                contacts = model.collide(state, collision_pipeline=pipeline)
+                pipeline.collide(state, contacts)
             solver.step(state_0, state_1, control, contacts, dt=sim_dt)
             state_0, state_1 = state_1, state_0
 
@@ -884,8 +725,10 @@ Soft contacts are generated automatically when particles are present. They use a
     # Add particles
     builder.add_particle(pos=wp.vec3(0, 0, 1), vel=wp.vec3(0, 0, 0), mass=1.0)
     
-    # Soft contact margin is set at collision time
-    contacts = model.collide(state, soft_contact_margin=0.01)
+    # Set soft contact margin
+    pipeline = CollisionPipeline(model, soft_contact_margin=0.01)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
     
     # Access soft contact data
     n_soft = contacts.soft_contact_count.numpy()[0]
@@ -899,10 +742,6 @@ Contact Data
 
 The :class:`~newton.Contacts` class stores the results from the collision detection step
 and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for contact handling.
-
-.. note::
-   Contact forces are not part of the :class:`~newton.Contacts` class - it only stores geometric 
-   contact information. See :class:`~newton.SensorContact` for computing contact forces.
 
 **Rigid contacts:**
 
@@ -922,8 +761,8 @@ and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for
      - Contact point offsets in body-local space.
    * - ``rigid_contact_normal``
      - Contact normal direction (from shape0 to shape1).
-   * - ``rigid_contact_thickness0``, ``rigid_contact_thickness1``
-     - Shape thickness at each contact point.
+   * - ``rigid_contact_margin0``, ``rigid_contact_margin1``
+     - Shape margin offsets at each contact point.
 
 **Soft contacts (particle-shape):**
 
@@ -944,11 +783,23 @@ and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for
    * - ``soft_contact_normal``
      - Contact normal.
 
+**Extended contact attributes** (see :ref:`extended_contact_attributes`):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Attribute
+     - Description
+   * - :attr:`~newton.Contacts.force`
+     - Contact spatial forces (used by :class:`~newton.sensors.SensorContact`)
+
 Example usage:
 
 .. code-block:: python
 
-    contacts = model.collide(state)
+    contacts = model.contacts()
+    model.collide(state, contacts)
     
     n = contacts.rigid_contact_count.numpy()[0]
     points0 = contacts.rigid_contact_point0.numpy()[:n]
@@ -959,33 +810,36 @@ Example usage:
     shape0 = contacts.rigid_contact_shape0.numpy()[:n]
     shape1 = contacts.rigid_contact_shape1.numpy()[:n]
 
-.. _Collide Method:
+.. _Creating Contacts:
 
-Model.collide() Parameters
---------------------------
+Creating and Populating Contacts
+--------------------------------
 
-The :meth:`Model.collide` method accepts the following parameters:
+:meth:`~newton.Model.contacts` creates a :class:`~newton.Contacts` buffer using a default
+:class:`~newton.CollisionPipeline` (EXPLICIT broad phase, cached on first call).
+:meth:`~newton.Model.collide` populates it:
 
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
+.. code-block:: python
 
-   * - Parameter
-     - Description
-   * - ``state``
-     - Current simulation state (required).
-   * - ``collision_pipeline``
-     - Optional custom collision pipeline. If None, creates/reuses default.
-   * - ``rigid_contact_max_per_pair``
-     - Maximum contacts per shape pair. None = no limit.
-   * - ``soft_contact_max``
-     - Maximum soft contacts to allocate.
-   * - ``soft_contact_margin``
-     - Margin for soft contact generation. Default: 0.01.
-   * - ``edge_sdf_iter``
-     - Iterations for edge-SDF contact search. Default: 10.
-   * - ``requires_grad``
-     - Enable gradient computation. Default: model.requires_grad.
+    contacts = model.contacts()
+    model.collide(state, contacts)
+
+The contacts buffer can be reused across steps — ``collide`` clears it each time.
+
+For control over broad phase mode, contact limits, or hydroelastic configuration, create a
+:class:`~newton.CollisionPipeline` directly:
+
+.. code-block:: python
+
+    from newton import CollisionPipeline
+
+    pipeline = CollisionPipeline(
+        model,
+        broad_phase="sap",
+        rigid_contact_max=50000,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Hydroelastic Contacts:
 
@@ -1009,7 +863,10 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 **Requirements:**
 
 - Both shapes in a pair must have ``is_hydroelastic=True``
-- Shapes must have SDF enabled (``sdf_max_resolution`` or ``sdf_target_voxel_size``)
+- Shapes must have SDF data available:
+  - mesh shapes: call ``mesh.build_sdf(...)``
+  - primitive shapes: use ``sdf_max_resolution`` or ``sdf_target_voxel_size`` in ``ShapeConfig``
+- For non-unit shape scale, the attached SDF must be scale-baked
 - Only volumetric shapes supported (not planes, heightfields, or non-watertight meshes)
 
 .. code-block:: python
@@ -1017,7 +874,7 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
     cfg = builder.ShapeConfig(
         is_hydroelastic=True,   # Opt-in to hydroelastic contacts
         sdf_max_resolution=64,  # Required for hydroelastic
-        k_hydro=1.0e11,         # Contact stiffness
+        kh=1.0e11,              # Contact stiffness
     )
     builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
 
@@ -1028,11 +885,28 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 3. Contact points are distributed across the surface area
 4. Optional contact reduction selects representative points
 
-**Hydroelastic stiffness (k_hydro):**
+**Hydroelastic stiffness (kh):**
 
-The ``k_hydro`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
+The ``kh`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
 
-Contact reduction options for hydroelastic contacts are configured via :class:`~newton.SDFHydroelasticConfig` (see :ref:`Contact Reduction`).
+Contact reduction options for hydroelastic contacts are configured via :class:`~newton.geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
+
+Hydroelastic memory can be tuned with ``buffer_fraction`` on
+:class:`~newton.geometry.HydroelasticSDF.Config`. This scales broadphase, iso-refinement,
+and hydroelastic face-contact buffer allocations as a fraction of the worst-case
+size. Lower values reduce memory usage but also reduce overflow headroom.
+
+.. code-block:: python
+
+    from newton.geometry import HydroelasticSDF
+
+    config = HydroelasticSDF.Config(
+        reduce_contacts=True,
+        buffer_fraction=0.2,  # 20% of worst-case hydroelastic buffers
+    )
+
+If runtime overflow warnings appear, increase ``buffer_fraction`` (or stage-specific
+``buffer_mult_*`` values) until warnings disappear in your target scenes.
 
 .. _Contact Material Properties:
 
@@ -1080,21 +954,21 @@ Shape material properties control contact resolution. Configure via :class:`~new
      - XPBD
      - :attr:`~newton.ModelBuilder.ShapeConfig.restitution`
      - :attr:`~newton.Model.shape_material_restitution`
-   * - ``torsional_friction``
+   * - ``mu_torsional``
      - Resistance to spinning at contact
      - XPBD, MuJoCo
-     - :attr:`~newton.ModelBuilder.ShapeConfig.torsional_friction`
-     - :attr:`~newton.Model.shape_material_torsional_friction`
-   * - ``rolling_friction``
+     - :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional`
+     - :attr:`~newton.Model.shape_material_mu_torsional`
+   * - ``mu_rolling``
      - Resistance to rolling motion
      - XPBD, MuJoCo
-     - :attr:`~newton.ModelBuilder.ShapeConfig.rolling_friction`
-     - :attr:`~newton.Model.shape_material_rolling_friction`
-   * - ``k_hydro``
+     - :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling`
+     - :attr:`~newton.Model.shape_material_mu_rolling`
+   * - ``kh``
      - Hydroelastic stiffness
      - SemiImplicit, Featherstone, MuJoCo
-     - :attr:`~newton.ModelBuilder.ShapeConfig.k_hydro`
-     - :attr:`~newton.Model.shape_material_k_hydro`
+     - :attr:`~newton.ModelBuilder.ShapeConfig.kh`
+     - :attr:`~newton.Model.shape_material_kh`
 
 Example:
 
@@ -1125,7 +999,7 @@ Custom collision properties can be authored in USD:
         custom float newton:contact_kd = 1000.0
         custom float newton:contact_kf = 1000.0
         custom float newton:contact_ka = 0.0
-        custom float newton:contact_thickness = 0.00001
+        custom float newton:margin = 0.00001
     }
 
 See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
@@ -1135,14 +1009,14 @@ See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
 Performance
 -----------
 
-- Use **EXPLICIT** or standard pipeline when collision pairs are limited (<100 shapes with most pairs filtered)
+- Use **EXPLICIT** (default) when collision pairs are limited (<100 shapes with most pairs filtered)
 - Use **SAP** for >100 shapes with spatial coherence
 - Use **NxN** for small scenes (<100 shapes) or uniform spatial distribution
 - Minimize global entities (world=-1) as they interact with all worlds
 - Use positive collision groups to reduce candidate pairs
 - Use world indices for parallel simulations (essential for RL with many environments)
 - Contact reduction is enabled by default for mesh-heavy scenes
-- Adjust ``rigid_contact_max_per_pair`` to limit memory usage in complex scenes
+- Pass ``rigid_contact_max`` to :class:`~newton.CollisionPipeline` to limit memory in complex scenes
 
 See Also
 --------
@@ -1154,30 +1028,29 @@ See Also
     import newton
     from newton import (
         CollisionPipeline,
-        CollisionPipelineUnified,
-        BroadPhaseMode,
         Contacts,
         GeoType,
     )
-    from newton.geometry import SDFHydroelasticConfig
+    from newton.geometry import HydroelasticSDF
 
 **API Reference:**
 
-- :class:`~newton.CollisionPipeline` - Standard collision pipeline
-- :class:`~newton.CollisionPipelineUnified` - Unified pipeline with broad phase options
-- :class:`~newton.BroadPhaseMode` - Broad phase algorithm selection
+- :meth:`~newton.Model.contacts` - Create a contacts buffer (default pipeline)
+- :meth:`~newton.Model.collide` - Run collision detection (default pipeline)
+- :class:`~newton.CollisionPipeline` - Collision pipeline with configurable broad phase
+- ``broad_phase`` - Broad phase algorithm: ``"nxn"``, ``"sap"``, or ``"explicit"``
 - :class:`~newton.Contacts` - Contact data container
 - :class:`~newton.GeoType` - Shape geometry types
 - :class:`~newton.ModelBuilder.ShapeConfig` - Shape configuration options
-- :meth:`~newton.Model.collide` - Collision detection method
-- :class:`~newton.geometry.SDFHydroelasticConfig` - Hydroelastic contact configuration
+- :class:`~newton.geometry.HydroelasticSDF.Config` - Hydroelastic contact configuration
+- :meth:`~newton.CollisionPipeline.contacts` - Allocate a contacts buffer for a custom pipeline
 
 **Model attributes:**
 
 - :attr:`~newton.Model.shape_collision_group` - Per-shape collision groups
 - :attr:`~newton.Model.shape_world` - Per-shape world indices
-- :attr:`~newton.Model.shape_contact_margin` - Per-shape contact margins
-- :attr:`~newton.Model.shape_thickness` - Per-shape thickness values
+- :attr:`~newton.Model.shape_gap` - Per-shape contact gaps (detection threshold)
+- :attr:`~newton.Model.shape_margin` - Per-shape margin values (signed distance padding)
 
 **Related documentation:**
 

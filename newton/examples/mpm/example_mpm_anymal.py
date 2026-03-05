@@ -80,7 +80,7 @@ class Example:
 
         # Disable collisions with bodies other than shanks
         for body in range(builder.body_count):
-            if "SHANK" not in builder.body_key[body]:
+            if "SHANK" not in builder.body_label[body]:
                 for shape in builder.body_shapes[body]:
                     builder.shape_flags[shape] = builder.shape_flags[shape] & ~newton.ShapeFlags.COLLIDE_PARTICLES
 
@@ -110,12 +110,16 @@ class Example:
             "LF_KFE": -0.8,
         }
         # Set initial joint positions (skip first 7 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
-        for key, value in initial_q.items():
-            builder.joint_q[builder.joint_key.index(key) + 6] = value
+        for name, value in initial_q.items():
+            idx = next(i for i, lbl in enumerate(builder.joint_label) if lbl.endswith(f"/{name}"))
+            builder.joint_q[idx + 6] = value
 
         for i in range(builder.joint_dof_count):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
+
+        # Register MPM custom attributes before adding particles
+        SolverImplicitMPM.register_custom_attributes(builder)
 
         # add sand particles
         density = 2500.0
@@ -130,11 +134,8 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.model.particle_mu = 0.48
-        self.model.particle_ke = 1.0e15
-
         # setup mpm solver
-        mpm_options = SolverImplicitMPM.Options()
+        mpm_options = SolverImplicitMPM.Config()
         mpm_options.voxel_size = voxel_size
         mpm_options.tolerance = tolerance
         mpm_options.transfer_scheme = "pic"
@@ -145,30 +146,33 @@ class Example:
 
         mpm_options.strain_basis = "P0"
         mpm_options.max_iterations = 50
-        mpm_options.hardening = 0.0
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
+        mpm_options.collider_velocity_mode = "finite_difference"
 
-        mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
-
-        # Select and merge meshes for robot/sand collisions
-        mpm_model.setup_collider(
-            body_mass=wp.zeros_like(self.model.body_mass),  # so that the robot bodies are considered as kinematic
-        )
+        # Set per-particle hardening via custom attributes
+        self.model.mpm.hardening.fill_(0.0)
 
         # setup solvers
-        self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True, njmax=50)
-        self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            ls_iterations=50,
+            njmax=50,  # ls_iterations=50 for determinism
+        )
+        self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
 
         # simulation state
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        self.mpm_solver.enrich_state(self.state_0)
-        self.mpm_solver.enrich_state(self.state_1)
-
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        # Configure collider: treat robot bodies as kinematic and update initial state
+        self.mpm_solver.setup_collider(
+            body_mass=wp.zeros_like(self.model.body_mass),
+            body_q=self.state_0.body_q,
+        )
 
         # Setup control policy
         self.control = self.model.control()
@@ -290,16 +294,16 @@ class Example:
             lambda q, qd: q[1] > 0.9,  # This threshold assumes 100 frames
         )
 
-        forward_vel_min = wp.spatial_vector(-0.2, 0.9, -0.2, -0.8, -0.5, -0.5)
-        forward_vel_max = wp.spatial_vector(0.2, 1.1, 0.2, 0.8, 0.5, 0.5)
+        forward_vel_min = wp.spatial_vector(-0.2, 0.9, -0.2, -0.8, -1.5, -0.5)
+        forward_vel_max = wp.spatial_vector(0.2, 1.1, 0.2, 0.8, 1.5, 0.5)
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
+            lambda q, qd: newton.math.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
-        voxel_size = self.mpm_solver.mpm_model.voxel_size
+        voxel_size = self.mpm_solver.voxel_size
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",

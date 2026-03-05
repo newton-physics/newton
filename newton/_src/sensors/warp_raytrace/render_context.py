@@ -25,6 +25,7 @@ from .bvh import (
     compute_shape_bvh_bounds,
 )
 from .render import render_megakernel
+from .types import RenderOrder
 from .utils import Utils
 
 
@@ -34,6 +35,7 @@ class ClearData:
     clear_depth: float | wp.float32 | None = field(default_factory=lambda: wp.float32(0.0))
     clear_shape_index: int | wp.uint32 | None = field(default_factory=lambda: wp.uint32(0xFFFFFFFF))
     clear_normal: wp.vec3f | None = field(default_factory=lambda: wp.vec3f(0.0))
+    clear_albedo: int | wp.int32 | None = field(default_factory=lambda: wp.int32(0))
 
 
 DEFAULT_CLEAR_DATA = ClearData()
@@ -41,37 +43,30 @@ DEFAULT_CLEAR_DATA = ClearData()
 
 class RenderContext:
     @dataclass
-    class Options:
+    class Config:
         enable_global_world: bool = True
         enable_textures: bool = True
         enable_shadows: bool = True
         enable_ambient_lighting: bool = True
         enable_particles: bool = True
         enable_backface_culling: bool = True
-        tile_rendering: bool = False
-        tile_size: int = 8
+        render_order: int = RenderOrder.PIXEL_PRIORITY
+        tile_width: int = 16
+        tile_height: int = 8
         max_distance: float = 1000.0
 
-    def __init__(
-        self,
-        width: int = 512,
-        height: int = 512,
-        num_worlds: int = 1,
-        num_cameras: int = 1,
-        options: Options | None = None,
-    ):
+    def __init__(self, world_count: int = 1, config: Config | None = None, device: str | None = None):
+        self.device = device
         self.utils = Utils(self)
-        self.options = options if options else RenderContext.Options()
+        self.config = config if config else RenderContext.Config()
 
-        self.width = width
-        self.height = height
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         self.bvh_shapes: wp.Bvh = None
         self.bvh_particles: wp.Bvh = None
         self.triangle_mesh: wp.Mesh = None
-        self.num_shapes_enabled = 0
-        self.num_shapes_total = 0
+        self.shape_count_enabled = 0
+        self.shape_count_total = 0
 
         self.mesh_bounds: wp.array2d(dtype=wp.vec3f) = None
         self.mesh_texcoord: wp.array(dtype=wp.vec2f) = None
@@ -101,8 +96,6 @@ class RenderContext:
         self.texture_width: wp.array(dtype=wp.int32) = None
         self.texture_height: wp.array(dtype=wp.int32) = None
 
-        self.num_cameras = num_cameras
-
         self.material_texture_ids: wp.array(dtype=wp.int32) = None
         self.material_texture_repeat: wp.array(dtype=wp.vec2f) = None
         self.material_rgba: wp.array(dtype=wp.vec4f) = None
@@ -124,51 +117,65 @@ class RenderContext:
 
     def __init_shape_outputs(self):
         if self.bvh_shapes_lowers is None:
-            self.bvh_shapes_lowers = wp.zeros(self.num_shapes_enabled, dtype=wp.vec3f)
+            self.bvh_shapes_lowers = wp.zeros(self.shape_count_enabled, dtype=wp.vec3f, device=self.device)
         if self.bvh_shapes_uppers is None:
-            self.bvh_shapes_uppers = wp.zeros(self.num_shapes_enabled, dtype=wp.vec3f)
+            self.bvh_shapes_uppers = wp.zeros(self.shape_count_enabled, dtype=wp.vec3f, device=self.device)
         if self.bvh_shapes_groups is None:
-            self.bvh_shapes_groups = wp.zeros(self.num_shapes_enabled, dtype=wp.int32)
+            self.bvh_shapes_groups = wp.zeros(self.shape_count_enabled, dtype=wp.int32, device=self.device)
         if self.bvh_shapes_group_roots is None:
-            self.bvh_shapes_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
+            self.bvh_shapes_group_roots = wp.zeros((self.world_count_total), dtype=wp.int32, device=self.device)
 
     def __init_particle_outputs(self):
         if self.bvh_particles_lowers is None:
-            self.bvh_particles_lowers = wp.zeros(self.num_particles_total, dtype=wp.vec3f)
+            self.bvh_particles_lowers = wp.zeros(self.particle_count_total, dtype=wp.vec3f, device=self.device)
         if self.bvh_particles_uppers is None:
-            self.bvh_particles_uppers = wp.zeros(self.num_particles_total, dtype=wp.vec3f)
+            self.bvh_particles_uppers = wp.zeros(self.particle_count_total, dtype=wp.vec3f, device=self.device)
         if self.bvh_particles_groups is None:
-            self.bvh_particles_groups = wp.zeros(self.num_particles_total, dtype=wp.int32)
+            self.bvh_particles_groups = wp.zeros(self.particle_count_total, dtype=wp.int32, device=self.device)
         if self.bvh_particles_group_roots is None:
-            self.bvh_particles_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
+            self.bvh_particles_group_roots = wp.zeros((self.world_count_total), dtype=wp.int32, device=self.device)
 
-    def create_color_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.uint32, device=self.device)
 
-    def create_depth_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.float32)
+    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.float32, ndim=4
+    ):
+        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.float32, device=self.device)
 
-    def create_shape_index_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.uint32, device=self.device)
 
-    def create_normal_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.vec3f)
+    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.vec3f, ndim=4
+    ):
+        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.vec3f, device=self.device)
+
+    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.uint32, device=self.device)
 
     def refit_bvh(self):
-        if self.num_shapes_enabled:
+        if self.shape_count_enabled:
             self.__init_shape_outputs()
             self.__compute_bvh_shape_bounds()
             if self.bvh_shapes is None:
                 self.bvh_shapes = wp.Bvh(self.bvh_shapes_lowers, self.bvh_shapes_uppers, groups=self.bvh_shapes_groups)
                 wp.launch(
                     kernel=compute_bvh_group_roots,
-                    dim=self.num_worlds_total,
+                    dim=self.world_count_total,
                     inputs=[self.bvh_shapes.id, self.bvh_shapes_group_roots],
+                    device=self.device,
                 )
             else:
                 self.bvh_shapes.refit()
 
-        if self.num_particles_total:
+        if self.particle_count_total:
             self.__init_particle_outputs()
             self.__compute_bvh_particle_bounds()
             if self.bvh_particles is None:
@@ -179,15 +186,16 @@ class RenderContext:
                 )
                 wp.launch(
                     kernel=compute_bvh_group_roots,
-                    dim=self.num_worlds_total,
+                    dim=self.world_count_total,
                     inputs=[self.bvh_particles.id, self.bvh_particles_group_roots],
+                    device=self.device,
                 )
             else:
                 self.bvh_particles.refit()
 
         if self.has_triangle_mesh:
             if self.triangle_mesh is None:
-                self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices)
+                self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices, device=self.device)
             else:
                 self.triangle_mesh.refit()
 
@@ -195,34 +203,166 @@ class RenderContext:
         self,
         camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-        color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
-        depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-        shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
-        normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
+        color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
+        depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
+        shape_index_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
+        normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None = None,
+        albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         refit_bvh: bool = True,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):
         if self.has_shapes or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
-            render_megakernel(
-                self,
-                camera_transforms,
-                camera_rays,
-                color_image,
-                depth_image,
-                shape_index_image,
-                normal_image,
-                clear_data,
+            width = camera_rays.shape[2]
+            height = camera_rays.shape[1]
+            camera_count = camera_rays.shape[0]
+
+            assert camera_transforms.shape == (camera_count, self.world_count), (
+                f"camera_transforms size must match {camera_count} x {self.world_count}"
+            )
+
+            assert camera_rays.shape == (camera_count, height, width, 2), (
+                f"camera_rays size must match {camera_count} x {height} x {width} x 2"
+            )
+
+            if color_image is not None:
+                assert color_image.shape == (self.world_count, camera_count, height, width), (
+                    f"color_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                )
+                if clear_data is not None and clear_data.clear_color is not None:
+                    color_image.fill_(wp.uint32(clear_data.clear_color))
+
+            if depth_image is not None:
+                assert depth_image.shape == (self.world_count, camera_count, height, width), (
+                    f"depth_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                )
+                if clear_data is not None and clear_data.clear_depth is not None:
+                    depth_image.fill_(wp.float32(clear_data.clear_depth))
+
+            if shape_index_image is not None:
+                assert shape_index_image.shape == (self.world_count, camera_count, height, width), (
+                    f"shape_index_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                )
+                if clear_data is not None and clear_data.clear_shape_index is not None:
+                    shape_index_image.fill_(wp.uint32(clear_data.clear_shape_index))
+
+            if normal_image is not None:
+                assert normal_image.shape == (self.world_count, camera_count, height, width), (
+                    f"normal_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                )
+                if clear_data is not None and clear_data.clear_normal is not None:
+                    normal_image.fill_(clear_data.clear_normal)
+
+            if albedo_image is not None:
+                assert albedo_image.shape == (self.world_count, camera_count, height, width), (
+                    f"albedo_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                )
+                if clear_data is not None and clear_data.clear_albedo is not None:
+                    albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
+
+            if self.config.render_order == RenderOrder.TILED:
+                assert width % self.config.tile_width == 0, "render width must be a multiple of tile_width"
+                assert height % self.config.tile_height == 0, "render height must be a multiple of tile_height"
+
+            # Reshaping output images to one dimension, slightly improves performance in the Kernel.
+            if color_image is not None:
+                color_image = color_image.reshape(self.world_count * camera_count * width * height)
+            if depth_image is not None:
+                depth_image = depth_image.reshape(self.world_count * camera_count * width * height)
+            if shape_index_image is not None:
+                shape_index_image = shape_index_image.reshape(self.world_count * camera_count * width * height)
+            if normal_image is not None:
+                normal_image = normal_image.reshape(self.world_count * camera_count * width * height)
+            if albedo_image is not None:
+                albedo_image = albedo_image.reshape(self.world_count * camera_count * width * height)
+
+            wp.launch(
+                kernel=render_megakernel,
+                dim=(self.world_count * camera_count * width * height),
+                inputs=[
+                    # Model and config
+                    self.world_count,
+                    camera_count,
+                    self.light_count,
+                    width,
+                    height,
+                    self.config.render_order,
+                    self.config.tile_width,
+                    self.config.tile_height,
+                    self.config.enable_shadows,
+                    self.config.enable_textures,
+                    self.config.enable_ambient_lighting,
+                    self.config.enable_particles and self.has_particles,
+                    self.config.enable_backface_culling,
+                    self.config.enable_global_world,
+                    self.config.max_distance,
+                    # Camera
+                    camera_rays,
+                    camera_transforms,
+                    # Shape BVH
+                    self.shape_count_enabled,
+                    self.bvh_shapes.id if self.bvh_shapes else 0,
+                    self.bvh_shapes_group_roots,
+                    # Shapes
+                    self.shape_enabled,
+                    self.shape_types,
+                    self.shape_mesh_indices,
+                    self.shape_materials,
+                    self.shape_sizes,
+                    self.shape_colors,
+                    self.shape_transforms,
+                    # Meshes
+                    self.mesh_ids,
+                    self.mesh_face_offsets,
+                    self.mesh_face_vertices,
+                    self.mesh_texcoord,
+                    self.mesh_texcoord_offsets,
+                    # Particle BVH
+                    self.particle_count_total,
+                    self.bvh_particles.id if self.bvh_particles else 0,
+                    self.bvh_particles_group_roots,
+                    # Particles
+                    self.particles_position,
+                    self.particles_radius,
+                    # Triangle Mesh
+                    self.triangle_mesh.id if self.triangle_mesh is not None else 0,
+                    # Textures
+                    self.material_texture_ids,
+                    self.material_texture_repeat,
+                    self.material_rgba,
+                    self.texture_offsets,
+                    self.texture_data,
+                    self.texture_height,
+                    self.texture_width,
+                    # Lights
+                    self.lights_active,
+                    self.lights_type,
+                    self.lights_cast_shadow,
+                    self.lights_position,
+                    self.lights_orientation,
+                    # Outputs
+                    color_image is not None,
+                    depth_image is not None,
+                    shape_index_image is not None,
+                    normal_image is not None,
+                    albedo_image is not None,
+                    color_image,
+                    depth_image,
+                    shape_index_image,
+                    normal_image,
+                    albedo_image,
+                ],
+                device=self.device,
             )
 
     def __compute_bvh_shape_bounds(self):
         wp.launch(
             kernel=compute_shape_bvh_bounds,
-            dim=self.num_shapes_enabled,
+            dim=self.shape_count_enabled,
             inputs=[
-                self.num_shapes_enabled,
-                self.num_worlds_total,
+                self.shape_count_enabled,
+                self.world_count_total,
                 self.shape_world_index,
                 self.shape_enabled,
                 self.shape_types,
@@ -234,15 +374,16 @@ class RenderContext:
                 self.bvh_shapes_uppers,
                 self.bvh_shapes_groups,
             ],
+            device=self.device,
         )
 
     def __compute_bvh_particle_bounds(self):
         wp.launch(
             kernel=compute_particle_bvh_bounds,
-            dim=self.num_particles_total,
+            dim=self.particle_count_total,
             inputs=[
-                self.num_particles_total,
-                self.num_worlds_total,
+                self.particle_count_total,
+                self.world_count_total,
                 self.particles_world_index,
                 self.particles_position,
                 self.particles_radius,
@@ -250,29 +391,30 @@ class RenderContext:
                 self.bvh_particles_uppers,
                 self.bvh_particles_groups,
             ],
+            device=self.device,
         )
 
     @property
-    def num_worlds_total(self) -> int:
-        if self.options.enable_global_world:
-            return self.num_worlds + 1
-        return self.num_worlds
+    def world_count_total(self) -> int:
+        if self.config.enable_global_world:
+            return self.world_count + 1
+        return self.world_count
 
     @property
-    def num_particles_total(self) -> int:
+    def particle_count_total(self) -> int:
         if self.particles_position is not None:
             return self.particles_position.shape[0]
         return 0
 
     @property
-    def num_lights(self) -> int:
+    def light_count(self) -> int:
         if self.lights_active is not None:
             return self.lights_active.shape[0]
         return 0
 
     @property
     def has_shapes(self) -> bool:
-        return self.num_shapes_enabled > 0
+        return self.shape_count_enabled > 0
 
     @property
     def has_particles(self) -> bool:

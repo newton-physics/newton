@@ -13,9 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+try:
+    # register the newton schema plugin before any other USD code is executed
+    import newton_usd_schemas  # noqa: F401
+except ImportError:
+    pass
+
 from .utils import (
-    convert_warp_type,
-    convert_warp_value,
     get_attribute,
     get_attributes_in_namespace,
     get_custom_attribute_declarations,
@@ -27,11 +31,11 @@ from .utils import (
     get_scale,
     get_transform,
     has_attribute,
+    type_to_warp,
+    value_to_warp,
 )
 
 __all__ = [
-    "convert_warp_type",
-    "convert_warp_value",
     "get_attribute",
     "get_attributes_in_namespace",
     "get_custom_attribute_declarations",
@@ -43,4 +47,6 @@ __all__ = [
     "get_scale",
     "get_transform",
     "has_attribute",
+    "type_to_warp",
+    "value_to_warp",
 ]

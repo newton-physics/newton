@@ -96,6 +96,7 @@ uniform mat4 light_space_matrix;
 
 out vec3 Normal;
 out vec3 FragPos;
+out vec3 LocalPos;
 out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec4 FragPosLightSpace;
@@ -108,6 +109,7 @@ void main()
     vec4 worldPos = transform * vec4(aPos, 1.0);
     gl_Position = projection * view * worldPos;
     FragPos = vec3(worldPos);
+    LocalPos = aPos;
 
     mat3 rotation = mat3(transform);
     Normal = mat3(transpose(inverse(rotation))) * aNormal;
@@ -124,6 +126,7 @@ out vec4 FragColor;
 
 in vec3 Normal;
 in vec3 FragPos;
+in vec3 LocalPos;
 in vec2 TexCoord;
 in vec3 ObjectColor; // used as albedo
 in vec4 FragPosLightSpace;
@@ -135,6 +138,9 @@ uniform vec3 sky_color;
 uniform vec3 ground_color;
 uniform vec3 sun_direction;
 uniform sampler2D shadow_map;
+uniform sampler2D env_map;
+uniform float env_intensity;
+uniform sampler2D albedo_map;
 
 uniform vec3 fogColor;
 uniform int up_axis;
@@ -233,8 +239,8 @@ float ShadowCalculation()
 
 float SpotlightAttenuation()
 {
-    // Calculate spotlight position as 20 units from origin in sun direction
-    vec3 spotlight_pos = sun_direction * 20.0;
+    // Calculate spotlight position as 20 units from the camera in sun direction
+    vec3 spotlight_pos = view_pos + sun_direction * 20.0;
 
     // Vector from fragment to spotlight
     vec3 fragToLight = normalize(spotlight_pos - FragPos);
@@ -252,21 +258,42 @@ float SpotlightAttenuation()
     return intensity;
 }
 
+vec3 sample_env_map(vec3 dir, float lod)
+{
+    // dir assumed normalized
+    // Convert to a Y-up reference frame before equirect sampling.
+    vec3 dir_up = dir;
+    if (up_axis == 0) {
+        dir_up = vec3(-dir.y, dir.x, dir.z); // X-up -> Y-up
+    } else if (up_axis == 2) {
+        dir_up = vec3(dir.x, dir.z, -dir.y); // Z-up -> Y-up
+    }
+    float u = atan(dir_up.z, dir_up.x) / (2.0 * PI) + 0.5;
+    float v = asin(clamp(dir_up.y, -1.0, 1.0)) / PI + 0.5;
+    return textureLod(env_map, vec2(u, v), lod).rgb;
+}
+
 void main()
 {
     // material properties from vertex shader
-    float roughness = Material.x;
-    float metallic = Material.y;
+    float roughness = clamp(Material.x, 0.0, 1.0);
+    float metallic = clamp(Material.y, 0.0, 1.0);
     float checker_enable = Material.z;
+    float texture_enable = Material.w;
     float checker_scale = 1.0;
 
     // convert to linear space
     vec3 albedo = pow(ObjectColor, vec3(2.2));
+    if (texture_enable > 0.5)
+    {
+        vec3 tex_color = texture(albedo_map, TexCoord).rgb;
+        albedo *= pow(tex_color, vec3(2.2));
+    }
 
-    // Optional checker_enable pattern based on surface UVs
+    // Optional checker pattern in object-space so it follows instance transforms
     if (checker_enable > 0.0)
     {
-        vec2 uv = FragPos.xy * checker_scale;
+        vec2 uv = LocalPos.xy * checker_scale;
         float cb = checker(uv);
         vec3 albedo2 = albedo*0.7;
         // pick between the two colors
@@ -286,9 +313,10 @@ void main()
     // Blinn-Phong terms
     float NdotL = max(dot(N, L), 0.0);
     float NdotH = max(dot(N, H), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
 
     // Derive Blinn-Phong exponent from perceptual roughness.
-    // roughness 0 → very rough, 1 → perfectly smooth
+    // roughness 0 → perfectly smooth, 1 → very rough
     float gloss = clamp(1.0 - roughness, 0.0, 1.0);
     // Map gloss to exponent range ~[2, 1024]
     float shininess = 1.0 + pow(gloss, 4.0) * 1023.0;
@@ -308,6 +336,9 @@ void main()
     if (up_axis == 2) up = vec3(0.0, 0.0, 1.0);
     float sky_fac = dot(N, up) * 0.5 + 0.5;
     vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo;
+    // Slight boost for metallics to avoid overly dark mid-roughness metals.
+    float metal_ambient_boost = mix(1.0, 1.25, metallic * (1.0 - 0.5 * roughness));
+    ambient *= metal_ambient_boost;
 
     // shadows
     float shadow = ShadowCalculation();
@@ -315,7 +346,22 @@ void main()
     // spotlight attenuation
     float spotlightAttenuation = SpotlightAttenuation();
 
+    // Metals should contribute little diffuse light.
+    diffuse *= 1.0 - metallic;
     vec3 color = ambient + (1.0 - shadow) * spotlightAttenuation * (diffuse + spec);
+
+    // Fresnel darkening: reduce brightness at glancing angles for metals
+    color *= mix(1.0, pow(NdotV, 2.0), metallic);
+
+    // environment reflection for metallic look (fade with roughness)
+    float env_lod = clamp(pow(roughness, 1.0/4.0), 0.0, 1.0) * 8.0;
+    vec3 R = reflect(-V, N);
+    vec3 env_color = sample_env_map(R, env_lod);
+    env_color = pow(env_color, vec3(2.2)); // to linear
+    float reflection_strength = clamp(metallic * pow(1.0 - roughness, 2.0), 0.0, 1.0);
+    vec3 env_tint = mix(vec3(1.0), albedo, metallic);
+    vec3 env_reflection = env_color * env_tint * env_intensity;
+    color = mix(color, env_reflection, reflection_strength);
 
     // fog
     float dist = length(FragPos - view_pos);
@@ -371,10 +417,12 @@ uniform vec3 sky_lower;
 uniform float far_plane;
 
 uniform vec3 sun_direction;
+uniform int up_axis;
 
 void main()
 {
-    float height = max(0.0, (FragPos.z/far_plane));//*0.5 + 0.5);
+    float h = up_axis == 0 ? FragPos.x : (up_axis == 1 ? FragPos.y : FragPos.z);
+    float height = max(0.0, h / far_plane);
     vec3 sky = mix(sky_lower, sky_upper, height);
 
     float diff = max(dot(sun_direction, normalize(FragPos)), 0.0);
@@ -455,7 +503,7 @@ class ShaderShape(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -469,6 +517,9 @@ class ShaderShape(ShaderGL):
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
             self.loc_shadow_map = self._get_uniform_location("shadow_map")
+            self.loc_albedo_map = self._get_uniform_location("albedo_map")
+            self.loc_env_map = self._get_uniform_location("env_map")
+            self.loc_env_intensity = self._get_uniform_location("env_intensity")
             self.loc_fog_color = self._get_uniform_location("fogColor")
             self.loc_up_axis = self._get_uniform_location("up_axis")
             self.loc_sun_direction = self._get_uniform_location("sun_direction")
@@ -490,6 +541,8 @@ class ShaderShape(ShaderGL):
         enable_shadows: bool = False,
         shadow_texture: int | None = None,
         light_space_matrix: np.ndarray | None = None,
+        env_texture: int | None = None,
+        env_intensity: float = 1.0,
     ):
         """Update all shader uniforms."""
         with self:
@@ -516,6 +569,14 @@ class ShaderShape(ShaderGL):
             self._gl.glUniformMatrix4fv(
                 self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(light_space_matrix)
             )
+            self._gl.glUniform1i(self.loc_albedo_map, 1)
+            self._gl.glActiveTexture(self._gl.GL_TEXTURE2)
+            if env_texture is not None:
+                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, env_texture)
+            else:
+                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, 0)
+            self._gl.glUniform1i(self.loc_env_map, 2)
+            self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
 
 
 class ShaderSky(ShaderGL):
@@ -523,7 +584,7 @@ class ShaderSky(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -539,6 +600,7 @@ class ShaderSky(ShaderGL):
             self.loc_far_plane = self._get_uniform_location("far_plane")
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_sun_direction = self._get_uniform_location("sun_direction")
+            self.loc_up_axis = self._get_uniform_location("up_axis")
 
     def update(
         self,
@@ -549,6 +611,7 @@ class ShaderSky(ShaderGL):
         sky_upper: tuple[float, float, float],
         sky_lower: tuple[float, float, float],
         sun_direction: tuple[float, float, float],
+        up_axis: int = 2,
     ):
         """Update all shader uniforms."""
         with self:
@@ -562,6 +625,7 @@ class ShaderSky(ShaderGL):
             self._gl.glUniform3f(self.loc_sky_upper, *sky_upper)
             self._gl.glUniform3f(self.loc_sky_lower, *sky_lower)
             self._gl.glUniform3f(self.loc_sun_direction, *sun_direction)
+            self._gl.glUniform1i(self.loc_up_axis, up_axis)
 
 
 class ShadowShader(ShaderGL):
@@ -569,7 +633,7 @@ class ShadowShader(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -593,7 +657,7 @@ class FrameShader(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -615,7 +679,7 @@ class ShaderLine(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(

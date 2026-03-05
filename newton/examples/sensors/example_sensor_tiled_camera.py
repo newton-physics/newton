@@ -28,7 +28,6 @@ import ctypes
 import math
 import random
 
-import OpenGL.GL as gl
 import warp as wp
 from pxr import Usd
 
@@ -76,34 +75,34 @@ def animate_franka(
 
 @wp.kernel
 def shape_index_to_semantic_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=3),
+    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
     colors: wp.array(dtype=wp.uint32),
-    rgba: wp.array(dtype=wp.uint32, ndim=3),
+    rgba: wp.array(dtype=wp.uint32, ndim=4),
 ):
-    world_id, camera_id, pixel_id = wp.tid()
-    shape_index = shape_indices[world_id, camera_id, pixel_id]
+    world_id, camera_id, y, x = wp.tid()
+    shape_index = shape_indices[world_id, camera_id, y, x]
     if shape_index < colors.shape[0]:
-        rgba[world_id, camera_id, pixel_id] = colors[shape_index]
+        rgba[world_id, camera_id, y, x] = colors[shape_index]
     else:
-        rgba[world_id, camera_id, pixel_id] = wp.uint32(0xFF000000)
+        rgba[world_id, camera_id, y, x] = wp.uint32(0xFF000000)
 
 
 @wp.kernel
 def shape_index_to_random_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=3),
-    rgba: wp.array(dtype=wp.uint32, ndim=3),
+    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
+    rgba: wp.array(dtype=wp.uint32, ndim=4),
 ):
-    world_id, camera_id, pixel_id = wp.tid()
-    shape_index = shape_indices[world_id, camera_id, pixel_id]
+    world_id, camera_id, y, x = wp.tid()
+    shape_index = shape_indices[world_id, camera_id, y, x]
     random_color = wp.randi(wp.rand_init(12345, wp.int32(shape_index)))
-    rgba[world_id, camera_id, pixel_id] = wp.uint32(random_color) | wp.uint32(0xFF000000)
+    rgba[world_id, camera_id, y, x] = wp.uint32(random_color) | wp.uint32(0xFF000000)
 
 
 class Example:
     def __init__(self, viewer: ViewerGL):
-        self.num_worlds_per_row = 6
-        self.num_worlds_per_col = 4
-        self.num_worlds_total = self.num_worlds_per_row * self.num_worlds_per_col
+        self.worlds_per_row = 6
+        self.worlds_per_col = 4
+        self.world_count_total = self.worlds_per_row * self.worlds_per_col
 
         self.time = 0.0
         self.time_delta = 0.005
@@ -126,7 +125,7 @@ class Example:
         semantic_colors = []
 
         rng = random.Random(1234)
-        for _ in range(self.num_worlds_total):
+        for _ in range(self.world_count_total):
             builder.begin_world()
             if rng.random() < 0.5:
                 builder.add_shape_cylinder(
@@ -179,23 +178,21 @@ class Example:
         self.ui_padding = 10
         self.ui_side_panel_width = 300
 
-        sensor_render_width = 64
-        sensor_render_height = 64
+        self.camera_count = 1
+        self.sensor_render_width = 64
+        self.sensor_render_height = 64
 
         if isinstance(self.viewer, ViewerGL):
             display_width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
             display_height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
 
-            sensor_render_width = int(display_width // self.num_worlds_per_row)
-            sensor_render_height = int(display_height // self.num_worlds_per_col)
+            self.sensor_render_width = int(display_width // self.worlds_per_row)
+            self.sensor_render_height = int(display_height // self.worlds_per_col)
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
-            num_cameras=1,
-            width=sensor_render_width,
-            height=sensor_render_height,
-            options=SensorTiledCamera.Options(
+            config=SensorTiledCamera.Config(
                 default_light=True,
                 default_light_shadows=True,
                 colors_per_shape=True,
@@ -208,11 +205,25 @@ class Example:
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(fov))
-        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
-        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
-        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output()
-        self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.create_shape_index_image_output()
+        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
+            self.sensor_render_width, self.sensor_render_height, math.radians(fov)
+        )
+        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output(
+            self.sensor_render_width, self.sensor_render_height, self.camera_count
+        )
+        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output(
+            self.sensor_render_width, self.sensor_render_height, self.camera_count
+        )
+        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output(
+            self.sensor_render_width, self.sensor_render_height, self.camera_count
+        )
+        self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.create_shape_index_image_output(
+            self.sensor_render_width, self.sensor_render_height, self.camera_count
+        )
+        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.create_albedo_image_output(
+            self.sensor_render_width, self.sensor_render_height, self.camera_count
+        )
+        self.depth_range = wp.array([1.0, 100.0], dtype=wp.float32)
 
         if isinstance(self.viewer, ViewerGL):
             self.create_texture()
@@ -242,7 +253,7 @@ class Example:
         self.viewer.end_frame()
 
     def render_sensors(self):
-        self.tiled_camera_sensor.render(
+        self.tiled_camera_sensor.update(
             self.state,
             self.get_camera_transforms(),
             self.camera_rays,
@@ -250,6 +261,7 @@ class Example:
             depth_image=self.tiled_camera_sensor_depth_image,
             normal_image=self.tiled_camera_sensor_normal_image,
             shape_index_image=self.tiled_camera_sensor_shape_index_image,
+            albedo_image=self.tiled_camera_sensor_albedo_image,
         )
         self.update_texture()
 
@@ -263,20 +275,24 @@ class Example:
                             wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
                         )
                     ]
-                    * self.num_worlds_total
+                    * self.world_count_total
                 ],
                 dtype=wp.transformf,
             )
         return wp.array(
-            [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))] * self.num_worlds_total],
+            [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))] * self.world_count_total],
             dtype=wp.transformf,
         )
 
     def create_texture(self):
-        width = self.tiled_camera_sensor.render_context.width * self.num_worlds_per_row
-        height = self.tiled_camera_sensor.render_context.height * self.num_worlds_per_col
+        from pyglet import gl  # noqa: PLC0415
 
-        self.texture_id = gl.glGenTextures(1)
+        width = self.sensor_render_width * self.worlds_per_row
+        height = self.sensor_render_height * self.worlds_per_col
+
+        texture_id = gl.GLuint()
+        gl.glGenTextures(1, texture_id)
+        self.texture_id = texture_id.value
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
@@ -285,7 +301,9 @@ class Example:
         gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, width, height, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
-        self.pixel_buffer = gl.glGenBuffers(1)
+        pixel_buffer = gl.GLuint()
+        gl.glGenBuffers(1, pixel_buffer)
+        self.pixel_buffer = pixel_buffer.value
         gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pixel_buffer)
         gl.glBufferData(gl.GL_PIXEL_UNPACK_BUFFER, width * height * 4, None, gl.GL_DYNAMIC_DRAW)
         gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
@@ -296,27 +314,42 @@ class Example:
         if not self.texture_id:
             return
 
+        from pyglet import gl  # noqa: PLC0415
+
         texture_buffer = self.texture_buffer.map(
             dtype=wp.uint8,
             shape=(
-                self.num_worlds_per_col * self.tiled_camera_sensor.render_context.height,
-                self.num_worlds_per_row * self.tiled_camera_sensor.render_context.width,
+                self.worlds_per_col * self.sensor_render_height,
+                self.worlds_per_row * self.sensor_render_width,
                 4,
             ),
         )
         if self.image_output == 0:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.tiled_camera_sensor_color_image, texture_buffer, self.num_worlds_per_row
+                self.tiled_camera_sensor_color_image,
+                texture_buffer,
+                self.worlds_per_row,
             )
         elif self.image_output == 1:
-            self.tiled_camera_sensor.flatten_depth_image_to_rgba(
-                self.tiled_camera_sensor_depth_image, texture_buffer, self.num_worlds_per_row
+            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+                self.tiled_camera_sensor_albedo_image,
+                texture_buffer,
+                self.worlds_per_row,
             )
         elif self.image_output == 2:
-            self.tiled_camera_sensor.flatten_normal_image_to_rgba(
-                self.tiled_camera_sensor_normal_image, texture_buffer, self.num_worlds_per_row
+            self.tiled_camera_sensor.flatten_depth_image_to_rgba(
+                self.tiled_camera_sensor_depth_image,
+                texture_buffer,
+                self.worlds_per_row,
+                self.depth_range,
             )
         elif self.image_output == 3:
+            self.tiled_camera_sensor.flatten_normal_image_to_rgba(
+                self.tiled_camera_sensor_normal_image,
+                texture_buffer,
+                self.worlds_per_row,
+            )
+        elif self.image_output == 4:
             wp.launch(
                 shape_index_to_semantic_rgb,
                 self.tiled_camera_sensor_shape_index_image.shape,
@@ -324,9 +357,11 @@ class Example:
                 [self.tiled_camera_sensor_shape_index_image],
             )
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.tiled_camera_sensor_shape_index_image, texture_buffer, self.num_worlds_per_row
+                self.tiled_camera_sensor_shape_index_image,
+                texture_buffer,
+                self.worlds_per_row,
             )
-        elif self.image_output == 4:
+        elif self.image_output == 5:
             wp.launch(
                 shape_index_to_random_rgb,
                 self.tiled_camera_sensor_shape_index_image.shape,
@@ -334,7 +369,9 @@ class Example:
                 [self.tiled_camera_sensor_shape_index_image],
             )
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.tiled_camera_sensor_shape_index_image, texture_buffer, self.num_worlds_per_row
+                self.tiled_camera_sensor_shape_index_image,
+                texture_buffer,
+                self.worlds_per_row,
             )
         self.texture_buffer.unmap()
 
@@ -345,8 +382,8 @@ class Example:
             0,
             0,
             0,
-            self.tiled_camera_sensor.render_context.width * self.num_worlds_per_row,
-            self.tiled_camera_sensor.render_context.height * self.num_worlds_per_col,
+            self.sensor_render_width * self.worlds_per_row,
+            self.sensor_render_height * self.worlds_per_col,
             gl.GL_RGBA,
             gl.GL_UNSIGNED_BYTE,
             ctypes.c_void_p(0),
@@ -358,24 +395,26 @@ class Example:
         self.render_sensors()
 
         color_image = self.tiled_camera_sensor_color_image.numpy()
-        assert color_image.shape == (24, 1, 64 * 64)
+        assert color_image.shape == (24, 1, self.sensor_render_height, self.sensor_render_width)
         assert color_image.min() < color_image.max()
 
         depth_image = self.tiled_camera_sensor_depth_image.numpy()
-        assert depth_image.shape == (24, 1, 64 * 64)
+        assert depth_image.shape == (24, 1, self.sensor_render_height, self.sensor_render_width)
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
         if ui.radio_button("Show Color Output", self.image_output == 0):
             self.image_output = 0
-        if ui.radio_button("Show Depth Output", self.image_output == 1):
+        if ui.radio_button("Show Albedo Output", self.image_output == 1):
             self.image_output = 1
-        if ui.radio_button("Show Normal Output", self.image_output == 2):
+        if ui.radio_button("Show Depth Output", self.image_output == 2):
             self.image_output = 2
-        if ui.radio_button("Show Semantic Output", self.image_output == 3):
+        if ui.radio_button("Show Normal Output", self.image_output == 3):
             self.image_output = 3
-        if ui.radio_button("Show Shape Index Output", self.image_output == 4):
+        if ui.radio_button("Show Semantic Output", self.image_output == 4):
             self.image_output = 4
+        if ui.radio_button("Show Shape Index Output", self.image_output == 5):
+            self.image_output = 5
 
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
@@ -402,17 +441,17 @@ class Example:
                 imgui.image(imgui.ImTextureRef(self.texture_id), imgui.ImVec2(width, height))
 
             draw_list = imgui.get_window_draw_list()
-            for x in range(1, self.num_worlds_per_row):
+            for x in range(1, self.worlds_per_row):
                 draw_list.add_line(
-                    imgui.ImVec2(pos_x + x * (width / self.num_worlds_per_row), pos_y),
-                    imgui.ImVec2(pos_x + x * (width / self.num_worlds_per_row), pos_y + height),
+                    imgui.ImVec2(pos_x + x * (width / self.worlds_per_row), pos_y),
+                    imgui.ImVec2(pos_x + x * (width / self.worlds_per_row), pos_y + height),
                     line_color,
                     2.0,
                 )
-            for y in range(1, self.num_worlds_per_col):
+            for y in range(1, self.worlds_per_col):
                 draw_list.add_line(
-                    imgui.ImVec2(pos_x, pos_y + y * (height / self.num_worlds_per_col)),
-                    imgui.ImVec2(pos_x + width, pos_y + y * (height / self.num_worlds_per_col)),
+                    imgui.ImVec2(pos_x, pos_y + y * (height / self.worlds_per_col)),
+                    imgui.ImVec2(pos_x + width, pos_y + y * (height / self.worlds_per_col)),
                     line_color,
                     2.0,
                 )

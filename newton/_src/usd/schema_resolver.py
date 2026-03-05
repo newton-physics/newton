@@ -14,12 +14,16 @@
 # limitations under the License.
 
 """
-USD schema resolver system. Currently not used.
+USD schema resolver infrastructure.
+
+This module defines the base resolver types used to map authored USD schema
+attributes onto Newton builder attributes. Public users should import resolver
+types from :mod:`newton.usd`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -28,6 +32,8 @@ from . import utils as usd
 
 if TYPE_CHECKING:
     from pxr import Usd
+
+    from ..sim.builder import ModelBuilder
 
 
 class PrimType(IntEnum):
@@ -49,28 +55,27 @@ class PrimType(IntEnum):
     """Articulation root prim type."""
 
 
-@dataclass
-class SchemaAttribute:
-    """
-    Specifies a USD attribute and its transformation function.
-
-    Args:
-        name (str): The name of the USD attribute.
-        default (Any | None): Default USD-authored value from schema, if any.
-        usd_value_transformer (Callable[[Any], Any] | None): A function to transform the raw USD attribute value
-            into the format expected by Newton. Takes the USD value as input and returns the transformed
-            value. For example, converting PhysX timeStepsPerSecond to Newton's timestep by computing 1/Hz.
-    """
-
-    name: str
-    default: Any | None = None
-    usd_value_transformer: Callable[[Any], Any] | None = None
-
-
 class SchemaResolver:
-    """
-    Defines a mapping from USD schema attributes to Newton attributes.
-    """
+    """Base class mapping USD schema attributes to Newton attributes."""
+
+    @dataclass
+    class SchemaAttribute:
+        """
+        Specifies a USD attribute and its transformation function.
+
+        Args:
+            name: The name of the USD attribute (or primary attribute when using a getter).
+            default: Default USD-authored value from schema, if any.
+            usd_value_transformer: Optional function to transform the raw value into the format expected by Newton.
+            usd_value_getter: Optional function (prim) -> value used instead of reading a single attribute (e.g. to compute gap from contactOffset - restOffset).
+            attribute_names: When set, names used for collect_prim_attrs; otherwise [name] is used.
+        """
+
+        name: str
+        default: Any | None = None
+        usd_value_transformer: Callable[[Any], Any] | None = None
+        usd_value_getter: Callable[[Usd.Prim], Any] | None = None
+        attribute_names: Sequence[str] = ()
 
     # mapping is a dictionary for known variables in Newton. Its purpose is to map USD attributes to existing Newton data.
     # PrimType -> Newton variable -> Attribute
@@ -95,34 +100,43 @@ class SchemaResolver:
             except AttributeError:
                 continue
             for _var, spec in var_items:
-                names.add(spec.name)
+                if spec.attribute_names:
+                    names.update(spec.attribute_names)
+                else:
+                    names.add(spec.name)
         self._solver_attributes: list[str] = list(names)
 
     def get_value(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> Any | None:
-        """
-        Get attribute value for a given prim type and key.
+        """Get an authored value for a resolver key.
 
         Args:
-            prim: USD prim to query
-            prim_type: Prim type (PrimType enum)
-            key: Attribute key within the prim type
+            prim: USD prim to query.
+            prim_type: Prim type category.
+            key: Logical Newton attribute key within the prim category.
 
         Returns:
-            Value if found, None otherwise
+            Resolved authored value, or ``None`` when not found.
         """
         if prim is None:
             return None
         spec = self.mapping.get(prim_type, {}).get(key)
         if spec is not None:
-            v = usd.get_attribute(prim, spec.name)
+            if spec.usd_value_getter is not None:
+                v = spec.usd_value_getter(prim)
+            else:
+                v = usd.get_attribute(prim, spec.name)
             if v is not None:
                 return spec.usd_value_transformer(v) if spec.usd_value_transformer is not None else v
         return None
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> dict[str, Any]:
-        """
-        Collect attributes pertaining to this schema for a single prim.
-        Returns dictionary of attributes for this prim.
+        """Collect all resolver-relevant attributes for a prim.
+
+        Args:
+            prim: USD prim to inspect.
+
+        Returns:
+            Dictionary mapping authored USD attribute names to values.
         """
         if prim is None:
             return {}
@@ -144,8 +158,24 @@ class SchemaResolver:
         merged.update(prim_solver_attrs)
         return merged
 
+    def validate_custom_attributes(self, builder: ModelBuilder) -> None:
+        """
+        Validate that solver-specific custom attributes are registered on the builder.
 
-def _collect_attrs_by_name(prim: Usd.Prim, names: list[str]) -> dict[str, Any]:
+        Override in subclasses to check that required custom attributes have been
+        registered before parsing. Called by parse_usd() before processing entities.
+
+        Args:
+            builder: The ModelBuilder to validate custom attributes on.
+        """
+        del builder
+
+
+# Backward-compatible alias; prefer SchemaResolver.SchemaAttribute.
+SchemaAttribute = SchemaResolver.SchemaAttribute
+
+
+def _collect_attrs_by_name(prim: Usd.Prim, names: Sequence[str]) -> dict[str, Any]:
     """Collect attributes authored on the prim that have direct mappings in the resolver mapping"""
     out: dict[str, Any] = {}
     for n in names:
@@ -155,7 +185,7 @@ def _collect_attrs_by_name(prim: Usd.Prim, names: list[str]) -> dict[str, Any]:
     return out
 
 
-def _collect_attrs_by_namespace(prim: Usd.Prim, namespaces: list[str]) -> dict[str, Any]:
+def _collect_attrs_by_namespace(prim: Usd.Prim, namespaces: Sequence[str]) -> dict[str, Any]:
     """Collect authored attributes using USD namespace queries."""
     out: dict[str, Any] = {}
     if prim is None:
@@ -170,7 +200,7 @@ class SchemaResolverManager:
     Manager for resolving multiple USD schemas in a priority order.
     """
 
-    def __init__(self, resolvers: list[SchemaResolver]):
+    def __init__(self, resolvers: Sequence[SchemaResolver]):
         """
         Initialize resolver manager with resolver instances in priority order.
 
@@ -240,10 +270,11 @@ class SchemaResolverManager:
         except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
         if verbose:
-            print(
+            error_message = (
                 f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
-                f"no authored value, no explicit default, and no solver mapping default."
+                + "no authored value, no explicit default, and no solver mapping default."
             )
+            print(error_message)
         return None
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> None:

@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 .. _usd_parsing:
 
 USD Parsing and Schema Resolver System
@@ -34,6 +37,46 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+Mass and Inertia Precedence
+---------------------------
+
+For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inertial property
+(mass, inertia, center of mass) independently.  Authored attributes take precedence;
+``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` provides baseline values for the rest.
+
+1. Authored ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
+   applied directly when present.  If ``physics:principalAxes`` is missing, identity rotation
+   is used.
+2. When ``physics:mass`` is authored but ``physics:diagonalInertia`` is not, the inertia
+   accumulated from collision shapes is scaled by ``authored_mass / accumulated_mass``.
+3. For any remaining unresolved properties, Newton falls back to
+   ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
+   In this fallback path, collider contributions use a two-level precedence:
+
+   a. If collider ``UsdPhysics.MassAPI`` has authored ``mass`` and ``diagonalInertia``, those
+      authored values are converted to unit-density collider mass information.
+   b. Otherwise, Newton derives unit-density collider mass information from collider geometry.
+
+   A collider is skipped (with warning) only if neither path provides usable collider mass
+   information.
+
+   .. note::
+
+      The callback payload provided by Newton in this path is unit-density collider shape
+      information (volume/COM/inertia basis). Collider density authored via ``UsdPhysics.MassAPI``
+      (for example, ``physics:density``) or via bound ``UsdPhysics.MaterialAPI`` is still applied
+      by USD during ``ComputeMassProperties(...)``. In other words, unit-density callback data does
+      not mean authored densities are ignored.
+
+If resolved mass is non-positive, inverse mass is set to ``0``.
+
+.. tip::
+
+   For the most predictable results, fully author ``physics:mass``, ``physics:diagonalInertia``,
+   ``physics:principalAxes``, and ``physics:centerOfMass`` on each rigid body.  This avoids any
+   fallback heuristics and is also the fastest import path since ``ComputeMassProperties(...)``
+   can be skipped entirely.
+
 .. _schema_resolvers:
 
 1. Solver Attribute Remapping
@@ -64,6 +107,26 @@ The table below demonstrates PhysX attribute remapping with both direct mapping 
    * - ``physxScene:timeStepsPerSecond``
      - ``time_step``
      - ``1.0 / timeStepsPerSecond``
+   * - ``physxArticulation:enabledSelfCollisions``
+     - ``self_collision_enabled`` (per articulation)
+     - Direct mapping
+
+**Newton articulation remapping:**
+
+On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``), the following is resolved:
+
+.. list-table:: Newton Articulation Remapping
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - **Newton Attribute**
+     - **Resolved key**
+     - **Transformation**
+   * - ``newton:selfCollisionEnabled``
+     - ``self_collision_enabled``
+     - Direct mapping
+
+The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` (in resolver priority order). The ``enable_self_collisions`` argument to :meth:`newton.ModelBuilder.add_usd` is used as the default when neither attribute is authored.
 
 **MuJoCo Attribute Remapping Examples:**
 
@@ -116,7 +179,7 @@ The following USD example demonstrates how PhysX attributes are authored in a US
        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI"]
    ) {
        # PhysX collision settings
-       float physxCollision:contactOffset = 0.02  # → contact_margin = 0.02
+      float physxCollision:contactOffset = 0.02  # → gap = 0.02
    }
 
 2. Priority-Based Resolution
@@ -150,7 +213,7 @@ By changing the order of resolvers in the ``schema_resolvers`` list, different a
    :skipif: True
 
    from newton import ModelBuilder
-   from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx, SchemaResolverMjc
+   from newton.usd import SchemaResolverMjc, SchemaResolverNewton, SchemaResolverPhysx
    
    builder = ModelBuilder()
    
@@ -207,7 +270,7 @@ Each solver has its own namespace prefixes for solver-specific attributes. The t
      - ``mjc:model:joint:testMjcJointScalar``, ``mjc:state:joint:testMjcJointVec3``
    * - **Newton**
      - ``newton``
-     - ``newton:hullVertexLimit``, ``newton:contactMargin``
+     - ``newton:hullVertexLimit``, ``newton:contactGap``
 
 **Accessing Collected Solver-Specific Attributes:**
 
@@ -217,7 +280,7 @@ The collected attributes are returned in the result dictionary and can be access
    :skipif: True
 
    from newton import ModelBuilder
-   from newton._src.usd.schemas import SchemaResolverPhysx, SchemaResolverNewton
+   from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
    
    builder = ModelBuilder()
    result = builder.add_usd(
@@ -471,3 +534,63 @@ After importing the USD file with the custom attributes shown above, they become
 **Namespace Isolation:**
 
 Attributes with the same name in different namespaces are completely independent and stored separately. This allows the same attribute name to be used for different purposes across namespaces. In the example above, ``mass_scale`` appears in both the default namespace (as a model attribute) and in ``namespace_a`` (as a state attribute). These are treated as completely separate attributes with independent values, assignments, and storage locations.
+
+5. Limitations
+----------------------------------------
+
+Importing USD files where many (> 30) mesh colliders are under the same rigid body
+can result in a crash in ``UsdPhysics.LoadUsdPhysicsFromRange``.  This is a known
+thread-safety issue in OpenUSD and will be fixed in a future release of
+``usd-core``.  It can be worked around by setting the work concurrency limit to 1
+before ``pxr`` initializes its thread pool.
+
+.. note::
+
+   Setting the concurrency limit to 1 disables multi-threaded USD processing
+   globally and may degrade performance of other OpenUSD workloads in the same
+   process.
+
+Choose **one** of the two approaches below — do not combine them.
+``PXR_WORK_THREAD_LIMIT`` is evaluated once when ``pxr`` is first imported and
+cached for the lifetime of the process; after that point,
+``Work.SetConcurrencyLimit()`` cannot override it.  Conversely, if the env var
+*is* set, calling ``Work.SetConcurrencyLimit()`` has no effect.
+
+**Option A — environment variable (before any USD import):**
+
+.. code-block:: python
+
+   import os
+   os.environ["PXR_WORK_THREAD_LIMIT"] = "1"  # must precede any pxr import
+
+   from newton import ModelBuilder
+
+   builder = ModelBuilder()
+   result = builder.add_usd(
+       source="rigid_body_with_many_mesh_colliders.usda",
+   )
+
+**Option B —** ``Work.SetConcurrencyLimit`` **(only when the env var is not set):**
+
+.. code-block:: python
+
+   from pxr import Work
+   import os
+
+   if "PXR_WORK_THREAD_LIMIT" not in os.environ:
+       Work.SetConcurrencyLimit(1)
+
+   from newton import ModelBuilder
+
+   builder = ModelBuilder()
+   result = builder.add_usd(
+       source="rigid_body_with_many_mesh_colliders.usda",
+   )
+
+.. seealso::
+
+   `threadLimits.h`_ (API reference) and `threadLimits.cpp`_ (implementation)
+   document the precedence rules between the environment variable and the API.
+
+   .. _threadLimits.h: https://openusd.org/dev/api/thread_limits_8h.html
+   .. _threadLimits.cpp: https://github.com/PixarAnimationStudios/OpenUSD/blob/release/pxr/base/work/threadLimits.cpp

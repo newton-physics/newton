@@ -13,15 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import inspect
 import subprocess
+from typing import Any
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton.utils import create_plane_mesh
 
-from ..core.types import override
+from ..core.types import nparray, override
+from ..utils.mesh import compute_vertex_normals
+from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
 
 try:
@@ -51,6 +56,71 @@ class ViewerRerun(ViewerBase):
             return x.numpy()
         return np.asarray(x)
 
+    @staticmethod
+    def _call_rr_constructor(ctor, **kwargs):
+        """Call a rerun constructor with only supported keyword args."""
+        try:
+            signature = inspect.signature(ctor)
+            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
+            return ctor(**allowed)
+        except Exception:
+            return ctor(**kwargs)
+
+    @staticmethod
+    def _prepare_texture(texture: np.ndarray | str | None) -> np.ndarray | None:
+        """Load and normalize texture data for rerun."""
+        return normalize_texture(
+            load_texture(texture),
+            flip_vertical=False,
+            require_channels=True,
+            scale_unit_range=True,
+        )
+
+    @staticmethod
+    def _flip_uvs_for_rerun(uvs: np.ndarray) -> np.ndarray:
+        """Rerun uses top-left UV origin; flip V from OpenGL-style UVs."""
+        uvs = np.asarray(uvs, dtype=np.float32)
+        if uvs.size == 0:
+            return uvs
+        flipped = uvs.copy()
+        flipped[:, 1] = 1.0 - flipped[:, 1]
+        return flipped
+
+    @staticmethod
+    def _build_texture_components(texture_image: np.ndarray):
+        """Create rerun ImageBuffer/ImageFormat components from a texture."""
+        if texture_image is None:
+            return None, None
+        if rr is None:
+            return None, None
+
+        height, width, channels = texture_image.shape
+        texture_image = np.ascontiguousarray(texture_image)
+
+        try:
+            color_model = rr.datatypes.ColorModel.RGBA if channels == 4 else rr.datatypes.ColorModel.RGB
+        except Exception:
+            color_model = "RGBA" if channels == 4 else "RGB"
+
+        try:
+            channel_dtype = rr.datatypes.ChannelDatatype.U8
+        except Exception:
+            channel_dtype = "U8"
+
+        texture_buffer = rr.components.ImageBuffer(texture_image.tobytes())
+        texture_format = rr.components.ImageFormat(
+            width=int(width),
+            height=int(height),
+            color_model=color_model,
+            channel_datatype=channel_dtype,
+        )
+        return texture_buffer, texture_format
+
+    def _mesh3d_supports(self, field_name: str) -> bool:
+        if not self._mesh3d_params:
+            return True
+        return field_name in self._mesh3d_params
+
     def __init__(
         self,
         *,
@@ -71,23 +141,23 @@ class ViewerRerun(ViewerBase):
         a local viewer (web-based or standalone, depending on ``serve_web_viewer`` flag), only if not running in a Jupyter notebook (notebooks use show_notebook() instead).
 
         Args:
-            app_id (str | None): Application ID for rerun (defaults to 'newton-viewer').
+            app_id: Application ID for rerun (defaults to 'newton-viewer').
                                  Use different IDs to differentiate between parallel viewer instances.
-            address (str | None): Optional server address to connect to a remote rerun server via gRPC.
+            address: Optional server address to connect to a remote rerun server via gRPC.
                                   You will need to start a stand-alone rerun server first, e.g. by typing ``rerun`` in your terminal.
                                   See rerun.io documentation for supported address formats.
                                   If provided, connects to the specified server regardless of environment.
-            serve_web_viewer (bool): If True, serves a web viewer over HTTP on the given ``web_port`` and opens it in the browser.
+            serve_web_viewer: If True, serves a web viewer over HTTP on the given ``web_port`` and opens it in the browser.
                                      If False, spawns a native Rerun viewer (only outside Jupyter notebooks).
                                      Defaults to True.
-            web_port (int): Port to serve the web viewer on. Only used if ``serve_web_viewer`` is True.
-            grpc_port (int): Port to serve the gRPC server on.
-            keep_historical_data (bool): If True, keep historical data in the timeline of the web viewer.
+            web_port: Port to serve the web viewer on. Only used if ``serve_web_viewer`` is True.
+            grpc_port: Port to serve the gRPC server on.
+            keep_historical_data: If True, keep historical data in the timeline of the web viewer.
                 If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
                 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
                 If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.
-            keep_scalar_history (bool): If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
-            record_to_rrd (str): Path to record the viewer to a ``*.rrd`` recording file (e.g. "my_recording.rrd"). If None, the viewer will not record to a file.
+            keep_scalar_history: If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
+            record_to_rrd: Path to record the viewer to a ``*.rrd`` recording file (e.g. "my_recording.rrd"). If None, the viewer will not record to a file.
         """
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
@@ -113,6 +183,11 @@ class ViewerRerun(ViewerBase):
 
         if record_to_rrd is not None:
             rr.save(record_to_rrd, default_blueprint=blueprint)
+
+        try:
+            self._mesh3d_params = set(inspect.signature(rr.Mesh3D).parameters)
+        except Exception:
+            self._mesh3d_params = set()
 
         self._grpc_server_uri = None
 
@@ -146,30 +221,33 @@ class ViewerRerun(ViewerBase):
     @override
     def log_mesh(
         self,
-        name,
-        points: wp.array,
-        indices: wp.array,
-        normals: wp.array | None = None,
-        uvs: wp.array | None = None,
-        hidden=False,
-        backface_culling=True,
+        name: str,
+        points: wp.array(dtype=wp.vec3),
+        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
+        normals: wp.array(dtype=wp.vec3) | None = None,
+        uvs: wp.array(dtype=wp.vec2) | None = None,
+        texture: np.ndarray | str | None = None,
+        hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """
         Log a mesh to rerun for visualization.
 
         Args:
-            name (str): Entity path for the mesh.
-            points (wp.array): Vertex positions (wp.vec3).
-            indices (wp.array): Triangle indices (wp.uint32).
-            normals (wp.array, optional): Vertex normals (wp.vec3).
-            uvs (wp.array, optional): UV coordinates (wp.vec2).
-            hidden (bool): Whether the mesh is hidden (unused).
-            backface_culling (bool): Whether to enable backface culling (unused).
+            name: Entity path for the mesh.
+            points: Vertex positions.
+            indices: Triangle indices.
+            normals: Vertex normals.
+            uvs: UV coordinates.
+            texture: Optional texture path/URL or image array.
+            hidden: Whether the mesh is hidden.
+            backface_culling: Whether to enable backface culling (unused).
         """
-        assert isinstance(points, wp.array)
-        assert isinstance(indices, wp.array)
-        assert normals is None or isinstance(normals, wp.array)
-        assert uvs is None or isinstance(uvs, wp.array)
+        if not hidden:
+            assert isinstance(points, wp.array)
+            assert isinstance(indices, wp.array)
+            assert normals is None or isinstance(normals, wp.array)
+            assert uvs is None or isinstance(uvs, wp.array)
 
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
@@ -180,13 +258,32 @@ class ViewerRerun(ViewerBase):
             indices_np = indices_np.reshape(-1, 3)
 
         if normals is None:
-            normals = wp.zeros_like(points)
-            wp.launch(_compute_normals, dim=len(indices_np), inputs=[points, indices, normals], device=self.device)
-            # normalize the normals
-            wp.map(wp.normalize, normals, out=normals)
-            normals_np = normals.numpy()
+            if hidden and not (isinstance(points, wp.array) and isinstance(indices, wp.array)):
+                # Hidden-mode callers can use lightweight array-like objects that are
+                # incompatible with compute_vertex_normals.
+                normals_np = None
+            else:
+                normals = compute_vertex_normals(points, indices, device=self.device)
+                normals_np = self._to_numpy(normals)
         else:
             normals_np = self._to_numpy(normals)
+
+        uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        texture_image = self._prepare_texture(texture)
+
+        if uvs_np is not None and len(uvs_np) != len(points_np):
+            uvs_np = None
+            texture_image = None
+        if texture_image is not None and uvs_np is None:
+            texture_image = None
+
+        if uvs_np is not None:
+            uvs_np = self._flip_uvs_for_rerun(uvs_np)
+
+        texture_buffer = None
+        texture_format = None
+        if texture_image is not None and self._mesh3d_supports("albedo_texture_buffer"):
+            texture_buffer, texture_format = self._build_texture_components(texture_image)
 
         # make sure deformable mesh updates are not kept in the viewer if desired
         static = name in self._meshes and not self.keep_historical_data
@@ -196,32 +293,62 @@ class ViewerRerun(ViewerBase):
             "points": points_np,
             "indices": indices_np,
             "normals": normals_np,
-            "uvs": self._to_numpy(uvs).astype(np.float32) if uvs is not None else None,
+            "uvs": uvs_np,
+            "texture_image": texture_image,
+            "texture_buffer": texture_buffer,
+            "texture_format": texture_format,
         }
 
+        if hidden:
+            return
+
+        mesh_kwargs = {
+            "vertex_positions": points_np,
+            "triangle_indices": indices_np,
+            "vertex_normals": self._meshes[name]["normals"],
+        }
+        if uvs_np is not None and self._mesh3d_supports("vertex_texcoords"):
+            mesh_kwargs["vertex_texcoords"] = uvs_np
+        if texture_buffer is not None and texture_format is not None:
+            mesh_kwargs["albedo_texture_buffer"] = texture_buffer
+            mesh_kwargs["albedo_texture_format"] = texture_format
+        elif texture_image is not None and self._mesh3d_supports("albedo_texture"):
+            mesh_kwargs["albedo_texture"] = texture_image
+
         # Log the mesh as a static asset
-        mesh_3d = rr.Mesh3D(
-            vertex_positions=points_np,
-            triangle_indices=indices_np,
-            vertex_normals=self._meshes[name]["normals"],
-        )
+        mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
 
         rr.log(name, mesh_3d, static=static)
 
     @override
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
         """
         Log instanced mesh data to rerun using InstancePoses3D.
 
         Args:
-            name (str): Entity path for the instances.
-            mesh (str): Name of the mesh asset to instance.
-            xforms (wp.array): Instance transforms (wp.transform).
-            scales (wp.array): Instance scales (wp.vec3).
-            colors (wp.array): Instance colors (wp.vec3).
-            materials (wp.array): Instance materials (wp.vec4).
-            hidden (bool): Whether the instances are hidden. (unused)
+            name: Entity path for the instances.
+            mesh: Name of the mesh asset to instance.
+            xforms: Instance transforms.
+            scales: Instance scales.
+            colors: Instance colors.
+            materials: Instance materials.
+            hidden: Whether the instances are hidden.
         """
+        if hidden:
+            if name in self._instances:
+                rr.log(name, rr.Clear(recursive=False))
+                self._instances.pop(name, None)
+            return
+
         # Check that mesh exists
         if mesh not in self._meshes:
             raise RuntimeError(f"Mesh {mesh} not found. Call log_mesh first.")
@@ -229,10 +356,14 @@ class ViewerRerun(ViewerBase):
         # re-run needs to generate a new mesh for each instancer
         if name not in self._instances:
             mesh_data = self._meshes[mesh]
+            has_texture = (
+                mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None
+            ) or mesh_data.get("texture_image") is not None
 
             # Handle colors - ReRun doesn't support per-instance colors
             # so we just use the first instance's color for all instances
-            if colors is not None:
+            vertex_colors = None
+            if colors is not None and not has_texture:
                 colors_np = self._to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices
                 first_color = colors_np[0]
@@ -241,12 +372,22 @@ class ViewerRerun(ViewerBase):
                 vertex_colors = np.tile(color_rgb, (num_vertices, 1))
 
             # Log the base mesh with optional colors
-            mesh_3d = rr.Mesh3D(
-                vertex_positions=mesh_data["points"],
-                triangle_indices=mesh_data["indices"],
-                vertex_normals=mesh_data["normals"],
-                vertex_colors=vertex_colors,
-            )
+            mesh_kwargs = {
+                "vertex_positions": mesh_data["points"],
+                "triangle_indices": mesh_data["indices"],
+                "vertex_normals": mesh_data["normals"],
+            }
+            if vertex_colors is not None:
+                mesh_kwargs["vertex_colors"] = vertex_colors
+            if mesh_data.get("uvs") is not None and self._mesh3d_supports("vertex_texcoords"):
+                mesh_kwargs["vertex_texcoords"] = mesh_data["uvs"]
+            if mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None:
+                mesh_kwargs["albedo_texture_buffer"] = mesh_data["texture_buffer"]
+                mesh_kwargs["albedo_texture_format"] = mesh_data["texture_format"]
+            elif mesh_data.get("texture_image") is not None and self._mesh3d_supports("albedo_texture"):
+                mesh_kwargs["albedo_texture"] = mesh_data["texture_image"]
+
+            mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
             rr.log(name, mesh_3d)
 
             # save reference
@@ -286,12 +427,12 @@ class ViewerRerun(ViewerBase):
             rr.log(name, instance_poses, static=not self.keep_historical_data)
 
     @override
-    def begin_frame(self, time):
+    def begin_frame(self, time: float):
         """
         Begin a new frame and set the timeline for rerun.
 
         Args:
-            time (float): The current simulation time.
+            time: The current simulation time.
         """
         self.time = time
         # Set the timeline for this frame
@@ -348,17 +489,36 @@ class ViewerRerun(ViewerBase):
             pass
 
     @override
-    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
+    def apply_forces(self, state: newton.State):
+        """Rerun backend does not apply interactive forces.
+
+        Args:
+            state: Current simulation state.
+        """
+        pass
+
+    @override
+    def log_lines(
+        self,
+        name: str,
+        starts: wp.array(dtype=wp.vec3) | None,
+        ends: wp.array(dtype=wp.vec3) | None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ),
+        width: float = 0.01,
+        hidden: bool = False,
+    ):
         """
         Log lines for visualization.
 
         Args:
-            name (str): Name of the line batch.
+            name: Name of the line batch.
             starts: Line start points.
             ends: Line end points.
             colors: Line colors.
-            width (float): Line width.
-            hidden (bool): Whether the lines are hidden.
+            width: Line width.
+            hidden: Whether the lines are hidden.
         """
 
         if hidden:
@@ -399,12 +559,12 @@ class ViewerRerun(ViewerBase):
         rr.log(name, rr.LineStrips3D(line_strips, **rr_kwargs), static=not self.keep_historical_data)
 
     @override
-    def log_array(self, name, array):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
         """
         Log a generic array for visualization.
 
         Args:
-            name (str): Name of the array.
+            name: Name of the array.
             array: The array data (can be a wp.array or a numpy array).
         """
         if array is None:
@@ -413,12 +573,12 @@ class ViewerRerun(ViewerBase):
         rr.log(name, rr.Scalars(array_np), static=not self.keep_historical_data)
 
     @override
-    def log_scalar(self, name, value):
+    def log_scalar(self, name: str, value: int | float | bool | np.number):
         """
         Log a scalar value for visualization.
 
         Args:
-            name (str): Name of the scalar.
+            name: Name of the scalar.
             value: The scalar value.
         """
         # Basic scalar logging for rerun: log as a 'Scalar' component (if present)
@@ -442,14 +602,25 @@ class ViewerRerun(ViewerBase):
     @override
     def log_geo(
         self,
-        name,
+        name: str,
         geo_type: int,
         geo_scale: tuple[float, ...],
         geo_thickness: float,
         geo_is_solid: bool,
-        geo_src=None,
-        hidden=False,
+        geo_src: newton.Mesh | newton.Heightfield | None = None,
+        hidden: bool = False,
     ):
+        """Log a geometry primitive, with plane expansion for infinite planes.
+
+        Args:
+            name: Unique path/name for the geometry asset.
+            geo_type: Geometry type value from `newton.GeoType`.
+            geo_scale: Geometry scale tuple interpreted by `geo_type`.
+            geo_thickness: Shell thickness for mesh-like geometry.
+            geo_is_solid: Whether mesh geometry is treated as solid.
+            geo_src: Optional source geometry for mesh-backed types.
+            hidden: Whether the resulting geometry is hidden.
+        """
         # Generate vertices/indices for supported primitive types
         if geo_type == newton.GeoType.PLANE:
             # Handle "infinite" planes encoded with non-positive scales
@@ -464,26 +635,35 @@ class ViewerRerun(ViewerBase):
             else:
                 width = geo_scale[0]
                 length = geo_scale[1] if len(geo_scale) > 1 else 10.0
-            vertices, indices = create_plane_mesh(width, length)
-            points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
-            normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
-            uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-            indices = wp.array(indices, dtype=wp.int32, device=self.device)
+            mesh = newton.Mesh.create_plane(width, length, compute_inertia=False)
+            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+            normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+            uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
             self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
 
     @override
-    def log_points(self, name, points, radii=None, colors=None, hidden=False):
+    def log_points(
+        self,
+        name: str,
+        points: wp.array(dtype=wp.vec3) | None,
+        radii: wp.array(dtype=wp.float32) | float | None = None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ) = None,
+        hidden: bool = False,
+    ):
         """
         Log points for visualization.
 
         Args:
-            name (str): Name of the point batch.
+            name: Name of the point batch.
             points: Point positions (can be a wp.array or a numpy array).
             radii: Point radii (can be a wp.array or a numpy array).
             colors: Point colors (can be a wp.array or a numpy array).
-            hidden (bool): Whether the points are hidden.
+            hidden: Whether the points are hidden.
         """
         if hidden:
             # Optionally, skip logging hidden points
@@ -535,9 +715,9 @@ class ViewerRerun(ViewerBase):
         Show the viewer in a Jupyter notebook.
 
         Args:
-            width (int): Width of the viewer in pixels.
-            height (int): Height of the viewer in pixels.
-            legacy_notebook_show (bool): Whether to use ``rr.legacy_notebook_show`` instead of ``rr.notebook_show`` for displaying the viewer as static HTML with embedded recording data.
+            width: Width of the viewer in pixels.
+            height: Height of the viewer in pixels.
+            legacy_notebook_show: Whether to use ``rr.legacy_notebook_show`` instead of ``rr.notebook_show`` for displaying the viewer as static HTML with embedded recording data.
         """
         if legacy_notebook_show and self.is_jupyter_notebook:
             rr.legacy_notebook_show(width=width, height=height, blueprint=self._get_blueprint())
@@ -549,23 +729,3 @@ class ViewerRerun(ViewerBase):
         Display the viewer in an IPython notebook when the viewer is at the end of a cell.
         """
         self.show_notebook()
-
-
-@wp.kernel
-def _compute_normals(
-    points: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int32),
-    # output
-    normals: wp.array(dtype=wp.vec3),
-):
-    face = wp.tid()
-    i0 = indices[face * 3]
-    i1 = indices[face * 3 + 1]
-    i2 = indices[face * 3 + 2]
-    v0 = points[i0]
-    v1 = points[i1]
-    v2 = points[i2]
-    normal = wp.normalize(wp.cross(v1 - v0, v2 - v0))
-    wp.atomic_add(normals, i0, normal)
-    wp.atomic_add(normals, i1, normal)
-    wp.atomic_add(normals, i2, normal)

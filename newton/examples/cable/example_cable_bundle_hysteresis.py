@@ -25,7 +25,6 @@
 ###########################################################################
 
 import argparse
-import math
 
 import numpy as np
 import warp as wp
@@ -101,7 +100,7 @@ def advance_time(t: wp.array(dtype=float), dt: float):
 
 
 class Example:
-    def create_bundle_positions(self, num_cables: int, cable_radius: float, gap_multiplier: float):
+    def bundle_start_offsets_yz(self, num_cables: int, cable_radius: float, gap_multiplier: float):
         """Create cross-sectional positions for cable bundle arrangement.
 
         Arranges cables in a compact bundle with one central cable and others in
@@ -177,7 +176,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 2
+        self.sim_iterations = 10
         self.update_step_interval = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -193,7 +192,7 @@ class Example:
         stretch_damping = 0.0
 
         builder = newton.ModelBuilder()
-        builder.rigid_contact_margin = 0.05
+        builder.rigid_gap = 0.05
 
         # Register solver-specific custom attributes (Dahl plasticity parameters live on the Model)
         newton.solvers.SolverVBD.register_custom_attributes(builder)
@@ -202,7 +201,7 @@ class Example:
         # Set default material properties for cables (cable-to-cable contact)
         builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
         builder.default_shape_cfg.kd = 1.0e-2  # Contact damping
-        builder.default_shape_cfg.mu = 0.6  # Friction coefficient
+        builder.default_shape_cfg.mu = 2.0  # Friction coefficient
 
         # Bundle layout: align cable center with obstacle center
         # Obstacles span x in [0.5, 2.5], center at x=1.5
@@ -212,26 +211,21 @@ class Example:
         # Obstacle capsule center is at z=0.3, align cable with this
         start_z = 0.3
 
-        # Cable geometry along +X axis (requires 90-degree rotation from +Z to +X)
-        q_cable = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 2.0)
-
         # Create bundle cross-section layout
-        bundle_positions = self.create_bundle_positions(self.num_cables, self.cable_radius, self.cable_gap_multiplier)
+        bundle_positions = self.bundle_start_offsets_yz(self.num_cables, self.cable_radius, self.cable_gap_multiplier)
 
         # Build each cable in the bundle
         for i in range(self.num_cables):
             off_y, off_z = bundle_positions[i]
             cable_start = wp.vec3(start_x, start_y + off_y, start_z + off_z)
 
-            # Create straight cable points along X axis
-            points = []
-            for j in range(self.num_elements + 1):
-                t = float(j) / float(self.num_elements)
-                p = cable_start + wp.vec3(self.cable_length * t, 0.0, 0.0)
-                points.append(p)
-
-            # All segments use same orientation (straight cable)
-            quats = [q_cable for _ in range(self.num_elements)]
+            points, quats = newton.utils.create_straight_cable_points_and_quaternions(
+                start=cable_start,
+                direction=wp.vec3(1.0, 0.0, 0.0),
+                length=float(self.cable_length),
+                num_segments=int(self.num_elements),
+                twist_total=0.0,
+            )
 
             _rod_bodies, _rod_joints = builder.add_rod(
                 positions=points,
@@ -241,7 +235,7 @@ class Example:
                 bend_damping=bend_damping,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
-                key=f"bundle_cable_{i}",
+                label=f"bundle_cable_{i}",
             )
 
         # Create moving obstacles (capsules arranged along X axis)
@@ -324,9 +318,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
 
         # Obstacle kinematics parameters
@@ -406,7 +398,7 @@ class Example:
 
             # Collide for contact detection
             if update_step_history:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+                self.model.collide(self.state_0, self.contacts)
 
             self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(

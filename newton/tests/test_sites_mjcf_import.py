@@ -46,7 +46,7 @@ class TestMJCFSiteImport(unittest.TestCase):
 
         # Find site
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_types = model.shape_type.numpy()
 
         site_idx = None
@@ -82,11 +82,15 @@ class TestMJCFSiteImport(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
-        site_names = ["site1", "site2", "site3"]
+        site_names = [
+            "worldbody/torso/site1",
+            "worldbody/torso/site2",
+            "worldbody/torso/site3",
+        ]
         found_sites = []
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
 
         for i in range(model.shape_count):
             if (shape_flags[i] & ShapeFlags.SITE) and shape_keys[i] in site_names:
@@ -113,12 +117,12 @@ class TestMJCFSiteImport(unittest.TestCase):
         model = builder.finalize()
 
         expected_types = {
-            "sphere_site": GeoType.SPHERE,
-            "box_site": GeoType.BOX,
+            "worldbody/link/sphere_site": GeoType.SPHERE,
+            "worldbody/link/box_site": GeoType.BOX,
         }
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_types = model.shape_type.numpy()
 
         for i in range(model.shape_count):
@@ -143,11 +147,11 @@ class TestMJCFSiteImport(unittest.TestCase):
         model = builder.finalize()
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_types = model.shape_type.numpy()
 
         for i in range(model.shape_count):
-            if shape_keys[i] == "default_site" and (shape_flags[i] & ShapeFlags.SITE):
+            if shape_keys[i] == "worldbody/link/default_site" and (shape_flags[i] & ShapeFlags.SITE):
                 self.assertEqual(shape_types[i], GeoType.SPHERE)
                 return
 
@@ -193,7 +197,7 @@ class TestMJCFSiteImport(unittest.TestCase):
 
         # Find world site
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_bodies = model.shape_body.numpy()
 
         world_site_idx = None
@@ -226,15 +230,17 @@ class TestMJCFSiteImport(unittest.TestCase):
 
         # Verify sites were created and check their orientations
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_transforms = model.shape_transform.numpy()
 
         # Find each site and check orientation
+        wb = "worldbody/link"
+        site_labels = [f"{wb}/quat_site", f"{wb}/euler_site", f"{wb}/axisangle_site"]
         found_sites = {}
         for i in range(model.shape_count):
             if shape_flags[i] & ShapeFlags.SITE:
                 key = shape_keys[i]
-                if key in ["quat_site", "euler_site", "axisangle_site"]:
+                if key in site_labels:
                     xform = wp.transform(*shape_transforms[i])
                     quat = wp.transform_get_rotation(xform)
                     found_sites[key] = [quat.w, quat.x, quat.y, quat.z]
@@ -244,18 +250,21 @@ class TestMJCFSiteImport(unittest.TestCase):
 
         # quat="1 0 0 0" should be identity quaternion
         np.testing.assert_allclose(
-            found_sites["quat_site"], [1, 0, 0, 0], atol=1e-5, err_msg="Identity quaternion mismatch"
+            found_sites[f"{wb}/quat_site"], [1, 0, 0, 0], atol=1e-5, err_msg="Identity quaternion mismatch"
         )
 
         # euler="0 0 90" is 90 degrees around Z axis
         # Quaternion for 90° around Z: [cos(45°), 0, 0, sin(45°)] = [0.7071, 0, 0, 0.7071]
         np.testing.assert_allclose(
-            found_sites["euler_site"], [0.7071068, 0, 0, 0.7071068], atol=1e-5, err_msg="Euler 90° Z rotation mismatch"
+            found_sites[f"{wb}/euler_site"],
+            [0.7071068, 0, 0, 0.7071068],
+            atol=1e-5,
+            err_msg="Euler 90° Z rotation mismatch",
         )
 
         # axisangle="0 0 1 90" is also 90 degrees around Z axis (angle in degrees)
         np.testing.assert_allclose(
-            found_sites["axisangle_site"],
+            found_sites[f"{wb}/axisangle_site"],
             [0.7071068, 0, 0, 0.7071068],
             atol=1e-5,
             err_msg="Axis-angle 90° Z rotation mismatch",

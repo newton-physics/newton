@@ -13,11 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .collision import Collision, CollisionHandler
-from .solver_style3d import SolverStyle3D
+"""
+Style3D solver module.
+
+This module provides helper functions for setting up Style3D cloth assets.
+Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver
+import path.
+"""
+
+from .cloth import (
+    add_cloth_grid,
+    add_cloth_mesh,
+)
 
 __all__ = [
-    "Collision",
-    "CollisionHandler",
-    "SolverStyle3D",
+    "add_cloth_grid",
+    "add_cloth_mesh",
 ]

@@ -20,6 +20,7 @@ import warp as wp
 from ..geometry import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
+from ..utils.selection import match_labels
 
 
 @wp.kernel
@@ -96,6 +97,8 @@ class SensorFrameTransform:
     Attributes:
         transforms: Output array of relative transforms (updated after each call to update())
 
+    The ``shapes`` and ``reference_sites`` parameters accept label patterns — see :ref:`label-matching`.
+
     Example:
         Measure shapes relative to a site::
 
@@ -105,12 +108,12 @@ class SensorFrameTransform:
 
             sensor = SensorFrameTransform(
                 model,
-                shape_indices=shape_indices,
-                reference_site_indices=[reference_site_idx],
+                shapes=shape_indices,
+                reference_sites=[reference_site_idx],
             )
 
             # Update after eval_fk
-            sensor.update(model, state)
+            sensor.update(state)
 
             # Access transforms
             transforms = sensor.transforms.numpy()  # shape: (N, 7) [pos, quat]
@@ -119,34 +122,48 @@ class SensorFrameTransform:
     def __init__(
         self,
         model: Model,
-        shapes: list[int],
-        reference_sites: list[int],
+        shapes: str | list[str] | list[int],
+        reference_sites: str | list[str] | list[int],
+        *,
         verbose: bool | None = None,
     ):
         """Initialize the SensorFrameTransform.
 
         Args:
             model: The model to measure.
-            shapes: List of shape indices to measure.
-            reference_sites: List of reference site indices (shapes with SITE flag).
-                Must match 1:1 with shape_indices, or be a single site for all shapes.
+            shapes: List of shape indices, single pattern to match against shape
+                labels, or list of patterns where any one matches.
+            reference_sites: List of shape indices, single pattern to match against
+                shape labels, or list of patterns where any one matches. Reference
+                shapes must have the SITE flag. Must match 1:1 with shapes, or be
+                a single site for all shapes.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
 
         Raises:
-            ValueError: If arguments are invalid.
+            ValueError: If arguments are invalid or no labels match.
         """
         self.model = model
         self.verbose = verbose if verbose is not None else wp.config.verbose
 
+        # Resolve label patterns to indices
+        original_shapes = shapes
+        shapes = match_labels(model.shape_label, shapes)
+        original_reference_sites = reference_sites
+        reference_sites = match_labels(model.shape_label, reference_sites)
+
         # Validate shape indices
         if not shapes:
-            raise ValueError("shape_indices must not be empty")
+            if isinstance(original_shapes, list) and len(original_shapes) == 0:
+                raise ValueError("'shapes' must not be empty")
+            raise ValueError(f"No shapes matched the given pattern {original_shapes!r}")
         if any(idx < 0 or idx >= model.shape_count for idx in shapes):
             raise ValueError(f"Invalid shape indices. Must be in range [0, {model.shape_count})")
 
         # Validate reference site indices
         if not reference_sites:
-            raise ValueError("reference_site_indices must not be empty")
+            if isinstance(original_reference_sites, list) and len(original_reference_sites) == 0:
+                raise ValueError("'reference_sites' must not be empty")
+            raise ValueError(f"No reference sites matched the given pattern {original_reference_sites!r}")
         if any(idx < 0 or idx >= model.shape_count for idx in reference_sites):
             raise ValueError(f"Invalid reference site indices. Must be in range [0, {model.shape_count})")
 
@@ -154,7 +171,7 @@ class SensorFrameTransform:
         shape_flags = model.shape_flags.numpy()
         for idx in reference_sites:
             if not (shape_flags[idx] & ShapeFlags.SITE):
-                raise ValueError(f"Reference index {idx} (key: {model.shape_key[idx]}) is not a site")
+                raise ValueError(f"Reference index {idx} (label: {model.shape_label[idx]}) is not a site")
 
         # Handle reference site matching
         if len(reference_sites) == 1:
@@ -200,22 +217,21 @@ class SensorFrameTransform:
                 f"  Unique shapes to compute: {len(self._unique_shape_indices)} (optimized from {len(shapes) + len(reference_sites_matched)})"
             )
 
-    def update(self, model: Model, state: State):
+    def update(self, state: State):
         """Update sensor measurements based on current state.
 
         This should be called after eval_fk to compute transforms.
 
         Args:
-            model: The model (must match the one used in __init__)
             state: The current state with body_q populated by eval_fk
         """
         # Compute world transforms for all unique shapes directly into the all_shape_transforms array
         wp.launch(
             compute_shape_transforms_kernel,
             dim=len(self._unique_shape_indices),
-            inputs=[self._unique_indices_arr, model.shape_body, model.shape_transform, state.body_q],
+            inputs=[self._unique_indices_arr, self.model.shape_body, self.model.shape_transform, state.body_q],
             outputs=[self._all_shape_transforms],
-            device=model.device,
+            device=self.model.device,
         )
 
         # Compute relative transforms by indexing directly into all_shape_transforms
@@ -224,5 +240,5 @@ class SensorFrameTransform:
             dim=len(self._shape_indices_arr),
             inputs=[self._all_shape_transforms, self._shape_indices_arr, self._reference_indices_arr],
             outputs=[self.transforms],
-            device=model.device,
+            device=self.model.device,
         )

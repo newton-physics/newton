@@ -1,92 +1,46 @@
 # Newton Guidelines
 
-## Public API and `_src` boundary
+- `newton/_src/` is internal. Examples and docs must not import from `newton._src`. Expose user-facing symbols via public modules (`newton/geometry.py`, `newton/solvers.py`, etc.).
+- Breaking changes require a deprecation first. Do not remove or rename public API symbols without deprecating them in a prior release.
+- Prefix-first naming for autocomplete: `ActuatorPD` (not `PDActuator`), `add_shape_sphere()` (not `add_sphere_shape()`).
+- Prefer nested classes for self-contained helper types/enums.
+- PEP 604 unions (`x | None`, not `Optional[x]`). Annotate Warp arrays with concrete dtypes (`wp.array(dtype=wp.vec3)`).
+- Google-style docstrings. Types in annotations, not docstrings. `Args:` use `name: description`.
+  - Sphinx cross-refs (`:class:`, `:meth:`) with shortest possible targets. Prefer public API paths; never use `newton._src`.
+  - SI units for physical quantities in public API docstrings: `"""Particle positions [m], shape [particle_count, 3]."""`. Joint-dependent: `[m or rad]`. Spatial vectors: `[N, N·m]`. Compound arrays: per-component. Skip non-physical fields.
+- Run `docs/generate_api.py` when adding public API symbols.
+- Avoid new required dependencies. Strongly prefer not adding optional ones — use Warp, NumPy, or stdlib.
+- Create a feature branch before committing — never commit directly to `main`. Use `<username>/feature-desc`.
+- Imperative mood in commit messages ("Fix X", not "Fixed X"), ~50 char subject, body wraps at 72 chars explaining _what_ and _why_.
+- Verify regression tests fail without the fix before committing.
+- Pin GitHub Actions by SHA: `action@<sha>  # vX.Y.Z`. Check `.github/workflows/` for allowlisted hashes.
 
-- **`newton/_src/` is internal library implementation only.**
-  - User code, that means Newton examples (under `newton/examples/`) and documentation, **must not** import from `newton._src`.
-  - Internal refactors can freely reorganize code under `_src` as long as the public API stays stable.
-- **Any user-facing class/function/object added under `_src` must be exposed via the public Newton API.**
-  - Add re-exports in the appropriate public module (e.g. `newton/geometry.py`, `newton/solvers.py`, `newton/sensors.py`, etc.).
-  - Prefer a single, discoverable public import path. Example: `from newton.geometry import BroadPhaseAllPairs` (not `from newton._src.geometry.broad_phase_all_pairs import BroadPhaseAllPairs`).
-
-## API design rules (naming + structure)
-
-- **Prefix-first naming for discoverability (autocomplete).**
-  - **Classes**: `ActuatorPD`, `ActuatorPID` (not `PDActuator`, `PIDActuator`).
-  - **Methods**: `add_shape_sphere()` (not `add_sphere_shape()`).
-- **Method names are `snake_case`.**
-- **CLI arguments are `kebab-case`.**
-  - Example: `--use-cuda-graph` (not `--use_cuda_graph`).
-- **Prefer nested classes when self-contained.**
-  - If a helper type or an enum is only meaningful inside one parent class and doesn't need a public identity, define it as a nested class instead of creating a new top-level class/module.
-- **Follow PEP 8 for Python code.**
-- **Use Google-style docstrings.**
-  - Write clear, concise docstrings that explain what the function does, its parameters, and its return value.
-- **Keep the documentation up-to-date.**
-  - When adding new files or symbols that are part of the public-facing API, make sure to keep the auto-generated documentation updated by running `docs/generate_api.py`.
-- **Add examples to README.md**
-  - When contributing a new Newton example you must follow the format of the existing examples, where we have an `Example` class. Then register the example in the appropriate table in `README.md` with the corresponding uv run command and a screenshot.
-  - Ensure your example implements a meaningful `test_final()` method that is executed after the example has been run to verify the state of the simulation is valid.
-  - Optionally you may implement a `test_post_step()` method that is evaluated after every `step()` of the example.
-
-## Dependencies
-
-- **Avoid adding new required dependencies.** Newton's core should remain lightweight and minimize external requirements.
-- **Strongly prefer not adding new optional dependencies.** If additional functionality requires a new package, carefully consider whether the benefit justifies the added complexity and maintenance burden. When possible, implement functionality using existing dependencies, including Warp functions and kernels, NumPy, or the standard library.
-
-## Tooling: prefer `uv` for running, testing, and benchmarking
-
-We standardize on `uv` for local workflows when available. If `uv` is not installed, fall back to a virtual environment created with `venv` or `conda`.
-
-Example commands using `uv` (from `docs/guide/development.rst`):
-
-### Run examples
-
-Newton examples live under `newton/examples/` and its subfolders. See `README.md` for uv commands.
+Run `uvx pre-commit run -a` to lint/format before committing. Use `uv` for all commands; fall back to `venv`/`conda` if unavailable.
 
 ```bash
-# set up the uv environment for running Newton examples
+# Examples
 uv sync --extra examples
-
-# run an example
 uv run -m newton.examples basic_pendulum
-```
 
-### Run tests
-
-```bash
-# install development extras and run tests
+# Tests
 uv run --extra dev -m newton.tests
+uv run --extra dev -m newton.tests -k test_viewer_log_shapes           # specific test
+uv run --extra dev -m newton.tests -k test_basic.example_basic_shapes  # example test
+uv run --extra dev --extra torch-cu12 -m newton.tests                  # with PyTorch
 
-# include tests that require PyTorch
-uv run --extra dev --extra torch-cu12 -m newton.tests
-
-# run a specific example test
-uv run --extra dev -m newton.tests.test_examples -k test_basic.example_basic_shapes
-```
-
-### Pre-commit (lint/format hooks)
-
-```bash
-uvx pre-commit run -a
-uvx pre-commit install
-```
-
-### Benchmarks (ASV)
-
-```bash
-# Unix shells
+# Benchmarks
 uvx --with virtualenv asv run --launch-method spawn main^!
-
-# Windows CMD (escape ^ as ^^)
-uvx --with virtualenv asv run --launch-method spawn main^^!
 ```
 
-## Commit and Pull Request Guidelines
+## PR Instructions
 
-Follow conventional commit message practices.
-- Use clear, descriptive commit messages that explain what changed and why.
-- Keep commits focused and atomic—one logical change per commit.
-- Reference related issues in commit messages when applicable.
+- If opening a pull request on GitHub, use the template in `.github/PULL_REQUEST_TEMPLATE.md`.
+- If a change modifies user-facing behavior, append an entry to the `[Unreleased]` section of `CHANGELOG.md`. Use imperative present tense ("Add X"), place under the correct category (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`), and avoid internal implementation details.
+- For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: "Deprecate `Model.geo_meshes` in favor of `Model.shapes`".
 
-For detailed guidance on writing good commit messages and structuring pull requests, see [Apache Airflow's Pull Request Guidelines](https://github.com/apache/airflow/blob/main/AGENTS.md#pull-request-guidelines).
+## Examples
+
+- Follow the `Example` class format.
+  - Implement `test_final()` — runs after the example completes to verify simulation state is valid.
+  - Optionally implement `test_post_step()` — runs after every `step()` for per-step validation.
+- Register in `README.md` with uv command and a 320x320 jpg screenshot.

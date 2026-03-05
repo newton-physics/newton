@@ -48,6 +48,26 @@ except ImportError:
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
 
+def _parallel_download(items, download_fn, description, max_jobs):
+    """Download *items* in parallel via a thread pool, re-raising on first failure."""
+
+    max_workers = max(1, min(max_jobs, len(items)))
+    futures = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for item in items:
+            futures[executor.submit(download_fn, item)] = item
+
+        for future in concurrent.futures.as_completed(futures):
+            item = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"{description} download failed: {item}: {e}", file=sys.stderr)
+                raise
+
+    print(f"Downloaded {description}")
+
+
 def main(argv=None):
     """
     unittest-parallel command-line script main entry point
@@ -63,8 +83,8 @@ def main(argv=None):
         python -m newton.tests -k 'mgpu' -k 'cuda'
         """,
     )
-    # parser.add_argument("-v", "--verbose", action="store_const", const=2, default=1, help="Verbose output")
-    parser.add_argument("-q", "--quiet", dest="verbose", action="store_const", const=0, default=2, help="Quiet output")
+    parser.add_argument("-v", "--verbose", action="store_const", const=2, default=1, help="Verbose output")
+    parser.add_argument("-q", "--quiet", dest="verbose", action="store_const", const=0, default=1, help="Quiet output")
     parser.add_argument("-f", "--failfast", action="store_true", default=False, help="Stop on first fail or error")
     parser.add_argument(
         "-b", "--buffer", action="store_true", default=False, help="Buffer stdout and stderr during tests"
@@ -157,6 +177,12 @@ def main(argv=None):
     group_warp.add_argument(
         "--no-shared-cache", action="store_true", help="Use a separate kernel cache per test process."
     )
+    group_warp.add_argument(
+        "--no-cache-clear",
+        action="store_true",
+        help="Skip clearing the Warp kernel cache before running tests. "
+        "Useful for faster iteration and avoiding interference with parallel sessions.",
+    )
     args = parser.parse_args(args=argv)
 
     if args.coverage_branch:
@@ -175,49 +201,54 @@ def main(argv=None):
     import warp as wp  # noqa: PLC0415 NVIDIA Modification
 
     # Clear the Warp cache (NVIDIA Modification)
-    wp.clear_lto_cache()
-    wp.clear_kernel_cache()
-    print("Cleared Warp kernel cache")
+    if not args.no_cache_clear:
+        wp.clear_lto_cache()
+        wp.clear_kernel_cache()
+        print("Cleared Warp kernel cache")
 
     # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
     # For now this avoids races and conflicting downloads in parallel test runs.
-    from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
-
     import newton.utils  # noqa: PLC0415
 
     assets_to_download = [
         "anybotics_anymal_c",
         "anybotics_anymal_d",
-        "anybotics_anymal_d/usd",
         "franka_emika_panda",
         "manipulation_objects/cup",  # Used in robot.example_robot_panda_hydro
         "manipulation_objects/pad",  # Used in robot.example_robot_panda_hydro
         "unitree_go2",
         "unitree_g1",
-        "unitree_g1/usd",
         "unitree_h1",
-        "unitree_h1/usd",
         "style3d",
         "universal_robots_ur10",
         "wonik_allegro",
     ]
+    # Passing args.maxjobs to respect CLI cap for parallelism.
+    _parallel_download(
+        assets_to_download,
+        newton.utils.download_asset,
+        "assets",
+        args.maxjobs,
+    )
 
-    # Respect CLI cap for parallelism
-    max_workers = max(1, min(args.maxjobs, len(assets_to_download)))
-    futures = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for asset in assets_to_download:
-            futures[executor.submit(newton.utils.download_asset, asset)] = asset
+    # Pre-download mujoco_menagerie folders used by test_robot_composer
+    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
-        for future in as_completed(futures):
-            asset = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                print(f"Asset download failed: {asset}: {e}", file=sys.stderr)
-                raise
-
-    print("Downloaded assets")
+    menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
+    menagerie_folders = [
+        "universal_robots_ur5e",
+        "apptronik_apollo",
+        "leap_hand",
+        "wonik_allegro",
+        "robotiq_2f85",
+    ]
+    # Passing args.maxjobs to respect CLI cap for parallelism.
+    _parallel_download(
+        menagerie_folders,
+        lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),
+        "mujoco_menagerie folders",
+        args.maxjobs,
+    )
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -251,33 +282,33 @@ def main(argv=None):
                 print(file=sys.stderr)
 
             # Create the shared index object used in Warp caches (NVIDIA Modification)
-            manager = multiprocessing.Manager()
-            shared_index = manager.Value("i", -1)
+            with multiprocessing.Manager() as manager:
+                shared_index = manager.Value("i", -1)
 
-            # Run the tests in parallel
-            start_time = time.perf_counter()
+                # Run the tests in parallel
+                start_time = time.perf_counter()
 
-            if args.disable_concurrent_futures:
-                multiprocessing_context = multiprocessing.get_context(method="spawn")
-                maxtasksperchild = 1 if args.disable_process_pooling else None
-                with multiprocessing_context.Pool(
-                    process_count,
-                    maxtasksperchild=maxtasksperchild,
-                    initializer=initialize_test_process,
-                    initargs=(manager.Lock(), shared_index, args, temp_dir),
-                ) as pool:
-                    test_manager = ParallelTestManager(manager, args, temp_dir)
-                    results = pool.map(test_manager.run_tests, test_suites)
-            else:
-                # NVIDIA Modification added concurrent.futures
-                with concurrent.futures.ProcessPoolExecutor(
-                    max_workers=process_count,
-                    mp_context=multiprocessing.get_context(method="spawn"),
-                    initializer=initialize_test_process,
-                    initargs=(manager.Lock(), shared_index, args, temp_dir),
-                ) as executor:
-                    test_manager = ParallelTestManager(manager, args, temp_dir)
-                    results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
+                if args.disable_concurrent_futures:
+                    multiprocessing_context = multiprocessing.get_context(method="spawn")
+                    maxtasksperchild = 1 if args.disable_process_pooling else None
+                    with multiprocessing_context.Pool(
+                        process_count,
+                        maxtasksperchild=maxtasksperchild,
+                        initializer=initialize_test_process,
+                        initargs=(manager.Lock(), shared_index, args, temp_dir),
+                    ) as pool:
+                        test_manager = ParallelTestManager(manager, args, temp_dir)
+                        results = pool.map(test_manager.run_tests, test_suites)
+                else:
+                    # NVIDIA Modification added concurrent.futures
+                    with concurrent.futures.ProcessPoolExecutor(
+                        max_workers=process_count,
+                        mp_context=multiprocessing.get_context(method="spawn"),
+                        initializer=initialize_test_process,
+                        initargs=(manager.Lock(), shared_index, args, temp_dir),
+                    ) as executor:
+                        test_manager = ParallelTestManager(manager, args, temp_dir)
+                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
         else:
             # This entire path is an NVIDIA Modification
 
@@ -451,6 +482,13 @@ def _iter_test_cases(test_suite):
 
 
 class ParallelTestManager:
+    # Manager proxy calls can fail with ConnectionError, TypeError, or OSError
+    # due to a TOCTOU race in Connection.send() where GC can close the
+    # connection handle between the closed-check and the write call
+    # (see https://github.com/python/cpython/issues/84582). Since failfast
+    # is a best-effort optimization, we log a warning and continue.
+    _PROXY_ERRORS = (ConnectionError, TypeError, OSError)
+
     def __init__(self, manager, args, temp_dir):
         self.args = args
         self.temp_dir = temp_dir
@@ -458,8 +496,14 @@ class ParallelTestManager:
 
     def run_tests(self, test_suite):
         # Fail fast?
-        if self.failfast.is_set():
-            return [0, [], [], 0, 0, 0, []]  # NVIDIA Modification
+        try:
+            if self.failfast.is_set():
+                return [0, [], [], 0, 0, 0, []]  # NVIDIA Modification
+        except self._PROXY_ERRORS as exc:
+            print(
+                f"Warning: failfast proxy is_set() failed ({type(exc).__name__}), continuing test execution",
+                file=sys.stderr,
+            )
 
         # NVIDIA Modification for GitLab
         import newton.tests.unittest_utils  # noqa: PLC0415
@@ -486,7 +530,14 @@ class ParallelTestManager:
 
             # Set failfast, if necessary
             if result.shouldStop:
-                self.failfast.set()
+                try:
+                    self.failfast.set()
+                except self._PROXY_ERRORS as exc:
+                    print(
+                        f"Warning: failfast proxy set() failed ({type(exc).__name__}), "
+                        "other workers may not stop early",
+                        file=sys.stderr,
+                    )
 
             # Return (test_count, errors, failures, skipped_count, expected_failure_count, unexpected_success_count)
             return (
@@ -521,38 +572,41 @@ class ParallelTextTestResult(unittest.TextTestResult):
         if self.showAll:
             self.stream.writeln(f"{self.getDescription(test)} ...")
             self.stream.flush()
+        elif self.dots:
+            self.stream.writeln(f"{test} ...")
+            self.stream.flush()
         super(unittest.TextTestResult, self).startTest(test)
 
-    def _add_helper(self, test, dots_message, show_all_message):
+    def _add_helper(self, test, show_all_message):
         if self.showAll:
             self.stream.writeln(f"{self.getDescription(test)} ... {show_all_message}")
         elif self.dots:
-            self.stream.write(dots_message)
+            self.stream.writeln(f"{test} ... {show_all_message}")
         self.stream.flush()
 
     def addSuccess(self, test):
         super(unittest.TextTestResult, self).addSuccess(test)
-        self._add_helper(test, ".", "ok")
+        self._add_helper(test, "ok")
 
     def addError(self, test, err):
         super(unittest.TextTestResult, self).addError(test, err)
-        self._add_helper(test, "E", "ERROR")
+        self._add_helper(test, "ERROR")
 
     def addFailure(self, test, err):
         super(unittest.TextTestResult, self).addFailure(test, err)
-        self._add_helper(test, "F", "FAIL")
+        self._add_helper(test, "FAIL")
 
     def addSkip(self, test, reason):
         super(unittest.TextTestResult, self).addSkip(test, reason)
-        self._add_helper(test, "s", f"skipped {reason!r}")
+        self._add_helper(test, f"skipped {reason!r}")
 
     def addExpectedFailure(self, test, err):
         super(unittest.TextTestResult, self).addExpectedFailure(test, err)
-        self._add_helper(test, "x", "expected failure")
+        self._add_helper(test, "expected failure")
 
     def addUnexpectedSuccess(self, test):
         super(unittest.TextTestResult, self).addUnexpectedSuccess(test)
-        self._add_helper(test, "u", "unexpected success")
+        self._add_helper(test, "unexpected success")
 
     def printErrors(self):
         pass
@@ -586,8 +640,9 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
 
             wp.config.kernel_cache_dir = cache_root_dir
 
-            wp.clear_lto_cache()
-            wp.clear_kernel_cache()
+            if not args.no_cache_clear:
+                wp.clear_lto_cache()
+                wp.clear_kernel_cache()
         elif "WARP_CACHE_ROOT" in os.environ:
             # Using a shared cache for all test processes
             wp.config.kernel_cache_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), wp.config.version)

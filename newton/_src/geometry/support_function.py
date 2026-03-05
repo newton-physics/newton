@@ -134,7 +134,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
 
     result = wp.vec3(0.0, 0.0, 0.0)
 
-    if geom.shape_type == int(GeoType.CONVEX_MESH):
+    if geom.shape_type == GeoType.CONVEX_MESH:
         # Convex hull support: find the furthest point in the direction
         mesh_ptr = unpack_mesh_ptr(geom.auxiliary)
         mesh = wp.mesh_get(mesh_ptr)
@@ -161,7 +161,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
                 best_vertex = vertex
         result = best_vertex
 
-    elif geom.shape_type == int(GeoTypeEx.TRIANGLE):
+    elif geom.shape_type == GeoTypeEx.TRIANGLE:
         # Triangle vertices: a at origin, b at scale, c at auxiliary
         tri_a = wp.vec3(0.0, 0.0, 0.0)
         tri_b = geom.scale
@@ -179,14 +179,14 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
             result = tri_b
         else:
             result = tri_c
-    elif geom.shape_type == int(GeoType.BOX):
+    elif geom.shape_type == GeoType.BOX:
         sx = 1.0 if dir_safe[0] >= 0.0 else -1.0
         sy = 1.0 if dir_safe[1] >= 0.0 else -1.0
         sz = 1.0 if dir_safe[2] >= 0.0 else -1.0
 
         result = wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
 
-    elif geom.shape_type == int(GeoType.SPHERE):
+    elif geom.shape_type == GeoType.SPHERE:
         radius = geom.scale[0]
         if dir_len_sq > eps:
             n = wp.normalize(dir_safe)
@@ -194,7 +194,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
 
-    elif geom.shape_type == int(GeoType.CAPSULE):
+    elif geom.shape_type == GeoType.CAPSULE:
         radius = geom.scale[0]
         half_height = geom.scale[1]
 
@@ -213,7 +213,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         else:
             result = result + wp.vec3(0.0, 0.0, -half_height)
 
-    elif geom.shape_type == int(GeoType.ELLIPSOID):
+    elif geom.shape_type == GeoType.ELLIPSOID:
         # Ellipsoid support for semi-axes a, b, c in direction d:
         # p* = (a^2 dx, b^2 dy, c^2 dz) / sqrt((a dx)^2 + (b dy)^2 + (c dz)^2)
         a = geom.scale[0]
@@ -234,7 +234,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         else:
             result = wp.vec3(a, 0.0, 0.0)
 
-    elif geom.shape_type == int(GeoType.CYLINDER):
+    elif geom.shape_type == GeoType.CYLINDER:
         radius = geom.scale[0]
         half_height = geom.scale[1]
 
@@ -256,7 +256,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         else:
             result = lateral_point
 
-    elif geom.shape_type == int(GeoType.CONE):
+    elif geom.shape_type == GeoType.CONE:
         radius = geom.scale[0]
         half_height = geom.scale[1]
 
@@ -281,7 +281,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
                 n_xy = dir_xy / dir_xy_len
                 result = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, -half_height)
 
-    elif geom.shape_type == int(GeoType.PLANE):
+    elif geom.shape_type == GeoType.PLANE:
         # Finite plane support: rectangular plane in XY, extents in scale[0] (half-width X) and scale[1] (half-length Y)
         # The plane lies at z=0 with normal along +Z
         half_width = geom.scale[0]
@@ -306,7 +306,7 @@ def extract_shape_data(
     shape_idx: int,
     shape_transform: wp.array(dtype=wp.transform),
     shape_types: wp.array(dtype=int),
-    shape_data: wp.array(dtype=wp.vec4),  # scale (xyz), thickness (w) or other data
+    shape_data: wp.array(dtype=wp.vec4),  # scale (xyz), margin_offset (w) or other data
     shape_source: wp.array(dtype=wp.uint64),
 ):
     """
@@ -316,11 +316,11 @@ def extract_shape_data(
         shape_idx: Index of the shape
         shape_transform: World space transforms (already computed)
         shape_types: Shape types
-        shape_data: Shape data (vec4 - scale xyz, thickness w)
+        shape_data: Shape data (vec4 - scale xyz, margin_offset w)
         shape_source: Source pointers (mesh IDs etc.)
 
     Returns:
-        tuple: (position, orientation, shape_data, scale, thickness)
+        tuple: (position, orientation, shape_data, scale, margin_offset)
     """
     # Get shape's world transform (already in world space)
     X_ws = shape_transform[shape_idx]
@@ -328,11 +328,11 @@ def extract_shape_data(
     position = wp.transform_get_translation(X_ws)
     orientation = wp.transform_get_rotation(X_ws)
 
-    # Extract scale and thickness from shape_data
-    # Assuming shape_data stores scale in xyz and thickness in w
+    # Extract scale and margin offset from shape_data.
+    # shape_data stores scale in xyz and margin offset in w.
     data = shape_data[shape_idx]
     scale = wp.vec3(data[0], data[1], data[2])
-    thickness = data[3]
+    margin_offset = data[3]
 
     # Create generic shape data
     result = GenericShapeData()
@@ -341,7 +341,7 @@ def extract_shape_data(
     result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
 
     # For CONVEX_MESH, pack the mesh pointer into auxiliary
-    if shape_types[shape_idx] == int(GeoType.CONVEX_MESH):
+    if shape_types[shape_idx] == GeoType.CONVEX_MESH:
         result.auxiliary = pack_mesh_ptr(shape_source[shape_idx])
 
-    return position, orientation, result, scale, thickness
+    return position, orientation, result, scale, margin_offset

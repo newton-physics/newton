@@ -1,9 +1,27 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 newton.usd
 ==========
 
 Utilities for working with the Universal Scene Description (USD) format.
 
+This module provides both low-level USD utility helpers and public schema
+resolver types used by :meth:`newton.ModelBuilder.add_usd`.
+
 .. currentmodule:: newton.usd
+
+.. rubric:: Classes
+
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
+
+   PrimType
+   SchemaResolver
+   SchemaResolverMjc
+   SchemaResolverNewton
+   SchemaResolverPhysx
 
 .. rubric:: Functions
 
@@ -11,8 +29,6 @@ Utilities for working with the Universal Scene Description (USD) format.
    :toctree: _generated
    :signatures: long
 
-   convert_warp_type
-   convert_warp_value
    get_attribute
    get_attributes_in_namespace
    get_custom_attribute_declarations
@@ -23,4 +39,7 @@ Utilities for working with the Universal Scene Description (USD) format.
    get_quat
    get_scale
    get_transform
+   has_applied_api_schema
    has_attribute
+   type_to_warp
+   value_to_warp

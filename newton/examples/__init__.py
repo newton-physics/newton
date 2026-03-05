@@ -35,6 +35,12 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
+def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
+    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
+
+    return download_git_folder(git_url, folder_path, force_refresh=force_refresh)
+
+
 def test_body_state(
     model: newton.Model,
     state: newton.State,
@@ -94,13 +100,13 @@ def test_body_state(
         )
         failures_np = failures.numpy()
         if np.any(failures_np):
-            body_key = np.array(model.body_key)[indices]
+            body_label = np.array(model.body_label)[indices]
             body_q = body_q.numpy()[indices]
             body_qd = body_qd.numpy()[indices]
             failed_indices = np.where(failures_np)[0]
             failed_details = []
             for index in failed_indices:
-                detail = body_key[index]
+                detail = body_label[index]
                 extras = []
                 if show_body_q:
                     extras.append(f"q={body_q[index]}")
@@ -221,7 +227,7 @@ def run(example, args):
 
 
 def compute_world_offsets(
-    num_worlds: int,
+    world_count: int,
     world_offset: tuple[float, float, float] = (5.0, 5.0, 0.0),
     up_axis: newton.AxisType = newton.Axis.Z,
 ):
@@ -241,13 +247,13 @@ def compute_world_offsets(
     nonzeros = np.nonzero(world_offset)[0]
     num_dim = nonzeros.shape[0]
     if num_dim > 0:
-        side_length = int(np.ceil(num_worlds ** (1.0 / num_dim)))
+        side_length = int(np.ceil(world_count ** (1.0 / num_dim)))
         world_offsets = []
         if num_dim == 1:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 world_offsets.append(i * world_offset)
         elif num_dim == 2:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 d0 = i // side_length
                 d1 = i % side_length
                 offset = np.zeros(3)
@@ -255,7 +261,7 @@ def compute_world_offsets(
                 offset[nonzeros[1]] = d1 * world_offset[nonzeros[1]]
                 world_offsets.append(offset)
         elif num_dim == 3:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 d0 = i // (side_length * side_length)
                 d1 = (i // side_length) % side_length
                 d2 = i % side_length
@@ -266,7 +272,7 @@ def compute_world_offsets(
                 world_offsets.append(offset)
         world_offsets = np.array(world_offsets)
     else:
-        world_offsets = np.zeros((num_worlds, 3))
+        world_offsets = np.zeros((world_count, 3))
     min_offsets = np.min(world_offsets, axis=0)
     correction = min_offsets + (np.max(world_offsets, axis=0) - min_offsets) / 2.0
     # ensure the envs are not shifted below the ground plane
@@ -318,18 +324,11 @@ def create_parser():
         help="Whether to run the example in test mode.",
     )
     parser.add_argument(
-        "--collision-pipeline",
-        type=str,
-        default="unified",
-        choices=["unified", "standard"],
-        help="Collision pipeline to use. 'unified' uses CollisionPipelineUnified (default), 'standard' uses CollisionPipeline.",
-    )
-    parser.add_argument(
-        "--broad-phase-mode",
+        "--broad-phase",
         type=str,
         default="explicit",
         choices=["nxn", "sap", "explicit"],
-        help="Broad phase mode for CollisionPipelineUnified. Only used when --collision-pipeline=unified.",
+        help="Broad phase for collision detection.",
     )
     parser.add_argument(
         "--use-mujoco-contacts",
@@ -342,6 +341,12 @@ def create_parser():
         type=int,
         default=None,
         help="Maximum number of worlds to render (for performance with many environments).",
+    )
+    parser.add_argument(
+        "--quiet",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Suppress Warp compilation messages.",
     )
 
     return parser
@@ -372,6 +377,10 @@ def init(parser=None):
         # When parser is provided, use parse_args() to properly handle --help
         args = parser.parse_args()
 
+    # Suppress Warp compilation messages if requested
+    if args.quiet:
+        wp.config.quiet = True
+
     # Set device if specified
     if args.device:
         wp.set_device(args.device)
@@ -395,76 +404,23 @@ def init(parser=None):
     return viewer, args
 
 
-def create_collision_pipeline(
-    model,
-    args=None,
-    collision_pipeline_type=None,
-    broad_phase_mode=None,
-):
-    """Create a collision pipeline based on command-line arguments or explicit parameters.
-
-    This helper function creates either a CollisionPipelineUnified or returns None for the
-    standard CollisionPipeline (which is created implicitly by model.collide()).
+def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs):
+    """Create a collision pipeline, optionally using --broad-phase from args.
 
     Args:
-        model: The Newton model to create the pipeline for
-        args: Parsed arguments from create_parser() (optional if explicit parameters provided)
-        collision_pipeline_type: Explicit pipeline type ("unified" or "standard"), overrides args
-        broad_phase_mode: Explicit broad phase mode ("nxn", "sap", "explicit"), overrides args
+        model: The Newton model to create the pipeline for.
+        args: Parsed arguments from create_parser() (optional).
+        broad_phase: Override broad phase ("nxn", "sap", "explicit"). Default from args or "explicit".
+        **kwargs: Additional keyword arguments passed to CollisionPipeline.
 
     Returns:
-        CollisionPipelineUnified instance if unified pipeline is selected, None for standard pipeline
-
-    Note:
-        Contact margins for rigid contacts are read from ``model.shape_contact_margin`` array.
-
-    Examples:
-        # Using command-line args
-        viewer, args = newton.examples.init()
-        model = builder.finalize()
-        pipeline = newton.examples.create_collision_pipeline(model, args)
-        contacts = model.collide(state, collision_pipeline=pipeline)
-
-        # Using explicit parameters
-        pipeline = newton.examples.create_collision_pipeline(
-            model,
-            collision_pipeline_type="unified",
-            broad_phase_mode="nxn"
-        )
+        CollisionPipeline instance.
     """
-    import newton  # noqa: PLC0415
 
-    # Determine collision pipeline type
-    if collision_pipeline_type is None:
-        if args is not None and hasattr(args, "collision_pipeline"):
-            collision_pipeline_type = args.collision_pipeline
-        else:
-            collision_pipeline_type = "unified"  # Default
+    if broad_phase is None:
+        broad_phase = (getattr(args, "broad_phase", None) if args else None) or "explicit"
 
-    # If standard pipeline requested, return None (model.collide will create it implicitly)
-    if collision_pipeline_type == "standard":
-        return None
-
-    # Determine broad phase mode for unified pipeline
-    if broad_phase_mode is None:
-        if args is not None and hasattr(args, "broad_phase_mode"):
-            broad_phase_mode = args.broad_phase_mode
-        else:
-            broad_phase_mode = "explicit"  # Default
-
-    # Map string to BroadPhaseMode enum
-    broad_phase_map = {
-        "nxn": newton.BroadPhaseMode.NXN,
-        "sap": newton.BroadPhaseMode.SAP,
-        "explicit": newton.BroadPhaseMode.EXPLICIT,
-    }
-    broad_phase_enum = broad_phase_map.get(broad_phase_mode.lower(), newton.BroadPhaseMode.NXN)
-
-    # Create and return CollisionPipelineUnified
-    return newton.CollisionPipelineUnified.from_model(
-        model,
-        broad_phase_mode=broad_phase_enum,
-    )
+    return newton.CollisionPipeline(model, broad_phase=broad_phase, **kwargs)
 
 
 def main():
@@ -474,7 +430,20 @@ def main():
 
     # Map short names to full module paths
     example_map = {}
-    modules = ["basic", "cable", "cloth", "contacts", "cosserat2", "diffsim", "ik", "mpm", "robot", "selection", "sensors"]
+    modules = [
+        "basic",
+        "cable",
+        "cloth",
+        "contacts",
+        "diffsim",
+        "ik",
+        "mpm",
+        "multiphysics",
+        "robot",
+        "selection",
+        "sensors",
+        "softbody",
+    ]
     for module in sorted(modules):
         for example in sorted(os.listdir(os.path.join(get_source_directory(), module))):
             if example.endswith(".py"):
@@ -510,4 +479,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_collision_pipeline", "create_parser", "init", "run", "test_body_state", "test_particle_state"]
+__all__ = ["create_parser", "init", "run", "test_body_state", "test_particle_state"]

@@ -20,7 +20,7 @@
 # from a USD file using newton.ModelBuilder.add_usd() and
 # applies a sinusoidal trajectory to the joint targets.
 #
-# Command: python -m newton.examples robot_ur10 --num-worlds 16
+# Command: python -m newton.examples robot_ur10 --world-count 16
 #
 ###########################################################################
 
@@ -30,6 +30,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
+from newton import JointTargetMode
 from newton.selection import ArticulationView
 
 
@@ -39,7 +40,7 @@ def update_joint_target_trajectory_kernel(
     time: wp.array(dtype=wp.float32),
     dt: wp.float32,
     # output
-    joint_target: wp.array2d(dtype=wp.float32),
+    joint_target: wp.array3d(dtype=wp.float32),
 ):
     world_idx = wp.tid()
     t = time[world_idx]
@@ -47,11 +48,11 @@ def update_joint_target_trajectory_kernel(
     step = int(t)
     time[world_idx] = t
 
-    num_dofs = joint_target.shape[1]
+    num_dofs = joint_target.shape[2]
     for dof in range(num_dofs):
         # add world_idx here to make the sequence of dofs different for each world
         di = (dof + world_idx) % num_dofs
-        joint_target[world_idx, dof] = wp.lerp(
+        joint_target[world_idx, 0, dof] = wp.lerp(
             joint_target_trajectory[step, world_idx, di],
             joint_target_trajectory[step + 1, world_idx, di],
             wp.frac(t),
@@ -59,7 +60,7 @@ def update_joint_target_trajectory_kernel(
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=4):
+    def __init__(self, viewer, world_count=4):
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -67,7 +68,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         self.viewer = viewer
 
@@ -92,9 +93,10 @@ class Example:
         for i in range(len(ur10.joint_target_ke)):
             ur10.joint_target_ke[i] = 500
             ur10.joint_target_kd[i] = 50
+            ur10.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
-        builder.replicate(ur10, self.num_worlds, spacing=(2, 2, 0))
+        builder.replicate(ur10, self.world_count, spacing=(2, 2, 0))
 
         # set random joint configurations
         rng = np.random.default_rng(42)
@@ -113,17 +115,17 @@ class Example:
         self.articulation_view = ArticulationView(
             self.model, "*ur10*", exclude_joint_types=[newton.JointType.FREE, newton.JointType.DISTANCE]
         )
-        assert self.articulation_view.count == self.num_worlds, (
+        assert self.articulation_view.count == self.world_count, (
             "Number of worlds must match the number of articulations"
         )
         dof_count = self.articulation_view.joint_dof_count
-        joint_target_trajectory = np.zeros((0, self.num_worlds, dof_count), dtype=np.float32)
+        joint_target_trajectory = np.zeros((0, self.world_count, dof_count), dtype=np.float32)
 
         self.control_speed = 50.0
 
-        dof_lower = self.articulation_view.get_attribute("joint_limit_lower", self.model)[0].numpy()
-        dof_upper = self.articulation_view.get_attribute("joint_limit_upper", self.model)[0].numpy()
-        joint_q = self.articulation_view.get_attribute("joint_q", self.state_0).numpy()
+        dof_lower = self.articulation_view.get_attribute("joint_limit_lower", self.model)[0, 0].numpy()
+        dof_upper = self.articulation_view.get_attribute("joint_limit_upper", self.model)[0, 0].numpy()
+        joint_q = self.articulation_view.get_attribute("joint_q", self.state_0).numpy().squeeze(axis=1)
         for i in range(dof_count):
             # generate sinusoidal control signal for this dof
             lower = dof_lower[i]
@@ -148,7 +150,7 @@ class Example:
             joint_target_trajectory = np.concatenate((joint_target_trajectory, target_trajectory), axis=0)
 
         self.joint_target_trajectory = wp.array(joint_target_trajectory, dtype=wp.float32, device=self.device)
-        self.time_step = wp.zeros(self.num_worlds, dtype=wp.float32, device=self.device)
+        self.time_step = wp.zeros(self.world_count, dtype=wp.float32, device=self.device)
 
         self.ctrl = self.articulation_view.get_attribute("joint_target_pos", self.control)
 
@@ -177,7 +179,7 @@ class Example:
 
             wp.launch(
                 update_joint_target_trajectory_kernel,
-                dim=self.num_worlds,
+                dim=self.world_count,
                 inputs=[self.joint_target_trajectory, self.time_step, self.sim_dt * self.control_speed],
                 outputs=[self.ctrl],
                 device=self.device,
@@ -208,10 +210,10 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=100, help="Total number of simulated worlds.")
+    parser.add_argument("--world-count", type=int, default=100, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_worlds)
+    example = Example(viewer, args.world_count)
 
     newton.examples.run(example, args)

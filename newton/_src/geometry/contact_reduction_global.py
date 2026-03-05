@@ -17,14 +17,45 @@
 
 This module provides a global contact reduction system that uses a hashtable
 to track the best contacts across shape pairs, normal bins, and scan directions.
-Unlike the shared-memory based approach in contact_reduction.py, this works
+Unlike the shared-memory based approach in ``contact_reduction.py``, this works
 across the entire GPU without block-level synchronization constraints.
 
-Key Design:
-- Contacts are stored in a global buffer (struct of arrays, packed into vec4)
-- A hashtable tracks the best contact per (shape_pair, normal_bin, scan_direction)
-- Each contact is registered 6 times (once per scan direction)
-- Atomic max selects the best contact based on spatial projection score
+**When to Use:**
+
+- Used for mesh-mesh (SDF) collisions where contacts span multiple GPU blocks
+- The shared-memory approach in ``contact_reduction.py`` is used for mesh-plane
+  and mesh-convex where all contacts for a pair fit in one block
+
+**Contact Reduction Strategy:**
+
+The same three-strategy approach as ``ContactReductionFunctions``:
+
+1. **Spatial Extreme Slots** (6 per normal bin = 120 total per pair)
+   - Builds support polygon boundary for stable stacking
+   - Only contacts with depth < beta participate
+
+2. **Per-Bin Max-Depth Slots** (1 per normal bin = 20 total per pair)
+   - Tracks deepest contact per normal direction
+   - Critical for gear-like contacts with varied normal orientations
+   - Participates unconditionally (not gated by beta)
+
+3. **Voxel-Based Depth Slots** (100 total per pair)
+   - Tracks deepest contact per mesh-local voxel region
+   - Ensures early detection of contacts at mesh centers
+   - Prevents sudden contact jumps between frames
+
+**Implementation Details:**
+
+- Contacts stored in global buffer (struct of arrays: position_depth, normal, shape_pairs)
+- Hashtable key: (shape_a, shape_b, bin_id) where bin_id is 0-19 for normal bins, 20-34 for voxel groups
+- Each normal bin entry has 7 value slots (6 spatial + 1 max-depth)
+- Voxels are grouped by 7: bin_id = 20 + (voxel_idx // 7), slot = voxel_idx % 7
+- This reduces voxel hashtable entries from 100 to 15 (⌈100/7⌉)
+- Atomic max on packed (score, contact_id) selects winners
+
+See Also:
+    :class:`ContactReductionFunctions` in ``contact_reduction.py`` for the
+    shared-memory variant and detailed algorithm documentation.
 """
 
 from __future__ import annotations
@@ -45,13 +76,72 @@ from .collision_core import (
 )
 from .contact_data import ContactData
 from .contact_reduction import (
+    NUM_NORMAL_BINS,
     NUM_SPATIAL_DIRECTIONS,
+    NUM_VOXEL_DEPTH_SLOTS,
+    compute_voxel_index,
     float_flip,
     get_slot,
     get_spatial_direction_2d,
     project_point_to_plane,
 )
 from .support_function import extract_shape_data
+from .types import GeoType
+
+# Fixed beta threshold for contact reduction - small positive value to avoid flickering
+# from numerical noise while effectively selecting only near-penetrating contacts for
+# the support polygon. Same value as used in ContactReductionFunctions.BETA_THRESHOLD.
+BETA_THRESHOLD = 0.0001  # 0.1mm
+
+# Number of value slots per hashtable entry: 6 spatial directions + 1 max-depth = 7
+VALUES_PER_KEY = NUM_SPATIAL_DIRECTIONS + 1
+
+# Vector type for tracking exported contact IDs (used in export kernels)
+exported_ids_vec_type = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
+
+
+@wp.func
+def is_contact_already_exported(
+    contact_id: int,
+    exported_ids: wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32),
+    num_exported: int,
+) -> bool:
+    """Check if a contact_id is already in the exported list.
+
+    Args:
+        contact_id: The contact ID to check
+        exported_ids: Vector of already exported contact IDs
+        num_exported: Number of valid entries in exported_ids
+
+    Returns:
+        True if contact_id is already in the list, False otherwise
+    """
+    j = int(0)
+    while j < num_exported:
+        if exported_ids[j] == contact_id:
+            return True
+        j = j + 1
+    return False
+
+
+@wp.func
+def compute_effective_radius(shape_type: int, shape_scale: wp.vec4) -> float:
+    """Compute effective radius for a shape based on its type.
+
+    For shapes that can be represented as Minkowski sums with a sphere (sphere, capsule),
+    the effective radius is the sphere radius component. For other shapes, it's 0.
+
+    Args:
+        shape_type: The GeoType of the shape
+        shape_scale: Shape scale data (vec4, xyz are scale components)
+
+    Returns:
+        Effective radius (scale[0] for sphere/capsule, 0 otherwise)
+    """
+    if shape_type == GeoType.SPHERE or shape_type == GeoType.CAPSULE:
+        return shape_scale[0]
+    return 0.0
+
 
 # =============================================================================
 # Reduction slot functions (specific to contact reduction)
@@ -125,35 +215,38 @@ def reduction_insert_slot(
 # Contact key/value packing
 # =============================================================================
 
-# Bit layout for hashtable key (64 bits total):
+# Bit layout for hashtable key (63 bits used, bit 63 kept 0 for signed/unsigned safety):
 # Key is (shape_a, shape_b, bin_id) - NO slot_id (slots are handled via values_per_key)
-# - Bits 0-28:   shape_a (29 bits, up to ~537M shapes)
-# - Bits 29-57:  shape_b (29 bits, up to ~537M shapes)
-# - Bits 58-62:  icosahedron_bin (5 bits, 0-19)
-# - Bit 63:      unused (could be used for flags)
+# - Bits 0-26:   shape_a (27 bits, up to ~134M shapes)
+# - Bits 27-54:  shape_b (28 bits, up to ~268M shapes)
+# - Bits 55-62:  bin_id (8 bits, 0-255, supports normal bins 0-19 + voxel groups 20-34)
+# - Bit 63:      unused (kept 0 for signed/unsigned compatibility)
 # Total: 63 bits used
 
-SHAPE_ID_BITS = wp.constant(wp.uint64(29))
-SHAPE_ID_MASK = wp.constant(wp.uint64((1 << 29) - 1))
-BIN_BITS = wp.constant(wp.uint64(5))
-BIN_MASK = wp.constant(wp.uint64((1 << 5) - 1))
+SHAPE_A_BITS = wp.constant(wp.uint64(27))
+SHAPE_A_MASK = wp.constant(wp.uint64((1 << 27) - 1))
+SHAPE_B_BITS = wp.constant(wp.uint64(28))
+SHAPE_B_MASK = wp.constant(wp.uint64((1 << 28) - 1))
+BIN_BITS = wp.constant(wp.uint64(8))
+BIN_MASK = wp.constant(wp.uint64((1 << 8) - 1))
 
 
 @wp.func
 def make_contact_key(shape_a: int, shape_b: int, bin_id: int) -> wp.uint64:
-    """Create a hashtable key from shape pair and normal bin.
+    """Create a hashtable key from shape pair and bin.
 
     Args:
         shape_a: First shape index
         shape_b: Second shape index
-        bin_id: Icosahedron bin index (0-19)
+        bin_id: Bin index (0-19 for normal bins, 20-34 for voxel groups)
 
     Returns:
-        64-bit key for hashtable lookup
+        64-bit key for hashtable lookup (only 63 bits used)
     """
-    key = wp.uint64(shape_a) & SHAPE_ID_MASK
-    key = key | ((wp.uint64(shape_b) & SHAPE_ID_MASK) << SHAPE_ID_BITS)
-    key = key | ((wp.uint64(bin_id) & BIN_MASK) << wp.uint64(58))
+    key = wp.uint64(shape_a) & SHAPE_A_MASK
+    key = key | ((wp.uint64(shape_b) & SHAPE_B_MASK) << SHAPE_A_BITS)
+    # bin_id goes at bits 55-62 (after 27 + 28 = 55 bits for shape IDs)
+    key = key | ((wp.uint64(bin_id) & BIN_MASK) << wp.uint64(55))
     return key
 
 
@@ -182,20 +275,59 @@ def unpack_contact_id(packed: wp.uint64) -> int:
     ...
 
 
-@wp.func_native("""
-return reinterpret_cast<float&>(i);
-""")
-def int_as_float(i: wp.int32) -> float:
-    """Reinterpret int32 bits as float32."""
-    ...
+@wp.func
+def encode_oct(n: wp.vec3) -> wp.vec2:
+    """Encode a unit normal into octahedral 2D representation.
+
+    Projects the unit vector onto an octahedron and flattens to 2D.
+    Near-uniform precision, stable numerics, no trig needed.
+    """
+    l1 = wp.abs(n[0]) + wp.abs(n[1]) + wp.abs(n[2])
+    if l1 < 1.0e-20:
+        return wp.vec2(0.0, 0.0)
+    inv_l1 = 1.0 / l1
+    ox = n[0] * inv_l1
+    oy = n[1] * inv_l1
+    oz = n[2] * inv_l1
+
+    if oz < 0.0:
+        sign_x = 1.0
+        if ox < 0.0:
+            sign_x = -1.0
+        sign_y = 1.0
+        if oy < 0.0:
+            sign_y = -1.0
+        new_x = (1.0 - wp.abs(oy)) * sign_x
+        new_y = (1.0 - wp.abs(ox)) * sign_y
+        ox = new_x
+        oy = new_y
+
+    return wp.vec2(ox, oy)
 
 
-@wp.func_native("""
-return reinterpret_cast<int&>(f);
-""")
-def float_as_int(f: float) -> wp.int32:
-    """Reinterpret float32 bits as int32."""
-    ...
+@wp.func
+def decode_oct(e: wp.vec2) -> wp.vec3:
+    """Decode octahedral 2D representation back to a unit normal.
+
+    Inverse of encode_oct.  Lossless within float precision.
+    """
+    nz = 1.0 - wp.abs(e[0]) - wp.abs(e[1])
+    nx = e[0]
+    ny = e[1]
+
+    if nz < 0.0:
+        sign_x = 1.0
+        if nx < 0.0:
+            sign_x = -1.0
+        sign_y = 1.0
+        if ny < 0.0:
+            sign_y = -1.0
+        new_x = (1.0 - wp.abs(ny)) * sign_x
+        new_y = (1.0 - wp.abs(nx)) * sign_y
+        nx = new_x
+        ny = new_y
+
+    return wp.normalize(wp.vec3(nx, ny, nz))
 
 
 @wp.struct
@@ -208,15 +340,38 @@ class GlobalContactReducerData:
 
     # Contact buffer arrays
     position_depth: wp.array(dtype=wp.vec4)
-    normal: wp.array(dtype=wp.vec3)
+    normal: wp.array(dtype=wp.vec2)  # Octahedral-encoded unit normal (see encode_oct/decode_oct)
     shape_pairs: wp.array(dtype=wp.vec2i)
     contact_count: wp.array(dtype=wp.int32)
     capacity: int
+
+    # Optional hydroelastic data
+    # contact_area: area of contact surface element (per contact)
+    contact_area: wp.array(dtype=wp.float32)
+
+    # Effective stiffness coefficient k_a*k_b/(k_a+k_b) per hashtable entry
+    # Constant for a given shape pair, stored once per entry instead of per contact
+    entry_k_eff: wp.array(dtype=wp.float32)
+
+    # Aggregate force per hashtable entry (indexed by ht_capacity)
+    # Used for hydroelastic stiffness calculation: c_stiffness = k_eff * |agg_force| / total_depth
+    # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
+    agg_force: wp.array(dtype=wp.vec3)
+
+    # Weighted position sum per hashtable entry (for anchor contact computation)
+    # Accumulates sum(area * depth * position) for penetrating contacts
+    # Divide by weight_sum to get center of pressure (anchor position)
+    weighted_pos_sum: wp.array(dtype=wp.vec3)
+
+    # Weight sum per hashtable entry (for anchor contact normalization)
+    # Accumulates sum(area * depth) for penetrating contacts
+    weight_sum: wp.array(dtype=wp.float32)
 
     # Hashtable arrays
     ht_keys: wp.array(dtype=wp.uint64)
     ht_values: wp.array(dtype=wp.uint64)
     ht_active_slots: wp.array(dtype=wp.int32)
+    ht_insert_failures: wp.array(dtype=wp.int32)
     ht_capacity: int
     ht_values_per_key: int
 
@@ -227,14 +382,19 @@ def _clear_active_kernel(
     ht_keys: wp.array(dtype=wp.uint64),
     ht_values: wp.array(dtype=wp.uint64),
     ht_active_slots: wp.array(dtype=wp.int32),
+    # Hydroelastic per-entry arrays
+    agg_force: wp.array(dtype=wp.vec3),
+    weighted_pos_sum: wp.array(dtype=wp.vec3),
+    weight_sum: wp.array(dtype=wp.float32),
+    entry_k_eff: wp.array(dtype=wp.float32),
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
 ):
-    """Kernel to clear active hashtable entries (keys and values).
+    """Kernel to clear active hashtable entries (keys, values, and hydroelastic aggregates).
 
     Uses grid-stride loop for efficient thread utilization.
-    Each thread handles one value slot, with key clearing done once per entry.
+    Each thread handles one value slot, with key and aggregate clearing done once per entry.
 
     Memory layout for values is slot-major (SoA):
     [slot0_entry0, slot0_entry1, ..., slot0_entryN, slot1_entry0, ...]
@@ -255,9 +415,15 @@ def _clear_active_kernel(
         local_idx = i % values_per_key
         entry_idx = ht_active_slots[active_idx]
 
-        # Clear the key only once per entry (when processing slot 0)
+        # Clear keys and hydroelastic aggregates only once per entry (when processing slot 0)
         if local_idx == 0:
             ht_keys[entry_idx] = HASHTABLE_EMPTY_KEY
+            # Clear hydroelastic aggregates if arrays are not empty
+            if agg_force.shape[0] > 0:
+                agg_force[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
+                weighted_pos_sum[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
+                weight_sum[entry_idx] = 0.0
+                entry_k_eff[entry_idx] = 0.0
 
         # Clear this value slot (slot-major layout)
         value_idx = local_idx * ht_capacity + entry_idx
@@ -269,34 +435,57 @@ def _clear_active_kernel(
 def _zero_count_and_contacts_kernel(
     ht_active_slots: wp.array(dtype=wp.int32),
     contact_count: wp.array(dtype=wp.int32),
+    ht_insert_failures: wp.array(dtype=wp.int32),
     ht_capacity: int,
 ):
     """Zero the active slots count and contact count."""
     ht_active_slots[ht_capacity] = 0
     contact_count[0] = 0
+    ht_insert_failures[0] = 0
 
 
 class GlobalContactReducer:
     """Global contact reduction using hashtable-based tracking.
 
     This class manages:
+
     1. A global contact buffer storing contact data (struct of arrays)
     2. A hashtable tracking the best contact per (shape_pair, bin, slot)
 
-    The hashtable key is (shape_a, shape_b, bin_id). Each key has multiple
-    values (one per slot = direction x beta + deepest). This allows one thread
-    to process all slots for a bin and deduplicate locally.
+    **Hashtable Structure:**
 
-    Contact data is packed for efficient memory access:
+    - Key: ``(shape_a, shape_b, bin_id)`` packed into 64 bits
+    - bin_id 0-19: Normal bins (icosahedron faces)
+    - bin_id 20-34: Voxel groups (100 voxels grouped by 7)
+
+    **Slot Layout per Normal Bin Entry (7 slots):**
+
+    - Slots 0-5: Spatial direction extremes (contacts with depth < beta)
+    - Slot 6: Maximum depth contact for the bin (unconditional)
+
+    **Slot Layout per Voxel Group Entry (7 slots):**
+
+    - Slots 0-6: Maximum depth contacts for voxels in this group
+    - voxel_idx maps to: bin_id = 20 + (voxel_idx // 7), slot = voxel_idx % 7
+    - This groups 100 voxels into 15 hashtable entries (⌈100/7⌉)
+
+    **Contact Data Storage:**
+
+    Packed for efficient memory access:
+
     - position_depth: vec4(position.x, position.y, position.z, depth)
-    - normal: vec3(normal.x, normal.y, normal.z)
+    - normal: vec2(octahedral-encoded unit normal)
+    - shape_pairs: vec2i(shape_a, shape_b)
+    - contact_area: float (optional, per contact, for hydroelastic contacts)
 
     Attributes:
         capacity: Maximum number of contacts that can be stored
-        values_per_key: Number of value slots per hashtable entry (13 for 2 betas)
+        values_per_key: Number of value slots per hashtable entry (7)
         position_depth: vec4 array storing position.xyz and depth
-        normal: vec3 array storing contact normal
+        normal: vec2 array storing octahedral-encoded contact normal
         shape_pairs: vec2i array storing (shape_a, shape_b) per contact
+        contact_area: float array storing contact area per contact (for hydroelastic)
+        entry_k_eff: float array storing effective stiffness per hashtable entry (for hydroelastic)
         contact_count: Atomic counter for allocated contacts
         hashtable: HashTable for tracking best contacts (keys only)
         ht_values: Values array for hashtable (managed here, not by HashTable)
@@ -306,58 +495,82 @@ class GlobalContactReducer:
         self,
         capacity: int,
         device: str | None = None,
-        num_betas: int = 2,
+        store_hydroelastic_data: bool = False,
     ):
         """Initialize the global contact reducer.
 
         Args:
             capacity: Maximum number of contacts to store
             device: Warp device (e.g., "cuda:0", "cpu")
-            num_betas: Number of depth thresholds for contact reduction.
-                       Total slots per bin = 6 directions * num_betas + 1 deepest.
-                       Default 2 gives 13 slots per bin.
+            store_hydroelastic_data: If True, allocate arrays for contact_area and entry_k_eff
         """
         self.capacity = capacity
         self.device = device
-        self.num_betas = num_betas
+        self.store_hydroelastic_data = store_hydroelastic_data
 
-        # Values per key: 6 directions x num_betas + 1 deepest
-        self.values_per_key = NUM_SPATIAL_DIRECTIONS * num_betas + 1
+        # Values per key: 6 directions + 1 deepest = 7
+        self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
 
         # Contact buffer (struct of arrays)
         self.position_depth = wp.zeros(capacity, dtype=wp.vec4, device=device)
-        self.normal = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        self.normal = wp.zeros(capacity, dtype=wp.vec2, device=device)  # Octahedral-encoded normals
         self.shape_pairs = wp.zeros(capacity, dtype=wp.vec2i, device=device)
+
+        # Optional hydroelastic data arrays
+        if store_hydroelastic_data:
+            self.contact_area = wp.zeros(capacity, dtype=wp.float32, device=device)
+        else:
+            self.contact_area = wp.zeros(0, dtype=wp.float32, device=device)
 
         # Atomic counter for contact allocation
         self.contact_count = wp.zeros(1, dtype=wp.int32, device=device)
+        # Count failed hashtable inserts (e.g., table full)
+        self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
-        # Hashtable: sized for worst case where each contact is a unique (shape_pair, bin)
-        # Each contact goes into exactly ONE normal bin, so max unique keys = num_contacts
-        # Use 2x for load factor to reduce hash collisions
-        hashtable_size = capacity * 2
+        # Hashtable sizing: estimate unique (shape_pair, bin) keys needed
+        # - 35 bins per shape pair (20 normal + 15 voxel groups)
+        # - Dense hydroelastic contacts: many contacts share the same bin
+        # - Assume ~8 contacts per unique key on average (conservative for dense contacts)
+        # - Provides 2x load factor headroom within the /4 estimate
+        # - If table fills, contacts gracefully skip reduction (still in buffer)
+        hashtable_size = max(capacity // 4, 1024)  # minimum 1024 for small scenes
         self.hashtable = HashTable(hashtable_size, device=device)
 
         # Values array for hashtable - managed here, not by HashTable
         # This is contact-reduction-specific (slot-major layout with values_per_key slots)
         self.ht_values = wp.zeros(self.hashtable.capacity * self.values_per_key, dtype=wp.uint64, device=device)
 
+        # Aggregate force per hashtable entry (for hydroelastic stiffness calculation)
+        # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
+        if store_hydroelastic_data:
+            self.agg_force = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
+            self.weighted_pos_sum = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
+            self.weight_sum = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+            # k_eff per entry (constant per shape pair, set once on first insert)
+            self.entry_k_eff = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+        else:
+            self.agg_force = wp.zeros(0, dtype=wp.vec3, device=device)
+            self.weighted_pos_sum = wp.zeros(0, dtype=wp.vec3, device=device)
+            self.weight_sum = wp.zeros(0, dtype=wp.float32, device=device)
+            self.entry_k_eff = wp.zeros(0, dtype=wp.float32, device=device)
+
     def clear(self):
         """Clear all contacts and reset the reducer (full clear)."""
         self.contact_count.zero_()
+        self.ht_insert_failures.zero_()
         self.hashtable.clear()
         self.ht_values.zero_()
 
     def clear_active(self):
         """Clear only the active entries (efficient for sparse usage).
 
-        Uses a combined kernel that clears both hashtable keys and values,
+        Uses a combined kernel that clears both hashtable keys, values, and aggregate force,
         followed by a small kernel to zero the counters.
         """
         # Use fixed thread count for efficient GPU utilization
         num_threads = min(1024, self.hashtable.capacity)
 
-        # Single kernel clears both keys and values for active entries
+        # Single kernel clears keys, values, and hydroelastic aggregates for active entries
         wp.launch(
             _clear_active_kernel,
             dim=num_threads,
@@ -365,6 +578,10 @@ class GlobalContactReducer:
                 self.hashtable.keys,
                 self.ht_values,
                 self.hashtable.active_slots,
+                self.agg_force,
+                self.weighted_pos_sum,
+                self.weight_sum,
+                self.entry_k_eff,
                 self.hashtable.capacity,
                 self.values_per_key,
                 num_threads,
@@ -379,6 +596,7 @@ class GlobalContactReducer:
             inputs=[
                 self.hashtable.active_slots,
                 self.contact_count,
+                self.ht_insert_failures,
                 self.hashtable.capacity,
             ],
             device=self.device,
@@ -396,9 +614,15 @@ class GlobalContactReducer:
         data.shape_pairs = self.shape_pairs
         data.contact_count = self.contact_count
         data.capacity = self.capacity
+        data.contact_area = self.contact_area
+        data.entry_k_eff = self.entry_k_eff
+        data.agg_force = self.agg_force
+        data.weighted_pos_sum = self.weighted_pos_sum
+        data.weight_sum = self.weight_sum
         data.ht_keys = self.hashtable.keys
         data.ht_values = self.ht_values
         data.ht_active_slots = self.hashtable.active_slots
+        data.ht_insert_failures = self.ht_insert_failures
         data.ht_capacity = self.hashtable.capacity
         data.ht_values_per_key = self.values_per_key
         return data
@@ -431,9 +655,9 @@ def export_contact_to_buffer(
     if contact_id >= reducer_data.capacity:
         return -1
 
-    # Store contact data (packed into vec4)
+    # Store contact data (packed into vec4, normal octahedral-encoded into vec2)
     reducer_data.position_depth[contact_id] = wp.vec4(position[0], position[1], position[2], depth)
-    reducer_data.normal[contact_id] = normal
+    reducer_data.normal[contact_id] = encode_oct(normal)
     reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
 
     return contact_id
@@ -443,75 +667,108 @@ def export_contact_to_buffer(
 def reduce_contact_in_hashtable(
     contact_id: int,
     reducer_data: GlobalContactReducerData,
-    beta0: float,
-    beta1: float,
+    beta: float,
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
+    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
+    shape_voxel_resolution: wp.array(dtype=wp.vec3i),
 ):
     """Register a buffered contact in the reduction hashtable.
+
+    Uses single beta threshold for contact reduction with two strategies:
+
+    1. **Normal-binned slots** (20 bins x 7 slots = 140 slot values):
+       - 6 spatial direction slots for contacts with depth < beta
+       - 1 max-depth slot per normal bin (always participates)
+
+    2. **Voxel-based depth slots** (100 voxels grouped into 15 entries x 7 slots):
+       - Voxels are grouped by 7: bin_id = 20 + (voxel_idx // 7), slot = voxel_idx % 7
+       - Each slot tracks the deepest contact in that voxel region
+       - Provides spatial coverage independent of contact normal
 
     Args:
         contact_id: Index of contact in buffer
         reducer_data: Reducer data
-        beta0: First depth threshold
-        beta1: Second depth threshold
+        beta: Depth threshold (contacts with depth < beta participate in spatial competition)
+        shape_transform: Per-shape world transforms (for transforming position to local space)
+        shape_collision_aabb_lower: Per-shape local AABB lower bounds
+        shape_collision_aabb_upper: Per-shape local AABB upper bounds
+        shape_voxel_resolution: Per-shape voxel grid resolution
     """
-    # Read contact data from buffer
+    # Read contact data from buffer (normal is octahedral-encoded)
     pd = reducer_data.position_depth[contact_id]
-    normal = reducer_data.normal[contact_id]
+    normal = decode_oct(reducer_data.normal[contact_id])
     pair = reducer_data.shape_pairs[contact_id]
 
     position = wp.vec3(pd[0], pd[1], pd[2])
     depth = pd[3]
-    shape_a = pair[0]
-    shape_b = pair[1]
+    shape_a = pair[0]  # Mesh shape
+    shape_b = pair[1]  # Convex shape
 
+    aabb_lower = shape_collision_aabb_lower[shape_a]
+    aabb_upper = shape_collision_aabb_upper[shape_a]
+
+    ht_capacity = reducer_data.ht_capacity
+
+    # === Part 1: Normal-binned reduction (spatial extremes + max-depth per bin) ===
     # Get icosahedron bin from normal
     bin_id = get_slot(normal)
 
     # Project position to 2D plane of the icosahedron face
     pos_2d = project_point_to_plane(bin_id, position)
 
-    # Key is (shape_a, shape_b, bin_id) - NO slot in key
+    # Key is (shape_a, shape_b, bin_id)
     key = make_contact_key(shape_a, shape_b, bin_id)
 
     # Find or create the hashtable entry ONCE, then write directly to slots
     entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
-    if entry_idx < 0:
-        return
+    if entry_idx >= 0:
+        # Register in hashtable for all 6 spatial directions (single beta)
+        # Slot layout: indices 0-5 for spatial directions, index 6 for max-depth
+        use_beta = depth < beta * wp.length(aabb_upper - aabb_lower)
+        for dir_i in range(NUM_SPATIAL_DIRECTIONS):
+            if use_beta:
+                dir_2d = get_spatial_direction_2d(dir_i)
+                score = wp.dot(pos_2d, dir_2d)
+                value = make_contact_value(score, contact_id)
+                slot_id = dir_i
+                reduction_update_slot(entry_idx, slot_id, value, reducer_data.ht_values, ht_capacity)
 
-    ht_capacity = reducer_data.ht_capacity
+        # Also register for max-depth slot (last slot = 6)
+        # Use -depth as score so atomic_max selects the deepest (most negative depth)
+        max_depth_slot_id = NUM_SPATIAL_DIRECTIONS  # = 6
+        max_depth_value = make_contact_value(-depth, contact_id)
+        reduction_update_slot(entry_idx, max_depth_slot_id, max_depth_value, reducer_data.ht_values, ht_capacity)
 
-    use_beta0 = depth < beta0
-    use_beta1 = depth < beta1
+    # === Part 2: Voxel-based reduction (deepest contact per voxel) ===
+    # Transform contact position from world space to shape_a's local space
+    X_shape_ws = shape_transform[shape_a]
+    X_ws_shape = wp.transform_inverse(X_shape_ws)
+    position_local = wp.transform_point(X_ws_shape, position)
 
-    if beta0 < beta1 and use_beta0:
-        use_beta1 = False
+    # Compute voxel index using shape_a's local AABB
+    voxel_res = shape_voxel_resolution[shape_a]
+    voxel_idx = compute_voxel_index(position_local, aabb_lower, aabb_upper, voxel_res)
 
-    if beta0 > beta1 and use_beta1:
-        use_beta0 = False
+    # Clamp voxel index to valid range
+    voxel_idx = wp.clamp(voxel_idx, 0, wp.static(NUM_VOXEL_DEPTH_SLOTS - 1))
 
-    # Register in hashtable for all 6 spatial directions x 2 betas
-    # Using direct slot access (no repeated hash lookups)
-    # Memory layout is slot-major for coalesced access
-    for dir_i in range(NUM_SPATIAL_DIRECTIONS):
-        dir_2d = get_spatial_direction_2d(dir_i)
-        score = wp.dot(pos_2d, dir_2d)
-        value = make_contact_value(score, contact_id)
+    # Group voxels by 7 to maximize slot utilization (matches values_per_key)
+    # 100 voxels -> 15 hashtable entries (ceil(100/7) = 15)
+    # bin_id = NUM_NORMAL_BINS + voxel_group (20-34)
+    # slot = voxel_local (0-6)
+    voxels_per_group = wp.static(NUM_SPATIAL_DIRECTIONS + 1)  # = 7 (same as values_per_key)
+    voxel_group = voxel_idx // voxels_per_group
+    voxel_local_slot = voxel_idx % voxels_per_group
 
-        # Beta 0 slot (even indices: 0, 2, 4, 6, 8, 10)
-        if use_beta0:
-            slot_id = dir_i * 2
-            reduction_update_slot(entry_idx, slot_id, value, reducer_data.ht_values, ht_capacity)
+    voxel_bin_id = NUM_NORMAL_BINS + voxel_group
+    voxel_key = make_contact_key(shape_a, shape_b, voxel_bin_id)
 
-        # Beta 1 slot (odd indices: 1, 3, 5, 7, 9, 11)
-        if use_beta1:
-            slot_id = dir_i * 2 + 1
-            reduction_update_slot(entry_idx, slot_id, value, reducer_data.ht_values, ht_capacity)
-
-    # Also register for max-depth slot (last slot = 12)
-    # Use -depth as score so atomic_max selects the deepest (most negative depth)
-    max_depth_slot_id = NUM_SPATIAL_DIRECTIONS * 2  # = 12
-    max_depth_value = make_contact_value(-depth, contact_id)
-    reduction_update_slot(entry_idx, max_depth_slot_id, max_depth_value, reducer_data.ht_values, ht_capacity)
+    voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
+    if voxel_entry_idx >= 0:
+        # Use -depth so atomic_max selects most penetrating (most negative depth)
+        voxel_value = make_contact_value(-depth, contact_id)
+        reduction_update_slot(voxel_entry_idx, voxel_local_slot, voxel_value, reducer_data.ht_values, ht_capacity)
 
 
 @wp.func
@@ -522,71 +779,93 @@ def export_and_reduce_contact(
     normal: wp.vec3,
     depth: float,
     reducer_data: GlobalContactReducerData,
-    beta0: float,
-    beta1: float,
+    beta: float,
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
+    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
+    shape_voxel_resolution: wp.array(dtype=wp.vec3i),
 ) -> int:
-    """Legacy wrapper for backward compatibility."""
+    """Export contact to buffer and register in hashtable for reduction."""
     contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, reducer_data)
 
     if contact_id >= 0:
-        reduce_contact_in_hashtable(contact_id, reducer_data, beta0, beta1)
+        reduce_contact_in_hashtable(
+            contact_id,
+            reducer_data,
+            beta,
+            shape_transform,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
+            shape_voxel_resolution,
+        )
 
     return contact_id
 
 
-def create_reduce_buffered_contacts_kernel(beta0: float, beta1: float):
-    """Create a kernel that registers buffered contacts to the hashtable.
+@wp.kernel(enable_backward=False)
+def reduce_buffered_contacts_kernel(
+    reducer_data: GlobalContactReducerData,
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
+    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
+    shape_voxel_resolution: wp.array(dtype=wp.vec3i),
+    total_num_threads: int,
+):
+    """Register buffered contacts in the hashtable for reduction.
 
-    This splits the contact reduction process into two steps:
-    1. Writing contacts to buffer (done by contact generation kernel)
-    2. Registering contacts to hashtable (done by this kernel)
-
-    This reduces register pressure on the contact generation kernel.
+    Uses the fixed BETA_THRESHOLD (0.1mm) for spatial competition.
+    Contacts with depth < beta participate in spatial extreme competition.
     """
+    tid = wp.tid()
 
-    @wp.kernel(enable_backward=False)
-    def reduce_buffered_contacts_kernel(
-        reducer_data: GlobalContactReducerData,
-        total_num_threads: int,
-    ):
-        """Iterate over buffered contacts and register them in the hashtable."""
-        tid = wp.tid()
+    # Get total number of contacts written
+    num_contacts = reducer_data.contact_count[0]
 
-        # Get total number of contacts written
-        num_contacts = reducer_data.contact_count[0]
+    # Early exit if no contacts (fast path for empty work)
+    if num_contacts == 0:
+        return
 
-        # Early exit if no contacts (fast path for empty work)
-        if num_contacts == 0:
-            return
+    # Cap at capacity
+    num_contacts = wp.min(num_contacts, reducer_data.capacity)
 
-        # Cap at capacity
-        num_contacts = wp.min(num_contacts, reducer_data.capacity)
+    # Grid stride loop over contacts
+    for i in range(tid, num_contacts, total_num_threads):
+        reduce_contact_in_hashtable(
+            i,
+            reducer_data,
+            wp.static(BETA_THRESHOLD),
+            shape_transform,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
+            shape_voxel_resolution,
+        )
 
-        # Grid stride loop over contacts
-        for i in range(tid, num_contacts, total_num_threads):
-            reduce_contact_in_hashtable(i, reducer_data, beta0, beta1)
 
-    return reduce_buffered_contacts_kernel
+# =============================================================================
+# Helper functions for contact unpacking and writing
+# =============================================================================
 
 
 @wp.func
 def unpack_contact(
     contact_id: int,
     position_depth: wp.array(dtype=wp.vec4),
-    normal: wp.array(dtype=wp.vec3),
+    normal: wp.array(dtype=wp.vec2),
 ):
     """Unpack contact data from the buffer.
+
+    Normal is stored as octahedral-encoded vec2 and decoded back to vec3.
 
     Args:
         contact_id: Index into the contact buffer
         position_depth: Contact buffer for position.xyz + depth
-        normal: Contact buffer for normal
+        normal: Contact buffer for octahedral-encoded normal
 
     Returns:
         Tuple of (position, normal, depth)
     """
     pd = position_depth[contact_id]
-    n = normal[contact_id]
+    n = decode_oct(normal[contact_id])
 
     position = wp.vec3(pd[0], pd[1], pd[2])
     depth = pd[3]
@@ -599,8 +878,6 @@ def write_contact_to_reducer(
     contact_data: Any,  # ContactData struct
     reducer_data: GlobalContactReducerData,
     output_index: int,  # Unused, kept for API compatibility with write_contact_simple
-    beta0: float,
-    beta1: float,
 ):
     """Writer function that stores contacts in GlobalContactReducer for reduction.
 
@@ -608,11 +885,13 @@ def write_contact_to_reducer(
     so it can be used with create_compute_gjk_mpr_contacts and other contact
     generation functions.
 
+    Note: Beta threshold is applied later in create_reduce_buffered_contacts_kernel,
+    not at write time. This reduces register pressure on contact generation kernels.
+
     Args:
         contact_data: ContactData struct from contact computation
         reducer_data: GlobalContactReducerData struct with all reducer arrays
-        beta0: First depth threshold (typically large, e.g., 1000000.0)
-        beta1: Second depth threshold (typically small, e.g., 0.0001)
+        output_index: Unused, kept for API compatibility
     """
     # Extract contact info from ContactData
     position = contact_data.contact_point_center
@@ -633,28 +912,29 @@ def write_contact_to_reducer(
     )
 
 
-def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int = 13):
+def create_export_reduced_contacts_kernel(writer_func: Any):
     """Create a kernel that exports reduced contacts using a custom writer function.
 
     The kernel processes one hashtable ENTRY per thread (not one value slot).
-    Each entry has values_per_key value slots. The thread reads all slots,
-    collects unique contact IDs, and exports each unique contact once.
+    Each entry has VALUES_PER_KEY value slots (7: 6 spatial + 1 max-depth).
+    The thread reads all slots, collects unique contact IDs, and exports each
+    unique contact once.
 
     This naturally deduplicates: one thread handles one (shape_pair, bin) entry
     and can locally track which contact IDs it has already exported.
 
     Args:
-        writer_func: A warp function with signature (ContactData, writer_data) -> None
-                     This follows the same pattern as narrow_phase.py's write_contact_simple.
-        values_per_key: Number of value slots per hashtable entry (default 13 for 2 betas)
+        writer_func: A warp function with signature (ContactData, writer_data, int) -> None.
+            The third argument is an output_index (-1 indicates the writer should allocate
+            a new slot). This follows the same pattern as narrow_phase.py's write_contact_simple.
 
     Returns:
         A warp kernel that can be launched to export reduced contacts.
     """
     # Define vector type for tracking exported contact IDs
-    exported_ids_vec = wp.types.vector(length=values_per_key, dtype=wp.int32)
+    exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def export_reduced_contacts_kernel(
         # Hashtable arrays
         ht_keys: wp.array(dtype=wp.uint64),
@@ -662,12 +942,13 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
         ht_active_slots: wp.array(dtype=wp.int32),
         # Contact buffer arrays
         position_depth: wp.array(dtype=wp.vec4),
-        normal: wp.array(dtype=wp.vec3),
+        normal: wp.array(dtype=wp.vec2),  # Octahedral-encoded
         shape_pairs: wp.array(dtype=wp.vec2i),
-        # Shape data for extracting thickness
+        # Shape data for extracting margin and effective radius
+        shape_types: wp.array(dtype=int),
         shape_data: wp.array(dtype=wp.vec4),
-        # Per-shape contact margins
-        shape_contact_margin: wp.array(dtype=float),
+        # Per-shape contact gaps
+        shape_gap: wp.array(dtype=float),
         # Writer data (custom struct)
         writer_data: Any,
         # Grid stride parameters
@@ -699,7 +980,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
             num_exported = int(0)
 
             # Read all value slots for this entry (slot-major layout)
-            for slot in range(values_per_key):
+            for slot in range(wp.static(VALUES_PER_KEY)):
                 value = ht_values[slot * ht_capacity + entry_idx]
 
                 # Skip empty slots (value = 0)
@@ -709,17 +990,8 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
                 # Extract contact ID from low 32 bits
                 contact_id = unpack_contact_id(value)
 
-                # Skip if already exported - use while loop with early exit
-                # This is O(num_exported) instead of O(values_per_key) per slot
-                # Note: Use explicit type declarations for variables mutated in while loops (Warp requirement)
-                already_exported = bool(False)
-                j = int(0)
-                while j < num_exported:
-                    if exported_ids[j] == contact_id:
-                        already_exported = True
-                        break  # Early exit when duplicate found
-                    j = j + 1
-                if already_exported:
+                # Skip if already exported
+                if is_contact_already_exported(contact_id, exported_ids, num_exported):
                     continue
 
                 # Record this contact ID as exported
@@ -734,27 +1006,31 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
                 shape_a = pair[0]
                 shape_b = pair[1]
 
-                # Extract thickness from shape_data (stored in w component)
-                thickness_a = shape_data[shape_a][3]
-                thickness_b = shape_data[shape_b][3]
+                # Extract margin offsets from shape_data (stored in w component)
+                margin_offset_a = shape_data[shape_a][3]
+                margin_offset_b = shape_data[shape_b][3]
 
-                # Use per-shape contact margin (max of both shapes, matching other kernels)
-                margin_a = shape_contact_margin[shape_a]
-                margin_b = shape_contact_margin[shape_b]
-                margin = wp.max(margin_a, margin_b)
+                # Compute effective radius for spheres, capsules, and cones
+                radius_eff_a = compute_effective_radius(shape_types[shape_a], shape_data[shape_a])
+                radius_eff_b = compute_effective_radius(shape_types[shape_b], shape_data[shape_b])
+
+                # Use additive per-shape contact gap (matching broad/narrow phase)
+                gap_a = shape_gap[shape_a]
+                gap_b = shape_gap[shape_b]
+                gap_sum = gap_a + gap_b
 
                 # Create ContactData struct
                 contact_data = ContactData()
                 contact_data.contact_point_center = position
                 contact_data.contact_normal_a_to_b = contact_normal
                 contact_data.contact_distance = depth
-                contact_data.radius_eff_a = 0.0
-                contact_data.radius_eff_b = 0.0
-                contact_data.thickness_a = thickness_a
-                contact_data.thickness_b = thickness_b
+                contact_data.radius_eff_a = radius_eff_a
+                contact_data.radius_eff_b = radius_eff_b
+                contact_data.margin_a = margin_offset_a
+                contact_data.margin_b = margin_offset_b
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
-                contact_data.margin = margin
+                contact_data.gap_sum = gap_sum
 
                 # Call the writer function
                 writer_func(contact_data, writer_data, -1)
@@ -762,108 +1038,86 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
     return export_reduced_contacts_kernel
 
 
-def create_mesh_triangle_contacts_to_reducer_kernel(beta0: float, beta1: float):
-    """Create a kernel that processes mesh-triangle contacts and stores them in GlobalContactReducer.
+@wp.kernel(enable_backward=False, module="unique")
+def mesh_triangle_contacts_to_reducer_kernel(
+    shape_types: wp.array(dtype=int),
+    shape_data: wp.array(dtype=wp.vec4),
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_source: wp.array(dtype=wp.uint64),
+    shape_gap: wp.array(dtype=float),
+    triangle_pairs: wp.array(dtype=wp.vec3i),
+    triangle_pairs_count: wp.array(dtype=int),
+    reducer_data: GlobalContactReducerData,
+    total_num_threads: int,
+):
+    """Process mesh-triangle contacts and store them in GlobalContactReducer.
 
     This kernel processes triangle pairs (mesh-shape, convex-shape, triangle_index) and
     computes contacts using GJK/MPR, storing results in the GlobalContactReducer for
     subsequent reduction and export.
 
-    Args:
-        beta0: First depth threshold for contact reduction
-        beta1: Second depth threshold for contact reduction
-
-    Returns:
-        A warp kernel for processing mesh-triangle contacts with global reduction.
+    Uses grid stride loop over triangle pairs.
     """
+    tid = wp.tid()
 
-    # Create a writer function that captures beta0 and beta1
-    @wp.func
-    def write_to_reducer_with_betas(
-        contact_data: Any,  # ContactData struct
-        reducer_data: GlobalContactReducerData,
-        output_index: int,  # Unused, kept for API compatibility with write_contact_simple
-    ):
-        write_contact_to_reducer(contact_data, reducer_data, output_index, beta0, beta1)
+    num_triangle_pairs = triangle_pairs_count[0]
 
-    @wp.kernel(enable_backward=False)
-    def mesh_triangle_contacts_to_reducer_kernel(
-        shape_types: wp.array(dtype=int),
-        shape_data: wp.array(dtype=wp.vec4),
-        shape_transform: wp.array(dtype=wp.transform),
-        shape_source: wp.array(dtype=wp.uint64),
-        shape_contact_margin: wp.array(dtype=float),
-        triangle_pairs: wp.array(dtype=wp.vec3i),
-        triangle_pairs_count: wp.array(dtype=int),
-        reducer_data: GlobalContactReducerData,
-        total_num_threads: int,
-    ):
-        """Process triangle pairs and store contacts in GlobalContactReducer.
+    for i in range(tid, num_triangle_pairs, total_num_threads):
+        if i >= triangle_pairs.shape[0]:
+            break
 
-        Uses grid stride loop over triangle pairs.
-        """
-        tid = wp.tid()
+        triple = triangle_pairs[i]
+        shape_a = triple[0]  # Mesh shape
+        shape_b = triple[1]  # Convex shape
+        tri_idx = triple[2]
 
-        num_triangle_pairs = triangle_pairs_count[0]
+        # Get mesh data for shape A
+        mesh_id_a = shape_source[shape_a]
+        if mesh_id_a == wp.uint64(0):
+            continue
 
-        for i in range(tid, num_triangle_pairs, total_num_threads):
-            if i >= triangle_pairs.shape[0]:
-                break
+        scale_data_a = shape_data[shape_a]
+        mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
 
-            triple = triangle_pairs[i]
-            shape_a = triple[0]  # Mesh shape
-            shape_b = triple[1]  # Convex shape
-            tri_idx = triple[2]
+        # Get mesh world transform
+        X_mesh_ws_a = shape_transform[shape_a]
 
-            # Get mesh data for shape A
-            mesh_id_a = shape_source[shape_a]
-            if mesh_id_a == wp.uint64(0):
-                continue
+        # Extract triangle shape data from mesh
+        shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_mesh_ws_a, tri_idx)
 
-            scale_data_a = shape_data[shape_a]
-            mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
+        # Extract shape B data
+        pos_b, quat_b, shape_data_b, _scale_b, margin_offset_b = extract_shape_data(
+            shape_b,
+            shape_transform,
+            shape_types,
+            shape_data,
+            shape_source,
+        )
 
-            # Get mesh world transform
-            X_mesh_ws_a = shape_transform[shape_a]
+        # Set pos_a to be vertex A (origin of triangle in local frame)
+        pos_a = v0_world
+        quat_a = wp.quat_identity()  # Triangle has no orientation
 
-            # Extract triangle shape data from mesh
-            shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_mesh_ws_a, tri_idx)
+        # Extract margin offset for shape A (signed distance padding)
+        margin_offset_a = shape_data[shape_a][3]
 
-            # Extract shape B data
-            pos_b, quat_b, shape_data_b, _scale_b, thickness_b = extract_shape_data(
-                shape_b,
-                shape_transform,
-                shape_types,
-                shape_data,
-                shape_source,
-            )
+        # Use additive per-shape contact gap for detection threshold
+        gap_a = shape_gap[shape_a]
+        gap_b = shape_gap[shape_b]
+        gap_sum = gap_a + gap_b
 
-            # Set pos_a to be vertex A (origin of triangle in local frame)
-            pos_a = v0_world
-            quat_a = wp.quat_identity()  # Triangle has no orientation
-
-            # Extract thickness for shape A
-            thickness_a = shape_data[shape_a][3]
-
-            # Use per-shape contact margin
-            margin_a = shape_contact_margin[shape_a]
-            margin_b = shape_contact_margin[shape_b]
-            margin = wp.max(margin_a, margin_b)
-
-            # Compute and write contacts using GJK/MPR
-            wp.static(create_compute_gjk_mpr_contacts(write_to_reducer_with_betas))(
-                shape_data_a,
-                shape_data_b,
-                quat_a,
-                quat_b,
-                pos_a,
-                pos_b,
-                margin,
-                shape_a,
-                shape_b,
-                thickness_a,
-                thickness_b,
-                reducer_data,
-            )
-
-    return mesh_triangle_contacts_to_reducer_kernel
+        # Compute and write contacts using GJK/MPR
+        wp.static(create_compute_gjk_mpr_contacts(write_contact_to_reducer))(
+            shape_data_a,
+            shape_data_b,
+            quat_a,
+            quat_b,
+            pos_a,
+            pos_b,
+            gap_sum,
+            shape_a,
+            shape_b,
+            margin_offset_a,
+            margin_offset_b,
+            reducer_data,
+        )

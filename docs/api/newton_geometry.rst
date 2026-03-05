@@ -1,3 +1,6 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 newton.geometry
 ===============
 
@@ -12,8 +15,8 @@ newton.geometry
    BroadPhaseAllPairs
    BroadPhaseExplicit
    BroadPhaseSAP
-   SDFData
-   SDFHydroelasticConfig
+   HydroelasticSDF
+   NarrowPhase
 
 .. rubric:: Functions
 
@@ -33,11 +36,13 @@ newton.geometry
    collide_sphere_capsule
    collide_sphere_cylinder
    collide_sphere_sphere
-   compute_sdf
-   compute_shape_inertia
-   create_box_mesh
+   compute_inertia_shape
    create_empty_sdf_data
-   generate_terrain_grid
-   heightfield_to_mesh
-   remesh_mesh
+   sdf_box
+   sdf_capsule
+   sdf_cone
+   sdf_cylinder
+   sdf_mesh
+   sdf_plane
+   sdf_sphere
    transform_inertia

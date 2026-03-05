@@ -13,19 +13,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-USD schema resolvers. Currently not used.
-"""
+"""Concrete USD schema resolvers used by :mod:`newton.usd`."""
 
-from typing import ClassVar
+from __future__ import annotations
 
-from ..geometry import MESH_MAXHULLVERT
-from ..usd.schema_resolver import PrimType, SchemaAttribute, SchemaResolver
+import warnings
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, ClassVar
+
+from ..core.types import override
+from ..usd.schema_resolver import PrimType, SchemaResolver
+from . import utils as usd
+
+if TYPE_CHECKING:
+    from pxr import Usd
+
+    from ..sim.builder import ModelBuilder
+
+
+SchemaAttribute = SchemaResolver.SchemaAttribute
+
+
+def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
+    """Compute Newton gap from PhysX: contactOffset - restOffset [m].
+
+    Returns None if either attribute is missing or -inf (PhysX uses -inf for "engine default").
+    Only when both are finite do we compute a concrete gap.
+    """
+    contact_offset = usd.get_attribute(prim, "physxCollision:contactOffset")
+    rest_offset = usd.get_attribute(prim, "physxCollision:restOffset")
+    if contact_offset is None or rest_offset is None:
+        return None
+    inf = float("-inf")
+    if contact_offset == inf or rest_offset == inf:
+        return None
+    return float(contact_offset) - float(rest_offset)
 
 
 class SchemaResolverNewton(SchemaResolver):
-    """
-    Resolver for the Newton USD schema.
+    """Schema resolver for Newton-authored USD attributes.
 
     .. note::
         The Newton USD schema is under development and may change in the future.
@@ -34,13 +60,13 @@ class SchemaResolverNewton(SchemaResolver):
     name: ClassVar[str] = "newton"
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {
         PrimType.SCENE: {
-            "time_step": SchemaAttribute("newton:timeStep", 0.002),
-            "max_solver_iterations": SchemaAttribute("newton:maxSolverIterations", 5),
-            "enable_gravity": SchemaAttribute("newton:enableGravity", True),
-            "rigid_contact_margin": SchemaAttribute("newton:rigidContactMargin", 0.0),
+            "max_solver_iterations": SchemaAttribute("newton:maxSolverIterations", -1),
+            "time_steps_per_second": SchemaAttribute("newton:timeStepsPerSecond", 1000),
+            "gravity_enabled": SchemaAttribute("newton:gravityEnabled", True),
         },
         PrimType.JOINT: {
-            "armature": SchemaAttribute("newton:armature", 1.0e-2),
+            # warning: there is no NewtonJointAPI, none of these are schema attributes
+            "armature": SchemaAttribute("newton:armature", 0.0),
             "friction": SchemaAttribute("newton:friction", 0.0),
             "limit_linear_ke": SchemaAttribute("newton:linear:limitStiffness", 1.0e4),
             "limit_angular_ke": SchemaAttribute("newton:angular:limitStiffness", 1.0e4),
@@ -64,48 +90,26 @@ class SchemaResolverNewton(SchemaResolver):
             "rotZ_velocity": SchemaAttribute("newton:rotZ:velocity", 0.0),
         },
         PrimType.SHAPE: {
-            "mesh_hull_vertex_limit": SchemaAttribute("newton:hullVertexLimit", -1),
-            # Use ShapeConfig.thickness default for contact margin
-            "rigid_contact_margin": SchemaAttribute("newton:rigidContactMargin", 1.0e-5),
+            # Mesh
+            "max_hull_vertices": SchemaAttribute("newton:maxHullVertices", -1),
+            # Collisions: newton margin == newton:contactMargin, newton gap == newton:contactGap
+            "margin": SchemaAttribute("newton:contactMargin", 0.0),
+            "gap": SchemaAttribute("newton:contactGap", float("-inf")),
         },
-        PrimType.BODY: {
-            "rigid_body_linear_damping": SchemaAttribute("newton:damping", 0.0),
+        PrimType.BODY: {},
+        PrimType.ARTICULATION: {
+            "self_collision_enabled": SchemaAttribute("newton:selfCollisionEnabled", True),
         },
         PrimType.MATERIAL: {
-            "priority": SchemaAttribute("newton:priority", 0),
-            "weight": SchemaAttribute("newton:weight", 1.0),
-            "stiffness": SchemaAttribute("newton:stiffness", 1.0e5),
-            "damping": SchemaAttribute("newton:damping", 1000.0),
+            "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
+            "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
         },
-        PrimType.ACTUATOR: {
-            # Mirror MuJoCo actuator defaults when applicable
-            "ctrl_low": SchemaAttribute("newton:ctrlRange:low", 0.0),
-            "ctrl_high": SchemaAttribute("newton:ctrlRange:high", 0.0),
-            "force_low": SchemaAttribute("newton:forceRange:low", 0.0),
-            "force_high": SchemaAttribute("newton:forceRange:high", 0.0),
-            "act_low": SchemaAttribute("newton:actRange:low", 0.0),
-            "act_high": SchemaAttribute("newton:actRange:high", 0.0),
-            "length_low": SchemaAttribute("newton:lengthRange:low", 0.0),
-            "length_high": SchemaAttribute("newton:lengthRange:high", 0.0),
-            "gainPrm": SchemaAttribute("newton:gainPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            "gainType": SchemaAttribute("newton:gainType", "fixed"),
-            "biasPrm": SchemaAttribute("newton:biasPrm", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            "biasType": SchemaAttribute("newton:biasType", "none"),
-            "dynPrm": SchemaAttribute("newton:dynPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            "dynType": SchemaAttribute("newton:dynType", "none"),
-            # The following have no MuJoCo counterpart; keep unspecified defaults
-            "speedTorqueGradient": SchemaAttribute("newton:speedTorqueGradient", None),
-            "torqueSpeedGradient": SchemaAttribute("newton:torqueSpeedGradient", None),
-            "maxVelocity": SchemaAttribute("newton:maxVelocity", None),
-            "gear": SchemaAttribute("newton:gear", [1, 0, 0, 0, 0, 0]),
-        },
+        PrimType.ACTUATOR: {},
     }
 
 
 class SchemaResolverPhysx(SchemaResolver):
-    """
-    Resolver for the PhysX USD schema.
-    """
+    """Schema resolver for PhysX USD attributes."""
 
     name: ClassVar[str] = "physx"
     extra_attr_namespaces: ClassVar[list[str]] = [
@@ -134,12 +138,9 @@ class SchemaResolverPhysx(SchemaResolver):
 
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {
         PrimType.SCENE: {
-            "time_step": SchemaAttribute(
-                "physxScene:timeStepsPerSecond", 60, lambda hz: (1.0 / hz) if (hz and hz > 0) else None
-            ),
             "max_solver_iterations": SchemaAttribute("physxScene:maxVelocityIterationCount", 255),
-            "enable_gravity": SchemaAttribute("physxRigidBody:disableGravity", False, lambda value: not value),
-            "rigid_contact_margin": SchemaAttribute("physxScene:contactOffset", 0.0),
+            "time_steps_per_second": SchemaAttribute("physxScene:timeStepsPerSecond", 60),
+            "gravity_enabled": SchemaAttribute("physxRigidBody:disableGravity", False, lambda value: not value),
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("physxJoint:armature", 0.0),
@@ -172,10 +173,19 @@ class SchemaResolverPhysx(SchemaResolver):
             "rotZ_velocity": SchemaAttribute("state:rotZ:physics:velocity", 0.0),
         },
         PrimType.SHAPE: {
-            # Mesh hull vertex limit
-            "mesh_hull_vertex_limit": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
-            # Collision contact offset
-            "rigid_contact_margin": SchemaAttribute("physxCollision:contactOffset", float("-inf")),
+            # Mesh
+            "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
+            # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset.
+            # PhysX uses -inf to mean "engine default"; treat as unset (None).
+            "margin": SchemaAttribute(
+                "physxCollision:restOffset", 0.0, lambda v: None if v == float("-inf") else float(v)
+            ),
+            "gap": SchemaAttribute(
+                "physxCollision:contactOffset",
+                float("-inf"),
+                usd_value_getter=_physx_gap_from_prim,
+                attribute_names=("physxCollision:contactOffset", "physxCollision:restOffset"),
+            ),
         },
         PrimType.MATERIAL: {
             "stiffness": SchemaAttribute("physxMaterial:compliantContactStiffness", 0.0),
@@ -186,10 +196,13 @@ class SchemaResolverPhysx(SchemaResolver):
             "rigid_body_linear_damping": SchemaAttribute("physxRigidBody:linearDamping", 0.0),
             "rigid_body_angular_damping": SchemaAttribute("physxRigidBody:angularDamping", 0.05),
         },
+        PrimType.ARTICULATION: {
+            "self_collision_enabled": SchemaAttribute("physxArticulation:enabledSelfCollisions", True),
+        },
     }
 
 
-def solref_to_stiffness_damping(solref):
+def solref_to_stiffness_damping(solref: Sequence[float] | None) -> tuple[float | None, float | None]:
     """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness and damping.
 
     Returns a tuple (stiffness, damping).
@@ -202,6 +215,9 @@ def solref_to_stiffness_damping(solref):
         k = -timeconst
         b = -dampratio
     """
+    if solref is None:
+        return None, None
+
     try:
         timeconst = float(solref[0])
         dampratio = float(solref[1])
@@ -222,7 +238,7 @@ def solref_to_stiffness_damping(solref):
     return stiffness, damping
 
 
-def solref_to_stiffness(solref):
+def solref_to_stiffness(solref: Sequence[float] | None) -> float | None:
     """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness.
 
     Standard mode (timeconst > 0): k = 1 / (timeconst^2 * dampratio^2)
@@ -232,7 +248,7 @@ def solref_to_stiffness(solref):
     return stiffness
 
 
-def solref_to_damping(solref):
+def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     """Convert MuJoCo solref (timeconst, dampratio) to internal damping.
 
     Standard mode (both positive): b = 2 / timeconst
@@ -242,19 +258,44 @@ def solref_to_damping(solref):
     return damping
 
 
+def _mjc_margin_from_prim(prim: Usd.Prim) -> float | None:
+    """Compute Newton margin from MuJoCo: margin - gap [m].
+
+    MuJoCo uses ``margin`` as the full contact detection envelope and ``gap``
+    as a sub-threshold that suppresses constraint activation.  Newton stores
+    them separately, so: ``newton_margin = mjc_margin - mjc_gap``.
+
+    Returns None if the MuJoCo margin attribute is not authored.
+    """
+    mjc_margin = usd.get_attribute(prim, "mjc:margin")
+    if mjc_margin is None:
+        return None
+    mjc_gap = usd.get_attribute(prim, "mjc:gap")
+    if mjc_gap is None:
+        mjc_gap = 0.0
+    result = float(mjc_margin) - float(mjc_gap)
+    if result < 0.0:
+        warnings.warn(
+            f"Prim '{prim.GetPath()}': MuJoCo gap ({mjc_gap}) exceeds margin ({mjc_margin}), "
+            f"resulting Newton margin is negative ({result}). "
+            f"This may indicate an invalid MuJoCo model.",
+            stacklevel=4,
+        )
+    return result
+
+
 class SchemaResolverMjc(SchemaResolver):
-    """
-    Resolver for the MuJoCo USD schema.
-    """
+    """Schema resolver for MuJoCo USD attributes."""
 
     name: ClassVar[str] = "mjc"
 
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {
         PrimType.SCENE: {
-            "time_step": SchemaAttribute("mjc:option:timestep", 0.002),
             "max_solver_iterations": SchemaAttribute("mjc:option:iterations", 100),
-            "enable_gravity": SchemaAttribute("mjc:flag:gravity", True),
-            "rigid_contact_margin": SchemaAttribute("mjc:option:o_margin", 0.0),
+            "time_steps_per_second": SchemaAttribute(
+                "mjc:option:timestep", 0.002, lambda s: int(1.0 / s) if (s and s > 0) else None
+            ),
+            "gravity_enabled": SchemaAttribute("mjc:flag:gravity", True),
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("mjc:armature", 0.0),
@@ -279,12 +320,22 @@ class SchemaResolverMjc(SchemaResolver):
         },
         PrimType.SHAPE: {
             # Mesh
-            "mesh_hull_vertex_limit": SchemaAttribute("mjc:maxhullvert", MESH_MAXHULLVERT),
-            # Collisions
-            "rigid_contact_margin": SchemaAttribute("mjc:margin", 0.0),
+            "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
+            # Collisions: MuJoCo -> Newton conversion applied via getter.
+            # newton_margin = mjc_margin - mjc_gap (see _mjc_margin_from_prim).
+            "margin": SchemaAttribute(
+                "mjc:margin",
+                0.0,
+                usd_value_getter=_mjc_margin_from_prim,
+                attribute_names=("mjc:margin", "mjc:gap"),
+            ),
+            "gap": SchemaAttribute("mjc:gap", 0.0),
         },
         PrimType.MATERIAL: {
-            # Materials and contact models
+            # Materials
+            "mu_torsional": SchemaAttribute("mjc:torsionalfriction", 0.005),
+            "mu_rolling": SchemaAttribute("mjc:rollingfriction", 0.0001),
+            # Contact models
             "priority": SchemaAttribute("mjc:priority", 0),
             "weight": SchemaAttribute("mjc:solmix", 1.0),
             "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
@@ -313,3 +364,22 @@ class SchemaResolverMjc(SchemaResolver):
             "gear": SchemaAttribute("mjc:gear", [1, 0, 0, 0, 0, 0]),
         },
     }
+
+    @override
+    def validate_custom_attributes(self, builder: ModelBuilder) -> None:
+        """
+        Validate that MuJoCo custom attributes have been registered on the builder.
+
+        Users must call :meth:`newton.solvers.SolverMuJoCo.register_custom_attributes` before parsing
+        USD files with this resolver.
+
+        Raises:
+            RuntimeError: If required MuJoCo custom attributes are not registered.
+        """
+        has_mujoco_attrs = any(attr.namespace == "mujoco" for attr in builder.custom_attributes.values())
+        if not has_mujoco_attrs:
+            raise RuntimeError(
+                "MuJoCo custom attributes not registered. Call "
+                + "SolverMuJoCo.register_custom_attributes(builder) before parsing "
+                + "USD with SchemaResolverMjc."
+            )

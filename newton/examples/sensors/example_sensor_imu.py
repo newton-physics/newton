@@ -102,7 +102,7 @@ class Example:
             builder.add_shape_box(
                 body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200)
             )
-            imu_site = builder.add_site(body, key=f"imu_site_{cube_idx}")
+            imu_site = builder.add_site(body, label=f"imu_site_{cube_idx}")
 
             self.visual_cubes.append(visual_cube)
             self.visual_fillers.append(visual_filler)
@@ -118,6 +118,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = self.model.contacts()
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
         self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)
@@ -130,6 +131,9 @@ class Example:
 
         self.viewer.update_shape_colors({cube: (0.1, 0.1, 0.1) for i, cube in enumerate(self.visual_fillers)})
 
+        # Warm up: run one simulate() step before graph capture to ensure the collision
+        # pipeline (and any D2H copies it needs) is initialized outside of capture.
+        self.simulate()
         self.capture()
 
     def capture(self):
@@ -147,7 +151,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states

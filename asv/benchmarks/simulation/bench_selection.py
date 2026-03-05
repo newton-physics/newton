@@ -30,7 +30,7 @@ class FastExampleSelectionCartpoleMuJoCo:
     def setup(self):
         self.num_frames = 200
         self.example = Example(
-            viewer=newton.viewer.ViewerNull(num_frames=self.num_frames), num_worlds=16, verbose=False
+            viewer=newton.viewer.ViewerNull(num_frames=self.num_frames), world_count=16, verbose=False
         )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)

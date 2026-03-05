@@ -13,16 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Utilities for working with the Universal Scene Description (USD) format.
+"""Utilities for working with the Universal Scene Description (USD) format.
+
+This module provides both low-level USD utility helpers and public schema
+resolver types used by :meth:`newton.ModelBuilder.add_usd`.
 """
 
 # ==================================================================================
 # USD utility functions
 # ==================================================================================
 from ._src.usd.utils import (
-    convert_warp_type,
-    convert_warp_value,
     get_attribute,
     get_attributes_in_namespace,
     get_custom_attribute_declarations,
@@ -33,12 +33,13 @@ from ._src.usd.utils import (
     get_quat,
     get_scale,
     get_transform,
+    has_applied_api_schema,
     has_attribute,
+    type_to_warp,
+    value_to_warp,
 )
 
 __all__ = [
-    "convert_warp_type",
-    "convert_warp_value",
     "get_attribute",
     "get_attributes_in_namespace",
     "get_custom_attribute_declarations",
@@ -49,31 +50,31 @@ __all__ = [
     "get_quat",
     "get_scale",
     "get_transform",
+    "has_applied_api_schema",
     "has_attribute",
+    "type_to_warp",
+    "value_to_warp",
 ]
 
 
 # ==================================================================================
 # USD schema resolution
-# TODO: Re-enable this when we have a finalized schema resolution system.
 # ==================================================================================
 
-# from ._src.usd.schema_resolver import (
-#     PrimType,
-#     SchemaResolver,
-#     SchemaResolverManager,
-# )
-# from ._src.usd.schemas import (
-#     SchemaResolverMjc,
-#     SchemaResolverNewton,
-#     SchemaResolverPhysx,
-# )
+from ._src.usd.schema_resolver import (
+    PrimType,
+    SchemaResolver,
+)
+from ._src.usd.schemas import (
+    SchemaResolverMjc,
+    SchemaResolverNewton,
+    SchemaResolverPhysx,
+)
 
-# __all__ += [
-#     "PrimType",
-#     "SchemaResolver",
-#     "SchemaResolverManager",
-#     "SchemaResolverMjc",
-#     "SchemaResolverNewton",
-#     "SchemaResolverPhysx",
-# ]
+__all__ += [
+    "PrimType",
+    "SchemaResolver",
+    "SchemaResolverMjc",
+    "SchemaResolverNewton",
+    "SchemaResolverPhysx",
+]

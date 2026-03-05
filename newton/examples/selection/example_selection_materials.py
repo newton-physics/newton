@@ -48,28 +48,26 @@ RANDOMIZE_PER_WORLD = True
 
 @wp.kernel
 def compute_middle_kernel(
-    lower: wp.array2d(dtype=float),
-    upper: wp.array2d(dtype=float),
-    middle: wp.array2d(dtype=float),
+    lower: wp.array3d(dtype=float), upper: wp.array3d(dtype=float), middle: wp.array3d(dtype=float)
 ):
-    i, j = wp.tid()
-    middle[i, j] = 0.5 * (lower[i, j] + upper[i, j])
+    world, arti, dof = wp.tid()
+    middle[world, arti, dof] = 0.5 * (lower[world, arti, dof] + upper[world, arti, dof])
 
 
 @wp.kernel
-def reset_materials_kernel(mu: wp.array2d(dtype=float), seed: int, shape_count: int):
-    i, j = wp.tid()
+def reset_materials_kernel(mu: wp.array3d(dtype=float), seed: int, shape_count: int):
+    world, arti, shape = wp.tid()
 
     if RANDOMIZE_PER_WORLD:
-        rng = wp.rand_init(seed, i)
+        rng = wp.rand_init(seed, world)
     else:
-        rng = wp.rand_init(seed, i * shape_count + j)
+        rng = wp.rand_init(seed, world * shape_count + shape)
 
-    mu[i, j] = wp.randf(rng)  # random coefficient of friction
+    mu[world, arti, shape] = 0.5 + 0.5 * wp.randf(rng)  # random coefficient of friction
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=16):
+    def __init__(self, viewer, world_count=16):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -77,7 +75,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         world_template = newton.ModelBuilder()
         world_template.add_mjcf(
@@ -88,8 +86,8 @@ class Example:
 
         scene = newton.ModelBuilder()
 
-        scene.add_ground_plane()
-        scene.replicate(world_template, num_worlds=self.num_worlds)
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+        scene.replicate(world_template, world_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()
@@ -101,7 +99,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+        # Contacts only needed for non-MuJoCo solvers
+        self.contacts = self.model.contacts() if not isinstance(self.solver, newton.solvers.SolverMuJoCo) else None
 
         self.next_reset = 0.0
         self.reset_count = 0
@@ -149,6 +148,13 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(18.0, 0.0, 2.0),
+            pitch=0.0,
+            yaw=-180.0,
+        )
+
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
@@ -173,10 +179,8 @@ class Example:
             self.viewer.apply_forces(self.state_0)
 
             # explicit collisions needed without MuJoCo solver
-            if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
-                self.contacts = self.model.collide(self.state_0)
-            else:
-                self.contacts = None
+            if self.contacts is not None:
+                self.model.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -202,15 +206,17 @@ class Example:
 
             # flip velocities
             if self.reset_count % 2 == 0:
-                self.default_ant_root_velocities[:, 4] = 5.0
+                self.default_ant_root_velocities[..., 1] = 5.0
             else:
-                self.default_ant_root_velocities[:, 4] = -5.0
+                self.default_ant_root_velocities[..., 1] = -5.0
 
             # randomize materials
             if RANDOMIZE_PER_WORLD:
-                material_mu = torch.rand(self.ants.count).unsqueeze(1).repeat(1, self.ants.shape_count)
+                material_mu = 0.5 + 0.5 * torch.rand(self.ants.count, 1).unsqueeze(1).repeat(
+                    1, 1, self.ants.shape_count
+                )
             else:
-                material_mu = torch.rand((self.ants.count, self.ants.shape_count))
+                material_mu = 0.5 + 0.5 * torch.rand((self.ants.count, 1, self.ants.shape_count))
         else:
             # flip velocities
             if self.reset_count % 2 == 0:
@@ -265,7 +271,7 @@ class Example:
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--num-worlds",
+        "--world-count",
         type=int,
         default=16,
         help="Total number of simulated worlds.",
@@ -276,8 +282,8 @@ if __name__ == "__main__":
     if USE_TORCH:
         import torch
 
-        torch.set_device(args.device)
+        torch.set_default_device(args.device)
 
-    example = Example(viewer, num_worlds=args.num_worlds)
+    example = Example(viewer, world_count=args.world_count)
 
     newton.examples.run(example, args)
