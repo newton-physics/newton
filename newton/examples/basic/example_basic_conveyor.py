@@ -109,7 +109,7 @@ def create_annular_prism_mesh(
     vertices = np.vstack((inner_top, outer_top, inner_bottom, outer_bottom)).astype(np.float32)
 
     it_offset = 0
-    ot_offset = segments
+    outer_top_offset = segments
     ib_offset = 2 * segments
     ob_offset = 3 * segments
 
@@ -119,19 +119,19 @@ def create_annular_prism_mesh(
 
         it_i = it_offset + i
         it_j = it_offset + j
-        ot_i = ot_offset + i
-        ot_j = ot_offset + j
+        outer_top_i = outer_top_offset + i
+        outer_top_j = outer_top_offset + j
         ib_i = ib_offset + i
         ib_j = ib_offset + j
         ob_i = ob_offset + i
         ob_j = ob_offset + j
 
         # Top face (+Z)
-        indices.extend((it_i, ot_i, ot_j, it_i, ot_j, it_j))
+        indices.extend((it_i, outer_top_i, outer_top_j, it_i, outer_top_j, it_j))
         # Bottom face (-Z)
         indices.extend((ib_i, ib_j, ob_j, ib_i, ob_j, ob_i))
         # Outer face (+radial)
-        indices.extend((ob_i, ob_j, ot_j, ob_i, ot_j, ot_i))
+        indices.extend((ob_i, ob_j, outer_top_j, ob_i, outer_top_j, outer_top_i))
         # Inner face (-radial)
         indices.extend((ib_i, it_i, it_j, ib_i, it_j, ib_j))
 
