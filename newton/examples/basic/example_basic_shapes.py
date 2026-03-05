@@ -126,6 +126,15 @@ class Example:
 
         self.viewer.set_model(self.model)
 
+        # Set camera to view all the shapes
+        self.viewer.set_camera(
+            pos=wp.vec3(10.0, -1.3, 2.0),
+            pitch=0.0,
+            yaw=-180.0,
+        )
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 70.0
+
         self.capture()
 
     def capture(self):

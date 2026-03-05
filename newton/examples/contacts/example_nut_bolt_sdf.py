@@ -191,7 +191,8 @@ class Example:
 
         offset = 0.15 * self.scene_scale
         self.viewer.set_world_offsets((offset, offset, 0.0))
-        self.viewer.set_camera(pos=wp.vec3(offset, -offset, 0.12 * self.scene_scale), pitch=-15.0, yaw=135.0)
+        camera_offset = np.sqrt(self.world_count) * offset
+        self.viewer.set_camera(pos=wp.vec3(camera_offset, -camera_offset, 0.5 * camera_offset), pitch=-15.0, yaw=135.0)
 
         # Initialize test tracking data (only in test mode for nut_bolt scene)
         self._init_test_tracking()
