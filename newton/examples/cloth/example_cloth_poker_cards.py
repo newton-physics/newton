@@ -232,11 +232,11 @@ class Example:
         # Set camera to view the stacking
         self.viewer.set_camera(
             pos=wp.vec3(0.5, -0.5, 0.3),
-            pitch=-20.0,
-            yaw=90.0,
+            pitch=-15.0,
+            yaw=140.0,
         )
         if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
-            self.viewer.camera.fov = 60.0
+            self.viewer.camera.fov = 70.0
 
         self.capture()
 

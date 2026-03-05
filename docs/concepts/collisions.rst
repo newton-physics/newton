@@ -50,6 +50,8 @@ Newton supports the following geometry types via :class:`~newton.GeoType`:
      - Description
    * - ``PLANE``
      - Infinite plane (ground)
+   * - ``HFIELD``
+     - Heightfield terrain (2D elevation grid)
    * - ``SPHERE``
      - Sphere primitive
    * - ``CAPSULE``
@@ -68,9 +70,6 @@ Newton supports the following geometry types via :class:`~newton.GeoType`:
      - Convex hull mesh
 
 .. note::
-   **Heightfields** (``HFIELD``) are not implemented. Convert heightfield terrain to a triangle mesh.
-
-.. note::
    **SDF is collision data, not a standalone shape type.** For mesh shapes, build and attach
    an SDF explicitly with ``mesh.build_sdf(...)`` and then pass that mesh to
    ``builder.add_shape_mesh(...)``. For primitive hydroelastic workflows, SDF generation uses
@@ -86,7 +85,8 @@ Collision shapes are attached to rigid bodies. Each shape has:
 - **Body index** (``shape_body``): The rigid body this shape is attached to. Use ``body=-1`` for static/world-fixed shapes.
 - **Local transform** (``shape_transform``): Position and orientation relative to the body frame.
 - **Scale** (``shape_scale``): 3D scale factors applied to the shape geometry.
-- **Margin** (``shape_margin``): Surface margin used in contact generation (see :ref:`Shape Configuration`).
+- **Margin** (``shape_margin``): Surface offset that shifts where contact points are placed. See :ref:`Margin and gap semantics <margin-gap-semantics>`.
+- **Gap** (``shape_gap``): Extra detection distance that shifts when contacts are generated. See :ref:`Margin and gap semantics <margin-gap-semantics>`.
 - **Source geometry** (``shape_source``): Reference to the underlying geometry object (e.g., :class:`~newton.Mesh`).
 
 During collision detection, shapes are transformed to world space using their parent body's pose:
@@ -367,24 +367,28 @@ Broad Phase and Shape Compatibility
 Shape Compatibility
 ^^^^^^^^^^^^^^^^^^^
 
-The collision pipeline supports collision detection between all shape type combinations:
+Shape compatibility summary (rigid + soft particle-shape):
 
 .. list-table::
    :header-rows: 1
-   :widths: 12 9 9 9 9 9 9 9 9 9
+   :widths: 11 7 7 7 7 7 7 7 7 7 7 7 7
 
-   * - 
+   * -
      - Plane
+     - HField
      - Sphere
      - Capsule
      - Box
      - Cylinder
      - Cone
+     - Ellipsoid
+     - ConvexHull
      - Mesh
      - SDF
      - Particle
    * - **Plane**
-     - 
+     - [1]
+     - [1]
      - ✅
      - ✅
      - ✅
@@ -392,7 +396,22 @@ The collision pipeline supports collision detection between all shape type combi
      - ✅
      - ✅
      - ✅
-     - 
+     - ✅
+     - ✅
+     - ✅
+   * - **HField**
+     - [1]
+     - [1]
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅⚠️
+     - ✅
+     - ✅
    * - **Sphere**
      - ✅
      - ✅
@@ -402,7 +421,10 @@ The collision pipeline supports collision detection between all shape type combi
      - ✅
      - ✅
      - ✅
-     - 
+     - ✅
+     - ✅
+     - ✅
+     - ✅
    * - **Capsule**
      - ✅
      - ✅
@@ -412,7 +434,10 @@ The collision pipeline supports collision detection between all shape type combi
      - ✅
      - ✅
      - ✅
-     - 
+     - ✅
+     - ✅
+     - ✅
+     - ✅
    * - **Box**
      - ✅
      - ✅
@@ -422,7 +447,10 @@ The collision pipeline supports collision detection between all shape type combi
      - ✅
      - ✅
      - ✅
-     - 
+     - ✅
+     - ✅
+     - ✅
+     - ✅
    * - **Cylinder**
      - ✅
      - ✅
@@ -432,7 +460,10 @@ The collision pipeline supports collision detection between all shape type combi
      - ✅
      - ✅
      - ✅
-     - 
+     - ✅
+     - ✅
+     - ✅
+     - ✅
    * - **Cone**
      - ✅
      - ✅
@@ -442,9 +473,41 @@ The collision pipeline supports collision detection between all shape type combi
      - ✅
      - ✅
      - ✅
-     - 
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+   * - **Ellipsoid**
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+   * - **ConvexHull**
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
    * - **Mesh**
      - ✅
+     - ✅⚠️
+     - ✅
+     - ✅
      - ✅
      - ✅
      - ✅
@@ -452,7 +515,7 @@ The collision pipeline supports collision detection between all shape type combi
      - ✅
      - ✅⚠️
      - ✅⚠️
-     - 
+     - ✅
    * - **SDF**
      - ✅
      - ✅
@@ -460,30 +523,53 @@ The collision pipeline supports collision detection between all shape type combi
      - ✅
      - ✅
      - ✅
+     - ✅
+     - ✅
+     - ✅
      - ✅⚠️
      - ✅
-     - 
+     - ✅
    * - **Particle**
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - ✅
+     - [2]
 
-**Legend:** ⚠️ = Can be slow for meshes with high triangle counts
+**Legend:** ⚠️ = Can be slow for meshes with high triangle counts; performance can
+often be improved by attaching a precomputed SDF to the mesh (``mesh.build_sdf(...)``).
 
-Ellipsoid and ConvexMesh are also fully supported. The only unsupported type is ``HFIELD`` (heightfield) - convert to mesh instead.
+| [1] Plane and heightfield shapes are static (world-attached) in Newton; static-static pairs are filtered from rigid collision generation.
+| [2] Particle-particle interactions are handled by the particle/soft-body solver self-collision path, not by the shape compatibility pipeline in this table.
 
 .. note::
-   **SDF** in this table refers to shapes with precomputed SDF data. Mesh SDFs are attached
-   through ``mesh.build_sdf(...)`` and provide O(1) distance queries.
+   ``Particle`` in this table refers to soft particle-shape contacts generated by
+   ``create_soft_contacts``. These contacts additionally require the shape to have
+   particle collision enabled (``ShapeFlags.COLLIDE_PARTICLES`` /
+   ``ShapeConfig.has_particle_collision``). For examples, see cloth and cable
+   scenes that use the collision pipeline for particle-shape contacts.
 
 .. note::
-   Particle (soft body) collision support is available; see cloth and cable examples that use the collision pipeline for particle-shape contacts.
+   **Heightfield representation:** A heightfield (``HFIELD``) stores a regular 2D grid
+   of elevation samples (``HeightfieldData`` + normalized elevation values). For rigid
+   contacts, Newton uses dedicated heightfield narrow-phase routes:
+   heightfield-vs-convex uses per-cell triangle GJK/MPR, while mesh-vs-heightfield
+   routes through the mesh/SDF path with on-the-fly triangle extraction from the grid.
+   For soft contacts, ``create_soft_contacts`` samples the heightfield signed distance
+   and normal directly.
+
+.. note::
+   **SDF** in this table refers to shapes with precomputed SDF data. There is no
+   ``GeoType.SDF`` enum value; this row is a conceptual collision mode for shapes
+   carrying SDF resources. Mesh SDFs are attached through ``mesh.build_sdf(...)``
+   and provide O(1) distance queries.
 
 .. _Narrow Phase:
 
@@ -629,10 +715,44 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
    * - ``kh``
      - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
 
-.. note::
-   **Contact generation**: A contact is created when ``d <= (gap_a + gap_b)``, where
-   ``d = surface_distance - (margin_a + margin_b)``. The solver enforces ``d >= 0``, 
-   so objects at rest settle with surfaces separated by ``margin_a + margin_b``.
+.. _margin-gap-semantics:
+
+**Margin and gap semantics (where vs when):**
+
+- **Where contacts are placed** is controlled by ``margin``.
+- **When contacts are generated** is controlled by ``gap``.
+
+For a shape pair ``(a, b)``:
+
+- Pair margin: ``m = margin_a + margin_b``
+- Pair gap: ``g = gap_a + gap_b``
+- Surface distance (true geometry, no offsets): ``s``
+- Contact-space distance used by Newton: ``d = s - m``
+
+Contacts are generated when:
+
+.. math::
+
+   d \leq g \quad\Leftrightarrow\quad s \leq (m + g)
+
+Broad phase uses the same idea by expanding each shape AABB by:
+
+.. math::
+
+   margin_i + gap_i
+
+This keeps broad-phase culling and narrow-phase contact generation consistent.
+The solver enforces ``d >= 0``, so objects at rest settle with surfaces separated
+by ``margin_a + margin_b``.
+
+.. figure:: ../images/margin_and_gap.svg
+   :alt: Margin and gap contact generation phases
+   :width: 90%
+   :align: center
+
+   Margin sets contact location (surface offset), while gap adds speculative
+   detection distance on top of margin. Left: no contact generated. Middle:
+   contact generated but not yet active. Right: active contact support.
 
 **SDF configuration (primitive generation defaults):**
 
@@ -661,7 +781,7 @@ Example (mesh SDF workflow):
     my_mesh.build_sdf(max_resolution=64)
     builder.add_shape_mesh(body, mesh=my_mesh, cfg=cfg)
 
-**Builder default margin:**
+**Builder default gap:**
 
 The builder's ``rigid_gap`` (default 0.1) applies to shapes without explicit ``gap``. Alternatively, use ``builder.default_shape_cfg.gap``.
 

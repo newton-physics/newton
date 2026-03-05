@@ -296,12 +296,12 @@ class Model:
         # computed once during finalization, not per-frame contact data.
         self.shape_collision_aabb_lower = None
         """Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
-        Computed from base geometry only (excludes thickness - thickness is added during contact
-        margin calculations). Used for voxel-based contact reduction."""
+        Computed from base geometry only (excludes shape margin; shape margin and gap are applied
+        during contact margin calculations). Used for voxel-based contact reduction."""
         self.shape_collision_aabb_upper = None
         """Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
-        Computed from base geometry only (excludes thickness - thickness is added during contact
-        margin calculations). Used for voxel-based contact reduction."""
+        Computed from base geometry only (excludes shape margin; shape margin and gap are applied
+        during contact margin calculations). Used for voxel-based contact reduction."""
         self._shape_voxel_resolution = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
@@ -686,6 +686,10 @@ class Model:
         self.attribute_frequency["body_mass"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_inv_mass"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_f"] = Model.AttributeFrequency.BODY
+        # Extended state attributes — these live on State (not Model) and are only
+        # allocated when explicitly requested via request_state_attributes().
+        self.attribute_frequency["body_qdd"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_parent_f"] = Model.AttributeFrequency.BODY
 
         # attributes per joint
         self.attribute_frequency["joint_type"] = Model.AttributeFrequency.JOINT
@@ -721,6 +725,7 @@ class Model:
         self.attribute_frequency["joint_effort_limit"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_friction"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_velocity_limit"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["mujoco:qfrc_actuator"] = Model.AttributeFrequency.JOINT_DOF
 
         # attributes per shape
         self.attribute_frequency["shape_transform"] = Model.AttributeFrequency.SHAPE

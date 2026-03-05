@@ -63,7 +63,7 @@ def reset_materials_kernel(mu: wp.array3d(dtype=float), seed: int, shape_count: 
     else:
         rng = wp.rand_init(seed, world * shape_count + shape)
 
-    mu[world, arti, shape] = wp.randf(rng)  # random coefficient of friction
+    mu[world, arti, shape] = 0.5 + 0.5 * wp.randf(rng)  # random coefficient of friction
 
 
 class Example:
@@ -86,7 +86,7 @@ class Example:
 
         scene = newton.ModelBuilder()
 
-        scene.add_ground_plane()
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
         scene.replicate(world_template, world_count=self.world_count)
 
         # finalize model
@@ -148,6 +148,13 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(18.0, 0.0, 2.0),
+            pitch=0.0,
+            yaw=-180.0,
+        )
+
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
@@ -205,9 +212,11 @@ class Example:
 
             # randomize materials
             if RANDOMIZE_PER_WORLD:
-                material_mu = torch.rand(self.ants.count, 1).unsqueeze(1).repeat(1, 1, self.ants.shape_count)
+                material_mu = 0.5 + 0.5 * torch.rand(self.ants.count, 1).unsqueeze(1).repeat(
+                    1, 1, self.ants.shape_count
+                )
             else:
-                material_mu = torch.rand((self.ants.count, 1, self.ants.shape_count))
+                material_mu = 0.5 + 0.5 * torch.rand((self.ants.count, 1, self.ants.shape_count))
         else:
             # flip velocities
             if self.reset_count % 2 == 0:

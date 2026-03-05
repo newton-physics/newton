@@ -7,7 +7,7 @@ name = "newton"
 dynamic = ["version"]
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
-authors = [{ name = "Newton Developers", email = "warp-python@nvidia.com" }]
+authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -77,6 +77,7 @@ examples = [
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
+    "Pillow>=9.0.0",        # for image processing (viewer icons, heightfield loading, textures)
 ]
 
 # Extra dependency needed to run examples that inference an RL policy

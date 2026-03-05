@@ -1,0 +1,39 @@
+name: Bug Report
+description: Create a report to help us improve Newton.
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: textarea
+    attributes:
+      label: Bug Description
+      description: >-
+        Describe the bug. What happened, and what did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction Script
+      description: >-
+        If possible, provide a minimal script or code snippet that reproduces
+        the issue.
+      render: python
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: System Information
+      description: >-
+        Newton version, Warp version, Python version, OS, and GPU (if
+        relevant).
+      placeholder: |
+        - Newton: 0.x.x
+        - Warp: 1.x.x
+        - Python: 3.x
+        - OS: Ubuntu 22.04 / Windows 11 / macOS 14
+        - GPU: NVIDIA RTX ...
+    validations:
+      required: false
