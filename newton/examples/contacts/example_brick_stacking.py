@@ -469,7 +469,7 @@ class Example:
             nconmax=8000,
             njmax=16000,
             cone="elliptic",
-            impratio=10.0,
+            impratio=50.0,
             use_mujoco_contacts=False,
         )
 
