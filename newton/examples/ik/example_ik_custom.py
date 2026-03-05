@@ -270,6 +270,7 @@ class Example:
     def simulate(self):
         self.ik_solver.reset()
         self.ik_solver.step(self.joint_q, self.joint_q, iterations=self.ik_iters)
+        wp.copy(self.model.joint_q, self.joint_q)
 
     def _push_targets_from_gizmos(self):
         """Read gizmo-updated transforms and push into IK objectives."""
