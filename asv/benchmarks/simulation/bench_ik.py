@@ -20,7 +20,7 @@ import sys
 
 import numpy as np
 import warp as wp
-from asv_runner.benchmarks.mark import skip_benchmark_if
+from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 wp.config.quiet = True
 
@@ -68,6 +68,8 @@ class _IKBenchmark:
             )
 
         # Capture CUDA graph
+        if not (wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())):
+            raise SkipNotImplemented
         with wp.ScopedCapture() as cap:
             self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
         self.solve_graph = cap.graph
