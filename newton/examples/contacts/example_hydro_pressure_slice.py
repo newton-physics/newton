@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -405,6 +406,154 @@ def build_mesh_edge_lines(mesh: newton.Mesh) -> tuple[np.ndarray, np.ndarray]:
     return starts, ends
 
 
+def _load_trimesh_for_hydro(mesh_file: str) -> Any:
+    """Load a mesh file as a single trimesh mesh for hydro preprocessing."""
+    try:
+        import trimesh
+    except ImportError as exc:
+        raise RuntimeError(
+            "Loading external mesh files requires trimesh. "
+            "Install example dependencies (for example: `uv sync --extra examples`)."
+        ) from exc
+
+    tri = trimesh.load(mesh_file, force="mesh", process=False)
+    if hasattr(tri, "geometry"):
+        geometries = []
+        for geom in tri.geometry.values():
+            geom_vertices = np.asarray(getattr(geom, "vertices", []))
+            geom_faces = np.asarray(getattr(geom, "faces", []))
+            if geom_vertices.size == 0 or geom_faces.size == 0:
+                continue
+            geometries.append(geom)
+        if not geometries:
+            raise ValueError(f"Mesh file '{mesh_file}' did not contain any triangle geometry.")
+        tri = trimesh.util.concatenate(tuple(geometries))
+    return tri
+
+
+def _collect_hydro_mesh_stats(tri_mesh: Any, vertices: np.ndarray) -> dict[str, Any]:
+    """Collect topology and size stats relevant for hydroelastic SDF meshes."""
+    extents = np.max(vertices, axis=0) - np.min(vertices, axis=0)
+    components = len(tri_mesh.split(only_watertight=False))
+    return {
+        "vertex_count": int(vertices.shape[0]),
+        "triangle_count": int(np.asarray(tri_mesh.faces).shape[0]),
+        "components": int(components),
+        "watertight": bool(tri_mesh.is_watertight),
+        "winding_consistent": bool(tri_mesh.is_winding_consistent),
+        "is_volume": bool(tri_mesh.is_volume),
+        "extents": extents.astype(np.float32),
+    }
+
+
+def _validate_hydro_mesh_stats(stats: dict[str, Any], *, allow_multiple_components: bool) -> list[str]:
+    """Return human-readable hydro readiness issues for a mesh stats record."""
+    issues: list[str] = []
+    if not stats["watertight"]:
+        issues.append("mesh is not watertight")
+    if not stats["winding_consistent"]:
+        issues.append("mesh winding is inconsistent")
+    if not stats["is_volume"]:
+        issues.append("mesh does not represent a closed volume")
+    if (not allow_multiple_components) and stats["components"] != 1:
+        issues.append(f"mesh has {stats['components']} disconnected components (expected 1)")
+    return issues
+
+
+def load_external_mesh_for_hydro(
+    mesh_file: str,
+    *,
+    scale: float = 1.0,
+    center_origin: bool = False,
+    allow_multiple_components: bool = False,
+    skip_hydro_validation: bool = False,
+) -> tuple[newton.Mesh, str]:
+    """Load, validate, and convert an external triangle mesh for hydroelastic SDF use."""
+    mesh_path = Path(mesh_file).expanduser().resolve()
+    if not mesh_path.exists():
+        raise FileNotFoundError(f"Mesh file not found: {mesh_path}")
+
+    tri_mesh = _load_trimesh_for_hydro(str(mesh_path))
+    vertices = np.asarray(tri_mesh.vertices, dtype=np.float32)
+    faces = np.asarray(tri_mesh.faces, dtype=np.int32)
+    if vertices.size == 0 or faces.size == 0:
+        raise ValueError(f"Mesh file '{mesh_path}' has no vertices or faces.")
+    if vertices.ndim != 2 or vertices.shape[1] != 3:
+        raise ValueError(f"Mesh vertices must have shape (N, 3); got {vertices.shape}.")
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError(f"Mesh faces must have shape (M, 3); got {faces.shape}.")
+
+    if center_origin:
+        center = 0.5 * (np.min(vertices, axis=0) + np.max(vertices, axis=0))
+        vertices = vertices - center.astype(np.float32)
+    if scale != 1.0:
+        vertices = vertices * float(scale)
+
+    tri_mesh_scaled = tri_mesh.copy()
+    tri_mesh_scaled.vertices = vertices
+    stats = _collect_hydro_mesh_stats(tri_mesh_scaled, vertices)
+    extents = stats["extents"]
+    print(
+        f"[hydro_pressure_slice] Mesh '{mesh_path.name}': "
+        f"{stats['vertex_count']} vertices, {stats['triangle_count']} triangles, "
+        f"components={stats['components']}, watertight={stats['watertight']}, "
+        f"winding_consistent={stats['winding_consistent']}, is_volume={stats['is_volume']}, "
+        f"extents=[{extents[0]:.4f}, {extents[1]:.4f}, {extents[2]:.4f}] m"
+    )
+
+    issues = _validate_hydro_mesh_stats(stats, allow_multiple_components=allow_multiple_components)
+    if issues and (not skip_hydro_validation):
+        raise ValueError(
+            "External mesh is not hydro-ready:\n"
+            + "\n".join(f"- {issue}" for issue in issues)
+            + "\nUse scripts/prepare_hydro_mesh.py to repair and validate the mesh."
+        )
+
+    mesh = newton.Mesh(vertices, faces.reshape(-1), compute_inertia=False)
+    return mesh, mesh_path.stem
+
+
+def normalize_pressure_for_display(
+    pressure_grid: np.ndarray,
+    *,
+    inside: np.ndarray,
+    mode: str,
+    global_max: float,
+    percentile_low: float,
+    percentile_high: float,
+    gamma: float,
+) -> np.ndarray:
+    """Normalize pressure values for display without affecting physical validation."""
+    normalized = np.full_like(pressure_grid, -1.0, dtype=np.float32)
+    if not np.any(inside):
+        return normalized
+
+    p_inside = pressure_grid[inside].astype(np.float32, copy=False)
+    if mode == "global":
+        if global_max > 1.0e-8:
+            display = p_inside / float(global_max)
+        else:
+            display = np.zeros_like(p_inside)
+    else:
+        lo = float(np.percentile(p_inside, percentile_low))
+        hi = float(np.percentile(p_inside, percentile_high))
+        if (not np.isfinite(lo)) or (not np.isfinite(hi)) or (hi <= lo + 1.0e-8):
+            lo = float(np.min(p_inside))
+            hi = float(np.max(p_inside))
+        if hi <= lo + 1.0e-8:
+            display = np.zeros_like(p_inside)
+        else:
+            display = (p_inside - lo) / (hi - lo)
+
+    display = np.clip(display, 0.0, 1.0)
+    gamma = max(float(gamma), 1.0e-4)
+    if abs(gamma - 1.0) > 1.0e-6:
+        display = np.power(display, gamma).astype(np.float32, copy=False)
+
+    normalized[inside] = display
+    return normalized
+
+
 class Example:
     def __init__(self, viewer, args):
         if not wp.get_device().is_cuda:
@@ -420,6 +569,7 @@ class Example:
         self.sim_time = 0.0
 
         self.shape_name = args.shape
+        self.has_external_mesh = args.mesh_file is not None
         self.viewer_is_viser = self.viewer.__class__.__name__ == "ViewerViser"
         self.slice_axis = {"x": 0, "y": 1, "z": 2}[args.slice_axis]
         self.slice_position_normalized = float(args.slice_position)
@@ -440,11 +590,38 @@ class Example:
         self.pressure_foot_structure_strength = float(args.pressure_foot_structure_strength)
         self.pressure_foot_arch_depth = float(args.pressure_foot_arch_depth)
         self.pressure_foot_medial_bias = float(args.pressure_foot_medial_bias)
+
+        display_mode_arg = str(args.display_mode).strip().lower()
+        if display_mode_arg == "auto":
+            self.display_mode = "slice_percentile" if self.has_external_mesh else "global"
+        else:
+            self.display_mode = display_mode_arg
+        self.display_percentile_low = float(args.display_percentile_low)
+        self.display_percentile_high = float(args.display_percentile_high)
+        self.display_gamma = float(args.display_gamma)
+
+        self.display_percentile_low = float(np.clip(self.display_percentile_low, 0.0, 95.0))
+        self.display_percentile_high = float(np.clip(self.display_percentile_high, 5.0, 100.0))
+        if self.display_percentile_high <= self.display_percentile_low + 1.0:
+            self.display_percentile_high = min(100.0, self.display_percentile_low + 1.0)
+
+        # Auto-apply a foot-pressure visualization preset for external meshes when
+        # no custom foot modulation strength was provided.
+        if bool(args.foot_pressure_preset) or (self.has_external_mesh and self.pressure_foot_structure_strength <= 1.0e-8):
+            if self.pressure_foot_structure_strength <= 1.0e-8:
+                self.pressure_foot_structure_strength = 0.80
+            if abs(self.pressure_foot_arch_depth - 1.0) <= 1.0e-8:
+                self.pressure_foot_arch_depth = 1.15
+            if abs(self.pressure_foot_medial_bias - 0.3) <= 1.0e-8:
+                self.pressure_foot_medial_bias = 0.22
+            if abs(self.slice_position_normalized) <= 1.0e-8 and self.slice_axis == 2:
+                self.slice_position_normalized = -0.18
+
         self.show_shape = self.viewer_is_viser
         self.show_shape_wireframe = not self.viewer_is_viser
         self.show_slice = True
 
-        self.mesh = self._create_shape_mesh(self.shape_name)
+        self.mesh = self._create_shape_mesh(args)
         self._build_hydroelastic_reference(args)
 
         self.capacity = self.resolution * self.resolution
@@ -604,6 +781,32 @@ class Example:
                 step=0.01,
                 initial_value=float(self.pressure_foot_medial_bias),
             )
+            self._viser_controls["display_mode"] = gui.add_dropdown(
+                "Display Scale",
+                options=("global", "slice_percentile"),
+                initial_value=self.display_mode,
+            )
+            self._viser_controls["display_percentile_low"] = gui.add_slider(
+                "Display P Low [%]",
+                min=0.0,
+                max=40.0,
+                step=0.1,
+                initial_value=float(self.display_percentile_low),
+            )
+            self._viser_controls["display_percentile_high"] = gui.add_slider(
+                "Display P High [%]",
+                min=60.0,
+                max=100.0,
+                step=0.1,
+                initial_value=float(self.display_percentile_high),
+            )
+            self._viser_controls["display_gamma"] = gui.add_slider(
+                "Display Gamma",
+                min=0.4,
+                max=3.0,
+                step=0.01,
+                initial_value=float(self.display_gamma),
+            )
 
     def _sync_viser_controls(self):
         """Pull current values from viser controls into example state."""
@@ -629,6 +832,10 @@ class Example:
         pressure_foot_structure_strength = float(self._viser_controls["pressure_foot_structure_strength"].value)
         pressure_foot_arch_depth = float(self._viser_controls["pressure_foot_arch_depth"].value)
         pressure_foot_medial_bias = float(self._viser_controls["pressure_foot_medial_bias"].value)
+        display_mode = str(self._viser_controls["display_mode"].value)
+        display_percentile_low = float(self._viser_controls["display_percentile_low"].value)
+        display_percentile_high = float(self._viser_controls["display_percentile_high"].value)
+        display_gamma = float(self._viser_controls["display_gamma"].value)
 
         if self.show_shape != show_shape:
             self.show_shape = show_shape
@@ -677,6 +884,25 @@ class Example:
             self._slice_dirty = True
         if self.pressure_foot_medial_bias != pressure_foot_medial_bias:
             self.pressure_foot_medial_bias = pressure_foot_medial_bias
+            self._slice_dirty = True
+        if self.display_mode != display_mode:
+            self.display_mode = display_mode
+            self._slice_dirty = True
+
+        display_percentile_low = float(np.clip(display_percentile_low, 0.0, 95.0))
+        display_percentile_high = float(np.clip(display_percentile_high, 5.0, 100.0))
+        if display_percentile_high <= display_percentile_low + 1.0:
+            display_percentile_high = min(100.0, display_percentile_low + 1.0)
+        if self.display_percentile_low != display_percentile_low:
+            self.display_percentile_low = display_percentile_low
+            self._slice_dirty = True
+        if self.display_percentile_high != display_percentile_high:
+            self.display_percentile_high = display_percentile_high
+            self._slice_dirty = True
+
+        display_gamma = float(np.clip(display_gamma, 0.4, 3.0))
+        if self.display_gamma != display_gamma:
+            self.display_gamma = display_gamma
             self._slice_dirty = True
 
         # Disable manual slider while animating.
@@ -751,7 +977,19 @@ class Example:
         self.sdf_half_extents = wp.vec3(sdf_data["half_extents"])
         self.mesh.finalize(device=self.device)
 
-    def _create_shape_mesh(self, shape: str) -> newton.Mesh:
+    def _create_shape_mesh(self, args) -> newton.Mesh:
+        if args.mesh_file is not None:
+            mesh, mesh_name = load_external_mesh_for_hydro(
+                args.mesh_file,
+                scale=float(args.mesh_scale),
+                center_origin=bool(args.mesh_center_origin),
+                allow_multiple_components=bool(args.mesh_allow_multiple_components),
+                skip_hydro_validation=bool(args.mesh_skip_hydro_validation),
+            )
+            self.shape_name = mesh_name
+            return mesh
+
+        shape = self.shape_name
         if shape == "sphere":
             return newton.Mesh.create_sphere(radius=0.6, compute_inertia=False)
         if shape == "box":
@@ -868,13 +1106,15 @@ class Example:
         pressure_grid = self.slice_pressure.numpy().reshape(self.resolution, self.resolution)
 
         inside = pressure_grid >= 0.0
-        normalized = np.full_like(pressure_grid, -1.0, dtype=np.float32)
-        if np.any(inside):
-            if self.pressure_global_max > 1.0e-8:
-                normalized[inside] = pressure_grid[inside] / self.pressure_global_max
-            else:
-                normalized[inside] = 0.0
-            normalized[inside] = np.clip(normalized[inside], 0.0, 1.0)
+        normalized = normalize_pressure_for_display(
+            pressure_grid,
+            inside=inside,
+            mode=self.display_mode,
+            global_max=self.pressure_global_max,
+            percentile_low=self.display_percentile_low,
+            percentile_high=self.display_percentile_high,
+            gamma=self.display_gamma,
+        )
 
         self.last_validation_ok, self.last_deep_p05, self.last_zero_fraction, self.last_hole_fraction = (
             validate_slice_field(pressure_grid)
@@ -979,11 +1219,16 @@ class Example:
         self.viewer.end_frame()
 
     def render_ui(self, imgui):
+        scale_desc = (
+            f"slice percentile [{self.display_percentile_low:.1f}, {self.display_percentile_high:.1f}]"
+            if self.display_mode == "slice_percentile"
+            else "immutable global max"
+        )
         imgui.text("Hydro Pressure Slice")
         imgui.text(f"Shape: {self.shape_name}")
         imgui.text(f"Viewer: {'viser' if self.viewer_is_viser else 'gl-like'}")
         imgui.text("Source: Hydroelastic immutable pressure volume.")
-        imgui.text("Color scale: normalized by immutable global max (not per-slice).")
+        imgui.text(f"Color scale: {scale_desc}.")
         imgui.text("This is the same field used by contact isosurface extraction.")
         imgui.text("Optional: pressure can be modulated by sine waves and a foot-structure field.")
         imgui.text("Validation: deep interior percentile, zero-fraction, interior-hole fraction.")
@@ -1089,6 +1334,46 @@ class Example:
         )
         if changed:
             self._slice_dirty = True
+
+        imgui.text("Display Scale")
+        if imgui.radio_button("Global Max", self.display_mode == "global"):
+            self.display_mode = "global"
+            self._slice_dirty = True
+        if imgui.radio_button("Slice Percentile", self.display_mode == "slice_percentile"):
+            self.display_mode = "slice_percentile"
+            self._slice_dirty = True
+        changed, self.display_percentile_low = imgui.slider_float(
+            "Display P Low [%]",
+            self.display_percentile_low,
+            0.0,
+            40.0,
+        )
+        if changed:
+            self.display_percentile_low = float(np.clip(self.display_percentile_low, 0.0, 95.0))
+            if self.display_percentile_high <= self.display_percentile_low + 1.0:
+                self.display_percentile_high = min(100.0, self.display_percentile_low + 1.0)
+            self._slice_dirty = True
+        changed, self.display_percentile_high = imgui.slider_float(
+            "Display P High [%]",
+            self.display_percentile_high,
+            60.0,
+            100.0,
+        )
+        if changed:
+            self.display_percentile_high = float(np.clip(self.display_percentile_high, 5.0, 100.0))
+            if self.display_percentile_high <= self.display_percentile_low + 1.0:
+                self.display_percentile_high = min(100.0, self.display_percentile_low + 1.0)
+            self._slice_dirty = True
+        changed, self.display_gamma = imgui.slider_float(
+            "Display Gamma",
+            self.display_gamma,
+            0.4,
+            3.0,
+        )
+        if changed:
+            self.display_gamma = float(np.clip(self.display_gamma, 0.4, 3.0))
+            self._slice_dirty = True
+
         _changed, self.show_slice = imgui.checkbox("Show Slice", self.show_slice)
         changed, self.animate_slice = imgui.checkbox("Animate Slice", self.animate_slice)
         if changed:
@@ -1135,13 +1420,70 @@ if __name__ == "__main__":
         type=str,
         choices=["sphere", "box", "capsule", "cylinder", "cone", "ellipsoid"],
         default="box",
-        help="Shape to section and visualize.",
+        help="Primitive shape to section and visualize (ignored when --mesh-file is provided).",
+    )
+    parser.add_argument(
+        "--mesh-file",
+        type=str,
+        default=None,
+        help="Path to an external triangle mesh file (.obj/.stl/etc.) to visualize instead of --shape.",
+    )
+    parser.add_argument(
+        "--mesh-scale",
+        type=float,
+        default=1.0,
+        help="Uniform scale factor applied to vertices from --mesh-file before SDF construction.",
+    )
+    parser.add_argument(
+        "--mesh-center-origin",
+        action="store_true",
+        help="Recenter --mesh-file geometry around its AABB center before applying --mesh-scale.",
+    )
+    parser.add_argument(
+        "--mesh-allow-multiple-components",
+        action="store_true",
+        help="Allow disconnected components when validating --mesh-file hydro readiness.",
+    )
+    parser.add_argument(
+        "--mesh-skip-hydro-validation",
+        action="store_true",
+        help="Skip watertight/volume validation for --mesh-file (not recommended).",
     )
     parser.add_argument(
         "--shape-opacity",
         type=float,
         default=0.22,
         help="Shape opacity in [0, 1] when using --viewer viser.",
+    )
+    parser.add_argument(
+        "--display-mode",
+        type=str,
+        choices=["auto", "global", "slice_percentile"],
+        default="auto",
+        help=(
+            "Display normalization mode. "
+            "'global' uses immutable pressure max, "
+            "'slice_percentile' auto-ranges each slice, "
+            "'auto' selects slice_percentile for --mesh-file and global otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--display-percentile-low",
+        type=float,
+        default=2.0,
+        help="Lower percentile for --display-mode slice_percentile.",
+    )
+    parser.add_argument(
+        "--display-percentile-high",
+        type=float,
+        default=98.0,
+        help="Upper percentile for --display-mode slice_percentile.",
+    )
+    parser.add_argument(
+        "--display-gamma",
+        type=float,
+        default=1.35,
+        help="Gamma applied to display-normalized density (visualization only).",
     )
     parser.add_argument(
         "--pressure-x-sine-amplitude",
@@ -1214,6 +1556,14 @@ if __name__ == "__main__":
         type=float,
         default=0.3,
         help="Medial (+) / lateral (-) bias for the foot-structure modulation in normalized y.",
+    )
+    parser.add_argument(
+        "--foot-pressure-preset",
+        action="store_true",
+        help=(
+            "Apply a plantar-pressure visualization preset "
+            "(foot structure modulation + default sole slice depth)."
+        ),
     )
     parser.add_argument(
         "--slice-axis",
