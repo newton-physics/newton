@@ -18,6 +18,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, Model, State
+from ..flags import SolverNotifyFlags
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -32,7 +33,6 @@ from ..semi_implicit.kernels_particle import (
     eval_tetrahedra_forces,
     eval_triangle_forces,
 )
-from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
     compute_com_transforms,
