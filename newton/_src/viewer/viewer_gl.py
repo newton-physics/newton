@@ -393,6 +393,13 @@ class ViewerGL(ViewerBase):
         self.picking = Picking(model, world_offsets=self.world_offsets)
         self.wind = Wind(model)
 
+        # Precompile picking/raycast kernels to avoid JIT delay on first pick
+        if model is not None:
+            from ..geometry import raycast as _raycast_module  # noqa: PLC0415
+
+            wp.load_module(module=_raycast_module, device=model.device)
+            wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
 
