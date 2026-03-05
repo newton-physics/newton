@@ -248,7 +248,7 @@ class ViewerPlot:
             avail = imgui.get_content_region_avail()
             plot_kwargs = dict(self.plot_kwargs)
             plot_kwargs["graph_size"] = (avail.x, plot_kwargs.get("graph_size", (0, 0))[1])
-            imgui.plot_lines("Force", self.data, **plot_kwargs)
+            imgui.plot_lines("##force", self.data, **plot_kwargs)
         imgui.end()
 
 
