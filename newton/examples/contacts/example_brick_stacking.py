@@ -50,8 +50,8 @@ BRICK_MARGIN = 5.0e-5
 
 # SDF mesh parameters
 SDF_RESOLUTION = 256
-SDF_NARROW_BAND = 0.001
-SDF_MARGIN = 0.002
+SDF_NARROW_BAND = 0.002
+SDF_MARGIN = 0.001
 
 # Gripper finger positions [m]
 GRIPPER_OPEN = 0.5 * (2 * PITCH * BRICK_SCALE + 0.004)
