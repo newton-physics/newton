@@ -250,8 +250,13 @@ Newton supports the following geometry types via :class:`~GeoType`:
      - Triangle mesh (arbitrary, including non-convex)
    * - ``CONVEX_MESH``
      - Convex hull mesh
+   * - ``HFIELD``
+     - Heightfield terrain (2D elevation grid)
 
 .. note::
+   **Heightfields** (``HFIELD``) are supported for terrain collisions.
+   Hydroelastic supports heightfields as terrain when set to
+   ``hydroelastic_type="rigid"``.
    **SDF is collision data, not a standalone shape type.** For mesh shapes, build and attach
    an SDF explicitly with ``mesh.build_sdf(...)`` and then pass that mesh to
    ``builder.add_shape_mesh(...)``. For primitive hydroelastic workflows, SDF generation uses
@@ -760,6 +765,7 @@ often be improved by attaching a precomputed SDF to the mesh (``mesh.build_sdf(.
 
 | [1] Plane and heightfield shapes are static (world-attached) in Newton; static-static pairs are filtered from rigid collision generation.
 | [2] Particle-particle interactions are handled by the particle/soft-body solver self-collision path, not by the shape compatibility pipeline in this table.
+| Heightfields (``HFIELD``) are fully supported for rigid terrain contacts.
 
 .. note::
    ``Particle`` in this table refers to soft particle-shape contacts generated
@@ -1020,7 +1026,15 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``is_hydroelastic``
      - Legacy hydroelastic enable switch. Keep for backward compatibility; when True and ``hydroelastic_type`` is unset, mode defaults to compliant. See :ref:`Hydroelastic Contacts`. Default: False.
    * - ``hydroelastic_type``
-     - Explicit hydroelastic mode: ``none``, ``rigid``, or ``compliant``. Hydroelastic contact is active when both shapes are non-``none`` and at least one is ``compliant``. Default: None.
+     - Explicit hydroelastic mode: ``none``, ``rigid``, or ``compliant``. Hydroelastic contact is active when both shapes are non-``none`` and at least one is ``compliant``. Planes and heightfields participate only when explicitly set to ``rigid``. Default: None.
+   * - ``hydroelastic_contact_workflow``
+     - Hydroelastic field workflow: ``classic`` or ``pressure``. ``classic`` uses SDF-only signed fields; ``pressure`` uses immutable interior pressure fields for compliant contact evaluation. Default: None (currently resolves to ``classic``; set explicitly to avoid future default changes).
+   * - ``hydro_pressure_sine_amplitude``
+     - Per-axis pressure modulation amplitude tuple ``(x, y, z)`` used by ``pressure`` workflow when building immutable pressure fields. Default: ``(0.0, 0.0, 0.0)``.
+   * - ``hydro_pressure_sine_cycles``
+     - Per-axis sine cycles tuple ``(x, y, z)`` used with ``hydro_pressure_sine_amplitude``. Values must be ``> 0``. Default: ``(1.0, 1.0, 1.0)``.
+   * - ``hydro_pressure_sine_phase``
+     - Per-axis sine phase tuple ``(x, y, z)`` [rad] for pressure modulation. Default: ``(0.0, 0.0, 0.0)``.
    * - ``kh``
      - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when hydro mode is not ``none``. Default: 1.0e10.
 
@@ -1474,6 +1488,15 @@ When both shapes opt into hydroelastic and at least one is ``compliant``, the sy
 - Better force distribution across large contact patches
 - Realistic friction behavior for flat-on-flat contacts
 
+**Workflow selection:**
+
+- ``hydroelastic_contact_workflow="classic"``
+  - Uses the original hydroelastic signed-distance field workflow.
+- ``hydroelastic_contact_workflow="pressure"``
+  - Uses immutable pressure fields for compliant interior samples and enables per-shape pressure modulation parameters.
+- Mixed compliant pairs (one ``classic``, one ``pressure``) evaluate as ``pressure`` for that pair.
+- If ``hydroelastic_contact_workflow`` is not set, current behavior defaults to ``classic``. This implicit default is deprecated; set the workflow explicitly to keep behavior stable across releases.
+
 **Requirements:**
 
 - Both shapes in a pair must set hydro mode to ``rigid`` or ``compliant``
@@ -1482,7 +1505,11 @@ When both shapes opt into hydroelastic and at least one is ``compliant``, the sy
   - mesh shapes: call ``mesh.build_sdf(...)``
   - primitive shapes: use ``sdf_max_resolution`` or ``sdf_target_voxel_size`` in ``ShapeConfig``
 - For non-unit shape scale, the attached SDF must be scale-baked
-- Only volumetric shapes supported (not planes, heightfields, or non-watertight meshes)
+- Terrain support is rigid-only:
+  - planes and heightfields are supported when ``hydroelastic_type="rigid"``
+  - compliant planes/heightfields are not supported
+  - legacy ``is_hydroelastic=True`` on terrain is ignored; set ``hydroelastic_type="rigid"`` explicitly
+- Non-watertight meshes are not supported for hydroelastic SDF contacts
 
 .. testcode:: hydroelastic
 
@@ -1490,6 +1517,10 @@ When both shapes opt into hydroelastic and at least one is ``compliant``, the sy
     body = builder.add_body()
     cfg = builder.ShapeConfig(
         hydroelastic_type="compliant",  # Opt-in as compliant hydroelastic
+        hydroelastic_contact_workflow="pressure",
+        hydro_pressure_sine_amplitude=(0.25, 0.0, 0.0),
+        hydro_pressure_sine_cycles=(1.5, 1.0, 1.0),
+        hydro_pressure_sine_phase=(0.0, 0.0, 0.0),
         sdf_max_resolution=64,  # Required for hydroelastic
         kh=1.0e11,              # Contact stiffness
     )

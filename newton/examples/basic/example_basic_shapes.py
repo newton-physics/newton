@@ -15,7 +15,7 @@
 ###########################################################################
 
 import warp as wp
-from pxr import Usd
+from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
@@ -24,6 +24,12 @@ import newton.usd
 
 class Example:
     def __init__(self, viewer, args):
+        def _find_first_mesh_prim(stage, asset_name):
+            for prim in stage.Traverse():
+                if prim.IsA(UsdGeom.Mesh):
+                    return prim
+            raise ValueError(f"No mesh prim found in USD asset: {asset_name}")
+
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -84,6 +90,16 @@ class Example:
         self.mesh_pos = wp.vec3(0.0, 4.0, drop_z - 0.5)
         body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), label="mesh")
         builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
+
+        #Mesh (foot)
+        usd_stage = Usd.Stage.Open(newton.examples.get_asset("foot1.usd"))
+        demo_mesh = newton.usd.get_mesh(_find_first_mesh_prim(usd_stage, "foot1.usd"))
+
+        self.mesh_pos = wp.vec3(0.0, 5.0, drop_z - 0.5)
+        body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), label="mesh")
+        builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
+
+
 
         # CONE (no collision support in the standard collision pipeline)
         self.cone_pos = wp.vec3(0.0, 6.0, drop_z)

@@ -18,7 +18,7 @@ from .collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
-from .flags import HydroelasticType, ParticleFlags, ShapeFlags
+from .flags import HydroelasticContactWorkflow, HydroelasticType, ParticleFlags, ShapeFlags
 from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_inertia
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
@@ -39,6 +39,7 @@ __all__ = [
     "Gaussian",
     "GeoType",
     "Heightfield",
+    "HydroelasticContactWorkflow",
     "HydroelasticType",
     "Mesh",
     "ParticleFlags",

@@ -36,6 +36,7 @@ from ..core.types import (
 from ..geometry import (
     Gaussian,
     GeoType,
+    HydroelasticContactWorkflow,
     HydroelasticType,
     Mesh,
     ParticleFlags,
@@ -44,8 +45,8 @@ from ..geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from ..geometry.flags import hydroelastic_contact_workflow_from_value, hydroelastic_type_from_flags
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
-from ..geometry.flags import hydroelastic_type_from_flags
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -276,7 +277,9 @@ class ModelBuilder:
 
         .. note::
             Hydroelastic collision handling only works with volumetric shapes and in particular will not work for shapes like flat meshes or cloth.
-            This flag will be automatically set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
+            Planes and heightfields ignore this legacy flag by default. To enable
+            hydroelastic terrain interaction, set ``hydroelastic_type="rigid"``
+            explicitly on the terrain shape config.
         """
         hydroelastic_type: HydroelasticType | str | None = None
         """Hydroelastic mode for this shape.
@@ -288,6 +291,21 @@ class ModelBuilder:
 
         If None, mode is inferred from ``is_hydroelastic`` for backward compatibility.
         """
+        hydroelastic_contact_workflow: HydroelasticContactWorkflow | str | None = None
+        """Hydroelastic contact workflow for compliant contact evaluation.
+
+        Supported values:
+        - ``HydroelasticContactWorkflow.CLASSIC`` / ``"classic"``
+        - ``HydroelasticContactWorkflow.PRESSURE`` / ``"pressure"``
+
+        If None, the workflow is resolved by backward-compatible defaults.
+        """
+        hydro_pressure_sine_amplitude: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        """Per-axis sine modulation amplitude for pressure workflow, ordered (x, y, z)."""
+        hydro_pressure_sine_cycles: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        """Per-axis sine cycles across normalized shape extent, ordered (x, y, z)."""
+        hydro_pressure_sine_phase: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        """Per-axis sine phase offset [rad], ordered (x, y, z)."""
         kh: float = 1.0e10
         """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
 
@@ -303,6 +321,10 @@ class ModelBuilder:
             target_voxel_size: float | None = None,
             is_hydroelastic: bool = False,
             hydroelastic_type: HydroelasticType | str | None = None,
+            hydroelastic_contact_workflow: HydroelasticContactWorkflow | str | None = None,
+            hydro_pressure_sine_amplitude: tuple[float, float, float] | None = None,
+            hydro_pressure_sine_cycles: tuple[float, float, float] | None = None,
+            hydro_pressure_sine_phase: tuple[float, float, float] | None = None,
             kh: float = 1.0e10,
             texture_format: str | None = None,
         ) -> None:
@@ -321,6 +343,11 @@ class ModelBuilder:
                     in a pair must have this enabled.
                 hydroelastic_type: Hydroelastic mode (none, rigid, compliant). If set,
                     this takes precedence over ``is_hydroelastic``.
+                hydroelastic_contact_workflow: Hydroelastic contact workflow. If None,
+                    retains current value.
+                hydro_pressure_sine_amplitude: Optional per-axis sine amplitude tuple.
+                hydro_pressure_sine_cycles: Optional per-axis sine cycle tuple.
+                hydro_pressure_sine_phase: Optional per-axis sine phase tuple [rad].
                 kh: Contact stiffness coefficient for hydroelastic collisions.
                 texture_format: Subgrid texture storage format. ``"uint16"``
                     (default) uses 16-bit normalized textures. ``"float32"``
@@ -349,6 +376,16 @@ class ModelBuilder:
                     self.hydroelastic_type = HydroelasticType.COMPLIANT
                 else:
                     self.hydroelastic_type = HydroelasticType.NONE
+            if hydroelastic_contact_workflow is not None:
+                self.hydroelastic_contact_workflow = self._parse_hydroelastic_contact_workflow(
+                    hydroelastic_contact_workflow
+                )
+            if hydro_pressure_sine_amplitude is not None:
+                self.hydro_pressure_sine_amplitude = self._normalize_axis_triplet(hydro_pressure_sine_amplitude)
+            if hydro_pressure_sine_cycles is not None:
+                self.hydro_pressure_sine_cycles = self._normalize_axis_triplet(hydro_pressure_sine_cycles)
+            if hydro_pressure_sine_phase is not None:
+                self.hydro_pressure_sine_phase = self._normalize_axis_triplet(hydro_pressure_sine_phase)
             self.kh = kh
             if texture_format is not None:
                 self.sdf_texture_format = texture_format
@@ -374,6 +411,20 @@ class ModelBuilder:
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"Unsupported hydroelastic_type value: {value!r}") from exc
 
+        @staticmethod
+        def _parse_hydroelastic_contact_workflow(
+            value: HydroelasticContactWorkflow | str | int | None,
+        ) -> HydroelasticContactWorkflow:
+            """Parse hydroelastic contact workflow from enum, string, or integer."""
+            return hydroelastic_contact_workflow_from_value(value)
+
+        @staticmethod
+        def _normalize_axis_triplet(value: tuple[float, float, float]) -> tuple[float, float, float]:
+            """Normalize a value into a float triplet."""
+            if len(value) != 3:
+                raise ValueError(f"Expected 3 values, got {len(value)}")
+            return (float(value[0]), float(value[1]), float(value[2]))
+
         def resolved_hydroelastic_type(self) -> HydroelasticType:
             """Resolve effective hydroelastic mode with backward-compatible defaults."""
             if self.hydroelastic_type is not None:
@@ -381,6 +432,14 @@ class ModelBuilder:
             if self.is_hydroelastic:
                 return HydroelasticType.COMPLIANT
             return HydroelasticType.NONE
+
+        def resolved_hydroelastic_contact_workflow(self) -> HydroelasticContactWorkflow:
+            """Resolve hydroelastic contact workflow with backward-compatible defaults."""
+            if self.hydroelastic_contact_workflow is not None:
+                return self._parse_hydroelastic_contact_workflow(self.hydroelastic_contact_workflow)
+            # Release-N default is classic. This implicit default is deprecated and
+            # warning emission is handled once per finalize call.
+            return HydroelasticContactWorkflow.CLASSIC
 
         def validate(self, shape_type: int | None = None) -> None:
             """Validate ShapeConfig parameters.
@@ -422,6 +481,12 @@ class ModelBuilder:
                 raise ValueError(
                     "Hydroelastic shapes require an SDF. Set either sdf_max_resolution or sdf_target_voxel_size."
                 )
+            self.hydro_pressure_sine_amplitude = self._normalize_axis_triplet(self.hydro_pressure_sine_amplitude)
+            self.hydro_pressure_sine_cycles = self._normalize_axis_triplet(self.hydro_pressure_sine_cycles)
+            self.hydro_pressure_sine_phase = self._normalize_axis_triplet(self.hydro_pressure_sine_phase)
+            if any(c <= 0.0 for c in self.hydro_pressure_sine_cycles):
+                raise ValueError("hydro_pressure_sine_cycles values must all be > 0.")
+            _ = self.resolved_hydroelastic_contact_workflow()
 
         def mark_as_site(self) -> None:
             """Marks this shape as a site and enforces all site invariants.
@@ -440,6 +505,7 @@ class ModelBuilder:
             self.collision_group = 0
             self.is_hydroelastic = False
             self.hydroelastic_type = HydroelasticType.NONE
+            self.hydroelastic_contact_workflow = None
 
         @property
         def flags(self) -> int:
@@ -989,6 +1055,16 @@ class ModelBuilder:
         """Rolling friction coefficients accumulated for :attr:`Model.shape_material_mu_rolling`."""
         self.shape_material_kh: list[float] = []
         """Hydroelastic stiffness values accumulated for :attr:`Model.shape_material_kh`."""
+        self.shape_hydroelastic_contact_workflow: list[int] = []
+        """Hydroelastic contact workflow values accumulated for :attr:`Model.shape_hydroelastic_contact_workflow`."""
+        self.shape_hydroelastic_contact_workflow_user_set: list[bool] = []
+        """Whether each shape explicitly set its hydroelastic workflow in the builder."""
+        self.shape_hydro_pressure_sine_amplitude: list[Vec3] = []
+        """Per-shape sine amplitudes for hydro pressure modulation accumulated for :attr:`Model.shape_hydro_pressure_sine_amplitude`."""
+        self.shape_hydro_pressure_sine_cycles: list[Vec3] = []
+        """Per-shape sine cycle counts for hydro pressure modulation accumulated for :attr:`Model.shape_hydro_pressure_sine_cycles`."""
+        self.shape_hydro_pressure_sine_phase: list[Vec3] = []
+        """Per-shape sine phases [rad] for hydro pressure modulation accumulated for :attr:`Model.shape_hydro_pressure_sine_phase`."""
         self.shape_gap: list[float] = []
         """Contact gaps [m] accumulated for :attr:`Model.shape_gap`."""
         self.shape_collision_group: list[int] = []
@@ -3161,6 +3237,11 @@ class ModelBuilder:
             "shape_material_mu_torsional",
             "shape_material_mu_rolling",
             "shape_material_kh",
+            "shape_hydroelastic_contact_workflow",
+            "shape_hydroelastic_contact_workflow_user_set",
+            "shape_hydro_pressure_sine_amplitude",
+            "shape_hydro_pressure_sine_cycles",
+            "shape_hydro_pressure_sine_phase",
             "shape_collision_radius",
             "shape_gap",
             "shape_sdf_narrow_band_range",
@@ -5295,9 +5376,8 @@ class ModelBuilder:
                     "Mesh shapes do not use cfg.sdf_* for SDF generation. "
                     "Build and attach an SDF on the mesh via mesh.build_sdf()."
                 )
-            if (
-                cfg.resolved_hydroelastic_type() != HydroelasticType.NONE
-                and (src is None or getattr(src, "sdf", None) is None)
+            if cfg.resolved_hydroelastic_type() != HydroelasticType.NONE and (
+                src is None or getattr(src, "sdf", None) is None
             ):
                 raise ValueError(
                     "Hydroelastic mesh shapes require mesh.sdf. "
@@ -5344,15 +5424,16 @@ class ModelBuilder:
         self.body_shapes[body].append(shape)
         self.shape_label.append(label or f"shape_{shape}")
         self.shape_transform.append(xform)
-        # Get flags and clear HYDROELASTIC for unsupported shape types (PLANE, HFIELD)
+        # Keep hydro flags on terrain only for explicit rigid opt-in.
         shape_flags = cfg.flags
-        if (shape_flags & ShapeFlags.HYDROELASTIC) and (type == GeoType.PLANE or type == GeoType.HFIELD):
-            # Falling back to mesh/primitive collisions for plane and hfield shapes.
-            shape_flags &= ~(
-                ShapeFlags.HYDROELASTIC
-                | ShapeFlags.HYDROELASTIC_RIGID
-                | ShapeFlags.HYDROELASTIC_COMPLIANT
+        if (shape_flags & ShapeFlags.HYDROELASTIC) and (type in (GeoType.PLANE, GeoType.HFIELD)):
+            allow_explicit_rigid_terrain = (
+                cfg.hydroelastic_type is not None and cfg.resolved_hydroelastic_type() == HydroelasticType.RIGID
             )
+            if not allow_explicit_rigid_terrain:
+                shape_flags &= ~(
+                    ShapeFlags.HYDROELASTIC | ShapeFlags.HYDROELASTIC_RIGID | ShapeFlags.HYDROELASTIC_COMPLIANT
+                )
 
         resolved_color = color
         if resolved_color is None and src is not None:
@@ -5375,6 +5456,11 @@ class ModelBuilder:
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
         self.shape_material_kh.append(cfg.kh)
+        self.shape_hydroelastic_contact_workflow.append(int(cfg.resolved_hydroelastic_contact_workflow()))
+        self.shape_hydroelastic_contact_workflow_user_set.append(cfg.hydroelastic_contact_workflow is not None)
+        self.shape_hydro_pressure_sine_amplitude.append(tuple(float(v) for v in cfg.hydro_pressure_sine_amplitude))
+        self.shape_hydro_pressure_sine_cycles.append(tuple(float(v) for v in cfg.hydro_pressure_sine_cycles))
+        self.shape_hydro_pressure_sine_phase.append(tuple(float(v) for v in cfg.hydro_pressure_sine_phase))
         self.shape_gap.append(cfg.gap if cfg.gap is not None else self.rigid_gap)
         self.shape_collision_group.append(cfg.collision_group)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
@@ -6312,6 +6398,12 @@ class ModelBuilder:
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
                             collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
+                            hydroelastic_contact_workflow=HydroelasticContactWorkflow(
+                                self.shape_hydroelastic_contact_workflow[shape]
+                            ),
+                            hydro_pressure_sine_amplitude=self.shape_hydro_pressure_sine_amplitude[shape],
+                            hydro_pressure_sine_cycles=self.shape_hydro_pressure_sine_cycles[shape],
+                            hydro_pressure_sine_phase=self.shape_hydro_pressure_sine_phase[shape],
                         )
                         cfg.flags = self.shape_flags[shape]
                         for i in range(1, len(decomposition)):
@@ -9566,6 +9658,24 @@ class ModelBuilder:
         # This method also performs relevant validation checks on the start.
         self._build_world_starts()
 
+        implicit_hydro_workflow_shapes = [
+            i
+            for i, (shape_flags, workflow_user_set) in enumerate(
+                zip(self.shape_flags, self.shape_hydroelastic_contact_workflow_user_set, strict=True)
+            )
+            if (shape_flags & ShapeFlags.HYDROELASTIC)
+            and (shape_flags & ShapeFlags.COLLIDE_SHAPES)
+            and (not workflow_user_set)
+        ]
+        if implicit_hydro_workflow_shapes:
+            warnings.warn(
+                "Hydroelastic shapes without explicit ShapeConfig.hydroelastic_contact_workflow currently "
+                "default to 'classic'. This implicit default is deprecated and will change to 'pressure' "
+                "in a future release. Set ShapeConfig.hydroelastic_contact_workflow explicitly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
         # static particles (with zero mass) have zero inverse mass
@@ -9667,6 +9777,25 @@ class ModelBuilder:
                 self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
             )
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_hydroelastic_contact_workflow = wp.array(
+                self.shape_hydroelastic_contact_workflow,
+                dtype=wp.int32,
+            )
+            m.shape_hydro_pressure_sine_amplitude = wp.array(
+                self.shape_hydro_pressure_sine_amplitude,
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
+            m.shape_hydro_pressure_sine_cycles = wp.array(
+                self.shape_hydro_pressure_sine_cycles,
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
+            m.shape_hydro_pressure_sine_phase = wp.array(
+                self.shape_hydro_pressure_sine_phase,
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = {

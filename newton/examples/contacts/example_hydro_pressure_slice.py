@@ -16,8 +16,8 @@
 ###########################################################################
 # Example Hydro Pressure Slice
 #
-# Visualize the immutable pressure field produced by HydroelasticSDF by
-# slicing the loaded shape and rendering one continuous heat-map section.
+# Visualize immutable hydroelastic pressure by slicing the loaded shape and
+# render hydro contact surfaces from the actual collision pipeline.
 #
 # Command: uv run -m newton.examples.contacts.example_hydro_pressure_slice --shape box
 #
@@ -25,14 +25,18 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import warp as wp
+from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+import newton.usd
+from newton.geometry import HydroelasticSDF
 
 
 @wp.kernel
@@ -86,7 +90,13 @@ def build_slice_points(
 
 @wp.kernel
 def sample_pressure_on_slice(
+    clip_to_sdf: int,
     pressure_volume_id: wp.uint64,
+    sdf_sparse_volume_id: wp.uint64,
+    sdf_coarse_volume_id: wp.uint64,
+    sdf_background_value: float,
+    sdf_center: wp.vec3,
+    sdf_half_extents: wp.vec3,
     pressure_epsilon: float,
     points: wp.array(dtype=wp.vec3),
     out_inside_flag: wp.array(dtype=wp.float32),
@@ -96,170 +106,54 @@ def sample_pressure_on_slice(
     """Sample immutable pressure volume and classify pressure-support interior."""
     tid = wp.tid()
     sample = points[tid]
+
     pressure_idx = wp.volume_world_to_index(pressure_volume_id, sample)
     pressure = wp.volume_sample_f(pressure_volume_id, pressure_idx, wp.Volume.LINEAR)
     if wp.isnan(pressure):
         pressure = 0.0
     pressure = wp.max(pressure, 0.0)
-    if pressure <= pressure_epsilon:
+
+    if clip_to_sdf == 0:
+        if pressure <= pressure_epsilon:
+            out_inside_flag[tid] = -1.0
+            out_pressure[tid] = -1.0
+            return
+
+        out_inside_flag[tid] = 1.0
+        out_pressure[tid] = pressure
+        wp.atomic_add(out_inside_count, 0, 1)
+        return
+
+    lower = sdf_center - sdf_half_extents
+    upper = sdf_center + sdf_half_extents
+    inside_extent = (
+        sample[0] >= lower[0]
+        and sample[0] <= upper[0]
+        and sample[1] >= lower[1]
+        and sample[1] <= upper[1]
+        and sample[2] >= lower[2]
+        and sample[2] <= upper[2]
+    )
+    if not inside_extent:
+        out_inside_flag[tid] = -1.0
+        out_pressure[tid] = -1.0
+        return
+
+    sdf_idx = wp.volume_world_to_index(sdf_sparse_volume_id, sample)
+    sdf_val = wp.volume_sample_f(sdf_sparse_volume_id, sdf_idx, wp.Volume.LINEAR)
+    invalid_sdf = sdf_val >= sdf_background_value * 0.99 or wp.isnan(sdf_val)
+    if invalid_sdf and sdf_coarse_volume_id != wp.uint64(0):
+        coarse_idx = wp.volume_world_to_index(sdf_coarse_volume_id, sample)
+        sdf_val = wp.volume_sample_f(sdf_coarse_volume_id, coarse_idx, wp.Volume.LINEAR)
+        invalid_sdf = wp.isnan(sdf_val)
+    if invalid_sdf or sdf_val > 0.0:
         out_inside_flag[tid] = -1.0
         out_pressure[tid] = -1.0
         return
 
     out_inside_flag[tid] = 1.0
-    out_pressure[tid] = pressure
+    out_pressure[tid] = wp.where(pressure > pressure_epsilon, pressure, 0.0)
     wp.atomic_add(out_inside_count, 0, 1)
-
-
-@wp.kernel
-def apply_pressure_axis_sine_modulation(
-    axis: int,
-    axis_center: float,
-    axis_half_extent: float,
-    amplitude: float,
-    cycles_across_extent: float,
-    phase_rad: float,
-    points: wp.array(dtype=wp.vec3),
-    inside_flag: wp.array(dtype=wp.float32),
-    pressure: wp.array(dtype=wp.float32),
-):
-    """Apply optional sine modulation along one axis to interior pressure samples."""
-    tid = wp.tid()
-    if inside_flag[tid] <= 0.0:
-        return
-
-    p = pressure[tid]
-    if p <= 0.0:
-        return
-
-    coord = 0.0
-    if axis == 0:
-        coord = points[tid][0]
-    elif axis == 1:
-        coord = points[tid][1]
-    else:
-        coord = points[tid][2]
-
-    coord01 = 0.5
-    if axis_half_extent > 1.0e-8:
-        coord_norm = (coord - axis_center) / axis_half_extent
-        coord01 = 0.5 * (coord_norm + 1.0)
-
-    two_pi = 6.283185307179586
-    wave = wp.sin(two_pi * cycles_across_extent * coord01 + phase_rad)
-    modulation = wp.max(1.0 + amplitude * wave, 0.0)
-    pressure[tid] = p * modulation
-
-
-@wp.kernel
-def apply_pressure_foot_structure_modulation(
-    sdf_center: wp.vec3,
-    sdf_half_extents: wp.vec3,
-    structure_strength: float,
-    arch_depth: float,
-    medial_bias: float,
-    points: wp.array(dtype=wp.vec3),
-    inside_flag: wp.array(dtype=wp.float32),
-    pressure: wp.array(dtype=wp.float32),
-):
-    """Apply localized foot-like pressure modulation (bone lobes + arch trough)."""
-    tid = wp.tid()
-    if inside_flag[tid] <= 0.0:
-        return
-
-    p = pressure[tid]
-    if p <= 0.0:
-        return
-
-    sample = points[tid]
-    hx = wp.max(sdf_half_extents[0], 1.0e-8)
-    hy = wp.max(sdf_half_extents[1], 1.0e-8)
-    hz = wp.max(sdf_half_extents[2], 1.0e-8)
-    x = (sample[0] - sdf_center[0]) / hx
-    y = (sample[1] - sdf_center[1]) / hy
-    z = (sample[2] - sdf_center[2]) / hz
-
-    medial = wp.max(-1.0, wp.min(1.0, medial_bias))
-
-    # Heel pads are modeled as two side peaks plus one broader center lobe.
-    g_heel_medial = wp.exp(
-        -(
-            ((x + 0.62) * (x + 0.62)) / 0.12
-            + ((y - (0.19 + 0.10 * medial)) * (y - (0.19 + 0.10 * medial))) / 0.11
-            + ((z + 0.15) * (z + 0.15)) / 0.14
-        )
-    )
-    g_heel_lateral = wp.exp(
-        -(
-            ((x + 0.64) * (x + 0.64)) / 0.12
-            + ((y + 0.20 - 0.08 * medial) * (y + 0.20 - 0.08 * medial)) / 0.12
-            + ((z + 0.15) * (z + 0.15)) / 0.14
-        )
-    )
-    g_heel_center = wp.exp(-(((x + 0.56) * (x + 0.56)) / 0.16 + (y * y) / 0.22 + ((z + 0.10) * (z + 0.10)) / 0.18))
-
-    # Midfoot scaffold that keeps a smooth anatomical transition.
-    g_talus = wp.exp(
-        -(
-            ((x + 0.28) * (x + 0.28)) / 0.15
-            + ((y - 0.05 * medial) * (y - 0.05 * medial)) / 0.20
-            + ((z + 0.03) * (z + 0.03)) / 0.14
-        )
-    )
-    g_navicular = wp.exp(
-        -(
-            ((x + 0.02) * (x + 0.02)) / 0.12
-            + ((y - (0.26 + 0.10 * medial)) * (y - (0.26 + 0.10 * medial))) / 0.12
-            + ((z + 0.08) * (z + 0.08)) / 0.12
-        )
-    )
-    g_cuboid = wp.exp(
-        -(
-            ((x + 0.00) * (x + 0.00)) / 0.13
-            + ((y + 0.30 - 0.08 * medial) * (y + 0.30 - 0.08 * medial)) / 0.14
-            + ((z + 0.08) * (z + 0.08)) / 0.12
-        )
-    )
-
-    # Metatarsal heads are tightened to create clearer forefoot definition.
-    g_meta_lateral = wp.exp(
-        -(((x - 0.44) * (x - 0.44)) / 0.12 + ((y + 0.36) * (y + 0.36)) / 0.11 + ((z + 0.12) * (z + 0.12)) / 0.12)
-    )
-    g_meta_center = wp.exp(-(((x - 0.49) * (x - 0.49)) / 0.11 + (y * y) / 0.10 + ((z + 0.12) * (z + 0.12)) / 0.12))
-    g_meta_medial = wp.exp(
-        -(
-            ((x - 0.52) * (x - 0.52)) / 0.10
-            + ((y - (0.34 + 0.14 * medial)) * (y - (0.34 + 0.14 * medial))) / 0.10
-            + ((z + 0.12) * (z + 0.12)) / 0.12
-        )
-    )
-    g_meta_shelf = wp.exp(-(((x - 0.40) * (x - 0.40)) / 0.18 + (y * y) / 0.26 + ((z + 0.14) * (z + 0.14)) / 0.18))
-
-    # Arch and midfoot troughs split heel and forefoot into distinct regions.
-    g_arch = wp.exp(
-        -(
-            ((x - 0.02) * (x - 0.02)) / 0.28
-            + ((y - (0.26 + 0.14 * medial)) * (y - (0.26 + 0.14 * medial))) / 0.19
-            + ((z + 0.28) * (z + 0.28)) / 0.18
-        )
-    )
-    g_midfoot_split = wp.exp(
-        -(
-            ((x - 0.08) * (x - 0.08)) / 0.12
-            + ((y - (0.04 + 0.05 * medial)) * (y - (0.04 + 0.05 * medial))) / 0.28
-            + ((z + 0.18) * (z + 0.18)) / 0.16
-        )
-    )
-    g_toe_relief = wp.exp(-(((x - 0.85) * (x - 0.85)) / 0.12 + (y * y) / 0.24 + ((z + 0.08) * (z + 0.08)) / 0.16))
-
-    heel_field = 0.96 * g_heel_medial + 0.92 * g_heel_lateral + 0.74 * g_heel_center
-    midfoot_field = 0.44 * g_talus + 0.36 * g_navicular + 0.32 * g_cuboid
-    metatarsal_field = 0.86 * g_meta_lateral + 0.94 * g_meta_center + 1.06 * g_meta_medial + 0.34 * g_meta_shelf
-    positive_field = 0.82 * heel_field + 0.30 * midfoot_field + 0.98 * metatarsal_field
-    negative_field = 0.72 * arch_depth * g_arch + 0.46 * g_midfoot_split + 0.24 * g_toe_relief
-    structure = 0.50 * positive_field - negative_field
-    modulation = wp.max(0.0, wp.min(3.0, 1.0 + structure_strength * structure))
-    pressure[tid] = p * modulation
 
 
 def density_to_rgb_image(density_grid: np.ndarray) -> np.ndarray:
@@ -268,20 +162,23 @@ def density_to_rgb_image(density_grid: np.ndarray) -> np.ndarray:
 
     # Viridis-like anchor table (normalized RGB) to avoid false contour bands.
     t_knots = np.array([0.00, 0.13, 0.25, 0.38, 0.50, 0.63, 0.75, 0.88, 1.00], dtype=np.float32)
-    c_knots = np.array(
-        [
-            [68, 1, 84],
-            [71, 44, 122],
-            [59, 81, 139],
-            [44, 113, 142],
-            [33, 144, 141],
-            [39, 173, 129],
-            [92, 200, 99],
-            [170, 220, 50],
-            [253, 231, 37],
-        ],
-        dtype=np.float32,
-    ) / 255.0
+    c_knots = (
+        np.array(
+            [
+                [68, 1, 84],
+                [71, 44, 122],
+                [59, 81, 139],
+                [44, 113, 142],
+                [33, 144, 141],
+                [39, 173, 129],
+                [92, 200, 99],
+                [170, 220, 50],
+                [253, 231, 37],
+            ],
+            dtype=np.float32,
+        )
+        / 255.0
+    )
 
     seg = np.searchsorted(t_knots, d, side="right") - 1
     seg = np.clip(seg, 0, len(t_knots) - 2)
@@ -366,6 +263,18 @@ def validate_slice_field(pressure_grid: np.ndarray) -> tuple[bool, float, float,
     return valid, deep_p05, zero_fraction, hole_fraction
 
 
+def validate_slice_metrics(
+    deep_p05: float,
+    zero_fraction: float,
+    hole_fraction: float,
+    *,
+    clipped_mesh_slice: bool,
+) -> bool:
+    """Validate slice metrics with a slightly lower interior threshold for clipped mesh slices."""
+    min_deep_p05 = 0.03 if clipped_mesh_slice else 0.05
+    return bool(deep_p05 > min_deep_p05 and zero_fraction < 0.10 and hole_fraction < 1.0e-3)
+
+
 def build_regular_grid_indices(resolution: int) -> np.ndarray:
     """Create triangle index buffer for a regular resolution x resolution grid."""
     tris: list[int] = []
@@ -409,7 +318,7 @@ def build_mesh_edge_lines(mesh: newton.Mesh) -> tuple[np.ndarray, np.ndarray]:
 def _load_trimesh_for_hydro(mesh_file: str) -> Any:
     """Load a mesh file as a single trimesh mesh for hydro preprocessing."""
     try:
-        import trimesh
+        trimesh = importlib.import_module("trimesh")
     except ImportError as exc:
         raise RuntimeError(
             "Loading external mesh files requires trimesh. "
@@ -429,6 +338,14 @@ def _load_trimesh_for_hydro(mesh_file: str) -> Any:
             raise ValueError(f"Mesh file '{mesh_file}' did not contain any triangle geometry.")
         tri = trimesh.util.concatenate(tuple(geometries))
     return tri
+
+
+def _find_first_usd_mesh_prim(stage: Usd.Stage, asset_name: str):
+    """Return the first mesh prim from a USD stage."""
+    for prim in stage.Traverse():
+        if prim.IsA(UsdGeom.Mesh):
+            return prim
+    raise ValueError(f"No mesh prim found in USD asset: {asset_name}")
 
 
 def _collect_hydro_mesh_stats(tri_mesh: Any, vertices: np.ndarray) -> dict[str, Any]:
@@ -575,21 +492,10 @@ class Example:
         self.slice_position_normalized = float(args.slice_position)
         self.animate_slice = bool(args.animate_slice)
         self.slice_speed = float(args.slice_speed)
+        self.clip_slice_to_sdf = bool(self.has_external_mesh or self.shape_name == "foot1")
         self.plane_scale = float(args.plane_scale)
         self.resolution = int(args.resolution)
         self.shape_opacity = float(args.shape_opacity)
-        self.pressure_x_sine_amplitude = float(args.pressure_x_sine_amplitude)
-        self.pressure_x_sine_cycles = float(args.pressure_x_sine_cycles)
-        self.pressure_x_sine_phase = float(args.pressure_x_sine_phase)
-        self.pressure_y_sine_amplitude = float(args.pressure_y_sine_amplitude)
-        self.pressure_y_sine_cycles = float(args.pressure_y_sine_cycles)
-        self.pressure_y_sine_phase = float(args.pressure_y_sine_phase)
-        self.pressure_z_sine_amplitude = float(args.pressure_z_sine_amplitude)
-        self.pressure_z_sine_cycles = float(args.pressure_z_sine_cycles)
-        self.pressure_z_sine_phase = float(args.pressure_z_sine_phase)
-        self.pressure_foot_structure_strength = float(args.pressure_foot_structure_strength)
-        self.pressure_foot_arch_depth = float(args.pressure_foot_arch_depth)
-        self.pressure_foot_medial_bias = float(args.pressure_foot_medial_bias)
 
         display_mode_arg = str(args.display_mode).strip().lower()
         if display_mode_arg == "auto":
@@ -605,24 +511,17 @@ class Example:
         if self.display_percentile_high <= self.display_percentile_low + 1.0:
             self.display_percentile_high = min(100.0, self.display_percentile_low + 1.0)
 
-        # Auto-apply a foot-pressure visualization preset for external meshes when
-        # no custom foot modulation strength was provided.
-        if bool(args.foot_pressure_preset) or (self.has_external_mesh and self.pressure_foot_structure_strength <= 1.0e-8):
-            if self.pressure_foot_structure_strength <= 1.0e-8:
-                self.pressure_foot_structure_strength = 0.80
-            if abs(self.pressure_foot_arch_depth - 1.0) <= 1.0e-8:
-                self.pressure_foot_arch_depth = 1.15
-            if abs(self.pressure_foot_medial_bias - 0.3) <= 1.0e-8:
-                self.pressure_foot_medial_bias = 0.22
-            if abs(self.slice_position_normalized) <= 1.0e-8 and self.slice_axis == 2:
-                self.slice_position_normalized = -0.18
-
         self.show_shape = self.viewer_is_viser
         self.show_shape_wireframe = not self.viewer_is_viser
         self.show_slice = True
+        self.show_contact_surface = True
 
         self.mesh = self._create_shape_mesh(args)
         self._build_hydroelastic_reference(args)
+        if hasattr(self.viewer, "set_model"):
+            self.viewer.set_model(self._hydro_model)
+        if hasattr(self.viewer, "show_hydro_contact_surface"):
+            self.viewer.show_hydro_contact_surface = self.show_contact_surface
 
         self.capacity = self.resolution * self.resolution
         self.slice_points = wp.zeros(self.capacity, dtype=wp.vec3, device=self.device)
@@ -634,6 +533,8 @@ class Example:
         self.last_zero_fraction = 0.0
         self.last_hole_fraction = 0.0
         self.last_validation_ok = False
+        self.last_contact_face_count = 0
+        self.last_penetrating_face_count = 0
 
         self.slice_indices = wp.array(build_regular_grid_indices(self.resolution), dtype=wp.int32, device=self.device)
         self.slice_uvs = wp.array(build_regular_grid_uvs(self.resolution), dtype=wp.vec2, device=self.device)
@@ -644,7 +545,14 @@ class Example:
 
         self.shape_xforms = wp.array([wp.transform_identity()], dtype=wp.transform, device=self.device)
         self.shape_colors = wp.array([wp.vec3(0.72, 0.72, 0.76)], dtype=wp.vec3, device=self.device)
+        self.support_xforms = wp.array(
+            [wp.transform(self.support_center, wp.quat_identity())],
+            dtype=wp.transform,
+            device=self.device,
+        )
+        self.support_colors = wp.array([wp.vec3(0.35, 0.38, 0.42)], dtype=wp.vec3, device=self.device)
         self.shape_materials = wp.array([wp.vec4(0.75, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=self.device)
+        self.support_materials = wp.array([wp.vec4(0.55, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=self.device)
         self._refresh_shape_materials()
         line_starts, line_ends = build_mesh_edge_lines(self.mesh)
         self.shape_line_starts = wp.array(line_starts, dtype=wp.vec3, device=self.device)
@@ -660,10 +568,96 @@ class Example:
             self._setup_viser_controls()
 
         self._slice_dirty = True
+        self._update_hydro_contacts()
 
     def _refresh_shape_materials(self):
         alpha = np.clip(self.shape_opacity, 0.0, 1.0) if self.viewer_is_viser else 0.0
         self.shape_materials = wp.array([wp.vec4(0.75, 0.0, 0.0, float(alpha))], dtype=wp.vec4, device=self.device)
+        support_alpha = 0.45 * alpha if self.viewer_is_viser else 0.0
+        self.support_materials = wp.array(
+            [wp.vec4(0.55, 0.0, 0.0, float(support_alpha))],
+            dtype=wp.vec4,
+            device=self.device,
+        )
+
+    def _slice_axis_options(self) -> list[tuple[str, int]]:
+        if self.shape_name == "foot1":
+            return [
+                ("Coronal (X normal / Y-Z plane)", 0),
+                ("Sagittal (Y normal / X-Z plane)", 1),
+                ("Axial (Z normal / X-Y plane)", 2),
+            ]
+        return [("X", 0), ("Y", 1), ("Z", 2)]
+
+    def _slice_axis_display_label(self) -> str:
+        for label, axis in self._slice_axis_options():
+            if axis == self.slice_axis:
+                return label
+        return {0: "X", 1: "Y", 2: "Z"}[self.slice_axis]
+
+    def _slice_axis_from_label(self, label: str) -> int:
+        label_norm = label.strip().lower()
+        for option_label, axis in self._slice_axis_options():
+            if option_label.lower() == label_norm:
+                return axis
+        return {"x": 0, "y": 1, "z": 2}.get(label_norm, self.slice_axis)
+
+    def _slice_plane_basis_labels(self) -> tuple[str, str, str]:
+        if self.slice_axis == 0:
+            return "+Y", "+Z", "+X"
+        if self.slice_axis == 1:
+            return "+X", "+Z", "+Y"
+        return "+X", "+Y", "+Z"
+
+    def _slice_plane_gizmo(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        center = np.array(
+            [float(self.sdf_center[0]), float(self.sdf_center[1]), float(self.sdf_center[2])],
+            dtype=np.float32,
+        )
+        center[self.slice_axis] += self.slice_position_normalized * self._axis_half_extent()
+
+        half = np.array(
+            [float(self.sdf_half_extents[0]), float(self.sdf_half_extents[1]), float(self.sdf_half_extents[2])],
+            dtype=np.float32,
+        )
+        plane_half = half * self.plane_scale
+
+        if self.slice_axis == 0:
+            u_axis, v_axis = 1, 2
+        elif self.slice_axis == 1:
+            u_axis, v_axis = 0, 2
+        else:
+            u_axis, v_axis = 0, 1
+
+        basis_u = np.zeros(3, dtype=np.float32)
+        basis_v = np.zeros(3, dtype=np.float32)
+        basis_n = np.zeros(3, dtype=np.float32)
+        basis_u[u_axis] = 1.0
+        basis_v[v_axis] = 1.0
+        basis_n[self.slice_axis] = 1.0
+
+        u_len = max(0.06, 0.18 * float(plane_half[u_axis]))
+        v_len = max(0.06, 0.18 * float(plane_half[v_axis]))
+        n_len = max(0.05, 0.16 * float(half[self.slice_axis]))
+
+        starts = np.stack([center, center, center], axis=0).astype(np.float32, copy=False)
+        ends = np.stack(
+            [
+                center + u_len * basis_u,
+                center + v_len * basis_v,
+                center + n_len * basis_n,
+            ],
+            axis=0,
+        ).astype(np.float32, copy=False)
+        colors = np.array(
+            [
+                [0.95, 0.25, 0.25],
+                [0.25, 0.90, 0.25],
+                [0.25, 0.55, 0.95],
+            ],
+            dtype=np.float32,
+        )
+        return starts, ends, colors
 
     def _setup_viser_controls(self):
         """Create native viser GUI controls when running with ViewerViser."""
@@ -672,11 +666,16 @@ class Example:
         if gui is None:
             return
 
-        axis_name = {0: "x", 1: "y", 2: "z"}[self.slice_axis]
+        axis_label = self._slice_axis_display_label()
         with gui.add_folder("Hydro Pressure Slice"):
             self._viser_controls["show_shape"] = gui.add_checkbox("Show Shape", self.show_shape)
-            self._viser_controls["show_shape_wireframe"] = gui.add_checkbox("Shape Wireframe", self.show_shape_wireframe)
+            self._viser_controls["show_shape_wireframe"] = gui.add_checkbox(
+                "Shape Wireframe", self.show_shape_wireframe
+            )
             self._viser_controls["show_slice"] = gui.add_checkbox("Show Slice", self.show_slice)
+            self._viser_controls["show_contact_surface"] = gui.add_checkbox(
+                "Show Contact Surface", self.show_contact_surface
+            )
             self._viser_controls["animate_slice"] = gui.add_checkbox("Animate Slice", self.animate_slice)
             self._viser_controls["slice_position"] = gui.add_slider(
                 "Slice Position",
@@ -687,8 +686,8 @@ class Example:
             )
             self._viser_controls["slice_axis"] = gui.add_dropdown(
                 "Slice Axis",
-                options=("x", "y", "z"),
-                initial_value=axis_name,
+                options=tuple(label for label, _axis in self._slice_axis_options()),
+                initial_value=axis_label,
             )
             self._viser_controls["shape_opacity"] = gui.add_slider(
                 "Shape Opacity",
@@ -696,90 +695,6 @@ class Example:
                 max=1.0,
                 step=0.01,
                 initial_value=float(self.shape_opacity),
-            )
-            self._viser_controls["pressure_x_sine_amplitude"] = gui.add_slider(
-                "Pressure X Sine Amp",
-                min=-2.0,
-                max=2.0,
-                step=0.01,
-                initial_value=float(self.pressure_x_sine_amplitude),
-            )
-            self._viser_controls["pressure_x_sine_cycles"] = gui.add_slider(
-                "Pressure X Sine Cycles",
-                min=0.0,
-                max=12.0,
-                step=0.1,
-                initial_value=float(self.pressure_x_sine_cycles),
-            )
-            self._viser_controls["pressure_x_sine_phase"] = gui.add_slider(
-                "Pressure X Sine Phase [rad]",
-                min=-3.14159,
-                max=3.14159,
-                step=0.01,
-                initial_value=float(self.pressure_x_sine_phase),
-            )
-            self._viser_controls["pressure_y_sine_amplitude"] = gui.add_slider(
-                "Pressure Y Sine Amp",
-                min=-2.0,
-                max=2.0,
-                step=0.01,
-                initial_value=float(self.pressure_y_sine_amplitude),
-            )
-            self._viser_controls["pressure_y_sine_cycles"] = gui.add_slider(
-                "Pressure Y Sine Cycles",
-                min=0.0,
-                max=12.0,
-                step=0.1,
-                initial_value=float(self.pressure_y_sine_cycles),
-            )
-            self._viser_controls["pressure_y_sine_phase"] = gui.add_slider(
-                "Pressure Y Sine Phase [rad]",
-                min=-3.14159,
-                max=3.14159,
-                step=0.01,
-                initial_value=float(self.pressure_y_sine_phase),
-            )
-            self._viser_controls["pressure_z_sine_amplitude"] = gui.add_slider(
-                "Pressure Z Sine Amp",
-                min=-2.0,
-                max=2.0,
-                step=0.01,
-                initial_value=float(self.pressure_z_sine_amplitude),
-            )
-            self._viser_controls["pressure_z_sine_cycles"] = gui.add_slider(
-                "Pressure Z Sine Cycles",
-                min=0.0,
-                max=12.0,
-                step=0.1,
-                initial_value=float(self.pressure_z_sine_cycles),
-            )
-            self._viser_controls["pressure_z_sine_phase"] = gui.add_slider(
-                "Pressure Z Sine Phase [rad]",
-                min=-3.14159,
-                max=3.14159,
-                step=0.01,
-                initial_value=float(self.pressure_z_sine_phase),
-            )
-            self._viser_controls["pressure_foot_structure_strength"] = gui.add_slider(
-                "Pressure Foot Strength",
-                min=0.0,
-                max=2.0,
-                step=0.01,
-                initial_value=float(self.pressure_foot_structure_strength),
-            )
-            self._viser_controls["pressure_foot_arch_depth"] = gui.add_slider(
-                "Pressure Foot Arch Depth",
-                min=0.0,
-                max=2.0,
-                step=0.01,
-                initial_value=float(self.pressure_foot_arch_depth),
-            )
-            self._viser_controls["pressure_foot_medial_bias"] = gui.add_slider(
-                "Pressure Foot Medial Bias",
-                min=-1.0,
-                max=1.0,
-                step=0.01,
-                initial_value=float(self.pressure_foot_medial_bias),
             )
             self._viser_controls["display_mode"] = gui.add_dropdown(
                 "Display Scale",
@@ -816,22 +731,11 @@ class Example:
         show_shape = bool(self._viser_controls["show_shape"].value)
         show_shape_wireframe = bool(self._viser_controls["show_shape_wireframe"].value)
         show_slice = bool(self._viser_controls["show_slice"].value)
+        show_contact_surface = bool(self._viser_controls["show_contact_surface"].value)
         animate_slice = bool(self._viser_controls["animate_slice"].value)
-        axis_name = str(self._viser_controls["slice_axis"].value).lower()
-        axis = {"x": 0, "y": 1, "z": 2}.get(axis_name, self.slice_axis)
+        axis_label = str(self._viser_controls["slice_axis"].value)
+        axis = self._slice_axis_from_label(axis_label)
         shape_opacity = float(self._viser_controls["shape_opacity"].value)
-        pressure_x_sine_amplitude = float(self._viser_controls["pressure_x_sine_amplitude"].value)
-        pressure_x_sine_cycles = float(self._viser_controls["pressure_x_sine_cycles"].value)
-        pressure_x_sine_phase = float(self._viser_controls["pressure_x_sine_phase"].value)
-        pressure_y_sine_amplitude = float(self._viser_controls["pressure_y_sine_amplitude"].value)
-        pressure_y_sine_cycles = float(self._viser_controls["pressure_y_sine_cycles"].value)
-        pressure_y_sine_phase = float(self._viser_controls["pressure_y_sine_phase"].value)
-        pressure_z_sine_amplitude = float(self._viser_controls["pressure_z_sine_amplitude"].value)
-        pressure_z_sine_cycles = float(self._viser_controls["pressure_z_sine_cycles"].value)
-        pressure_z_sine_phase = float(self._viser_controls["pressure_z_sine_phase"].value)
-        pressure_foot_structure_strength = float(self._viser_controls["pressure_foot_structure_strength"].value)
-        pressure_foot_arch_depth = float(self._viser_controls["pressure_foot_arch_depth"].value)
-        pressure_foot_medial_bias = float(self._viser_controls["pressure_foot_medial_bias"].value)
         display_mode = str(self._viser_controls["display_mode"].value)
         display_percentile_low = float(self._viser_controls["display_percentile_low"].value)
         display_percentile_high = float(self._viser_controls["display_percentile_high"].value)
@@ -843,48 +747,16 @@ class Example:
             self.show_shape_wireframe = show_shape_wireframe
         if self.show_slice != show_slice:
             self.show_slice = show_slice
+        if self.show_contact_surface != show_contact_surface:
+            self.show_contact_surface = show_contact_surface
+            if hasattr(self.viewer, "show_hydro_contact_surface"):
+                self.viewer.show_hydro_contact_surface = self.show_contact_surface
         if self.slice_axis != axis:
             self.slice_axis = axis
             self._slice_dirty = True
         if self.shape_opacity != shape_opacity:
             self.shape_opacity = shape_opacity
             self._refresh_shape_materials()
-        if self.pressure_x_sine_amplitude != pressure_x_sine_amplitude:
-            self.pressure_x_sine_amplitude = pressure_x_sine_amplitude
-            self._slice_dirty = True
-        if self.pressure_x_sine_cycles != pressure_x_sine_cycles:
-            self.pressure_x_sine_cycles = pressure_x_sine_cycles
-            self._slice_dirty = True
-        if self.pressure_x_sine_phase != pressure_x_sine_phase:
-            self.pressure_x_sine_phase = pressure_x_sine_phase
-            self._slice_dirty = True
-        if self.pressure_y_sine_amplitude != pressure_y_sine_amplitude:
-            self.pressure_y_sine_amplitude = pressure_y_sine_amplitude
-            self._slice_dirty = True
-        if self.pressure_y_sine_cycles != pressure_y_sine_cycles:
-            self.pressure_y_sine_cycles = pressure_y_sine_cycles
-            self._slice_dirty = True
-        if self.pressure_y_sine_phase != pressure_y_sine_phase:
-            self.pressure_y_sine_phase = pressure_y_sine_phase
-            self._slice_dirty = True
-        if self.pressure_z_sine_amplitude != pressure_z_sine_amplitude:
-            self.pressure_z_sine_amplitude = pressure_z_sine_amplitude
-            self._slice_dirty = True
-        if self.pressure_z_sine_cycles != pressure_z_sine_cycles:
-            self.pressure_z_sine_cycles = pressure_z_sine_cycles
-            self._slice_dirty = True
-        if self.pressure_z_sine_phase != pressure_z_sine_phase:
-            self.pressure_z_sine_phase = pressure_z_sine_phase
-            self._slice_dirty = True
-        if self.pressure_foot_structure_strength != pressure_foot_structure_strength:
-            self.pressure_foot_structure_strength = pressure_foot_structure_strength
-            self._slice_dirty = True
-        if self.pressure_foot_arch_depth != pressure_foot_arch_depth:
-            self.pressure_foot_arch_depth = pressure_foot_arch_depth
-            self._slice_dirty = True
-        if self.pressure_foot_medial_bias != pressure_foot_medial_bias:
-            self.pressure_foot_medial_bias = pressure_foot_medial_bias
-            self._slice_dirty = True
         if self.display_mode != display_mode:
             self.display_mode = display_mode
             self._slice_dirty = True
@@ -920,21 +792,45 @@ class Example:
                 self._slice_dirty = True
 
     def _build_hydroelastic_reference(self, args):
-        """Build a tiny hydroelastic scene and fetch the exact immutable field volume."""
+        """Build a hydroelastic scene and fetch immutable pressure/contact data."""
         self.mesh.build_sdf(
             max_resolution=int(args.sdf_resolution),
             narrow_band_range=(-float(args.narrow_band), float(args.narrow_band)),
             margin=float(args.sdf_margin),
         )
 
-        cfg_mesh = newton.ModelBuilder.ShapeConfig(
+        v_min, v_max = self._mesh_bounds()
+        extents = np.maximum(v_max - v_min, 1.0e-4)
+        support_hx = max(0.20, 0.75 * float(extents[0]))
+        support_hy = max(0.20, 0.75 * float(extents[1]))
+        support_hz = max(0.05, 0.20 * float(extents[2]))
+        overlap = max(0.003, 0.02 * float(extents[2]))
+        support_center_xy = 0.5 * (v_min[:2] + v_max[:2])
+        support_top = float(v_min[2]) + overlap
+        support_center = wp.vec3(
+            float(support_center_xy[0]),
+            float(support_center_xy[1]),
+            support_top - support_hz,
+        )
+        self.support_center = support_center
+        self.support_half_extents = (support_hx, support_hy, support_hz)
+
+        cfg_main = newton.ModelBuilder.ShapeConfig(
             hydroelastic_type=newton.HydroelasticType.COMPLIANT,
+            hydroelastic_contact_workflow=newton.HydroelasticContactWorkflow.PRESSURE,
+            hydro_pressure_sine_amplitude=(0.0, 0.0, 0.0),
+            hydro_pressure_sine_cycles=(1.0, 1.0, 1.0),
+            hydro_pressure_sine_phase=(0.0, 0.0, 0.0),
             gap=0.02,
             kh=2.0e8,
             margin=1.0e-5,
         )
-        cfg_primitive = newton.ModelBuilder.ShapeConfig(
-            hydroelastic_type=newton.HydroelasticType.COMPLIANT,
+        cfg_support = newton.ModelBuilder.ShapeConfig(
+            hydroelastic_type=newton.HydroelasticType.RIGID,
+            hydroelastic_contact_workflow=newton.HydroelasticContactWorkflow.CLASSIC,
+            hydro_pressure_sine_amplitude=(0.0, 0.0, 0.0),
+            hydro_pressure_sine_cycles=(1.0, 1.0, 1.0),
+            hydro_pressure_sine_phase=(0.0, 0.0, 0.0),
             sdf_max_resolution=int(args.sdf_resolution),
             sdf_narrow_band_range=(-float(args.narrow_band), float(args.narrow_band)),
             gap=0.02,
@@ -944,38 +840,85 @@ class Example:
 
         builder = newton.ModelBuilder(gravity=0.0)
         body_main = builder.add_body(xform=wp.transform_identity(), label="main_shape")
-        self.main_shape_index = builder.add_shape_mesh(body=body_main, mesh=self.mesh, cfg=cfg_mesh)
+        self.main_shape_index = builder.add_shape_mesh(body=body_main, mesh=self.mesh, cfg=cfg_main)
 
-        # Add a distant compliant shape so hydroelastic pair tables are instantiated.
-        body_dummy = builder.add_body(xform=wp.transform(wp.vec3(10.0, 0.0, 0.0), wp.quat_identity()), label="dummy")
-        builder.add_shape_sphere(body=body_dummy, radius=0.1, cfg=cfg_primitive)
+        body_support = builder.add_body(xform=wp.transform(support_center, wp.quat_identity()), label="support_shape")
+        self.support_shape_index = builder.add_shape_box(
+            body=body_support,
+            hx=support_hx,
+            hy=support_hy,
+            hz=support_hz,
+            cfg=cfg_support,
+        )
 
         model = builder.finalize(device=self.device)
-        pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+        sdf_config = HydroelasticSDF.Config(output_contact_surface=True, buffer_fraction=1.0)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            sdf_hydroelastic_config=sdf_config,
+        )
         hydro = pipeline.hydroelastic_sdf
         if hydro is None:
             raise RuntimeError("Failed to construct hydroelastic pipeline for immutable pressure field visualization.")
+
         self._hydro_model = model
         self._hydro_pipeline = pipeline
         self._hydro = hydro
+        self._hydro_state = model.state()
+        self._hydro_contacts = pipeline.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, self._hydro_state)
+        self._hydro_pipeline.collide(self._hydro_state, self._hydro_contacts)
 
         main_sdf_idx = int(model.shape_sdf_index.numpy()[self.main_shape_index])
         if main_sdf_idx < 0:
             raise RuntimeError("Main shape has no SDF index.")
 
-        self.pressure_volume = hydro.pressure_field_volume[main_sdf_idx]
-        if self.pressure_volume is None:
-            raise RuntimeError("Hydroelastic immutable pressure volume is missing for main shape.")
-        self.pressure_volume_id = wp.uint64(int(self.pressure_volume.id))
+        main_pressure_idx = int(hydro.shape_pressure_index.numpy()[self.main_shape_index])
+        if main_pressure_idx < 0:
+            raise RuntimeError("Main compliant shape has no immutable pressure profile.")
+
         pressure_table = hydro.compact_pressure_field_data.numpy()
-        self.pressure_global_max = float(pressure_table[main_sdf_idx]["pressure_max"])
+        pressure_ptr = int(pressure_table[main_pressure_idx]["pressure_ptr"])
+        if pressure_ptr == 0:
+            raise RuntimeError("Hydroelastic immutable pressure volume pointer is zero for main shape.")
+        self.pressure_volume_id = wp.uint64(pressure_ptr)
+
+        self.pressure_global_max = float(pressure_table[main_pressure_idx]["pressure_max"])
         if self.pressure_global_max <= 1.0e-8:
             raise RuntimeError("Hydroelastic immutable pressure max is zero; expected positive interior pressure.")
 
         sdf_data = model.sdf_data.numpy()[main_sdf_idx]
+        self.sdf_sparse_volume_id = wp.uint64(int(sdf_data["sparse_sdf_ptr"]))
+        self.sdf_coarse_volume_id = wp.uint64(int(sdf_data["coarse_sdf_ptr"]))
+        self.sdf_background_value = float(sdf_data["background_value"])
         self.sdf_center = wp.vec3(sdf_data["center"])
         self.sdf_half_extents = wp.vec3(sdf_data["half_extents"])
         self.mesh.finalize(device=self.device)
+
+    def _mesh_bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        vertices = np.asarray(self.mesh.vertices, dtype=np.float32)
+        if vertices.ndim != 2 or vertices.shape[1] != 3:
+            raise ValueError(f"Expected mesh vertices with shape [N, 3], got {vertices.shape}.")
+        return np.min(vertices, axis=0), np.max(vertices, axis=0)
+
+    def _update_hydro_contacts(self):
+        self._hydro_pipeline.collide(self._hydro_state, self._hydro_contacts)
+        contact_surface = self._hydro.get_contact_surface()
+        if contact_surface is None:
+            self.last_contact_face_count = 0
+            self.last_penetrating_face_count = 0
+            return None
+
+        num_faces = int(contact_surface.face_contact_count.numpy()[0])
+        self.last_contact_face_count = num_faces
+        if num_faces <= 0:
+            self.last_penetrating_face_count = 0
+            return contact_surface
+
+        depths = contact_surface.contact_surface_depth.numpy()[:num_faces]
+        self.last_penetrating_face_count = int(np.sum(depths < 0.0))
+        return contact_surface
 
     def _create_shape_mesh(self, args) -> newton.Mesh:
         if args.mesh_file is not None:
@@ -990,6 +933,19 @@ class Example:
             return mesh
 
         shape = self.shape_name
+        if shape == "foot1":
+            usd_path = newton.examples.get_asset("foot1.usd")
+            stage = Usd.Stage.Open(usd_path)
+            if stage is None:
+                raise RuntimeError(f"Failed to open USD asset: {usd_path}")
+            prim = _find_first_usd_mesh_prim(stage, "foot1.usd")
+            src_mesh = newton.usd.get_mesh(prim)
+            # Scale to ~1 m (comparable to other built-in shapes) and center at origin.
+            vertices = np.asarray(src_mesh.vertices, dtype=np.float32)
+            center = 0.5 * (vertices.min(axis=0) + vertices.max(axis=0))
+            vertices = (vertices - center) * 5.0
+            indices = np.asarray(src_mesh.indices, dtype=np.int32)
+            return newton.Mesh(vertices, indices, compute_inertia=False)
         if shape == "sphere":
             return newton.Mesh.create_sphere(radius=0.6, compute_inertia=False)
         if shape == "box":
@@ -1022,47 +978,6 @@ class Example:
     def _axis_half_extent(self) -> float:
         return float(self.sdf_half_extents[self.slice_axis])
 
-    def _apply_axis_sine_modulation(self, axis: int, amplitude: float, cycles: float, phase: float):
-        if abs(amplitude) <= 1.0e-8:
-            return
-
-        wp.launch(
-            kernel=apply_pressure_axis_sine_modulation,
-            dim=self.capacity,
-            inputs=[
-                axis,
-                float(self.sdf_center[axis]),
-                float(self.sdf_half_extents[axis]),
-                amplitude,
-                cycles,
-                phase,
-                self.slice_points,
-                self.slice_inside_flag,
-            ],
-            outputs=[self.slice_pressure],
-            device=self.device,
-        )
-
-    def _apply_foot_structure_modulation(self):
-        if self.pressure_foot_structure_strength <= 1.0e-8:
-            return
-
-        wp.launch(
-            kernel=apply_pressure_foot_structure_modulation,
-            dim=self.capacity,
-            inputs=[
-                self.sdf_center,
-                self.sdf_half_extents,
-                self.pressure_foot_structure_strength,
-                self.pressure_foot_arch_depth,
-                self.pressure_foot_medial_bias,
-                self.slice_points,
-                self.slice_inside_flag,
-            ],
-            outputs=[self.slice_pressure],
-            device=self.device,
-        )
-
     def _update_slice(self):
         if not self._slice_dirty:
             return
@@ -1089,18 +1004,19 @@ class Example:
             kernel=sample_pressure_on_slice,
             dim=self.capacity,
             inputs=[
+                int(self.clip_slice_to_sdf),
                 self.pressure_volume_id,
+                self.sdf_sparse_volume_id,
+                self.sdf_coarse_volume_id,
+                self.sdf_background_value,
+                self.sdf_center,
+                self.sdf_half_extents,
                 1.0e-8,
                 self.slice_points,
             ],
             outputs=[self.slice_inside_flag, self.slice_pressure, self.slice_inside_count],
             device=self.device,
         )
-
-        self._apply_axis_sine_modulation(0, self.pressure_x_sine_amplitude, self.pressure_x_sine_cycles, self.pressure_x_sine_phase)
-        self._apply_axis_sine_modulation(1, self.pressure_y_sine_amplitude, self.pressure_y_sine_cycles, self.pressure_y_sine_phase)
-        self._apply_axis_sine_modulation(2, self.pressure_z_sine_amplitude, self.pressure_z_sine_cycles, self.pressure_z_sine_phase)
-        self._apply_foot_structure_modulation()
 
         self.last_slice_count = int(self.slice_inside_count.numpy()[0])
         pressure_grid = self.slice_pressure.numpy().reshape(self.resolution, self.resolution)
@@ -1116,8 +1032,12 @@ class Example:
             gamma=self.display_gamma,
         )
 
-        self.last_validation_ok, self.last_deep_p05, self.last_zero_fraction, self.last_hole_fraction = (
-            validate_slice_field(pressure_grid)
+        _, self.last_deep_p05, self.last_zero_fraction, self.last_hole_fraction = validate_slice_field(pressure_grid)
+        self.last_validation_ok = validate_slice_metrics(
+            self.last_deep_p05,
+            self.last_zero_fraction,
+            self.last_hole_fraction,
+            clipped_mesh_slice=self.clip_slice_to_sdf,
         )
         self.slice_texture = density_to_rgb_image(normalized)
         if self.viewer_is_viser:
@@ -1141,7 +1061,9 @@ class Example:
             return
 
         axis = self.slice_axis
-        half = np.array([float(self.sdf_half_extents[0]), float(self.sdf_half_extents[1]), float(self.sdf_half_extents[2])])
+        half = np.array(
+            [float(self.sdf_half_extents[0]), float(self.sdf_half_extents[1]), float(self.sdf_half_extents[2])]
+        )
         plane_half = half * self.plane_scale
         if axis == 0:
             du = 2.0 * plane_half[1] / max(self.resolution - 1, 1)
@@ -1181,6 +1103,7 @@ class Example:
 
     def render(self):
         self._update_slice()
+        contact_surface = self._update_hydro_contacts()
 
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_shapes(
@@ -1192,6 +1115,15 @@ class Example:
             materials=self.shape_materials,
             geo_src=self.mesh,
             hidden=(not self.show_shape) or self.show_shape_wireframe,
+        )
+        self.viewer.log_shapes(
+            name="/slice/support_shape",
+            geo_type=newton.GeoType.BOX,
+            geo_scale=self.support_half_extents,
+            xforms=self.support_xforms,
+            colors=self.support_colors,
+            materials=self.support_materials,
+            hidden=not self.show_shape,
         )
 
         self.viewer.log_lines(
@@ -1206,14 +1138,34 @@ class Example:
         if self.viewer_is_viser:
             self._render_slice_viser()
         else:
+            # Flip texture vertically: the GL/Rerun viewers flip textures on
+            # upload (OpenGL convention), but slice_texture rows already match
+            # the UV v-coordinate, so pre-flip to cancel the viewer's flip.
             self.viewer.log_mesh(
                 name="/slice/pressure_heatmap",
                 points=self.slice_points,
                 indices=self.slice_indices,
                 uvs=self.slice_uvs,
-                texture=self.slice_texture,
+                texture=np.flipud(self.slice_texture),
                 hidden=not self.show_slice,
                 backface_culling=False,
+            )
+        gizmo_starts, gizmo_ends, gizmo_colors = self._slice_plane_gizmo()
+        self.viewer.log_lines(
+            name="/slice/plane_basis",
+            starts=wp.array(gizmo_starts, dtype=wp.vec3, device=self.device),
+            ends=wp.array(gizmo_ends, dtype=wp.vec3, device=self.device),
+            colors=wp.array(gizmo_colors, dtype=wp.vec3, device=self.device),
+            width=0.0035,
+            hidden=not self.show_slice,
+        )
+
+        if hasattr(self.viewer, "show_hydro_contact_surface"):
+            self.viewer.show_hydro_contact_surface = self.show_contact_surface
+        if hasattr(self.viewer, "log_hydro_contact_surface"):
+            self.viewer.log_hydro_contact_surface(
+                contact_surface if self.show_contact_surface else None,
+                penetrating_only=True,
             )
 
         self.viewer.end_frame()
@@ -1226,114 +1178,27 @@ class Example:
         )
         imgui.text("Hydro Pressure Slice")
         imgui.text(f"Shape: {self.shape_name}")
+        imgui.text("Support: rigid box")
         imgui.text(f"Viewer: {'viser' if self.viewer_is_viser else 'gl-like'}")
-        imgui.text("Source: Hydroelastic immutable pressure volume.")
+        imgui.text("Source: immutable hydro pressure field + hydro contact surface.")
         imgui.text(f"Color scale: {scale_desc}.")
-        imgui.text("This is the same field used by contact isosurface extraction.")
-        imgui.text("Optional: pressure can be modulated by sine waves and a foot-structure field.")
+        imgui.text("Pressure profile is fixed at build time in ShapeConfig.")
         imgui.text("Validation: deep interior percentile, zero-fraction, interior-hole fraction.")
+        imgui.text(f"Slice Plane: {self._slice_axis_display_label()}")
+        u_label, v_label, n_label = self._slice_plane_basis_labels()
+        imgui.text(f"Slice Basis: red=U {u_label}, green=V {v_label}, blue=N {n_label}")
+        if self.shape_name == "foot1":
+            imgui.text("Foot1 planes: Coronal=Y-Z, Sagittal=X-Z, Axial=X-Y.")
 
         _changed, self.show_shape = imgui.checkbox("Show Shape", self.show_shape)
         _changed, self.show_shape_wireframe = imgui.checkbox("Shape Wireframe", self.show_shape_wireframe)
+        _changed, self.show_slice = imgui.checkbox("Show Slice", self.show_slice)
+        changed, self.show_contact_surface = imgui.checkbox("Show Contact Surface", self.show_contact_surface)
+        if changed and hasattr(self.viewer, "show_hydro_contact_surface"):
+            self.viewer.show_hydro_contact_surface = self.show_contact_surface
         changed, self.shape_opacity = imgui.slider_float("Shape Opacity (viser)", self.shape_opacity, 0.0, 1.0)
         if changed:
             self._refresh_shape_materials()
-        changed, self.pressure_x_sine_amplitude = imgui.slider_float(
-            "Pressure X Sine Amp",
-            self.pressure_x_sine_amplitude,
-            -2.0,
-            2.0,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_x_sine_cycles = imgui.slider_float(
-            "Pressure X Sine Cycles",
-            self.pressure_x_sine_cycles,
-            0.0,
-            12.0,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_x_sine_phase = imgui.slider_float(
-            "Pressure X Sine Phase [rad]",
-            self.pressure_x_sine_phase,
-            -np.pi,
-            np.pi,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_y_sine_amplitude = imgui.slider_float(
-            "Pressure Y Sine Amp",
-            self.pressure_y_sine_amplitude,
-            -2.0,
-            2.0,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_y_sine_cycles = imgui.slider_float(
-            "Pressure Y Sine Cycles",
-            self.pressure_y_sine_cycles,
-            0.0,
-            12.0,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_y_sine_phase = imgui.slider_float(
-            "Pressure Y Sine Phase [rad]",
-            self.pressure_y_sine_phase,
-            -np.pi,
-            np.pi,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_z_sine_amplitude = imgui.slider_float(
-            "Pressure Z Sine Amp",
-            self.pressure_z_sine_amplitude,
-            -2.0,
-            2.0,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_z_sine_cycles = imgui.slider_float(
-            "Pressure Z Sine Cycles",
-            self.pressure_z_sine_cycles,
-            0.0,
-            12.0,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_z_sine_phase = imgui.slider_float(
-            "Pressure Z Sine Phase [rad]",
-            self.pressure_z_sine_phase,
-            -np.pi,
-            np.pi,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_foot_structure_strength = imgui.slider_float(
-            "Pressure Foot Strength",
-            self.pressure_foot_structure_strength,
-            0.0,
-            2.0,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_foot_arch_depth = imgui.slider_float(
-            "Pressure Foot Arch Depth",
-            self.pressure_foot_arch_depth,
-            0.0,
-            2.0,
-        )
-        if changed:
-            self._slice_dirty = True
-        changed, self.pressure_foot_medial_bias = imgui.slider_float(
-            "Pressure Foot Medial Bias",
-            self.pressure_foot_medial_bias,
-            -1.0,
-            1.0,
-        )
-        if changed:
-            self._slice_dirty = True
 
         imgui.text("Display Scale")
         if imgui.radio_button("Global Max", self.display_mode == "global"):
@@ -1374,7 +1239,6 @@ class Example:
             self.display_gamma = float(np.clip(self.display_gamma, 0.4, 3.0))
             self._slice_dirty = True
 
-        _changed, self.show_slice = imgui.checkbox("Show Slice", self.show_slice)
         changed, self.animate_slice = imgui.checkbox("Animate Slice", self.animate_slice)
         if changed:
             self._slice_dirty = True
@@ -1390,26 +1254,32 @@ class Example:
                 self._slice_dirty = True
 
         imgui.text("Slice Axis")
-        if imgui.radio_button("X", self.slice_axis == 0):
-            self.slice_axis = 0
-            self._slice_dirty = True
-        if imgui.radio_button("Y", self.slice_axis == 1):
-            self.slice_axis = 1
-            self._slice_dirty = True
-        if imgui.radio_button("Z", self.slice_axis == 2):
-            self.slice_axis = 2
-            self._slice_dirty = True
+        for label, axis in self._slice_axis_options():
+            if imgui.radio_button(label, self.slice_axis == axis):
+                self.slice_axis = axis
+                self._slice_dirty = True
 
         imgui.text(f"Inside Samples: {self.last_slice_count}")
         imgui.text(f"Deep Interior P05 (norm): {self.last_deep_p05:.4f}")
         imgui.text(f"Inside Zero Fraction: {self.last_zero_fraction:.4f}")
         imgui.text(f"Interior Hole Fraction: {self.last_hole_fraction:.4f}")
         imgui.text(f"Validation: {'PASS' if self.last_validation_ok else 'FAIL'}")
+        imgui.text(f"Contact Faces: {self.last_contact_face_count}")
+        imgui.text(f"Penetrating Faces: {self.last_penetrating_face_count}")
 
     def test_final(self):
         self._update_slice()
+        contact_surface = self._update_hydro_contacts()
         assert self.last_slice_count > 0, "Expected non-empty heat-map section for the selected shape."
-        assert self.last_validation_ok, "Immutable hydroelastic pressure slice validation failed."
+        assert validate_slice_metrics(
+            self.last_deep_p05,
+            self.last_zero_fraction,
+            self.last_hole_fraction,
+            clipped_mesh_slice=self.clip_slice_to_sdf,
+        ), "Immutable hydroelastic pressure slice validation failed."
+        assert contact_surface is not None, "Expected hydro contact-surface output."
+        assert self.last_contact_face_count > 0, "Expected at least one hydro contact-surface face."
+        assert self.last_penetrating_face_count > 0, "Expected at least one penetrating hydro contact-surface face."
 
 
 if __name__ == "__main__":
@@ -1418,7 +1288,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--shape",
         type=str,
-        choices=["sphere", "box", "capsule", "cylinder", "cone", "ellipsoid"],
+        choices=["sphere", "box", "capsule", "cylinder", "cone", "ellipsoid", "foot1"],
         default="box",
         help="Primitive shape to section and visualize (ignored when --mesh-file is provided).",
     )
@@ -1484,86 +1354,6 @@ if __name__ == "__main__":
         type=float,
         default=1.35,
         help="Gamma applied to display-normalized density (visualization only).",
-    )
-    parser.add_argument(
-        "--pressure-x-sine-amplitude",
-        type=float,
-        default=0.0,
-        help="Amplitude for pressure sine modulation along x (0 disables modulation).",
-    )
-    parser.add_argument(
-        "--pressure-x-sine-cycles",
-        type=float,
-        default=1.0,
-        help="Sine cycles across the full x extent for pressure modulation.",
-    )
-    parser.add_argument(
-        "--pressure-x-sine-phase",
-        type=float,
-        default=0.0,
-        help="Phase offset [rad] for pressure x sine modulation.",
-    )
-    parser.add_argument(
-        "--pressure-y-sine-amplitude",
-        type=float,
-        default=0.0,
-        help="Amplitude for pressure sine modulation along y (0 disables modulation).",
-    )
-    parser.add_argument(
-        "--pressure-y-sine-cycles",
-        type=float,
-        default=1.0,
-        help="Sine cycles across the full y extent for pressure modulation.",
-    )
-    parser.add_argument(
-        "--pressure-y-sine-phase",
-        type=float,
-        default=0.0,
-        help="Phase offset [rad] for pressure y sine modulation.",
-    )
-    parser.add_argument(
-        "--pressure-z-sine-amplitude",
-        type=float,
-        default=0.0,
-        help="Amplitude for pressure sine modulation along z (0 disables modulation).",
-    )
-    parser.add_argument(
-        "--pressure-z-sine-cycles",
-        type=float,
-        default=1.0,
-        help="Sine cycles across the full z extent for pressure modulation.",
-    )
-    parser.add_argument(
-        "--pressure-z-sine-phase",
-        type=float,
-        default=0.0,
-        help="Phase offset [rad] for pressure z sine modulation.",
-    )
-    parser.add_argument(
-        "--pressure-foot-structure-strength",
-        type=float,
-        default=0.0,
-        help="Overall strength for localized foot-bone/arch pressure modulation (0 disables).",
-    )
-    parser.add_argument(
-        "--pressure-foot-arch-depth",
-        type=float,
-        default=1.0,
-        help="Arch trough depth multiplier for foot-structure modulation.",
-    )
-    parser.add_argument(
-        "--pressure-foot-medial-bias",
-        type=float,
-        default=0.3,
-        help="Medial (+) / lateral (-) bias for the foot-structure modulation in normalized y.",
-    )
-    parser.add_argument(
-        "--foot-pressure-preset",
-        action="store_true",
-        help=(
-            "Apply a plantar-pressure visualization preset "
-            "(foot structure modulation + default sole slice depth)."
-        ),
     )
     parser.add_argument(
         "--slice-axis",

@@ -2110,12 +2110,18 @@ class NarrowPhase:
                     record_tape=False,
                 )
         if self.hydroelastic_sdf is not None:
+            hf_data = shape_heightfield_data if shape_heightfield_data is not None else self._empty_heightfield_data
+            hf_elev = heightfield_elevation_data if heightfield_elevation_data is not None else self._empty_elevation_data
             self.hydroelastic_sdf.launch(
                 texture_sdf_data,
                 shape_sdf_index,
+                shape_types,
+                shape_data,
                 shape_transform,
                 shape_flags,
                 shape_gap,
+                hf_data,
+                hf_elev,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
                 shape_voxel_resolution,

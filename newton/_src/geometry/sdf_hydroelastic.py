@@ -50,8 +50,8 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL, Devicelike
 
-from .flags import HydroelasticType, ShapeFlags, hydroelastic_type_from_flags
 from ..sim.model import Model
+from ..utils.heightfield import HeightfieldData, sample_sdf_heightfield
 from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import get_slot
@@ -66,6 +66,7 @@ from .contact_reduction_hydroelastic import (
     HydroelasticReductionConfig,
     export_hydroelastic_contact_to_buffer,
 )
+from .flags import HydroelasticContactWorkflow, HydroelasticType, ShapeFlags, hydroelastic_type_from_flags
 from .hashtable import hashtable_find_or_insert
 from .sdf_mc import (
     MC_DEGENERATE_N_SQ_EPS,
@@ -86,6 +87,7 @@ from .kernels import (
     sdf_mesh,
     sdf_sphere,
 )
+from .sdf_contact import sample_sdf_extrapolated
 from .sdf_mc import get_mc_tables, mc_calc_face
 from .sdf_utils import SDFData
 from .types import Axis, GeoType
@@ -97,6 +99,8 @@ PRE_PRUNE_MAX_PENETRATING = 2
 HYDROELASTIC_MODE_NONE = wp.int32(0)
 HYDROELASTIC_MODE_RIGID = wp.int32(1)
 HYDROELASTIC_MODE_COMPLIANT = wp.int32(2)
+HYDROELASTIC_WORKFLOW_CLASSIC = wp.int32(int(HydroelasticContactWorkflow.CLASSIC))
+HYDROELASTIC_WORKFLOW_PRESSURE = wp.int32(int(HydroelasticContactWorkflow.PRESSURE))
 
 _POISSON_MAX_ITERS = 512
 _POISSON_TOL = 1.0e-5
@@ -137,17 +141,17 @@ def map_shape_sdf_data_kernel(
 @wp.kernel
 def map_shape_pressure_data_kernel(
     pressure_data: wp.array(dtype=PressureFieldData),
-    shape_sdf_index: wp.array(dtype=wp.int32),
+    shape_pressure_index: wp.array(dtype=wp.int32),
     out_shape_pressure_data: wp.array(dtype=PressureFieldData),
 ):
     """Map compact pressure field table entries to per-shape PressureFieldData."""
     shape_idx = wp.tid()
-    sdf_idx = shape_sdf_index[shape_idx]
-    if sdf_idx < 0:
+    pressure_idx = shape_pressure_index[shape_idx]
+    if pressure_idx < 0:
         out_shape_pressure_data[shape_idx].pressure_ptr = wp.uint64(0)
         out_shape_pressure_data[shape_idx].pressure_max = 0.0
     else:
-        out_shape_pressure_data[shape_idx] = pressure_data[sdf_idx]
+        out_shape_pressure_data[shape_idx] = pressure_data[pressure_idx]
 
 
 @wp.kernel
@@ -321,6 +325,64 @@ def _solve_poisson_pressure_extent(
     return field
 
 
+def _normalize_axis_triplet(
+    value: np.ndarray | tuple[float, float, float] | list[float] | None,
+    default: tuple[float, float, float],
+) -> np.ndarray:
+    """Convert axis-triplet input to float32 numpy array."""
+    if value is None:
+        return np.asarray(default, dtype=np.float32)
+    arr = np.asarray(value, dtype=np.float32).reshape(-1)
+    if arr.shape[0] != 3:
+        raise ValueError(f"Expected 3 values, got {arr.shape[0]}")
+    return arr
+
+
+def _apply_pressure_axis_sine_modulation_to_grid(
+    pressure_grid: np.ndarray,
+    inside: np.ndarray,
+    lower: np.ndarray,
+    voxel_size_scalar: float,
+    center: np.ndarray,
+    half_extents: np.ndarray,
+    amplitude: np.ndarray,
+    cycles: np.ndarray,
+    phase: np.ndarray,
+) -> np.ndarray:
+    """Apply per-axis sine modulation to a dense pressure grid."""
+    if not np.any(inside):
+        return pressure_grid
+
+    out = pressure_grid.astype(np.float32, copy=True)
+    two_pi = np.float32(2.0 * np.pi)
+    nx, ny, nz = out.shape
+    axis_sizes = (nx, ny, nz)
+
+    for axis in range(3):
+        amp = float(amplitude[axis])
+        if abs(amp) <= 1.0e-8:
+            continue
+        cyc = float(max(cycles[axis], 1.0e-6))
+        ph = float(phase[axis])
+        count = axis_sizes[axis]
+        coords = lower[axis] + np.arange(count, dtype=np.float32) * np.float32(voxel_size_scalar)
+        half_extent = float(max(abs(half_extents[axis]), 1.0e-8))
+        coord_norm = (coords - float(center[axis])) / half_extent
+        coord01 = 0.5 * (coord_norm + 1.0)
+        wave = np.sin(two_pi * np.float32(cyc) * coord01 + np.float32(ph)).astype(np.float32)
+        modulation = np.maximum(1.0 + np.float32(amp) * wave, 0.0).astype(np.float32)
+
+        if axis == 0:
+            out *= modulation[:, None, None]
+        elif axis == 1:
+            out *= modulation[None, :, None]
+        else:
+            out *= modulation[None, None, :]
+
+    out[~inside] = 0.0
+    return out
+
+
 def _is_geometry_sampling_supported(shape_type: int, shape_source_ptr: int) -> bool:
     """Return whether pressure construction can sample geometry directly."""
     if shape_type in {
@@ -345,6 +407,9 @@ def build_immutable_pressure_field_from_sdf(
     shape_type: int | None = None,
     shape_scale: np.ndarray | None = None,
     shape_source_ptr: int | None = None,
+    pressure_sine_amplitude: np.ndarray | tuple[float, float, float] | None = None,
+    pressure_sine_cycles: np.ndarray | tuple[float, float, float] | None = None,
+    pressure_sine_phase: np.ndarray | tuple[float, float, float] | None = None,
 ) -> tuple[PressureFieldData, wp.Volume | None]:
     """Build immutable pressure field for one compact SDF entry."""
     if int(sdf_entry["sparse_sdf_ptr"]) == 0:
@@ -409,6 +474,24 @@ def build_immutable_pressure_field_from_sdf(
         # hydroelastic stiffness calibration (k * depth * area) remains coherent.
         depth_scale = float(np.max(-sdf_grid[inside]))
         pressure_grid[inside] *= depth_scale
+
+    amplitude = _normalize_axis_triplet(pressure_sine_amplitude, (0.0, 0.0, 0.0))
+    cycles = _normalize_axis_triplet(pressure_sine_cycles, (1.0, 1.0, 1.0))
+    phase = _normalize_axis_triplet(pressure_sine_phase, (0.0, 0.0, 0.0))
+    if np.any(np.abs(amplitude) > 1.0e-8):
+        center = np.asarray(sdf_entry["center"], dtype=np.float32)
+        half_extents = np.asarray(sdf_entry["half_extents"], dtype=np.float32)
+        pressure_grid = _apply_pressure_axis_sine_modulation_to_grid(
+            pressure_grid,
+            inside,
+            lower,
+            voxel_size_scalar,
+            center,
+            half_extents,
+            amplitude,
+            cycles,
+            phase,
+        )
 
     pressure_volume = wp.Volume.load_from_numpy(
         pressure_grid.astype(np.float32),
@@ -529,6 +612,25 @@ def is_hydroelastic_compliant(mode: wp.int32) -> wp.bool:
 
 
 @wp.func
+def resolve_pair_contact_workflow(
+    mode_a: wp.int32,
+    mode_b: wp.int32,
+    workflow_a: wp.int32,
+    workflow_b: wp.int32,
+) -> wp.int32:
+    """Resolve per-pair hydroelastic workflow from per-shape settings.
+
+    Rule: if any compliant participant chooses pressure workflow, the pair uses
+    pressure workflow; otherwise classic workflow.
+    """
+    if mode_a == HYDROELASTIC_MODE_COMPLIANT and workflow_a == HYDROELASTIC_WORKFLOW_PRESSURE:
+        return HYDROELASTIC_WORKFLOW_PRESSURE
+    if mode_b == HYDROELASTIC_MODE_COMPLIANT and workflow_b == HYDROELASTIC_WORKFLOW_PRESSURE:
+        return HYDROELASTIC_WORKFLOW_PRESSURE
+    return HYDROELASTIC_WORKFLOW_CLASSIC
+
+
+@wp.func
 def get_pair_effective_stiffness(
     k_a: wp.float32,
     k_b: wp.float32,
@@ -623,6 +725,8 @@ class HydroelasticSDF:
         shape_sdf_block_coords: Block coordinates for each shape's SDF representation.
         shape_sdf_shape2blocks: Mapping from shape index to (start, end) block range.
         shape_material_kh: Hydroelastic stiffness coefficient for each shape.
+        shape_contact_workflow: Contact workflow enum value for each shape.
+        shape_pressure_index: Per-shape index into compact pressure field table.
         compact_pressure_field_data: Compact immutable pressure-field table
             aligned with compact SDF indices.
         n_shapes: Total number of shapes in the simulation.
@@ -728,6 +832,8 @@ class HydroelasticSDF:
         shape_material_kh: wp.array(dtype=wp.float32),
         shape_material_kd: wp.array(dtype=wp.float32),
         shape_material_mu: wp.array(dtype=wp.float32),
+        shape_contact_workflow: wp.array(dtype=wp.int32),
+        shape_pressure_index: wp.array(dtype=wp.int32),
         compact_pressure_field_data: wp.array(dtype=PressureFieldData),
         pressure_field_volume: list[wp.Volume],
         n_shapes: int,
@@ -749,6 +855,8 @@ class HydroelasticSDF:
         self.shape_material_kh = shape_material_kh
         self.shape_material_kd = shape_material_kd
         self.shape_material_mu = shape_material_mu
+        self.shape_contact_workflow = shape_contact_workflow
+        self.shape_pressure_index = shape_pressure_index
         self.compact_pressure_field_data = compact_pressure_field_data
         # Keep pressure volumes alive for device-side pointer validity.
         self.pressure_field_volume = pressure_field_volume
@@ -918,6 +1026,32 @@ class HydroelasticSDF:
         shape_type = model.shape_type.numpy()
         shape_source_ptr = model.shape_source_ptr.numpy()
         shape_scale = model.shape_scale.numpy()
+        if (
+            hasattr(model, "shape_hydroelastic_contact_workflow")
+            and model.shape_hydroelastic_contact_workflow is not None
+        ):
+            shape_contact_workflow = model.shape_hydroelastic_contact_workflow.numpy().astype(np.int32)
+        else:
+            shape_contact_workflow = np.full(
+                model.shape_count,
+                int(HydroelasticContactWorkflow.CLASSIC),
+                dtype=np.int32,
+            )
+        if (
+            hasattr(model, "shape_hydro_pressure_sine_amplitude")
+            and model.shape_hydro_pressure_sine_amplitude is not None
+        ):
+            shape_pressure_sine_amp = model.shape_hydro_pressure_sine_amplitude.numpy().astype(np.float32)
+        else:
+            shape_pressure_sine_amp = np.zeros((model.shape_count, 3), dtype=np.float32)
+        if hasattr(model, "shape_hydro_pressure_sine_cycles") and model.shape_hydro_pressure_sine_cycles is not None:
+            shape_pressure_sine_cycles = model.shape_hydro_pressure_sine_cycles.numpy().astype(np.float32)
+        else:
+            shape_pressure_sine_cycles = np.ones((model.shape_count, 3), dtype=np.float32)
+        if hasattr(model, "shape_hydro_pressure_sine_phase") and model.shape_hydro_pressure_sine_phase is not None:
+            shape_pressure_sine_phase = model.shape_hydro_pressure_sine_phase.numpy().astype(np.float32)
+        else:
+            shape_pressure_sine_phase = np.zeros((model.shape_count, 3), dtype=np.float32)
 
         # Get indices of shapes that can collide and are hydroelastic
         hydroelastic_indices = [
@@ -927,6 +1061,14 @@ class HydroelasticSDF:
         ]
 
         for idx in hydroelastic_indices:
+            mode = shape_hydro_mode[idx]
+            stype = int(shape_type[idx])
+            is_rigid_terrain = mode == int(HydroelasticType.RIGID) and stype in (
+                int(GeoType.PLANE),
+                int(GeoType.HFIELD),
+            )
+            if is_rigid_terrain:
+                continue
             sdf_idx = shape_sdf_index[idx]
             if sdf_idx < 0:
                 raise ValueError(f"Hydroelastic shape {idx} requires SDF data but has no attached/generated SDF.")
@@ -966,28 +1108,72 @@ class HydroelasticSDF:
             sdf_shape_scale[sdf_idx] = np.asarray(shape_scale[shape_idx], dtype=np.float32)
             sdf_shape_source_ptr[sdf_idx] = np.uint64(shape_source_ptr[shape_idx])
 
+        shape_pressure_index = np.full(model.shape_count, -1, dtype=np.int32)
         compact_pressure_field_data: list[PressureFieldData] = []
         pressure_field_volume: list[wp.Volume] = []
-        for sdf_idx in range(num_sdfs):
-            pressure_shape_type: int | None = None
-            pressure_shape_scale: np.ndarray | None = None
-            pressure_shape_source_ptr: int | None = None
-            if sdf_shape_type[sdf_idx] >= 0:
-                pressure_shape_type = int(sdf_shape_type[sdf_idx])
-                pressure_shape_scale = sdf_shape_scale[sdf_idx]
-                pressure_shape_source_ptr = int(sdf_shape_source_ptr[sdf_idx])
-            pressure_data, pressure_volume = build_immutable_pressure_field_from_sdf(
-                model.sdf_data,
-                sdf_data[sdf_idx],
-                sdf_idx,
-                model.device,
-                shape_type=pressure_shape_type,
-                shape_scale=pressure_shape_scale,
-                shape_source_ptr=pressure_shape_source_ptr,
+        pressure_profile_cache: dict[tuple[Any, ...], int] = {}
+
+        for shape_idx in hydroelastic_indices:
+            if shape_hydro_mode[shape_idx] != int(HydroelasticType.COMPLIANT):
+                continue
+            sdf_idx = shape_sdf_index[shape_idx]
+            if sdf_idx < 0:
+                continue
+
+            amp = np.asarray(shape_pressure_sine_amp[shape_idx], dtype=np.float32)
+            cyc = np.asarray(shape_pressure_sine_cycles[shape_idx], dtype=np.float32)
+            phs = np.asarray(shape_pressure_sine_phase[shape_idx], dtype=np.float32)
+            workflow = int(shape_contact_workflow[shape_idx])
+            if workflow != int(HydroelasticContactWorkflow.PRESSURE):
+                amp = np.zeros(3, dtype=np.float32)
+                cyc = np.ones(3, dtype=np.float32)
+                phs = np.zeros(3, dtype=np.float32)
+
+            if np.all(np.abs(amp) <= 1.0e-8):
+                amp = np.zeros(3, dtype=np.float32)
+                cyc = np.ones(3, dtype=np.float32)
+                phs = np.zeros(3, dtype=np.float32)
+
+            key = (
+                int(sdf_idx),
+                float(amp[0]),
+                float(amp[1]),
+                float(amp[2]),
+                float(cyc[0]),
+                float(cyc[1]),
+                float(cyc[2]),
+                float(phs[0]),
+                float(phs[1]),
+                float(phs[2]),
             )
-            compact_pressure_field_data.append(pressure_data)
-            if pressure_volume is not None:
-                pressure_field_volume.append(pressure_volume)
+            pressure_idx = pressure_profile_cache.get(key)
+            if pressure_idx is None:
+                pressure_shape_type: int | None = None
+                pressure_shape_scale: np.ndarray | None = None
+                pressure_shape_source_ptr: int | None = None
+                if sdf_shape_type[sdf_idx] >= 0:
+                    pressure_shape_type = int(sdf_shape_type[sdf_idx])
+                    pressure_shape_scale = sdf_shape_scale[sdf_idx]
+                    pressure_shape_source_ptr = int(sdf_shape_source_ptr[sdf_idx])
+                pressure_data, pressure_volume = build_immutable_pressure_field_from_sdf(
+                    model.sdf_data,
+                    sdf_data[sdf_idx],
+                    sdf_idx,
+                    model.device,
+                    shape_type=pressure_shape_type,
+                    shape_scale=pressure_shape_scale,
+                    shape_source_ptr=pressure_shape_source_ptr,
+                    pressure_sine_amplitude=amp,
+                    pressure_sine_cycles=cyc,
+                    pressure_sine_phase=phs,
+                )
+                pressure_idx = len(compact_pressure_field_data)
+                pressure_profile_cache[key] = pressure_idx
+                compact_pressure_field_data.append(pressure_data)
+                if pressure_volume is not None:
+                    pressure_field_volume.append(pressure_volume)
+
+            shape_pressure_index[shape_idx] = pressure_idx
 
         return cls(
             num_shape_pairs=num_hydroelastic_pairs,
@@ -998,6 +1184,8 @@ class HydroelasticSDF:
             shape_material_kh=model.shape_material_kh,
             shape_material_kd=model.shape_material_kd,
             shape_material_mu=model.shape_material_mu,
+            shape_contact_workflow=wp.array(shape_contact_workflow, dtype=wp.int32, device=model.device),
+            shape_pressure_index=wp.array(shape_pressure_index, dtype=wp.int32, device=model.device),
             compact_pressure_field_data=wp.array(
                 compact_pressure_field_data, dtype=PressureFieldData, device=model.device
             ),
@@ -1029,9 +1217,13 @@ class HydroelasticSDF:
         self,
         sdf_data: wp.array(dtype=SDFData),
         shape_sdf_index: wp.array(dtype=wp.int32),
+        shape_type: wp.array(dtype=wp.int32),
+        shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
         shape_flags: wp.array(dtype=wp.int32),
         shape_gap: wp.array(dtype=wp.float32),
+        shape_heightfield_data: wp.array(dtype=HeightfieldData),
+        heightfield_elevation_data: wp.array(dtype=wp.float32),
         shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
         shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
@@ -1044,9 +1236,13 @@ class HydroelasticSDF:
         Args:
             sdf_data: Compact SDF table.
             shape_sdf_index: Per-shape SDF index into sdf_data.
+            shape_type: Per-shape geometry type.
+            shape_data: Per-shape scale/thickness data.
             shape_transform: World transforms for each shape.
             shape_flags: Per-shape flags with hydroelastic mode bits.
             shape_gap: Per-shape contact gap (detection threshold) for each shape.
+            shape_heightfield_data: Per-shape heightfield metadata.
+            heightfield_elevation_data: Concatenated heightfield elevation array.
             shape_collision_aabb_lower: Per-shape collision AABB lower bounds.
             shape_collision_aabb_upper: Per-shape collision AABB upper bounds.
             shape_voxel_resolution: Per-shape voxel grid resolution.
@@ -1066,7 +1262,7 @@ class HydroelasticSDF:
         wp.launch(
             kernel=map_shape_pressure_data_kernel,
             dim=shape_sdf_index.shape[0],
-            inputs=[self.compact_pressure_field_data, shape_sdf_index],
+            inputs=[self.compact_pressure_field_data, self.shape_pressure_index],
             outputs=[shape_pressure_data],
             device=self.device,
         )
@@ -1075,14 +1271,35 @@ class HydroelasticSDF:
             shape_sdf_data,
             shape_transform,
             shape_flags,
+            shape_type,
             shape_pairs_sdf_sdf,
             shape_pairs_sdf_sdf_count,
         )
 
-        self._find_iso_voxels(shape_sdf_data, shape_pressure_data, shape_transform, shape_flags, shape_gap)
+        self._find_iso_voxels(
+            shape_sdf_data,
+            shape_pressure_data,
+            shape_type,
+            shape_data,
+            shape_transform,
+            shape_flags,
+            shape_heightfield_data,
+            heightfield_elevation_data,
+            shape_gap,
+        )
 
         if self.config.reduce_contacts:
-            self._generate_contacts(shape_sdf_data, shape_pressure_data, shape_transform, shape_flags, shape_gap)
+            self._generate_contacts(
+                shape_sdf_data,
+                shape_pressure_data,
+                shape_type,
+                shape_data,
+                shape_transform,
+                shape_flags,
+                shape_heightfield_data,
+                heightfield_elevation_data,
+                shape_gap,
+            )
             self._reduce_decode_contacts(
                 shape_transform,
                 shape_flags,
@@ -1093,7 +1310,17 @@ class HydroelasticSDF:
                 writer_data,
             )
         else:
-            self._generate_contacts(shape_sdf_data, shape_pressure_data, shape_transform, shape_flags, shape_gap)
+            self._generate_contacts(
+                shape_sdf_data,
+                shape_pressure_data,
+                shape_type,
+                shape_data,
+                shape_transform,
+                shape_flags,
+                shape_heightfield_data,
+                heightfield_elevation_data,
+                shape_gap,
+            )
             self._decode_contacts(
                 shape_transform,
                 shape_flags,
@@ -1143,6 +1370,7 @@ class HydroelasticSDF:
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_transform: wp.array(dtype=wp.transform),
         shape_flags: wp.array(dtype=wp.int32),
+        shape_type: wp.array(dtype=wp.int32),
         shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
         shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
     ) -> None:
@@ -1158,6 +1386,7 @@ class HydroelasticSDF:
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
                 shape_flags,
+                shape_type,
                 self.shape_sdf_shape2blocks,
             ],
             outputs=[
@@ -1213,8 +1442,12 @@ class HydroelasticSDF:
         self,
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_pressure_data: wp.array(dtype=PressureFieldData),
+        shape_type: wp.array(dtype=wp.int32),
+        shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
         shape_flags: wp.array(dtype=wp.int32),
+        shape_heightfield_data: wp.array(dtype=HeightfieldData),
+        heightfield_elevation_data: wp.array(dtype=wp.float32),
         shape_gap: wp.array(dtype=wp.float32),
     ) -> None:
         # Find voxels which contain the isosurface between the shapes using octree-like pruning.
@@ -1229,9 +1462,14 @@ class HydroelasticSDF:
                     self.iso_buffer_counts[i],
                     shape_sdf_data,
                     shape_pressure_data,
+                    shape_type,
+                    shape_data,
                     shape_transform,
                     self.shape_material_kh,
                     shape_flags,
+                    self.shape_contact_workflow,
+                    shape_heightfield_data,
+                    heightfield_elevation_data,
                     self.iso_buffer_coords[i],
                     self.iso_buffer_shape_pairs[i],
                     shape_gap,
@@ -1278,8 +1516,12 @@ class HydroelasticSDF:
         self,
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_pressure_data: wp.array(dtype=PressureFieldData),
+        shape_type: wp.array(dtype=wp.int32),
+        shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
         shape_flags: wp.array(dtype=wp.int32),
+        shape_heightfield_data: wp.array(dtype=HeightfieldData),
+        heightfield_elevation_data: wp.array(dtype=wp.float32),
         shape_gap: wp.array(dtype=wp.float32),
         shape_local_aabb_lower: wp.array | None = None,
         shape_local_aabb_upper: wp.array | None = None,
@@ -1310,9 +1552,14 @@ class HydroelasticSDF:
                 self.iso_voxel_count,
                 shape_sdf_data,
                 shape_pressure_data,
+                shape_type,
+                shape_data,
                 shape_transform,
                 self.shape_material_kh,
                 shape_flags,
+                self.shape_contact_workflow,
+                shape_heightfield_data,
+                heightfield_elevation_data,
                 self.iso_voxel_coords,
                 self.iso_voxel_shape_pair,
                 self.mc_tables[0],
@@ -1413,6 +1660,7 @@ def broadphase_collision_pairs_count(
     shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
     shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
     shape_flags: wp.array(dtype=wp.int32),
+    shape_type: wp.array(dtype=wp.int32),
     shape2blocks: wp.array(dtype=wp.vec2i),
     # outputs
     thread_num_blocks: wp.array(dtype=wp.int32),
@@ -1424,27 +1672,45 @@ def broadphase_collision_pairs_count(
     pair = shape_pairs_sdf_sdf[tid]
     shape_a = pair[0]
     shape_b = pair[1]
-    half_extents_a = shape_sdf_data[shape_a].half_extents
-    half_extents_b = shape_sdf_data[shape_b].half_extents
-
-    center_offset_a = shape_sdf_data[shape_a].center
-    center_offset_b = shape_sdf_data[shape_b].center
-
-    does_collide = wp.bool(False)
-
-    world_transform_a = shape_transform[shape_a]
-    world_transform_b = shape_transform[shape_b]
-
-    # Apply center offset to transforms (since SAT assumes centered boxes)
-    centered_transform_a = wp.transform_multiply(world_transform_a, wp.transform(center_offset_a, wp.quat_identity()))
-    centered_transform_b = wp.transform_multiply(world_transform_b, wp.transform(center_offset_b, wp.quat_identity()))
-
-    does_collide = sat_box_intersection(centered_transform_a, half_extents_a, centered_transform_b, half_extents_b)
-
     mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
     mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
     compliant_a = mode_a == HYDROELASTIC_MODE_COMPLIANT
     compliant_b = mode_b == HYDROELASTIC_MODE_COMPLIANT
+
+    type_a = shape_type[shape_a]
+    type_b = shape_type[shape_b]
+
+    analytic_rigid_a = (
+        mode_a == HYDROELASTIC_MODE_RIGID
+        and (type_a == wp.int32(GeoType.PLANE) or type_a == wp.int32(GeoType.HFIELD))
+        and shape_sdf_data[shape_a].sparse_sdf_ptr == wp.uint64(0)
+    )
+    analytic_rigid_b = (
+        mode_b == HYDROELASTIC_MODE_RIGID
+        and (type_b == wp.int32(GeoType.PLANE) or type_b == wp.int32(GeoType.HFIELD))
+        and shape_sdf_data[shape_b].sparse_sdf_ptr == wp.uint64(0)
+    )
+    has_analytic_rigid_terrain = (analytic_rigid_a and compliant_b) or (analytic_rigid_b and compliant_a)
+
+    does_collide = wp.bool(False)
+    if has_analytic_rigid_terrain:
+        # Conservative admission for analytic rigid terrain. Downstream iso pruning
+        # rejects non-overlapping blocks.
+        does_collide = True
+    else:
+        half_extents_a = shape_sdf_data[shape_a].half_extents
+        half_extents_b = shape_sdf_data[shape_b].half_extents
+        center_offset_a = shape_sdf_data[shape_a].center
+        center_offset_b = shape_sdf_data[shape_b].center
+        world_transform_a = shape_transform[shape_a]
+        world_transform_b = shape_transform[shape_b]
+        centered_transform_a = wp.transform_multiply(
+            world_transform_a, wp.transform(center_offset_a, wp.quat_identity())
+        )
+        centered_transform_b = wp.transform_multiply(
+            world_transform_b, wp.transform(center_offset_b, wp.quat_identity())
+        )
+        does_collide = sat_box_intersection(centered_transform_a, half_extents_a, centered_transform_b, half_extents_b)
 
     # For rigid-compliant pairs keep the compliant body in slot B so downstream
     # depth sampling (mc_calc_face over sdf_b) uses the compliant field.
@@ -1600,6 +1866,52 @@ def weighted_sdf_difference(
 
 
 @wp.func
+def sample_plane_signed_field_clipped(local_pos: wp.vec3, width: wp.float32, length: wp.float32) -> wp.float32:
+    """Sample signed plane field with finite-footprint clipping.
+
+    Infinite planes (``width <= 0`` or ``length <= 0``) use signed local-Z.
+    Finite planes use signed local-Z inside the XY footprint and return a
+    positive distance outside the footprint to suppress off-plane contacts.
+    """
+    if width <= 0.0 or length <= 0.0:
+        return local_pos[2]
+
+    ax = wp.abs(local_pos[0])
+    ay = wp.abs(local_pos[1])
+    if ax <= width and ay <= length:
+        return local_pos[2]
+
+    dx = wp.max(ax - width, 0.0)
+    dy = wp.max(ay - length, 0.0)
+    lateral = wp.sqrt(dx * dx + dy * dy)
+    if local_pos[2] > 0.0:
+        return wp.sqrt(lateral * lateral + local_pos[2] * local_pos[2])
+    return lateral
+
+
+@wp.func
+def sample_signed_field_with_terrain_fallback(
+    sdf_data: SDFData,
+    shape_type: wp.int32,
+    shape_scale: wp.vec3,
+    shape_hfield_data: HeightfieldData,
+    elevation_data: wp.array(dtype=wp.float32),
+    local_pos: wp.vec3,
+) -> tuple[wp.float32, wp.bool]:
+    """Sample signed field from SDF when available, else terrain analytic path."""
+    if sdf_data.sparse_sdf_ptr != wp.uint64(0):
+        return sample_sdf_extrapolated(sdf_data, local_pos), True
+
+    if shape_type == wp.int32(GeoType.PLANE):
+        return sample_plane_signed_field_clipped(local_pos, shape_scale[0], shape_scale[1]), True
+
+    if shape_type == wp.int32(GeoType.HFIELD):
+        return sample_sdf_heightfield(shape_hfield_data, elevation_data, local_pos), True
+
+    return wp.float32(MAXVAL), False
+
+
+@wp.func
 def sample_pressure_field(pressure_data: PressureFieldData, local_pos: wp.vec3) -> wp.float32:
     """Sample immutable pressure field at local position."""
     if pressure_data.pressure_ptr == wp.uint64(0):
@@ -1619,16 +1931,22 @@ def eval_signed_field(
     sdf_data: SDFData,
     mode: wp.int32,
     pressure_data: PressureFieldData,
+    pair_workflow: wp.int32,
 ) -> tuple[wp.float32, wp.bool]:
     """Evaluate a robust signed field and validity flag for one shape.
 
-    For compliant shapes we use the immutable pressure potential directly in the
-    interior (negative sign convention). This decouples contact from sparse/coarse
-    SDF sign artifacts in deep interior samples.
+    In classic workflow this returns the SDF value. In pressure workflow, compliant
+    shapes may use immutable pressure potential in the interior (negative sign
+    convention), decoupling contact from sparse/coarse SDF sign artifacts in deep
+    interior samples.
     """
     invalid_sdf = sdf_val >= wp.static(MAXVAL * 0.99) or wp.isnan(sdf_val)
 
-    if mode == HYDROELASTIC_MODE_COMPLIANT and pressure_data.pressure_ptr != wp.uint64(0):
+    if (
+        pair_workflow == HYDROELASTIC_WORKFLOW_PRESSURE
+        and mode == HYDROELASTIC_MODE_COMPLIANT
+        and pressure_data.pressure_ptr != wp.uint64(0)
+    ):
         pressure = sample_pressure_field(pressure_data, local_pos)
         if pressure > 0.0:
             if (not invalid_sdf) and sdf_val < 0.0:
@@ -1639,7 +1957,8 @@ def eval_signed_field(
                 )
                 blend = wp.clamp(depth / boundary_shell, 0.0, 1.0)
                 return -((1.0 - blend) * depth + blend * pressure), True
-            return -pressure, True
+            if invalid_sdf:
+                return -pressure, True
 
     if invalid_sdf:
         return wp.float32(MAXVAL), False
@@ -1655,10 +1974,16 @@ def sdf_diff_sdf(
     pressureB_data: PressureFieldData,
     mode_a: wp.int32,
     mode_b: wp.int32,
+    workflow_a: wp.int32,
+    workflow_b: wp.int32,
     transfA: wp.transform,
     transfB: wp.transform,
     k_eff_a: wp.float32,
     k_eff_b: wp.float32,
+    shape_b_type: wp.int32,
+    shape_b_scale: wp.vec3,
+    shape_b_hfield_data: HeightfieldData,
+    heightfield_elevation_data: wp.array(dtype=wp.float32),
     x_id: wp.int32,
     y_id: wp.int32,
     z_id: wp.int32,
@@ -1675,11 +2000,19 @@ def sdf_diff_sdf(
     pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
     valA = wp.volume_lookup_f(sdfA, x_id, y_id, z_id)
 
-    valB = sample_sdf_extrapolated(sdfB_data, pointB)
+    valB, sampled_b = sample_signed_field_with_terrain_fallback(
+        sdfB_data,
+        shape_b_type,
+        shape_b_scale,
+        shape_b_hfield_data,
+        heightfield_elevation_data,
+        pointB,
+    )
 
-    fieldA, validA = eval_signed_field(valA, pointA, sdfA_data, mode_a, pressureA_data)
-    fieldB, validB = eval_signed_field(valB, pointB, sdfB_data, mode_b, pressureB_data)
-    is_valid = validA and validB
+    pair_workflow = resolve_pair_contact_workflow(mode_a, mode_b, workflow_a, workflow_b)
+    fieldA, validA = eval_signed_field(valA, pointA, sdfA_data, mode_a, pressureA_data, pair_workflow)
+    fieldB, validB = eval_signed_field(valB, pointB, sdfB_data, mode_b, pressureB_data, pair_workflow)
+    is_valid = sampled_b and validA and validB
 
     diff = weighted_sdf_difference(fieldA, fieldB, k_eff_a, k_eff_b)
     return diff, fieldA, fieldB, is_valid
@@ -1693,10 +2026,16 @@ def sdf_diff_sdf(
     pressureB_data: PressureFieldData,
     mode_a: wp.int32,
     mode_b: wp.int32,
+    workflow_a: wp.int32,
+    workflow_b: wp.int32,
     transfA: wp.transform,
     transfB: wp.transform,
     k_eff_a: wp.float32,
     k_eff_b: wp.float32,
+    shape_b_type: wp.int32,
+    shape_b_scale: wp.vec3,
+    shape_b_hfield_data: HeightfieldData,
+    heightfield_elevation_data: wp.array(dtype=wp.float32),
     pos_a_local: wp.vec3,
 ) -> tuple[wp.float32, wp.float32, wp.float32, wp.bool]:
     """Compute hydroelastic field difference at a local position.
@@ -1711,11 +2050,19 @@ def sdf_diff_sdf(
     pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
     valA = wp.volume_sample_f(sdfA, pos_a_local, wp.Volume.LINEAR)
 
-    valB = sample_sdf_extrapolated(sdfB_data, pointB)
+    valB, sampled_b = sample_signed_field_with_terrain_fallback(
+        sdfB_data,
+        shape_b_type,
+        shape_b_scale,
+        shape_b_hfield_data,
+        heightfield_elevation_data,
+        pointB,
+    )
 
-    fieldA, validA = eval_signed_field(valA, pointA, sdfA_data, mode_a, pressureA_data)
-    fieldB, validB = eval_signed_field(valB, pointB, sdfB_data, mode_b, pressureB_data)
-    is_valid = validA and validB
+    pair_workflow = resolve_pair_contact_workflow(mode_a, mode_b, workflow_a, workflow_b)
+    fieldA, validA = eval_signed_field(valA, pointA, sdfA_data, mode_a, pressureA_data, pair_workflow)
+    fieldB, validB = eval_signed_field(valB, pointB, sdfB_data, mode_b, pressureB_data, pair_workflow)
+    is_valid = sampled_b and validA and validB
 
     diff = weighted_sdf_difference(fieldA, fieldB, k_eff_a, k_eff_b)
     return diff, fieldA, fieldB, is_valid
@@ -1727,9 +2074,14 @@ def count_iso_voxels_block(
     in_buffer_collide_count: wp.array(dtype=int),
     shape_sdf_data: wp.array(dtype=SDFData),
     shape_pressure_data: wp.array(dtype=PressureFieldData),
+    shape_type: wp.array(dtype=wp.int32),
+    shape_data: wp.array(dtype=wp.vec4),
     shape_transform: wp.array(dtype=wp.transform),
     shape_material_kh: wp.array(dtype=float),
     shape_flags: wp.array(dtype=wp.int32),
+    shape_contact_workflow: wp.array(dtype=wp.int32),
+    shape_heightfield_data: wp.array(dtype=HeightfieldData),
+    heightfield_elevation_data: wp.array(dtype=wp.float32),
     in_buffer_collide_coords: wp.array(dtype=wp.vec3us),
     in_buffer_collide_shape_pair: wp.array(dtype=wp.vec2i),
     shape_gap: wp.array(dtype=wp.float32),
@@ -1756,6 +2108,10 @@ def count_iso_voxels_block(
 
         X_ws_a = shape_transform[shape_a]
         X_ws_b = shape_transform[shape_b]
+        type_a = shape_type[shape_a]
+        scale_data_a = shape_data[shape_a]
+        scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
+        hfield_data_a = shape_heightfield_data[shape_a]
 
         margin_a = shape_gap[shape_a]
         margin_b = shape_gap[shape_b]
@@ -1767,6 +2123,8 @@ def count_iso_voxels_block(
         k_b = shape_material_kh[shape_b]
         mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
         mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
+        workflow_a = shape_contact_workflow[shape_a]
+        workflow_b = shape_contact_workflow[shape_b]
         k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b, mode_a, mode_b)
         r_eff = r * (k_eff_a + k_eff_b)
 
@@ -1790,10 +2148,16 @@ def count_iso_voxels_block(
                         pressure_data_a,
                         mode_b,
                         mode_a,
+                        workflow_b,
+                        workflow_a,
                         X_ws_b,
                         X_ws_a,
                         k_eff_b,
                         k_eff_a,
+                        type_a,
+                        scale_a,
+                        hfield_data_a,
+                        heightfield_elevation_data,
                         x_center,
                     )
 
@@ -1853,10 +2217,16 @@ def mc_iterate_voxel_vertices(
     pressure_other_data: PressureFieldData,
     mode: wp.int32,
     mode_other: wp.int32,
+    workflow: wp.int32,
+    workflow_other: wp.int32,
     X_ws: wp.transform,
     X_ws_other: wp.transform,
     k_eff: wp.float32,
     k_eff_other: wp.float32,
+    other_shape_type: wp.int32,
+    other_shape_scale: wp.vec3,
+    other_shape_hfield_data: HeightfieldData,
+    heightfield_elevation_data: wp.array(dtype=wp.float32),
     margin: wp.float32,
 ) -> tuple[wp.uint8, vec8f, bool, bool]:
     """Iterate over the vertices of a voxel and return the cube index, corner values, and whether any vertices are inside the shape."""
@@ -1877,10 +2247,16 @@ def mc_iterate_voxel_vertices(
             pressure_other_data,
             mode,
             mode_other,
+            workflow,
+            workflow_other,
             X_ws,
             X_ws_other,
             k_eff,
             k_eff_other,
+            other_shape_type,
+            other_shape_scale,
+            other_shape_hfield_data,
+            heightfield_elevation_data,
             x,
             y,
             z,
@@ -2066,9 +2442,14 @@ def get_generate_contacts_kernel(
         iso_voxel_count: wp.array(dtype=wp.int32),
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_pressure_data: wp.array(dtype=PressureFieldData),
+        shape_type: wp.array(dtype=wp.int32),
+        shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
         shape_material_kh: wp.array(dtype=float),
         shape_flags: wp.array(dtype=wp.int32),
+        shape_contact_workflow: wp.array(dtype=wp.int32),
+        shape_heightfield_data: wp.array(dtype=HeightfieldData),
+        heightfield_elevation_data: wp.array(dtype=wp.float32),
         iso_voxel_coords: wp.array(dtype=wp.vec3us),
         iso_voxel_shape_pair: wp.array(dtype=wp.vec2i),
         tri_range_table: wp.array(dtype=wp.int32),
@@ -2112,7 +2493,13 @@ def get_generate_contacts_kernel(
             k_b = shape_material_kh[shape_b]
             mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
             mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
+            workflow_a = shape_contact_workflow[shape_a]
+            workflow_b = shape_contact_workflow[shape_b]
             k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b, mode_a, mode_b)
+            type_a = shape_type[shape_a]
+            scale_data_a = shape_data[shape_a]
+            scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
+            hfield_data_a = shape_heightfield_data[shape_a]
 
             x_id = wp.int32(iso_coords.x)
             y_id = wp.int32(iso_coords.y)
@@ -2130,10 +2517,16 @@ def get_generate_contacts_kernel(
                 pressure_data_a,
                 mode_b,
                 mode_a,
+                workflow_b,
+                workflow_a,
                 transform_b,
                 transform_a,
                 k_eff_b,
                 k_eff_a,
+                type_a,
+                scale_a,
+                hfield_data_a,
+                heightfield_elevation_data,
                 margin,
             )
 

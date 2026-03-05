@@ -3,14 +3,23 @@
 
 import time
 import unittest
+import warnings
 from enum import Enum
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.sdf_hydroelastic import _solve_poisson_pressure_extent, weighted_sdf_difference
-from newton.geometry import HydroelasticSDF, HydroelasticType
+from newton._src.geometry.sdf_hydroelastic import (
+    HYDROELASTIC_MODE_COMPLIANT,
+    PressureFieldData,
+    eval_signed_field,
+    _solve_poisson_pressure_extent,
+    resolve_pair_contact_workflow,
+    weighted_sdf_difference,
+)
+from newton._src.geometry.sdf_utils import SDFData
+from newton.geometry import HydroelasticContactWorkflow, HydroelasticSDF, HydroelasticType
 from newton.tests.unittest_utils import (
     add_function_test,
     get_selected_cuda_test_devices,
@@ -55,6 +64,16 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
 }
 
+HYDRO_PRESSURE_TEST_SHAPES = (
+    "sphere",
+    "ellipsoid",
+    "box",
+    "capsule",
+    "cylinder",
+    "cone",
+    "mesh",
+)
+
 
 @wp.kernel(enable_backward=False)
 def weighted_sdf_difference_kernel(
@@ -66,6 +85,70 @@ def weighted_sdf_difference_kernel(
 ):
     tid = wp.tid()
     out[tid] = weighted_sdf_difference(val_a[tid], val_b[tid], w_a, w_b)
+
+
+@wp.kernel(enable_backward=False)
+def resolve_pair_contact_workflow_kernel(
+    mode_a: wp.array(dtype=wp.int32),
+    mode_b: wp.array(dtype=wp.int32),
+    workflow_a: wp.array(dtype=wp.int32),
+    workflow_b: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+    out[tid] = resolve_pair_contact_workflow(mode_a[tid], mode_b[tid], workflow_a[tid], workflow_b[tid])
+
+
+@wp.kernel(enable_backward=False)
+def sample_pressure_and_sdf_kernel(
+    pressure_volume_id: wp.uint64,
+    sparse_sdf_id: wp.uint64,
+    coarse_sdf_id: wp.uint64,
+    background_value: wp.float32,
+    points: wp.array(dtype=wp.vec3),
+    out_pressure: wp.array(dtype=wp.float32),
+    out_sdf: wp.array(dtype=wp.float32),
+):
+    tid = wp.tid()
+    sample = points[tid]
+
+    pressure_idx = wp.volume_world_to_index(pressure_volume_id, sample)
+    pressure = wp.volume_sample_f(pressure_volume_id, pressure_idx, wp.Volume.LINEAR)
+    if wp.isnan(pressure):
+        pressure = 0.0
+    out_pressure[tid] = wp.max(pressure, 0.0)
+
+    sdf_idx = wp.volume_world_to_index(sparse_sdf_id, sample)
+    sdf_val = wp.volume_sample_f(sparse_sdf_id, sdf_idx, wp.Volume.LINEAR)
+    if (sdf_val >= background_value * 0.99 or wp.isnan(sdf_val)) and coarse_sdf_id != wp.uint64(0):
+        coarse_idx = wp.volume_world_to_index(coarse_sdf_id, sample)
+        sdf_val = wp.volume_sample_f(coarse_sdf_id, coarse_idx, wp.Volume.LINEAR)
+    out_sdf[tid] = sdf_val
+
+
+@wp.kernel(enable_backward=False)
+def eval_signed_field_kernel(
+    sdf_values: wp.array(dtype=wp.float32),
+    points: wp.array(dtype=wp.vec3),
+    sdf_data: wp.array(dtype=SDFData),
+    pressure_data: wp.array(dtype=PressureFieldData),
+    sdf_index: wp.int32,
+    pressure_index: wp.int32,
+    pair_workflow: wp.int32,
+    out_field: wp.array(dtype=wp.float32),
+    out_valid: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+    field, valid = eval_signed_field(
+        sdf_values[tid],
+        points[tid],
+        sdf_data[sdf_index],
+        HYDROELASTIC_MODE_COMPLIANT,
+        pressure_data[pressure_index],
+        pair_workflow,
+    )
+    out_field[tid] = field
+    out_valid[tid] = wp.int32(valid)
 
 
 # --- Helper functions ---
@@ -173,6 +256,189 @@ def build_stacked_cubes_scene(
     )
 
     return model, solver, state_0, state_1, control, collision_pipeline, initial_positions, cube_half
+
+
+def _get_hydro_pressure_test_mesh_box() -> newton.Mesh:
+    """Return cached procedural box mesh used by pressure-field tests."""
+    mesh = getattr(_get_hydro_pressure_test_mesh_box, "_mesh", None)
+    if mesh is None:
+        mesh = newton.Mesh.create_box(
+            0.1,
+            0.08,
+            0.12,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        mesh.build_sdf(
+            max_resolution=32,
+            narrow_band_range=(-0.08, 0.08),
+            margin=0.01,
+        )
+        _get_hydro_pressure_test_mesh_box._mesh = mesh
+    return mesh
+
+
+def _hydro_pair_shape_extents(shape_name: str) -> tuple[float, float]:
+    """Return (z half-extent [m], x half-extent [m]) for a hydro test shape."""
+    if shape_name == "mesh":
+        return 0.12, 0.10
+    return 0.10, 0.10
+
+
+def _make_hydro_pair_shape_cfg(
+    shape_name: str,
+    kh: float,
+    workflow: HydroelasticContactWorkflow,
+    sine_amplitude=(0.0, 0.0, 0.0),
+    sine_cycles=(1.0, 1.0, 1.0),
+    sine_phase=(0.0, 0.0, 0.0),
+):
+    """Create per-shape hydroelastic config for pairwise pressure tests."""
+    kwargs = {
+        "hydroelastic_type": HydroelasticType.COMPLIANT,
+        "hydroelastic_contact_workflow": workflow,
+        "hydro_pressure_sine_amplitude": sine_amplitude,
+        "hydro_pressure_sine_cycles": sine_cycles,
+        "hydro_pressure_sine_phase": sine_phase,
+        "kh": float(kh),
+        "kd": 40.0,
+        "mu": 0.5,
+        "gap": 0.005,
+        "margin": 1.0e-5,
+    }
+    if shape_name != "mesh":
+        kwargs["sdf_max_resolution"] = 32
+        kwargs["sdf_narrow_band_range"] = (-0.08, 0.08)
+    return newton.ModelBuilder.ShapeConfig(**kwargs)
+
+
+def _add_hydro_test_shape(builder, body: int, shape_name: str, cfg) -> int:
+    """Add a hydro test shape by name."""
+    if shape_name == "sphere":
+        return builder.add_shape_sphere(body=body, radius=0.1, cfg=cfg)
+    if shape_name == "ellipsoid":
+        return builder.add_shape_ellipsoid(body=body, a=0.12, b=0.09, c=0.10, cfg=cfg)
+    if shape_name == "box":
+        return builder.add_shape_box(body=body, hx=0.10, hy=0.09, hz=0.10, cfg=cfg)
+    if shape_name == "capsule":
+        return builder.add_shape_capsule(body=body, radius=0.06, half_height=0.04, cfg=cfg)
+    if shape_name == "cylinder":
+        return builder.add_shape_cylinder(body=body, radius=0.08, half_height=0.10, cfg=cfg)
+    if shape_name == "cone":
+        return builder.add_shape_cone(body=body, radius=0.08, half_height=0.10, cfg=cfg)
+    if shape_name == "mesh":
+        return builder.add_shape_mesh(body=body, mesh=_get_hydro_pressure_test_mesh_box(), cfg=cfg)
+    raise ValueError(f"Unsupported hydro pressure test shape: {shape_name}")
+
+
+def _build_hydro_pair_scene(
+    device,
+    shape_name: str,
+    penetration: float,
+    kh: float = 2.0e8,
+    workflow: HydroelasticContactWorkflow = HydroelasticContactWorkflow.PRESSURE,
+    sine_amplitude=(0.0, 0.0, 0.0),
+    sine_cycles=(1.0, 1.0, 1.0),
+    sine_phase=(0.0, 0.0, 0.0),
+    x_shift: float = 0.0,
+):
+    """Build and collide a two-shape hydro pair at a target penetration."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    half_z, _half_x = _hydro_pair_shape_extents(shape_name)
+    z_pos = 2.0 * half_z - float(penetration)
+    cfg = _make_hydro_pair_shape_cfg(
+        shape_name=shape_name,
+        kh=kh,
+        workflow=workflow,
+        sine_amplitude=sine_amplitude,
+        sine_cycles=sine_cycles,
+        sine_phase=sine_phase,
+    )
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(float(x_shift), 0.0, z_pos), wp.quat_identity()))
+    shape_a = _add_hydro_test_shape(builder, body_a, shape_name, cfg)
+    shape_b = _add_hydro_test_shape(builder, body_b, shape_name, cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=12000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            buffer_fraction=1.0,
+            buffer_mult_contact=8,
+            buffer_mult_iso=8,
+            reduce_contacts=False,
+            output_contact_surface=True,
+        ),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return model, pipeline, contacts, shape_a, shape_b
+
+
+def _pair_mask(shape0: np.ndarray, shape1: np.ndarray, shape_a: int, shape_b: int) -> np.ndarray:
+    return ((shape0 == shape_a) & (shape1 == shape_b)) | ((shape0 == shape_b) & (shape1 == shape_a))
+
+
+def _pair_contact_stiffness_sum(contacts, shape_a: int, shape_b: int) -> float:
+    """Sum per-contact stiffness for a specific shape pair."""
+    if contacts.rigid_contact_stiffness is None:
+        return 0.0
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    if rigid_count <= 0:
+        return 0.0
+    shape0 = contacts.rigid_contact_shape0.numpy()[:rigid_count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:rigid_count]
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:rigid_count]
+    mask = _pair_mask(shape0, shape1, shape_a, shape_b)
+    return float(np.sum(stiffness[mask]))
+
+
+def _pair_penetrating_depth_metrics(pipeline, shape_a: int, shape_b: int) -> tuple[float, float, int]:
+    """Return (sum depth, mean depth, penetrating count) for one pair."""
+    hydro = pipeline.hydroelastic_sdf
+    if hydro is None:
+        return 0.0, 0.0, 0
+    contact_surface = hydro.get_contact_surface()
+    face_count = int(contact_surface.face_contact_count.numpy()[0])
+    if face_count <= 0:
+        return 0.0, 0.0, 0
+
+    depth = contact_surface.contact_surface_depth.numpy()[:face_count]
+    shape_pair = contact_surface.contact_surface_shape_pair.numpy()[:face_count]
+    mask = _pair_mask(shape_pair[:, 0], shape_pair[:, 1], shape_a, shape_b)
+    pair_depth = depth[mask]
+    pair_depth = pair_depth[pair_depth < 0.0]
+    if pair_depth.size == 0:
+        return 0.0, 0.0, 0
+
+    depth_mag = -pair_depth
+    return float(np.sum(depth_mag)), float(np.mean(depth_mag)), int(pair_depth.size)
+
+
+def _assert_strictly_increasing(test, values: list[float], label: str):
+    for i in range(1, len(values)):
+        test.assertGreater(values[i], values[i - 1], f"{label}: expected increasing sequence, got {values}")
+
+
+def _fit_first_harmonic_r2(signal: np.ndarray, theta: np.ndarray) -> float:
+    """Fit signal to sin(theta), cos(theta), constant; return R^2."""
+    design = np.column_stack([np.sin(theta), np.cos(theta), np.ones_like(theta)])
+    coeff, *_ = np.linalg.lstsq(design, signal, rcond=None)
+    fit = design @ coeff
+    sse = float(np.sum((signal - fit) ** 2))
+    sst = float(np.sum((signal - np.mean(signal)) ** 2))
+    if sst <= 1.0e-12:
+        return 0.0
+    return max(0.0, 1.0 - sse / sst)
 
 
 # --- Test functions ---
@@ -978,6 +1244,500 @@ def _build_two_box_hydro_mode_scene(device, mode_a: HydroelasticType, mode_b: Hy
     return pipeline, contacts
 
 
+def _build_compliant_box_vs_plane_scene(
+    device,
+    *,
+    plane_cfg: newton.ModelBuilder.ShapeConfig,
+    box_pos: tuple[float, float, float],
+    plane_width: float = 0.0,
+    plane_length: float = 0.0,
+):
+    """Create a scene with one compliant box against a plane."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_shape_plane(width=plane_width, length=plane_length, cfg=plane_cfg)
+
+    box_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=2.0e8,
+        kd=75.0,
+        mu=0.6,
+        margin=1.0e-5,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(*box_pos), wp.quat_identity()))
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=box_cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return pipeline, contacts
+
+
+def _build_compliant_box_vs_heightfield_scene(
+    device,
+    *,
+    hfield_cfg: newton.ModelBuilder.ShapeConfig,
+    box_pos: tuple[float, float, float],
+):
+    """Create a scene with one compliant box against a heightfield."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    hfield_data = np.zeros((10, 10), dtype=np.float32)
+    hfield = newton.Heightfield(data=hfield_data, nrow=10, ncol=10, hx=2.0, hy=2.0, min_z=0.0, max_z=1.0)
+    builder.add_shape_heightfield(heightfield=hfield, cfg=hfield_cfg)
+
+    box_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=2.0e8,
+        kd=75.0,
+        mu=0.6,
+        margin=1.0e-5,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(*box_pos), wp.quat_identity()))
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=box_cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return pipeline, contacts
+
+
+def _build_two_box_hydro_workflow_scene(
+    device,
+    workflow_a: HydroelasticContactWorkflow,
+    workflow_b: HydroelasticContactWorkflow,
+    amp_a=(0.0, 0.0, 0.0),
+    amp_b=(0.0, 0.0, 0.0),
+):
+    """Create a minimal two-box scene for hydro workflow tests."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    cfg_a = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=workflow_a,
+        hydro_pressure_sine_amplitude=amp_a,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=2.0e8,
+        margin=1.0e-5,
+    )
+    cfg_b = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=workflow_b,
+        hydro_pressure_sine_amplitude=amp_b,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=3.0e8,
+        margin=1.0e-5,
+    )
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.29), wp.quat_identity()))
+
+    shape_a = builder.add_shape_box(body=body_a, hx=0.1, hy=0.1, hz=0.1, cfg=cfg_a)
+    shape_b = builder.add_shape_box(body=body_b, hx=0.1, hy=0.1, hz=0.1, cfg=cfg_b)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return model, pipeline, contacts, shape_a, shape_b
+
+
+def test_shape_workflow_and_sine_parameters_propagate_to_model(test, device):
+    """Validate per-shape workflow and sine parameters are finalized on model arrays."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.PRESSURE,
+        hydro_pressure_sine_amplitude=(0.25, 0.0, -0.10),
+        hydro_pressure_sine_cycles=(1.5, 1.0, 2.0),
+        hydro_pressure_sine_phase=(0.1, 0.0, -0.2),
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+    shape = builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    workflow = int(model.shape_hydroelastic_contact_workflow.numpy()[shape])
+    test.assertEqual(workflow, int(HydroelasticContactWorkflow.PRESSURE))
+    amps = model.shape_hydro_pressure_sine_amplitude.numpy()[shape]
+    cycles = model.shape_hydro_pressure_sine_cycles.numpy()[shape]
+    phase = model.shape_hydro_pressure_sine_phase.numpy()[shape]
+    test.assertTrue(np.allclose(amps, np.array([0.25, 0.0, -0.10], dtype=np.float32)))
+    test.assertTrue(np.allclose(cycles, np.array([1.5, 1.0, 2.0], dtype=np.float32)))
+    test.assertTrue(np.allclose(phase, np.array([0.1, 0.0, -0.2], dtype=np.float32)))
+
+
+def test_finalize_warns_on_implicit_hydro_workflow_default(test, device):
+    """Validate deprecation warning for implicit hydro workflow default."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        _ = builder.finalize(device=device)
+    has_warning = any(issubclass(w.category, DeprecationWarning) for w in caught)
+    test.assertTrue(has_warning, "Expected finalize() to emit a DeprecationWarning for implicit workflow")
+
+
+def test_pressure_workflow_builds_distinct_profiles_for_shared_sdf(test, device):
+    """Validate pressure workflow creates distinct profile entries for shared SDF geometry."""
+    model, pipeline, _contacts, shape_a, shape_b = _build_two_box_hydro_workflow_scene(
+        device,
+        HydroelasticContactWorkflow.PRESSURE,
+        HydroelasticContactWorkflow.PRESSURE,
+        amp_a=(0.0, 0.0, 0.0),
+        amp_b=(0.3, 0.0, 0.0),
+    )
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+
+    shape_sdf_index = model.shape_sdf_index.numpy()
+    test.assertEqual(shape_sdf_index[shape_a], shape_sdf_index[shape_b], "Expected shared compact SDF entry")
+
+    pressure_index = hydro.shape_pressure_index.numpy()
+    test.assertNotEqual(
+        int(pressure_index[shape_a]),
+        int(pressure_index[shape_b]),
+        "Expected distinct pressure profiles for different sine modulation settings",
+    )
+
+
+def test_mixed_classic_pressure_pair_assigns_pressure_profile_to_both_compliant_shapes(test, device):
+    """Validate mixed compliant workflows still assign pressure profiles to both sides."""
+    _model, pipeline, _contacts, shape_a, shape_b = _build_two_box_hydro_workflow_scene(
+        device,
+        HydroelasticContactWorkflow.CLASSIC,
+        HydroelasticContactWorkflow.PRESSURE,
+        amp_a=(0.0, 0.0, 0.0),
+        amp_b=(0.25, 0.0, 0.0),
+    )
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+    pressure_index = hydro.shape_pressure_index.numpy()
+    test.assertGreaterEqual(int(pressure_index[shape_a]), 0, "Classic compliant shape should have pressure profile")
+    test.assertGreaterEqual(int(pressure_index[shape_b]), 0, "Pressure compliant shape should have pressure profile")
+
+
+def test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf(test, device):
+    """Validate positive interpolated pressure outside the mesh does not flip field sign."""
+    model, pipeline, _contacts, shape_a, _shape_b = _build_hydro_pair_scene(
+        device=device,
+        shape_name="sphere",
+        penetration=0.025,
+        workflow=HydroelasticContactWorkflow.PRESSURE,
+    )
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+
+    sdf_index = int(model.shape_sdf_index.numpy()[shape_a])
+    pressure_index = int(hydro.shape_pressure_index.numpy()[shape_a])
+    test.assertGreaterEqual(sdf_index, 0)
+    test.assertGreaterEqual(pressure_index, 0)
+
+    sdf_entry = model.sdf_data.numpy()[sdf_index]
+    pressure_entry = hydro.compact_pressure_field_data.numpy()[pressure_index]
+
+    sample_points = np.array(
+        [
+            [-0.04222222, -0.09111111, 0.0],
+            [0.04222222, -0.09111111, 0.0],
+            [-0.09111111, -0.04222222, 0.0],
+            [0.09111111, -0.04222222, 0.0],
+            [-0.09111111, 0.04222222, 0.0],
+            [0.09111111, 0.04222222, 0.0],
+            [-0.04222222, 0.09111111, 0.0],
+            [0.04222222, 0.09111111, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    points_wp = wp.array(sample_points, dtype=wp.vec3, device=device)
+    pressure_wp = wp.zeros(len(sample_points), dtype=wp.float32, device=device)
+    sdf_wp = wp.zeros(len(sample_points), dtype=wp.float32, device=device)
+    wp.launch(
+        sample_pressure_and_sdf_kernel,
+        dim=len(sample_points),
+        inputs=[
+            wp.uint64(int(pressure_entry["pressure_ptr"])),
+            wp.uint64(int(sdf_entry["sparse_sdf_ptr"])),
+            wp.uint64(int(sdf_entry["coarse_sdf_ptr"])),
+            float(sdf_entry["background_value"]),
+            points_wp,
+        ],
+        outputs=[pressure_wp, sdf_wp],
+        device=device,
+    )
+    wp.synchronize()
+
+    pressure_np = pressure_wp.numpy()
+    sdf_np = sdf_wp.numpy()
+    outside_mask = (pressure_np > 1.0e-6) & (sdf_np > 1.0e-5)
+    test.assertTrue(
+        np.any(outside_mask),
+        "Expected at least one sample with positive interpolated pressure outside the valid SDF interior.",
+    )
+
+    chosen_points = sample_points[outside_mask]
+    chosen_sdf = sdf_np[outside_mask].astype(np.float32, copy=False)
+    chosen_points_wp = wp.array(chosen_points, dtype=wp.vec3, device=device)
+    chosen_sdf_wp = wp.array(chosen_sdf, dtype=wp.float32, device=device)
+    out_field_wp = wp.zeros(len(chosen_points), dtype=wp.float32, device=device)
+    out_valid_wp = wp.zeros(len(chosen_points), dtype=wp.int32, device=device)
+    wp.launch(
+        eval_signed_field_kernel,
+        dim=len(chosen_points),
+        inputs=[
+            chosen_sdf_wp,
+            chosen_points_wp,
+            model.sdf_data,
+            hydro.compact_pressure_field_data,
+            wp.int32(sdf_index),
+            wp.int32(pressure_index),
+            wp.int32(int(HydroelasticContactWorkflow.PRESSURE)),
+        ],
+        outputs=[out_field_wp, out_valid_wp],
+        device=device,
+    )
+    wp.synchronize()
+
+    field_np = out_field_wp.numpy()
+    valid_np = out_valid_wp.numpy()
+    test.assertTrue(np.all(valid_np > 0), "Expected valid signed-field evaluations outside the narrow pressure spill.")
+    test.assertTrue(
+        np.all(field_np > 0.0),
+        f"Expected positive signed-field values outside the mesh; got {field_np.tolist()}",
+    )
+
+
+def test_pair_workflow_resolution_prefers_pressure_when_any_compliant_side_uses_pressure(test, device):
+    """Validate pair workflow resolution rule for mixed and homogeneous pairs."""
+    mode_a = wp.array(
+        np.array(
+            [
+                int(HydroelasticType.COMPLIANT),
+                int(HydroelasticType.COMPLIANT),
+                int(HydroelasticType.RIGID),
+            ],
+            dtype=np.int32,
+        ),
+        dtype=wp.int32,
+        device=device,
+    )
+    mode_b = wp.array(
+        np.array(
+            [
+                int(HydroelasticType.COMPLIANT),
+                int(HydroelasticType.COMPLIANT),
+                int(HydroelasticType.COMPLIANT),
+            ],
+            dtype=np.int32,
+        ),
+        dtype=wp.int32,
+        device=device,
+    )
+    workflow_a = wp.array(
+        np.array(
+            [
+                int(HydroelasticContactWorkflow.CLASSIC),
+                int(HydroelasticContactWorkflow.CLASSIC),
+                int(HydroelasticContactWorkflow.CLASSIC),
+            ],
+            dtype=np.int32,
+        ),
+        dtype=wp.int32,
+        device=device,
+    )
+    workflow_b = wp.array(
+        np.array(
+            [
+                int(HydroelasticContactWorkflow.PRESSURE),
+                int(HydroelasticContactWorkflow.CLASSIC),
+                int(HydroelasticContactWorkflow.PRESSURE),
+            ],
+            dtype=np.int32,
+        ),
+        dtype=wp.int32,
+        device=device,
+    )
+    out = wp.empty(3, dtype=wp.int32, device=device)
+    wp.launch(
+        resolve_pair_contact_workflow_kernel,
+        dim=3,
+        inputs=[mode_a, mode_b, workflow_a, workflow_b],
+        outputs=[out],
+        device=device,
+    )
+    wp.synchronize()
+    got = out.numpy()
+    test.assertEqual(int(got[0]), int(HydroelasticContactWorkflow.PRESSURE))
+    test.assertEqual(int(got[1]), int(HydroelasticContactWorkflow.CLASSIC))
+    test.assertEqual(int(got[2]), int(HydroelasticContactWorkflow.PRESSURE))
+
+
+def test_pressure_workflow_depth_proxy_increases_with_penetration_for_all_shapes(test, device):
+    """Validate pressure proxy grows with penetration for all hydro-capable shapes."""
+    penetration_values = [0.015, 0.025, 0.035]
+
+    for shape_name in HYDRO_PRESSURE_TEST_SHAPES:
+        proxy_values = []
+        for penetration in penetration_values:
+            _model, pipeline, contacts, shape_a, shape_b = _build_hydro_pair_scene(
+                device=device,
+                shape_name=shape_name,
+                penetration=penetration,
+                workflow=HydroelasticContactWorkflow.PRESSURE,
+            )
+            test.assertIsNotNone(pipeline.hydroelastic_sdf, f"{shape_name}: expected hydroelastic SDF pipeline")
+            rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(rigid_count, 0, f"{shape_name}: expected rigid contacts")
+
+            total_depth, _mean_depth, num_pen = _pair_penetrating_depth_metrics(pipeline, shape_a, shape_b)
+            test.assertGreater(num_pen, 0, f"{shape_name}: expected penetrating contact-surface samples")
+            proxy_values.append(total_depth)
+
+        _assert_strictly_increasing(test, proxy_values, f"{shape_name} depth proxy")
+
+
+def test_pressure_workflow_contact_stiffness_increases_with_k_hydro_for_all_shapes(test, device):
+    """Validate per-contact stiffness output increases with k_hydro at fixed penetration."""
+    kh_values = [8.0e7, 2.0e8, 6.0e8]
+    penetration = 0.025
+
+    for shape_name in HYDRO_PRESSURE_TEST_SHAPES:
+        stiffness_values = []
+        for kh in kh_values:
+            _model, _pipeline, contacts, shape_a, shape_b = _build_hydro_pair_scene(
+                device=device,
+                shape_name=shape_name,
+                penetration=penetration,
+                kh=kh,
+                workflow=HydroelasticContactWorkflow.PRESSURE,
+            )
+            stiffness_sum = _pair_contact_stiffness_sum(contacts, shape_a, shape_b)
+            test.assertGreater(stiffness_sum, 0.0, f"{shape_name}: expected positive pair stiffness")
+            stiffness_values.append(stiffness_sum)
+
+        _assert_strictly_increasing(test, stiffness_values, f"{shape_name} stiffness proxy")
+
+
+def test_pressure_workflow_nonlinear_axis_sine_modulates_contact_depth_for_box_and_mesh(test, device):
+    """Validate nonlinear axis modulation changes contact depth at fixed penetration."""
+    for shape_name in ("box", "mesh"):
+        _, half_extent_x = _hydro_pair_shape_extents(shape_name)
+        x_samples = np.linspace(-0.8 * half_extent_x, 0.8 * half_extent_x, 13, dtype=np.float32)
+
+        depth_signal = []
+        for x_shift in x_samples:
+            _model, pipeline, _contacts, shape_a, shape_b = _build_hydro_pair_scene(
+                device=device,
+                shape_name=shape_name,
+                penetration=0.025,
+                workflow=HydroelasticContactWorkflow.PRESSURE,
+                sine_amplitude=(0.6, 0.0, 0.0),
+                sine_cycles=(1.0, 1.0, 1.0),
+                sine_phase=(0.0, 0.0, 0.0),
+                x_shift=float(x_shift),
+            )
+            _total_depth, mean_depth, num_pen = _pair_penetrating_depth_metrics(pipeline, shape_a, shape_b)
+            test.assertGreater(num_pen, 0, f"{shape_name}: expected penetrating samples at x={x_shift:.4f}")
+            depth_signal.append(mean_depth)
+
+        depth_signal = np.asarray(depth_signal, dtype=np.float64)
+        rel_spread = float((np.max(depth_signal) - np.min(depth_signal)) / max(np.mean(depth_signal), 1.0e-8))
+        test.assertGreater(
+            rel_spread,
+            0.05,
+            f"{shape_name}: expected measurable modulation spread, got {rel_spread:.4f}",
+        )
+
+        coord01 = 0.5 * (x_samples / half_extent_x + 1.0)
+        theta = 2.0 * np.pi * coord01
+        r2 = _fit_first_harmonic_r2(depth_signal, theta)
+        test.assertGreater(r2, 0.5, f"{shape_name}: expected sinusoidal modulation fit, got R^2={r2:.3f}")
+
+
+def test_pressure_field_falls_back_to_nonhydro_for_plane_and_heightfield(test, device):
+    """Validate unsupported pressure-field geometries route through non-hydro contacts."""
+    for terrain_name in ("plane", "heightfield"):
+        builder = newton.ModelBuilder(gravity=0.0)
+        cfg = newton.ModelBuilder.ShapeConfig(
+            hydroelastic_type=HydroelasticType.COMPLIANT,
+            hydroelastic_contact_workflow=HydroelasticContactWorkflow.PRESSURE,
+            kh=2.0e8,
+            sdf_max_resolution=32,
+            sdf_narrow_band_range=(-0.08, 0.08),
+            gap=0.005,
+            margin=1.0e-5,
+        )
+
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()))
+        if terrain_name == "plane":
+            builder.add_shape_plane(body=-1, plane=(0.0, 0.0, 1.0, 0.0), cfg=cfg)
+        else:
+            hfield = newton.Heightfield(data=np.zeros((8, 8), dtype=np.float32), nrow=8, ncol=8, hx=1.0, hy=1.0)
+            builder.add_shape_heightfield(heightfield=hfield, cfg=cfg)
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+
+        model = builder.finalize(device=device)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+        )
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        wp.synchronize()
+
+        rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(rigid_count, 0, f"{terrain_name}: expected fallback rigid contacts")
+        test.assertIsNone(pipeline.hydroelastic_sdf, f"{terrain_name}: expected non-hydro fallback path")
+
+
 def test_rigid_compliant_mode_routes_to_hydroelastic_sdf(test, device):
     """Validate rigid-compliant hydro mode routing and per-contact damping/friction export."""
     pipeline, contacts = _build_two_box_hydro_mode_scene(device, HydroelasticType.RIGID, HydroelasticType.COMPLIANT)
@@ -993,6 +1753,113 @@ def test_rigid_compliant_mode_routes_to_hydroelastic_sdf(test, device):
     friction = contacts.rigid_contact_friction.numpy()[:rigid_count]
     test.assertTrue(np.any(damping > 0.0), "Expected hydroelastic contacts to export positive damping")
     test.assertTrue(np.any(friction > 0.0), "Expected hydroelastic contacts to export positive friction scale")
+
+
+def test_explicit_rigid_plane_routes_to_hydroelastic_sdf(test, device):
+    """Validate compliant box vs explicit rigid plane routes to hydroelastic SDF."""
+    plane_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.RIGID,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        gap=0.02,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    pipeline, contacts = _build_compliant_box_vs_plane_scene(
+        device,
+        plane_cfg=plane_cfg,
+        box_pos=(0.0, 0.0, 0.06),
+    )
+
+    test.assertIsNotNone(pipeline.hydroelastic_sdf, "Expected hydroelastic SDF pipeline for rigid-plane pair")
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 1, "Expected exactly one hydroelastic SDF pair")
+
+    hfield_pair_count = int(pipeline.narrow_phase.shape_pairs_heightfield_count.numpy()[0])
+    test.assertEqual(hfield_pair_count, 0, "Plane pair should not route through heightfield path")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected rigid contacts from hydroelastic plane interaction")
+
+
+def test_explicit_rigid_heightfield_routes_to_hydroelastic_sdf(test, device):
+    """Validate compliant box vs explicit rigid heightfield routes to hydroelastic SDF."""
+    hfield_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.RIGID,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        gap=0.02,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    pipeline, contacts = _build_compliant_box_vs_heightfield_scene(
+        device,
+        hfield_cfg=hfield_cfg,
+        box_pos=(0.0, 0.0, 0.06),
+    )
+
+    test.assertIsNotNone(pipeline.hydroelastic_sdf, "Expected hydroelastic SDF pipeline for rigid-heightfield pair")
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 1, "Expected exactly one hydroelastic SDF pair")
+
+    hfield_pair_count = int(pipeline.narrow_phase.shape_pairs_heightfield_count.numpy()[0])
+    test.assertEqual(hfield_pair_count, 0, "Hydro heightfield pair should bypass non-hydro heightfield path")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected rigid contacts from hydroelastic heightfield interaction")
+
+
+def test_finite_rigid_plane_is_clipped_in_hydro_path(test, device):
+    """Validate finite rigid plane clipping rejects contacts outside XY footprint."""
+    plane_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.RIGID,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        gap=0.2,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    pipeline, contacts = _build_compliant_box_vs_plane_scene(
+        device,
+        plane_cfg=plane_cfg,
+        box_pos=(0.35, 0.0, 0.05),
+        plane_width=0.2,
+        plane_length=0.2,
+    )
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 1, "Expected hydro pair routing even with conservative terrain broadphase")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(rigid_count, 0, "Expected no contacts outside finite plane footprint")
+
+
+def test_legacy_is_hydroelastic_still_ignored_for_terrain(test, device):
+    """Validate terrain legacy is_hydroelastic flag does not opt terrain into hydro path."""
+    plane_cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        gap=0.02,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    pipeline, contacts = _build_compliant_box_vs_plane_scene(
+        device,
+        plane_cfg=plane_cfg,
+        box_pos=(0.0, 0.0, 0.06),
+    )
+
+    test.assertIsNone(
+        pipeline.hydroelastic_sdf,
+        "Legacy is_hydroelastic on terrain should not instantiate hydroelastic SDF pipeline",
+    )
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected fallback non-hydro rigid contacts for legacy terrain flag")
 
 
 def test_rigid_rigid_mode_uses_nonhydro_path(test, device):
@@ -1352,8 +2219,92 @@ add_function_test(
 )
 add_function_test(
     TestHydroelastic,
+    "test_shape_workflow_and_sine_parameters_propagate_to_model",
+    test_shape_workflow_and_sine_parameters_propagate_to_model,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_finalize_warns_on_implicit_hydro_workflow_default",
+    test_finalize_warns_on_implicit_hydro_workflow_default,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_builds_distinct_profiles_for_shared_sdf",
+    test_pressure_workflow_builds_distinct_profiles_for_shared_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_mixed_classic_pressure_pair_assigns_pressure_profile_to_both_compliant_shapes",
+    test_mixed_classic_pressure_pair_assigns_pressure_profile_to_both_compliant_shapes,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf",
+    test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pair_workflow_resolution_prefers_pressure_when_any_compliant_side_uses_pressure",
+    test_pair_workflow_resolution_prefers_pressure_when_any_compliant_side_uses_pressure,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_depth_proxy_increases_with_penetration_for_all_shapes",
+    test_pressure_workflow_depth_proxy_increases_with_penetration_for_all_shapes,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_contact_stiffness_increases_with_k_hydro_for_all_shapes",
+    test_pressure_workflow_contact_stiffness_increases_with_k_hydro_for_all_shapes,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_nonlinear_axis_sine_modulates_contact_depth_for_box_and_mesh",
+    test_pressure_workflow_nonlinear_axis_sine_modulates_contact_depth_for_box_and_mesh,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_field_falls_back_to_nonhydro_for_plane_and_heightfield",
+    test_pressure_field_falls_back_to_nonhydro_for_plane_and_heightfield,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
     "test_rigid_compliant_mode_routes_to_hydroelastic_sdf",
     test_rigid_compliant_mode_routes_to_hydroelastic_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_explicit_rigid_plane_routes_to_hydroelastic_sdf",
+    test_explicit_rigid_plane_routes_to_hydroelastic_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_explicit_rigid_heightfield_routes_to_hydroelastic_sdf",
+    test_explicit_rigid_heightfield_routes_to_hydroelastic_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_finite_rigid_plane_is_clipped_in_hydro_path",
+    test_finite_rigid_plane_is_clipped_in_hydro_path,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_legacy_is_hydroelastic_still_ignored_for_terrain",
+    test_legacy_is_hydroelastic_still_ignored_for_terrain,
     devices=cuda_devices,
 )
 add_function_test(

@@ -21,6 +21,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import importlib
 from pathlib import Path
 from typing import Any
 
@@ -31,13 +32,11 @@ import newton
 
 def _load_trimesh_module():
     try:
-        import trimesh
+        return importlib.import_module("trimesh")
     except ImportError as exc:
         raise RuntimeError(
-            "This script requires trimesh. Install example dependencies "
-            "(for example: `uv sync --extra examples`)."
+            "This script requires trimesh. Install example dependencies (for example: `uv sync --extra examples`)."
         ) from exc
-    return trimesh
 
 
 def _load_as_single_mesh(mesh_file: Path) -> Any:
@@ -132,7 +131,7 @@ def _run_sdf_build_check(
     narrow_band: float,
     sdf_margin: float,
 ):
-    import warp as wp
+    wp = importlib.import_module("warp")
 
     if not wp.get_device().is_cuda:
         raise RuntimeError("SDF build check requires a CUDA device.")

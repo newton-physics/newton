@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- Add :class:`newton.geometry.HydroelasticContactWorkflow` and per-shape
+  workflow controls on :class:`newton.ModelBuilder.ShapeConfig` via
+  ``hydroelastic_contact_workflow``.
+- Add per-shape immutable pressure-field sine modulation parameters
+  ``hydro_pressure_sine_amplitude``, ``hydro_pressure_sine_cycles``, and
+  ``hydro_pressure_sine_phase`` for pressure-workflow hydroelastic
+  contacts.
 
 - Add `SolverXPBD.update_contacts()` to populate `contacts.force` with per-contact spatial forces (linear force and torque) derived from XPBD constraint impulses
 - Raise process priority automatically in `--benchmark` mode for more stable measurements; add `--realtime` for maximum priority.
@@ -87,6 +94,10 @@
   rigid-compliant hydroelastic contact routing. Migrate by setting
   ``hydroelastic_type="compliant"`` instead of relying on
   ``is_hydroelastic=True`` when you need explicit mode selection.
+- Change hydroelastic terrain routing so planes and heightfields can
+  participate as rigid hydroelastic counterparts. Migrate terrain setups by
+  setting ``hydroelastic_type="rigid"`` on the terrain shape config (legacy
+  ``is_hydroelastic=True`` on terrain remains ignored).
 
 - Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
 - Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.
@@ -116,6 +127,10 @@
 - Align articulated `State.body_qd` / FK / IK / Jacobian / mass-matrix linear velocity with COM-referenced motion. If you were comparing `body_qd[:3]` against finite-differenced body-origin motion, recover origin velocity via `v_origin = v_com - omega x r_com_world`. Descendant `FREE` / `DISTANCE` `joint_qd` remains parent-frame and `joint_f` remains a world-frame COM wrench.
 
 ### Deprecated
+- Deprecate implicit hydroelastic workflow resolution for shapes that set
+  hydro mode without ``hydroelastic_contact_workflow``. Migrate by setting
+  :attr:`newton.ModelBuilder.ShapeConfig.hydroelastic_contact_workflow`
+  explicitly to ``"classic"`` or ``"pressure"``.
 
 - Deprecate `ModelBuilder.default_body_armature`, the `armature` argument on `ModelBuilder.add_link()` / `ModelBuilder.add_body()`, and USD-authored body armature via `newton:armature` in favor of adding any isotropic artificial inertia directly to `inertia`
 - Deprecate `SensorContact.net_force` in favor of `SensorContact.total_force` and `SensorContact.force_matrix`

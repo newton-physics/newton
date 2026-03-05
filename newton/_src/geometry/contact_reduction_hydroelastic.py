@@ -32,7 +32,6 @@ import warp as wp
 from newton._src.geometry.hashtable import hashtable_find_or_insert
 
 from .contact_data import ContactData
-from .flags import ShapeFlags
 from .contact_reduction import (
     NUM_NORMAL_BINS,
     NUM_SPATIAL_DIRECTIONS,
@@ -56,6 +55,7 @@ from .contact_reduction_global import (
     make_contact_key,
     reduction_update_slot,
 )
+from .flags import ShapeFlags
 
 # =============================================================================
 # Constants for hydroelastic export
@@ -1300,4 +1300,6 @@ class HydroelasticContactReduction:
             shape_voxel_resolution,
             grid_size,
         )
-        self.export(shape_material_kd, shape_material_mu, shape_flags, shape_gap, shape_transform, writer_data, grid_size)
+        self.export(
+            shape_material_kd, shape_material_mu, shape_flags, shape_gap, shape_transform, writer_data, grid_size
+        )
