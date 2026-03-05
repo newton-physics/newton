@@ -686,6 +686,8 @@ class Model:
         self.attribute_frequency["body_mass"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_inv_mass"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_f"] = Model.AttributeFrequency.BODY
+        # Extended state attributes — these live on State (not Model) and are only
+        # allocated when explicitly requested via request_state_attributes().
         self.attribute_frequency["body_qdd"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_parent_f"] = Model.AttributeFrequency.BODY
 

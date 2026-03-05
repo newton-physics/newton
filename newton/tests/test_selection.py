@@ -1075,9 +1075,9 @@ class TestSelection(unittest.TestCase):
         self.run_test_link_selection(use_mask=True, use_multiple_artics_per_view=True)
 
     def test_get_attribute_extended_state(self):
-        """Test that get_attribute works for extended state attributes (body_qdd, body_parent_f)."""
+        """Test that get_attribute works for extended state attributes."""
         builder = newton.ModelBuilder(gravity=-9.81)
-        builder.request_state_attributes("body_qdd", "body_parent_f")
+        builder.request_state_attributes("body_qdd", "body_parent_f", "mujoco:qfrc_actuator")
 
         link = builder.add_link()
         builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
@@ -1100,6 +1100,9 @@ class TestSelection(unittest.TestCase):
 
         body_parent_f = view.get_attribute("body_parent_f", state)
         self.assertEqual(body_parent_f.shape[2], 1)  # 1 link
+
+        qfrc_actuator = view.get_attribute("mujoco.qfrc_actuator", state)
+        self.assertEqual(qfrc_actuator.shape[2], 1)  # 1 revolute DOF
 
 
 class TestSelectionFixedTendons(unittest.TestCase):
