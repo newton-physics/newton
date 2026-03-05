@@ -130,9 +130,8 @@ def _combine_meshes(mesh_list):
 
 
 
-CLEARANCE = 0.00004
 STUD_RADIUS = 0.0024
-STUD_HEIGHT = 0.00182
+STUD_HEIGHT = 0.0017
 WALL_THICKNESS = 0.0012
 TOP_THICKNESS = 0.001
 TUBE_OUTER_RADIUS = 0.003255
@@ -146,11 +145,11 @@ def _make_shell_mesh(nx, ny):
     Origin at the centre-bottom (z=0).  Inner cavity is open at the
     bottom and sealed by a top plate.
     """
-    ox = nx * PITCH / 2.0 - CLEARANCE
-    oy = ny * PITCH / 2.0 - CLEARANCE
+    ox = nx * PITCH / 2.0
+    oy = ny * PITCH / 2.0
     inx = ox - WALL_THICKNESS
     iny = oy - WALL_THICKNESS
-    H = BODY_HEIGHT - CLEARANCE
+    H = BODY_HEIGHT
     T = TOP_THICKNESS
 
     v = np.array(
@@ -204,8 +203,6 @@ def _make_brick_mesh(nx=4, ny=2):
     at the origin in XY with the bottom at Z=0.
     """
     shell_v, shell_f = _make_shell_mesh(nx, ny)
-    shell_top = BODY_HEIGHT - CLEARANCE
-
     stud_meshes = []
     for i in range(nx):
         for j in range(ny):
@@ -213,7 +210,7 @@ def _make_brick_mesh(nx=4, ny=2):
             sy = (j - (ny - 1) / 2.0) * PITCH
             stud_meshes.append(
                 _cylinder_mesh(
-                    STUD_RADIUS, STUD_HEIGHT, CYLINDER_SEGMENTS, cx=sx, cy=sy, cz=shell_top, bottom_cap=False
+                    STUD_RADIUS, STUD_HEIGHT, CYLINDER_SEGMENTS, cx=sx, cy=sy, cz=BODY_HEIGHT, bottom_cap=False
                 )
             )
 
