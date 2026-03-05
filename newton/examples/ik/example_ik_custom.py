@@ -264,8 +264,6 @@ class Example:
             jacobian_mode=ik.IKJacobianType.MIXED,
         )
 
-
-
         self.capture()
 
     # ----------------------------------------------------------------------
