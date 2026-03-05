@@ -35,9 +35,9 @@ class _IKBenchmark:
 
     params = None
     param_names = ["batch_size"]
-
     repeat = None
     number = 1
+    rounds = 2
 
     EE_LINKS = (9,)
     ITERATIONS = 16
@@ -91,15 +91,14 @@ class _IKBenchmark:
             self.solver, self.model, q_best, self.tgt_p, self.tgt_r,
             self.EE_LINKS, self.POS_THRESH_M, self.ORI_THRESH_RAD,
         )
-        success_rate = success.mean()
-        if success_rate < 1.0:
-            raise RuntimeError(f"IK success rate {success_rate * 100:.1f}% < 100% (batch_size={batch_size})")
+        if not success.all():
+            n_failed = int((~success).sum())
+            raise RuntimeError(f"IK failed for {n_failed}/{batch_size} problems")
 
 
-class KpiIKSolve(_IKBenchmark):
-    params = ([8192],)
-    repeat = 3
-
+class FastIKSolve(_IKBenchmark):
+    params = ([512],)
+    repeat = 6
 
 if __name__ == "__main__":
     import argparse
