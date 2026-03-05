@@ -83,8 +83,14 @@ class _IKBenchmark:
     def teardown(self, batch_size):
         q_best = self.winners_d.numpy()
         success = eval_success(
-            self.solver, self.model, q_best, self.tgt_p, self.tgt_r,
-            self.EE_LINKS, self.POS_THRESH_M, self.ORI_THRESH_RAD,
+            self.solver,
+            self.model,
+            q_best,
+            self.tgt_p,
+            self.tgt_r,
+            self.EE_LINKS,
+            self.POS_THRESH_M,
+            self.ORI_THRESH_RAD,
         )
         if not success.all():
             n_failed = int((~success).sum())
@@ -94,6 +100,7 @@ class _IKBenchmark:
 class FastIKSolve(_IKBenchmark):
     params = ([512],)
     repeat = 6
+
 
 if __name__ == "__main__":
     import argparse
