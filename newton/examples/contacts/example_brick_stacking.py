@@ -486,6 +486,13 @@ class Example:
         self.setup_tasks()
 
         self.viewer.set_model(self.model)
+        if hasattr(self.viewer, "picking"):
+            self.viewer.picking.pick_stiffness = 1.0
+            self.viewer.picking.pick_damping = 0.1
+            ps = self.viewer.picking.pick_state.numpy()
+            ps[6] = 1.0
+            ps[7] = 0.1
+            self.viewer.picking.pick_state = wp.array(ps, dtype=float, device=self.model.device)
         cam_pos = self.table_top_center + wp.vec3(0.22, -0.18, 0.15)
         self.viewer.set_camera(pos=cam_pos, pitch=-30.0, yaw=135.0)
 
@@ -601,7 +608,7 @@ class Example:
             density=BRICK_DENSITY,
             ke=BRICK_KE,
             kd=BRICK_KD,
-            mu=1.0,
+            mu=0.5,
             margin=BRICK_MARGIN,
             gap=SDF_MARGIN,
         )
@@ -856,6 +863,7 @@ class Example:
         self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
