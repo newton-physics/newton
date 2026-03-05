@@ -19,6 +19,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import warnings
 import zlib
 
 import numpy as np
@@ -895,6 +896,61 @@ class TestImportMjcfGeometry(unittest.TestCase):
 
         # Body 6: mass="0" should also have zero inertia
         self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
+
+    def test_zero_mass_mesh_geom_no_warning(self):
+        """Regression test: mass='0' on mesh geoms must not emit a warning.
+
+        MuJoCo models commonly set mass='0' (with density='0') as a default
+        for visual mesh geoms. The MJCF importer should silently skip the
+        explicit-mass handling when the mass is zero instead of warning that
+        'explicit mass on mesh is not supported'.
+
+        See https://github.com/newton-physics/newton/issues/1836
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="zero_mass_mesh_test">
+    <asset>
+        <mesh name="box_mesh" file="box.obj"/>
+    </asset>
+    <default>
+        <geom group="3" mass="0" density="0"/>
+    </default>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+            <freejoint/>
+            <geom type="mesh" mesh="box_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            mesh_path = os.path.join(tmpdir, "box.obj")
+            with open(mesh_path, "w") as f:
+                f.write(
+                    "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+                    "v 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n"
+                    "f 1 2 3 4\nf 5 6 7 8\nf 1 2 6 5\n"
+                    "f 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n"
+                )
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.add_mjcf(mjcf_path)
+
+            mass_warnings = [
+                w for w in caught if "explicit mass" in str(w.message) and "not supported" in str(w.message)
+            ]
+            self.assertEqual(
+                len(mass_warnings),
+                0,
+                msg=f"Expected no 'explicit mass' warnings for mass=0 mesh geoms, got: "
+                f"{[str(w.message) for w in mass_warnings]}",
+            )
 
     def test_solreflimit_parsing(self):
         """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
