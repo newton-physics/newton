@@ -686,6 +686,8 @@ class Model:
         self.attribute_frequency["body_mass"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_inv_mass"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_f"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_qdd"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_parent_f"] = Model.AttributeFrequency.BODY
 
         # attributes per joint
         self.attribute_frequency["joint_type"] = Model.AttributeFrequency.JOINT
@@ -721,6 +723,7 @@ class Model:
         self.attribute_frequency["joint_effort_limit"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_friction"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_velocity_limit"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["mujoco:qfrc_actuator"] = Model.AttributeFrequency.JOINT_DOF
 
         # attributes per shape
         self.attribute_frequency["shape_transform"] = Model.AttributeFrequency.SHAPE
