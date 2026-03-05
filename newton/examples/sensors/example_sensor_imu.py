@@ -118,7 +118,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
         self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)
@@ -151,8 +151,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -161,6 +160,8 @@ class Example:
             self.imu.update(self.state_0)
             # average and compute color
             wp.launch(acc_to_color, dim=self.n_cubes, inputs=[0.025, self.imu.accelerometer, self.buffer, self.colors])
+
+        self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:

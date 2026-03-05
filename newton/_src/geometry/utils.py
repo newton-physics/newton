@@ -17,7 +17,7 @@ import contextlib
 import os
 import warnings
 from collections import defaultdict
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -430,7 +430,13 @@ def silence_stdio():
         devnull.close()
 
 
-def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbose=False):
+def remesh_ftetwild(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    optimize: bool = False,
+    edge_length_fac: float = 0.05,
+    verbose: bool = False,
+):
     """Remesh a 3D triangular surface mesh using "Fast Tetrahedral Meshing in the Wild" (fTetWild).
 
     This is useful for improving the quality of the mesh, and for ensuring that the mesh is
@@ -497,7 +503,7 @@ def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbo
     return new_vertices, new_faces
 
 
-def remesh_alphashape(vertices, alpha: float = 3.0):
+def remesh_alphashape(vertices: np.ndarray, alpha: float = 3.0):
     """Remesh a 3D triangular surface mesh using the alpha shape algorithm.
 
     Args:
@@ -515,7 +521,13 @@ def remesh_alphashape(vertices, alpha: float = 3.0):
     return np.array(alpha_shape.vertices), np.array(alpha_shape.faces, dtype=np.int32)
 
 
-def remesh_quadratic(vertices, faces, target_reduction=0.5, target_count=None, **kwargs):
+def remesh_quadratic(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    target_reduction: float = 0.5,
+    target_count: int | None = None,
+    **kwargs: Any,
+):
     """Remesh a 3D triangular surface mesh using fast quadratic mesh simplification.
 
     https://github.com/pyvista/fast-simplification
@@ -534,7 +546,7 @@ def remesh_quadratic(vertices, faces, target_reduction=0.5, target_count=None, *
     return simplify(vertices, faces, target_reduction=target_reduction, target_count=target_count, **kwargs)
 
 
-def remesh_convex_hull(vertices, maxhullvert: int = 0):
+def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0):
     """Compute the convex hull of a set of 3D points and return the vertices and faces of the convex hull mesh.
 
     Uses ``scipy.spatial.ConvexHull`` to compute the convex hull.
@@ -582,7 +594,11 @@ RemeshingMethod = Literal["ftetwild", "alphashape", "quadratic", "convex_hull", 
 
 
 def remesh(
-    vertices, faces, method: RemeshingMethod = "quadratic", visualize=False, **remeshing_kwargs
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    method: RemeshingMethod = "quadratic",
+    visualize: bool = False,
+    **remeshing_kwargs: Any,
 ) -> tuple[nparray, nparray]:
     """
     Remeshes a 3D triangular surface mesh using the specified method.
@@ -630,19 +646,19 @@ def remesh_mesh(
     method: RemeshingMethod = "quadratic",
     recompute_inertia: bool = False,
     inplace: bool = False,
-    **remeshing_kwargs,
+    **remeshing_kwargs: Any,
 ) -> Mesh:
     """
     Remeshes a Mesh object using the specified remeshing method.
 
     Args:
-        mesh (Mesh): The mesh to be remeshed.
-        method (RemeshingMethod, optional): The remeshing method to use.
+        mesh: The mesh to be remeshed.
+        method: The remeshing method to use.
             One of "ftetwild", "quadratic", "convex_hull", "alphashape", or "poisson".
             Defaults to "quadratic".
-        recompute_inertia (bool, optional): If True, recompute the mass, center of mass,
+        recompute_inertia: If True, recompute the mass, center of mass,
             and inertia tensor of the mesh after remeshing. Defaults to False.
-        inplace (bool, optional): If True, modify the mesh in place. If False,
+        inplace: If True, modify the mesh in place. If False,
             return a new mesh instance with the remeshed geometry. Defaults to False.
         **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 

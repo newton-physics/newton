@@ -75,12 +75,12 @@ class SolverSemiImplicit(SolverBase):
     ):
         """
         Args:
-            model (Model): the model to be simulated.
-            angular_damping (float, optional): Angular damping factor to be used in rigid body integration. Defaults to 0.05.
-            friction_smoothing (float, optional): Huber norm delta used for friction velocity normalization (see :func:`warp.math.norm_huber`). Defaults to 1.0.
-            joint_attach_ke (float, optional): Joint attachment spring stiffness. Defaults to 1.0e4.
-            joint_attach_kd (float, optional): Joint attachment spring damping. Defaults to 1.0e2.
-            enable_tri_contact (bool, optional): Enable triangle contact. Defaults to True.
+            model: The model to be simulated.
+            angular_damping: Angular damping factor to be used in rigid body integration. Defaults to 0.05.
+            friction_smoothing: Huber norm delta used for friction velocity normalization (see :func:`warp.math.norm_huber`). Defaults to 1.0.
+            joint_attach_ke: Joint attachment spring stiffness. Defaults to 1.0e4.
+            joint_attach_kd: Joint attachment spring damping. Defaults to 1.0e2.
+            enable_tri_contact: Enable triangle contact. Defaults to True.
         """
         super().__init__(model=model)
         self.angular_damping = angular_damping
