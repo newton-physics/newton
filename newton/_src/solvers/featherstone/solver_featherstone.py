@@ -32,6 +32,7 @@ from ..semi_implicit.kernels_particle import (
     eval_tetrahedra_forces,
     eval_triangle_forces,
 )
+from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
     compute_com_transforms,
@@ -126,6 +127,29 @@ class SolverFeatherstone(SolverBase):
 
         self._step = 0
 
+        self._update_kinematic_state()
+
+        self._compute_articulation_indices(model)
+        self._allocate_model_aux_vars(model)
+
+        if self.use_tile_gemm:
+            # create a custom kernel to evaluate the system matrix for this type
+            if self.fuse_cholesky:
+                self.eval_inertia_matrix_cholesky_kernel = create_inertia_matrix_cholesky_kernel(
+                    int(self.joint_count), int(self.dof_count)
+                )
+            else:
+                self.eval_inertia_matrix_kernel = create_inertia_matrix_kernel(
+                    int(self.joint_count), int(self.dof_count)
+                )
+
+            # ensure matrix is reloaded since otherwise an unload can happen during graph capture
+            # todo: should not be necessary?
+            wp.load_module(device=wp.get_device())
+
+    def _update_kinematic_state(self):
+        """Recompute cached kinematic body/joint flags and effective armature."""
+        model = self.model
         self.has_kinematic_bodies = False
         self.has_kinematic_joints = False
         self.joint_armature_effective = model.joint_armature
@@ -147,23 +171,10 @@ class SolverFeatherstone(SolverBase):
                 if self.has_kinematic_joints:
                     self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
 
-        self._compute_articulation_indices(model)
-        self._allocate_model_aux_vars(model)
-
-        if self.use_tile_gemm:
-            # create a custom kernel to evaluate the system matrix for this type
-            if self.fuse_cholesky:
-                self.eval_inertia_matrix_cholesky_kernel = create_inertia_matrix_cholesky_kernel(
-                    int(self.joint_count), int(self.dof_count)
-                )
-            else:
-                self.eval_inertia_matrix_kernel = create_inertia_matrix_kernel(
-                    int(self.joint_count), int(self.dof_count)
-                )
-
-            # ensure matrix is reloaded since otherwise an unload can happen during graph capture
-            # todo: should not be necessary?
-            wp.load_module(device=wp.get_device())
+    @override
+    def notify_model_changed(self, flags: int):
+        if flags & SolverNotifyFlags.BODY_PROPERTIES:
+            self._update_kinematic_state()
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system

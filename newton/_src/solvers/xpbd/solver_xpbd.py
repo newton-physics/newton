@@ -18,6 +18,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, Model, State
+from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
     apply_body_delta_velocities,
@@ -98,6 +99,20 @@ class SolverXPBD(SolverBase):
 
         self.compute_body_velocity_from_position_delta = False
 
+        self._update_kinematic_state()
+
+        # helper variables to track constraint resolution vars
+        self._particle_delta_counter = 0
+        self._body_delta_counter = 0
+
+        if model.particle_count > 1 and model.particle_grid is not None:
+            # reserve space for the particle hash grid
+            with wp.ScopedDevice(model.device):
+                model.particle_grid.reserve(model.particle_count)
+
+    def _update_kinematic_state(self):
+        """Recompute cached kinematic body flags and effective inverse mass/inertia."""
+        model = self.model
         self.has_kinematic_bodies = False
         self.body_inv_mass_effective = model.body_inv_mass
         self.body_inv_inertia_effective = model.body_inv_inertia
@@ -113,14 +128,10 @@ class SolverXPBD(SolverBase):
                 self.body_inv_mass_effective = wp.array(inv_mass, dtype=float, device=model.device)
                 self.body_inv_inertia_effective = wp.array(inv_inertia, dtype=wp.mat33, device=model.device)
 
-        # helper variables to track constraint resolution vars
-        self._particle_delta_counter = 0
-        self._body_delta_counter = 0
-
-        if model.particle_count > 1 and model.particle_grid is not None:
-            # reserve space for the particle hash grid
-            with wp.ScopedDevice(model.device):
-                model.particle_grid.reserve(model.particle_count)
+    @override
+    def notify_model_changed(self, flags: int):
+        if flags & SolverNotifyFlags.BODY_PROPERTIES:
+            self._update_kinematic_state()
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
         if model.body_count == 0:

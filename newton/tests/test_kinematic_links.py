@@ -463,6 +463,82 @@ def test_kinematic_fixed_root_static_force_immune(
     test.assertGreater(abs(no_force["probe_qd"][0] - probe_vx), 2.5e-1)
 
 
+def test_kinematic_runtime_toggle(
+    test: TestKinematicLinksCanonical,
+    device,
+    solver_fn,
+):
+    """Toggle a body between kinematic and dynamic at runtime via notify_model_changed."""
+    sim_dt = 1.0 / 240.0
+    phase_steps = 60
+
+    builder = ModelBuilder(gravity=0.0)
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        mass=1.0,
+        is_kinematic=True,
+        label="toggle_body",
+    )
+    builder.add_shape_sphere(body, radius=0.1)
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+    contacts = _create_contacts(model, solver)
+
+    state_0, state_1 = model.state(), model.state()
+    applied_wrench = np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    # Phase 1: body is kinematic — should not move under applied force.
+    for _ in range(phase_steps):
+        state_0.clear_forces()
+        _set_body_wrench(state_0, body, applied_wrench)
+        if contacts is not None:
+            model.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    pos_after_kinematic = state_0.body_q.numpy()[body, :3].copy()
+    test.assertLess(np.linalg.norm(pos_after_kinematic), 1e-3, "Kinematic body should not move")
+
+    # Toggle to dynamic.
+    flags = model.body_flags.numpy()
+    flags[body] = int(BodyFlags.DYNAMIC)
+    model.body_flags.assign(flags)
+    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+
+    # Phase 2: body is now dynamic — should move under applied force.
+    for _ in range(phase_steps):
+        state_0.clear_forces()
+        _set_body_wrench(state_0, body, applied_wrench)
+        if contacts is not None:
+            model.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    pos_after_dynamic = state_0.body_q.numpy()[body, :3].copy()
+    test.assertGreater(pos_after_dynamic[0], 0.05, "Dynamic body should move under applied force")
+
+    # Toggle back to kinematic.
+    flags = model.body_flags.numpy()
+    flags[body] = int(BodyFlags.KINEMATIC)
+    model.body_flags.assign(flags)
+    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+
+    pos_before_rekinematic = state_0.body_q.numpy()[body, :3].copy()
+
+    # Phase 3: body is kinematic again — should not move further.
+    for _ in range(phase_steps):
+        state_0.clear_forces()
+        _set_body_wrench(state_0, body, applied_wrench)
+        if contacts is not None:
+            model.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    pos_after_rekinematic = state_0.body_q.numpy()[body, :3].copy()
+    displacement = np.linalg.norm(pos_after_rekinematic - pos_before_rekinematic)
+    test.assertLess(displacement, 1e-3, "Re-kinematic body should not move further")
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
@@ -499,6 +575,14 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
+        if "mujoco" not in solver_name:
+            add_function_test(
+                TestKinematicLinksCanonical,
+                f"test_kinematic_runtime_toggle_{solver_name}",
+                test_kinematic_runtime_toggle,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
 
 
 if __name__ == "__main__":
