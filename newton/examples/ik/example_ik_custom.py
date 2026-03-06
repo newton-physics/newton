@@ -65,7 +65,7 @@ def _collision_residuals(
     # Softplus of penetration depth to keep it smooth
     dist = wp.length(ee_pos - c)
     delta = (link_radius + r_obs) - dist
-    margin = 0.05
+    margin = 0.15
     pen = wp.log(1.0 + wp.exp(delta / margin)) * margin
 
     residuals[row_idx, start_idx] = weight * pen
@@ -142,7 +142,7 @@ class CollisionSphereAvoidObjective(ik.IKObjective):
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -170,6 +170,15 @@ class Example:
         self.graph = None
         self.model = builder.finalize()
         self.viewer.set_model(self.model)
+
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(0.0, -2.0, 1.0),
+            pitch=0.0,
+            yaw=90.0,
+        )
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 90.0
 
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
@@ -229,7 +238,7 @@ class Example:
                     link_radius=link_radius,
                     obstacle_centers=self.obstacle_centers,
                     obstacle_radii=self.obstacle_radii,
-                    weight=10.0,
+                    weight=50.0,
                 )
             )
 
@@ -241,7 +250,7 @@ class Example:
         )
 
         # Variables the solver will update
-        self.joint_q = wp.array(self.model.joint_q, shape=(1, self.model.joint_coord_count))
+        self.joint_q = self.model.joint_q.reshape((1, self.model.joint_coord_count))
 
         self.ik_iters = 10
         self.ik_solver = ik.IKSolver(
@@ -273,8 +282,10 @@ class Example:
 
     def _push_targets_from_gizmos(self):
         """Read gizmo-updated transforms and push into IK objectives."""
-        # Update EE target
-        self.pos_obj.set_target_position(0, wp.transform_get_translation(self.ee_tf))
+        # Update EE target (clamp z to ground)
+        pos = wp.transform_get_translation(self.ee_tf)
+        pos = wp.vec3(pos[0], pos[1], max(pos[2], 0.11))
+        self.pos_obj.set_target_position(0, pos)
         q = wp.transform_get_rotation(self.ee_tf)
         self.rot_obj.set_target_rotation(0, wp.vec4(q[0], q[1], q[2], q[3]))
 
@@ -320,5 +331,5 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)

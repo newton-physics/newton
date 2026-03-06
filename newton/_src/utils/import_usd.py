@@ -1590,13 +1590,59 @@ def parse_usd(
                         root_joint_desc = joint_descriptions[joint_names[i]]
                         b0 = str(root_joint_desc.body0)
                         b1 = str(root_joint_desc.body1)
-                        world_body_path = b0 if body_ids.get(b0, -1) == -1 else b1
+                        # Determine the world-facing side from this articulation's body set.
+                        # path_body_map includes previously imported articulations, so using
+                        # it here can misidentify the world-side path for the current root
+                        # joint when b0 references an external rigid body.
+                        if b0 not in body_ids:
+                            world_body_path = b0
+                        elif b1 not in body_ids:
+                            world_body_path = b1
+                        else:
+                            # Defensive fallback; root joints should have exactly one side
+                            # outside the articulation.
+                            world_body_path = b0
                         world_body_prim = stage.GetPrimAtPath(world_body_path) if world_body_path else None
                         if world_body_prim is not None and world_body_prim.IsValid():
                             world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
                         else:
-                            # world-side path can be empty (body0 == ""); localPose0 already carries world-side pose
-                            world_body_xform = wp.transform_identity()
+                            # body0/body1 can resolve to world with an empty path (""),
+                            # leaving no world-side prim to query.
+                            # If the authored world-side local pose is identity, recover
+                            # the missing world-side frame from the resolved child body
+                            # pose and local poses so root-joint FK stays consistent with
+                            # imported body_q.
+                            # If the world-side local pose is non-identity, keep the
+                            # previous identity fallback: USD often bakes non-rigid world
+                            # anchors directly into localPose0/localPose1 in this case.
+                            _, child_local_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+                                root_joint_desc,
+                                body_ids,
+                                get_transforms=True,
+                            )
+                            assert parent_tf is not None and child_tf is not None
+                            identity_tf = wp.transform_identity()
+                            parent_pos = np.array(parent_tf.p, dtype=float)
+                            parent_quat = np.array(parent_tf.q, dtype=float)
+                            identity_pos = np.array(identity_tf.p, dtype=float)
+                            identity_quat = np.array(identity_tf.q, dtype=float)
+                            parent_pos_is_identity = np.allclose(parent_pos, identity_pos, atol=1e-6)
+                            # q and -q represent the same rotation
+                            parent_rot_is_identity = abs(np.dot(parent_quat, identity_quat)) > 1.0 - 1e-6
+                            if (
+                                parent_pos_is_identity
+                                and parent_rot_is_identity
+                                and 0 <= child_local_id < len(body_labels)
+                            ):
+                                child_path = body_labels[child_local_id]
+                                child_prim = stage.GetPrimAtPath(child_path)
+                            else:
+                                child_prim = None
+                            if child_prim is not None and child_prim.IsValid():
+                                child_world_xform = usd.get_transform(child_prim, local=False, xform_cache=xform_cache)
+                                world_body_xform = child_world_xform * child_tf * wp.transform_inverse(parent_tf)
+                            else:
+                                world_body_xform = wp.transform_identity()
                         root_frame_xform = (
                             wp.transform_inverse(articulation_root_xform)
                             if override_root_xform

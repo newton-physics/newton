@@ -16,11 +16,9 @@
 ###########################################################################
 # Example SDF Mesh Collision
 #
-# Demonstrates mesh-mesh collision using SDF (Signed Distance Field).
-# Supports two scenes "nut_bolt" and "gears":
+# Demonstrates nut/bolt mesh collision using hydroelastic contacts.
 #
-# Command: python -m newton.examples nut_bolt_hydro --scene nut_bolt
-#          python -m newton.examples nut_bolt_hydro --scene gears
+# Command: python -m newton.examples nut_bolt_hydro
 #
 ###########################################################################
 
@@ -34,16 +32,8 @@ import newton.examples
 # Assembly type for the nut and bolt
 ASSEMBLY_STR = "m20_loose"
 
-# Gear mesh files available (filename -> key)
-GEAR_FILES = [
-    ("factory_gear_base_loose_space_5e-4_subdiv_4x.obj", "gear_base"),
-    ("factory_gear_large_space_5e-4.obj", "gear_large"),
-    ("factory_gear_medium_space_5e-4.obj", "gear_medium"),
-    ("factory_gear_small_space_5e-4.obj", "gear_small"),
-]
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
-ISAACGYM_GEARS_FOLDER = "assets/factory/mesh/factory_gears"
 
 SDF_MAX_RESOLUTION = 256
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
@@ -133,41 +123,31 @@ def load_mesh_with_sdf(
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-        world_count=1,
-        num_per_world=1,
-        scene="nut_bolt",
-        solver="xpbd",
-        test_mode=False,
-    ):
+    def __init__(self, viewer, args):
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        # Use more substeps for gears scene to improve stability
-        self.sim_substeps = 50 if scene == "gears" else 5
+        self.sim_substeps = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
         self.viewer = viewer
-        self.scene = scene
-        self.solver_type = solver
-        self.test_mode = test_mode
+        self.solver_type = args.solver
+        self.test_mode = args.test
 
         # XPBD contact correction (0.0 = no correction, 1.0 = full correction)
         self.xpbd_contact_relaxation = 0.8
 
         # Scene scaling factor (1.0 = original size)
-        self.scene_scale = 5.0
+        self.scene_scale = 1.0
 
         # Ground plane offset (negative = below origin)
         self.ground_plane_offset = -0.01
 
         # Grid dimensions for nut/bolt scene (number of assemblies in X and Y)
-        self.num_per_world = num_per_world
-        self.grid_x = int(np.ceil(np.sqrt(num_per_world)))
-        self.grid_y = int(np.ceil(num_per_world / self.grid_x))
+        self.num_per_world = args.num_per_world
+        self.grid_x = int(np.ceil(np.sqrt(self.num_per_world)))
+        self.grid_y = int(np.ceil(self.num_per_world / self.grid_x))
 
         # Maximum number of rigid contacts to allocate (limits memory usage)
         # None = auto-calculate (can be very large), or set explicit limit (e.g., 1_000_000)
@@ -176,15 +156,10 @@ class Example:
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
         self.broad_phase_mode = "sap"
 
-        if scene == "nut_bolt":
-            world_builder = self._build_nut_bolt_scene()
-        elif scene == "gears":
-            world_builder = self._build_gears_scene()
-        else:
-            raise ValueError(f"Unknown scene '{scene}'")
+        world_builder = self._build_nut_bolt_scene()
 
         main_scene = newton.ModelBuilder()
-        main_scene.default_shape_cfg.gap = 0.01
+        main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
         # Add ground plane with offset (plane equation: z = offset)
         # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d
         # Therefore, to get plane at z = offset, we need d = -offset
@@ -239,14 +214,10 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        if scene == "nut_bolt":
-            offset = 0.15 * self.scene_scale
-            self.viewer.set_world_offsets((offset, offset, 0.0))
-            self.viewer.set_camera(pos=wp.vec3(offset, -offset, 0.12 * self.scene_scale), pitch=-15.0, yaw=135.0)
-        else:  # gears
-            offset = 0.25 * self.scene_scale
-            self.viewer.set_world_offsets((offset, offset, 0.0))
-            self.viewer.set_camera(pos=wp.vec3(offset, -offset, 0.2 * self.scene_scale), pitch=-25.0, yaw=135.0)
+        offset = 0.15 * self.scene_scale
+        self.viewer.set_world_offsets((offset, offset, 0.0))
+        camera_offset = np.sqrt(self.world_count) * offset * 1.25
+        self.viewer.set_camera(pos=wp.vec3(camera_offset, -camera_offset, 0.5 * camera_offset), pitch=-15.0, yaw=135.0)
 
         # Initialize test tracking data (only in test mode for nut_bolt scene)
         self._init_test_tracking()
@@ -259,7 +230,7 @@ class Example:
         print(f"Assets downloaded to: {asset_path}")
 
         world_builder = newton.ModelBuilder()
-        world_builder.default_shape_cfg.gap = 0.01 * self.scene_scale
+        world_builder.default_shape_cfg.gap = 0.001 * self.scene_scale
 
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
         nut_file = str(asset_path / f"factory_nut_{ASSEMBLY_STR}_subdiv_3x.obj")
@@ -315,32 +286,6 @@ class Example:
 
         return world_builder
 
-    def _build_gears_scene(self) -> newton.ModelBuilder:
-        print("Downloading gear assets...")
-        asset_path = newton.examples.download_external_git_folder(ISAACGYM_ENVS_REPO_URL, ISAACGYM_GEARS_FOLDER)
-        print(f"Assets downloaded to: {asset_path}")
-
-        world_builder = newton.ModelBuilder()
-        world_builder.default_shape_cfg.gap = 0.003 * self.scene_scale
-
-        for _, (gear_filename, gear_key) in enumerate(GEAR_FILES):
-            gear_file = str(asset_path / gear_filename)
-            gear_mesh, gear_center = load_mesh_with_sdf(
-                gear_file, shape_cfg=SHAPE_CFG, scale=self.scene_scale, center_origin=True
-            )
-            gear_xform = wp.transform(wp.vec3(0.0, 0.0, 0.01) * self.scene_scale, wp.quat_identity())
-            add_mesh_object(
-                world_builder,
-                gear_mesh,
-                gear_xform,
-                SHAPE_CFG,
-                key=gear_key,
-                center_vec=gear_center,
-                scale=self.scene_scale,
-            )
-
-        return world_builder
-
     def capture(self):
         if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
@@ -377,8 +322,8 @@ class Example:
         self.viewer.end_frame()
 
     def _init_test_tracking(self):
-        """Initialize tracking data for test validation (nut_bolt scene only)."""
-        if not self.test_mode or self.scene != "nut_bolt":
+        """Initialize tracking data for test validation."""
+        if not self.test_mode:
             self.bolt_body_indices = None
             self.nut_body_indices = None
             return
@@ -408,7 +353,7 @@ class Example:
 
     def _track_test_data(self):
         """Track transforms for test validation (called each step in test mode)."""
-        if not self.test_mode or self.scene != "nut_bolt":
+        if not self.test_mode:
             return
 
         body_q = self.state_0.body_q.numpy()
@@ -433,18 +378,13 @@ class Example:
     def test_final(self):
         """Verify simulation state after example completes.
 
-        For nut_bolt scene:
         - Bolts should stay approximately in place (limited displacement)
         - Nuts should rotate (thread engagement) and move slightly downward
         """
-        if self.scene != "nut_bolt":
-            # For gears scene, just verify simulation ran without error
-            return
-
         body_q = self.state_0.body_q.numpy()
 
         # Check bolts stayed in place
-        max_bolt_displacement = 0.01 * self.scene_scale  # 1cm scaled
+        max_bolt_displacement = 0.02  # 2 cm tolerance
         for i, bolt_idx in enumerate(self.bolt_body_indices):
             current_pos = body_q[bolt_idx][:3]
             initial_pos = self.bolt_initial_transforms[i][:3]
@@ -472,37 +412,30 @@ class Example:
                 f"Nut {i}: did not move downward. Initial z={initial_z:.4f}, min z reached={min_z:.4f}"
             )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=20)
+        parser.add_argument(
+            "--solver",
+            type=str,
+            choices=["xpbd", "mujoco"],
+            default="mujoco",
+            help="Solver to use: 'xpbd' or 'mujoco'.",
+        )
+        parser.add_argument(
+            "--num-per-world",
+            type=int,
+            default=1,
+            help="Number of assemblies per world.",
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument(
-        "--world-count",
-        type=int,
-        default=20,
-        help="Total number of simulated worlds.",
-    )
-    parser.add_argument(
-        "--scene",
-        type=str,
-        choices=["nut_bolt", "gears"],
-        default="nut_bolt",
-        help="Scene to run: 'nut_bolt' or 'gears'.",
-    )
-    parser.add_argument(
-        "--solver",
-        type=str,
-        choices=["xpbd", "mujoco"],
-        default="mujoco",
-        help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
-    )
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(
-        viewer,
-        world_count=args.world_count,
-        scene=args.scene,
-        solver=args.solver,
-        test_mode=args.test,
-    )
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

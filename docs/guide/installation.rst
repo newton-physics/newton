@@ -120,6 +120,17 @@ with other packages:
             .venv\Scripts\Activate.ps1
             pip install "newton[examples]"
 
+.. note::
+
+    Users on Python 3.10 may experience issues when installing ``imgui_bundle`` (a dependency of the
+    ``examples`` extra). If you encounter installation errors, we recommend either upgrading to a later
+    Python version or using `uv <https://docs.astral.sh/uv/>`_ to install Newton:
+
+    .. code-block:: console
+
+        uv venv
+        uv pip install --pre newton[dev]
+
 Running Examples
 ^^^^^^^^^^^^^^^^
 

@@ -118,7 +118,7 @@ class Example:
         edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=float(twisting_angle))
         return points, edge_q
 
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
