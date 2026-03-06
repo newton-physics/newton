@@ -708,7 +708,7 @@ def parse_usd(
             joint_prim,
             prim_type=PrimType.JOINT,
             key="velocity_limit",
-            default=default_joint_velocity_limit,
+            default=None,
             verbose=verbose,
         )
 
@@ -758,8 +758,7 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
-            if joint_velocity_limit is not None:
-                joint_params["velocity_limit"] = joint_velocity_limit
+            joint_params["velocity_limit"] = joint_velocity_limit
             if joint_desc.drive.enabled:
                 target_vel = joint_desc.drive.targetVelocity
                 target_pos = joint_desc.drive.targetPosition
@@ -812,7 +811,7 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
-                if "velocity_limit" in joint_params:
+                if joint_params["velocity_limit"] is not None:
                     joint_params["velocity_limit"] *= DegreesToRadian
 
                 joint_index = builder.add_joint_revolute(**joint_params)
@@ -939,7 +938,9 @@ def parse_usd(
                             target_kd=target_kd,
                             armature=joint_armature,
                             effort_limit=effort_limit,
-                            velocity_limit=joint_velocity_limit if joint_velocity_limit is not None else 1e6,
+                            velocity_limit=joint_velocity_limit
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
@@ -994,7 +995,7 @@ def parse_usd(
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit * DegreesToRadian
                             if joint_velocity_limit is not None
-                            else 1e6,
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
