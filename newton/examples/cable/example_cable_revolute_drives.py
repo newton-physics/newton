@@ -144,8 +144,8 @@ class Example:
         anchor_radius = 0.18
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.ke = 5.0e4
-        builder.default_shape_cfg.kd = 5.0e1
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e1
         builder.default_shape_cfg.mu = 0.8
 
         for i in range(2):

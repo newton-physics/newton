@@ -16,14 +16,16 @@
 ###########################################################################
 # Example Cable D6 Drives
 #
-# Two cables hanging from kinematic sphere anchors via D6 joints
-# (1 free linear axis = X, 1 free angular axis = Y), comparing drive
-# tracking with and without joint limits:
+# Four cables hanging from kinematic sphere anchors via D6 joints,
+# separated into linear and angular groups with drive vs. drive+limit:
 #
-#   y = -0.5   DRIVE        -- tracks oscillating targets:
-#                               linear +/-0.3 m, angular +/-1.2 rad
-#   y = +0.5   DRIVE+LIMIT  -- same drives, clamped at
-#                               +/-0.05 m linear, +/-0.3 rad angular
+#   Linear group (free linear X only, all angular locked):
+#     lin_drive       -- drive tracks +/-0.3 m oscillation
+#     lin_drive_limit -- same drive, clamped at +/-0.05 m
+#
+#   Angular group (free angular Y only, all linear locked):
+#     ang_drive       -- drive tracks +/-1.2 rad oscillation
+#     ang_drive_limit -- same drive, clamped at +/-0.3 rad
 #
 ###########################################################################
 
@@ -45,40 +47,25 @@ def advance_time(t: wp.array(dtype=float), dt: float):
 def update_drive_targets(
     t: wp.array(dtype=float),
     dof_indices: wp.array(dtype=int),
-    lin_amplitude: float,
-    ang_amplitude: float,
+    amplitudes: wp.array(dtype=float),
     omega: float,
     joint_target_pos: wp.array(dtype=float),
 ):
-    """Write oscillating target_pos for D6 drive cables.
-
-    Each cable has 2 DOFs (linear + angular). Thread i writes to
-    dof_indices[2*i] (linear) and dof_indices[2*i+1] (angular).
-    """
+    """Write oscillating target_pos for each driven DOF."""
     i = wp.tid()
-    lin_idx = dof_indices[i * 2]
-    ang_idx = dof_indices[i * 2 + 1]
-    joint_target_pos[lin_idx] = lin_amplitude * wp.sin(omega * t[0])
-    joint_target_pos[ang_idx] = ang_amplitude * wp.sin(omega * t[0])
+    idx = dof_indices[i]
+    joint_target_pos[idx] = amplitudes[i] * wp.sin(omega * t[0])
 
 
-def _extract_d6_state(model, body_q_np, joint_index):
-    """Extract free-axis displacement and angle for a D6 joint.
-
-    Uses the same convention as the VBD D6 constraint:
-    - Linear: d = dot(x_c - x_p, axis_world) for the free linear axis.
-    - Angular: twist-decomposition about the free angular axis.
-    """
+def _extract_d6_linear(model, body_q_np, joint_index):
+    """Extract linear displacement along a D6 joint's free linear axis."""
     from scipy.spatial.transform import Rotation  # noqa: PLC0415
 
     parent_idx = model.joint_parent.numpy()[joint_index]
     child_idx = model.joint_child.numpy()[joint_index]
     qd_start = int(model.joint_qd_start.numpy()[joint_index])
 
-    # D6 axes: first linear axes, then angular axes.
-    # For our config: DOF 0 = linear X, DOF 1 = angular Y.
     lin_axis_local = model.joint_axis.numpy()[qd_start]
-    ang_axis_local = model.joint_axis.numpy()[qd_start + 1]
 
     X_pj = model.joint_X_p.numpy()[joint_index]
     X_cj = model.joint_X_c.numpy()[joint_index]
@@ -99,15 +86,41 @@ def _extract_d6_state(model, body_q_np, joint_index):
     X_wc = tf_mul(child_pose, X_cj)
 
     q_wp = Rotation.from_quat([X_wp[3], X_wp[4], X_wp[5], X_wp[6]])
-
-    # Linear displacement along free axis
     lin_a = lin_axis_local / np.linalg.norm(lin_axis_local)
     axis_world = q_wp.apply(lin_a)
-    x_p = X_wp[:3]
-    x_c = X_wc[:3]
-    d_lin = float(np.dot(x_c - x_p, axis_world))
 
-    # Angular rotation about free axis
+    return float(np.dot(X_wc[:3] - X_wp[:3], axis_world))
+
+
+def _extract_d6_angular(model, body_q_np, joint_index):
+    """Extract angular rotation about a D6 joint's free angular axis."""
+    from scipy.spatial.transform import Rotation  # noqa: PLC0415
+
+    parent_idx = model.joint_parent.numpy()[joint_index]
+    child_idx = model.joint_child.numpy()[joint_index]
+    qd_start = int(model.joint_qd_start.numpy()[joint_index])
+
+    ang_axis_local = model.joint_axis.numpy()[qd_start]
+
+    X_pj = model.joint_X_p.numpy()[joint_index]
+    X_cj = model.joint_X_c.numpy()[joint_index]
+
+    def tf_mul(a, b):
+        pa, qa = a[:3], a[3:]
+        pb, qb = b[:3], b[3:]
+        ra = Rotation.from_quat([qa[0], qa[1], qa[2], qa[3]])
+        rb = Rotation.from_quat([qb[0], qb[1], qb[2], qb[3]])
+        q_out = (ra * rb).as_quat()
+        p_out = pa + ra.apply(pb)
+        return np.concatenate([p_out, q_out])
+
+    parent_pose = body_q_np[parent_idx] if parent_idx >= 0 else np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+    child_pose = body_q_np[child_idx]
+
+    X_wp = tf_mul(parent_pose, X_pj)
+    X_wc = tf_mul(child_pose, X_cj)
+
+    q_wp = Rotation.from_quat([X_wp[3], X_wp[4], X_wp[5], X_wp[6]])
     q_wc = Rotation.from_quat([X_wc[3], X_wc[4], X_wc[5], X_wc[6]])
     r_err = (q_wp.inv() * q_wc).as_quat()
 
@@ -116,26 +129,26 @@ def _extract_d6_state(model, body_q_np, joint_index):
     twist_quat = np.array([a[0] * proj, a[1] * proj, a[2] * proj, r_err[3]])
     twist_norm = np.linalg.norm(twist_quat)
     if twist_norm < 1e-12:
-        return d_lin, 0.0
+        return 0.0
     twist_quat /= twist_norm
 
     w = np.clip(twist_quat[3], -1.0, 1.0)
     angle = 2.0 * np.arccos(abs(w))
     sign = np.sign(np.dot(a, twist_quat[:3]))
-    d_ang = float(angle * (sign if sign != 0.0 else 1.0))
-
-    return d_lin, d_ang
+    return float(angle * (sign if sign != 0.0 else 1.0))
 
 
 class Example:
-    """Two cables comparing D6 joint drive with and without limits.
+    """Four cables comparing D6 joint drives with and without limits,
+    separated into linear and angular groups.
 
-    Each cable hangs from a kinematic sphere at z=4 via a D6 joint
-    (1 free linear axis X, 1 free angular axis Y):
+    Linear group (free linear X only, all angular locked):
+      lin_drive       -- spring-damper tracks +/-0.3 m oscillation
+      lin_drive_limit -- same drive, clamped at +/-0.05 m
 
-    - **Drive**: spring-damper (linear ke=5000/kd=200, angular ke=2000/kd=100) tracks
-      +/-0.3 m linear and +/-1.2 rad angular oscillation.
-    - **Drive+Limit**: same drives but joint limits clamp to +/-0.05 m linear and +/-0.3 rad angular.
+    Angular group (free angular Y only, all linear locked):
+      ang_drive       -- spring-damper tracks +/-1.2 rad oscillation
+      ang_drive_limit -- same drive, clamped at +/-0.3 rad
     """
 
     def __init__(self, viewer, args=None):
@@ -151,7 +164,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
-        # Cable parameters -- same as example_cable_d6_joints for stability.
+        # Cable parameters.
         num_segments = 50
         segment_length = 0.05
         cable_radius = 0.015
@@ -166,36 +179,94 @@ class Example:
         self.lin_limit_bound = 0.05  # m
         self.ang_limit_bound = 0.3  # rad
 
-        # Drive parameters (shared by both cables).
+        # Drive stiffness/damping.
         lin_drive_ke = 5000.0
         lin_drive_kd = 200.0
         ang_drive_ke = 2000.0
         ang_drive_kd = 100.0
 
-        # Layout.
-        y_positions = [-0.5, 0.5]
         anchor_z = 4.0
         anchor_radius = 0.18
 
         JointDofConfig = newton.ModelBuilder.JointDofConfig
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.ke = 5.0e4
-        builder.default_shape_cfg.kd = 5.0e1
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e1
         builder.default_shape_cfg.mu = 0.8
 
-        for i in range(2):
-            y = y_positions[i]
+        # Four configs: linear drive/limit pair, then angular drive/limit pair.
+        y_spacing = 1.0
+        y0 = -1.5 * y_spacing
+        drive_configs = [
+            {
+                "label": "lin_drive",
+                "y": y0 + 0 * y_spacing,
+                "dof_type": "lin",
+                "lin_axes": [JointDofConfig(axis=(1, 0, 0), target_ke=lin_drive_ke, target_kd=lin_drive_kd)],
+                "ang_axes": [],
+                "amplitude": self.lin_drive_amplitude,
+            },
+            {
+                "label": "lin_drive_limit",
+                "y": y0 + 1 * y_spacing,
+                "dof_type": "lin",
+                "lin_axes": [
+                    JointDofConfig(
+                        axis=(1, 0, 0),
+                        target_ke=lin_drive_ke,
+                        target_kd=lin_drive_kd,
+                        limit_lower=-self.lin_limit_bound,
+                        limit_upper=self.lin_limit_bound,
+                        limit_ke=1.0e5,
+                        limit_kd=1.0e2,
+                    )
+                ],
+                "ang_axes": [],
+                "amplitude": self.lin_drive_amplitude,
+            },
+            {
+                "label": "ang_drive",
+                "y": y0 + 2 * y_spacing,
+                "dof_type": "ang",
+                "lin_axes": [],
+                "ang_axes": [JointDofConfig(axis=(0, 1, 0), target_ke=ang_drive_ke, target_kd=ang_drive_kd)],
+                "amplitude": self.ang_drive_amplitude,
+            },
+            {
+                "label": "ang_drive_limit",
+                "y": y0 + 3 * y_spacing,
+                "dof_type": "ang",
+                "lin_axes": [],
+                "ang_axes": [
+                    JointDofConfig(
+                        axis=(0, 1, 0),
+                        target_ke=ang_drive_ke,
+                        target_kd=ang_drive_kd,
+                        limit_lower=-self.ang_limit_bound,
+                        limit_upper=self.ang_limit_bound,
+                        limit_ke=1.0e5,
+                        limit_kd=1.0e1,
+                    )
+                ],
+                "amplitude": self.ang_drive_amplitude,
+            },
+        ]
 
-            # Kinematic sphere anchor.
+        # Track per-cable info for DOF resolution and testing.
+        self._cable_configs = drive_configs
+        drive_amplitudes: list[float] = []
+
+        for cfg in drive_configs:
+            y = cfg["y"]
+
             anchor = builder.add_link(xform=wp.transform(wp.vec3(0.0, y, anchor_z), wp.quat_identity()), mass=0.0)
-            builder.add_shape_sphere(body=anchor, radius=anchor_radius, label=f"anchor_{i}")
+            builder.add_shape_sphere(body=anchor, radius=anchor_radius, label=f"anchor_{cfg['label']}")
             builder.body_mass[anchor] = 0.0
             builder.body_inv_mass[anchor] = 0.0
             builder.body_inertia[anchor] = wp.mat33(0.0)
             builder.body_inv_inertia[anchor] = wp.mat33(0.0)
 
-            # Cable hanging below anchor.
             cable_start = wp.vec3(0.0, y, anchor_z - anchor_radius)
             rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
                 start=cable_start,
@@ -211,59 +282,26 @@ class Example:
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 stretch_stiffness=stretch_stiffness,
-                label=f"cable_{i}",
+                label=f"cable_{cfg['label']}",
                 wrap_in_articulation=False,
             )
 
-            # D6 joint -- both share the same anchor geometry.
             parent_frame_q = rod_quats[0]
             parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), parent_frame_q)
             child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
-            if i == 0:
-                # Drive only.
-                j = builder.add_joint_d6(
-                    parent=anchor,
-                    child=rod_bodies[0],
-                    parent_xform=parent_xform,
-                    child_xform=child_xform,
-                    linear_axes=[JointDofConfig(axis=(1, 0, 0), target_ke=lin_drive_ke, target_kd=lin_drive_kd)],
-                    angular_axes=[JointDofConfig(axis=(0, 1, 0), target_ke=ang_drive_ke, target_kd=ang_drive_kd)],
-                    label="d6_drive",
-                )
-            else:
-                # Drive + limit.
-                j = builder.add_joint_d6(
-                    parent=anchor,
-                    child=rod_bodies[0],
-                    parent_xform=parent_xform,
-                    child_xform=child_xform,
-                    linear_axes=[
-                        JointDofConfig(
-                            axis=(1, 0, 0),
-                            target_ke=lin_drive_ke,
-                            target_kd=lin_drive_kd,
-                            limit_lower=-self.lin_limit_bound,
-                            limit_upper=self.lin_limit_bound,
-                            limit_ke=1.0e5,
-                            limit_kd=1.0e2,
-                        )
-                    ],
-                    angular_axes=[
-                        JointDofConfig(
-                            axis=(0, 1, 0),
-                            target_ke=ang_drive_ke,
-                            target_kd=ang_drive_kd,
-                            limit_lower=-self.ang_limit_bound,
-                            limit_upper=self.ang_limit_bound,
-                            limit_ke=1.0e5,
-                            limit_kd=1.0e1,
-                        )
-                    ],
-                    label="d6_limit",
-                )
-
+            j = builder.add_joint_d6(
+                parent=anchor,
+                child=rod_bodies[0],
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                linear_axes=cfg["lin_axes"],
+                angular_axes=cfg["ang_axes"],
+                label=f"d6_{cfg['label']}",
+            )
             builder.add_articulation([*rod_joints, j])
+
+            drive_amplitudes.append(cfg["amplitude"])
 
         builder.add_ground_plane()
         builder.color()
@@ -286,16 +324,17 @@ class Example:
         joint_qd_start = self.model.joint_qd_start.numpy()
 
         d6_indices = [i for i in range(self.model.joint_count) if int(joint_types[i]) == int(newton.JointType.D6)]
-        assert len(d6_indices) == 2, f"Expected 2 D6 joints, found {len(d6_indices)}"
+        assert len(d6_indices) == len(drive_configs), (
+            f"Expected {len(drive_configs)} D6 joints, found {len(d6_indices)}"
+        )
         self._d6_joint_indices = d6_indices
 
-        # Each D6 joint has 2 DOFs (linear + angular). Build flat list: [lin0, ang0, lin1, ang1].
+        # Each D6 joint has 1 DOF. Build flat DOF index and amplitude arrays.
         drive_dofs = []
         for idx in d6_indices:
-            qd_s = int(joint_qd_start[idx])
-            drive_dofs.append(qd_s)  # linear DOF
-            drive_dofs.append(qd_s + 1)  # angular DOF
+            drive_dofs.append(int(joint_qd_start[idx]))
         self._drive_dof_indices = wp.array(drive_dofs, dtype=int, device=self.device)
+        self._drive_amplitudes = wp.array(drive_amplitudes, dtype=float, device=self.device)
 
         self.capture()
 
@@ -312,15 +351,13 @@ class Example:
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
 
-            # Drive targets for both cables.
             wp.launch(
                 kernel=update_drive_targets,
-                dim=2,  # one thread per cable
+                dim=self._drive_dof_indices.shape[0],
                 inputs=[
                     self.sim_time_array,
                     self._drive_dof_indices,
-                    self.lin_drive_amplitude,
-                    self.ang_drive_amplitude,
+                    self._drive_amplitudes,
                     self.omega,
                     self.control.joint_target_pos,
                 ],
@@ -351,28 +388,39 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Validate drive tracking and limit clamping."""
+        """Validate drive tracking and limit clamping for all four cables."""
         body_q_np = self.state_0.body_q.numpy()
         t = self.sim_time_array.numpy()[0]
-        lin_target = self.lin_drive_amplitude * math.sin(self.omega * t)
-        ang_target = self.ang_drive_amplitude * math.sin(self.omega * t)
 
-        d_lin_drive, d_ang_drive = _extract_d6_state(self.model, body_q_np, self._d6_joint_indices[0])
-        d_lin_limit, d_ang_limit = _extract_d6_state(self.model, body_q_np, self._d6_joint_indices[1])
+        for i, cfg in enumerate(self._cable_configs):
+            ji = self._d6_joint_indices[i]
+            dof_type = cfg["dof_type"]
+            label = cfg["label"]
 
-        # Drive cable should track the targets.
-        if abs(d_lin_drive - lin_target) > 0.15:
-            raise AssertionError(f"Linear drive tracking: d={d_lin_drive:.3f}, target={lin_target:.3f}")
-        if abs(d_ang_drive - ang_target) > 0.5:
-            raise AssertionError(f"Angular drive tracking: theta={d_ang_drive:.3f}, target={ang_target:.3f}")
+            if dof_type == "lin":
+                d = _extract_d6_linear(self.model, body_q_np, ji)
+                target = self.lin_drive_amplitude * math.sin(self.omega * t)
 
-        # Limit cable should be clamped within bounds.
-        if abs(d_lin_limit) > self.lin_limit_bound + 0.05:
-            raise AssertionError(f"Linear limit violated: |d|={abs(d_lin_limit):.3f}, bound={self.lin_limit_bound}")
-        if abs(d_ang_limit) > self.ang_limit_bound + 0.15:
-            raise AssertionError(
-                f"Angular limit violated: |theta|={abs(d_ang_limit):.3f}, bound={self.ang_limit_bound}"
-            )
+                if "limit" not in label:
+                    if abs(d - target) > 0.15:
+                        raise AssertionError(f"{label}: linear drive tracking d={d:.3f}, target={target:.3f}")
+                else:
+                    if abs(d) > self.lin_limit_bound + 0.05:
+                        raise AssertionError(
+                            f"{label}: linear limit violated |d|={abs(d):.3f}, bound={self.lin_limit_bound}"
+                        )
+            else:
+                theta = _extract_d6_angular(self.model, body_q_np, ji)
+                target = self.ang_drive_amplitude * math.sin(self.omega * t)
+
+                if "limit" not in label:
+                    if abs(theta - target) > 0.5:
+                        raise AssertionError(f"{label}: angular drive tracking theta={theta:.3f}, target={target:.3f}")
+                else:
+                    if abs(theta) > self.ang_limit_bound + 0.15:
+                        raise AssertionError(
+                            f"{label}: angular limit violated |theta|={abs(theta):.3f}, bound={self.ang_limit_bound}"
+                        )
 
 
 if __name__ == "__main__":

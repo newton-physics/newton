@@ -49,7 +49,7 @@ def compute_ball_joint_error(
     For each i:
       - Position error: world-space distance between parent and child anchor points.
       - Relative rotation angle: angle between parent and child body orientations.
-        Expected to be nonzero because ball joints free all rotation — the cable
+        Expected to be nonzero because ball joints free all rotation -- the cable
         should NOT follow the parent's rotation.
     """
     i = wp.tid()
@@ -113,11 +113,11 @@ def move_kinematic_anchors(
     w = 1.5
 
     if m == 0:
-        # Rotate about X — cable ignores (ball frees all rotation)
+        # Rotate about X -- cable ignores (ball frees all rotation)
         ang = (ramp * 0.8) * wp.sin(w * ti)
         q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), ang)
     else:
-        # Rotate about Y — cable ignores (ball frees all rotation)
+        # Rotate about Y -- cable ignores (ball frees all rotation)
         ang = (ramp * 1.6) * wp.sin(w * ti + 0.7)
         q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang)
 
@@ -169,8 +169,8 @@ class Example:
         builder = newton.ModelBuilder()
 
         # Contacts.
-        builder.default_shape_cfg.ke = 5.0e4
-        builder.default_shape_cfg.kd = 5.0e1
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e1
         builder.default_shape_cfg.mu = 0.8
 
         # Load meshes for variety.

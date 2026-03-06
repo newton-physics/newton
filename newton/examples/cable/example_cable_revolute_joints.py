@@ -20,11 +20,11 @@
 # - Create multiple kinematic anchor bodies (sphere, capsule, box, bear mesh)
 # - Attach a cable (rod) to each anchor via a REVOLUTE joint (axis = Y)
 # - Two sets of drivers side by side:
-#     Left column  (mode 0): rotate about X (locked axis) — cable follows
-#     Right column (mode 1): rotate about Y (free axis)   — cable ignores rotation
+#     Left column  (mode 0): rotate about X (locked axis) -- cable follows
+#     Right column (mode 1): rotate about Y (free axis)   -- cable ignores rotation
 # - Rotation-based driving directly exercises the hinge DOF:
-#     Rotating about the free axis → cable decouples (unlike fixed joint).
-#     Rotating about a locked axis → cable follows (unlike ball joint).
+#     Rotating about the free axis -> cable decouples (unlike fixed joint).
+#     Rotating about a locked axis -> cable follows (unlike ball joint).
 #
 ###########################################################################
 
@@ -58,8 +58,8 @@ def compute_revolute_joint_error(
     For each i:
       - Position error: ||x_p - x_c||
       - Perpendicular angular error: ||kappa_perp|| (rotation component perpendicular
-        to the joint axis) — should be near zero for a working revolute constraint.
-      - Free-axis rotation: |kappa_free| (rotation about the hinge axis) — expected
+        to the joint axis) -- should be near zero for a working revolute constraint.
+      - Free-axis rotation: |kappa_free| (rotation about the hinge axis) -- expected
         to be nonzero for the "free" set where the driver rotates about the hinge axis.
     """
     i = wp.tid()
@@ -135,11 +135,11 @@ def move_kinematic_anchors(
     w = 1.5
 
     if m == 0:
-        # Rotate about X (locked axis) — cable follows
+        # Rotate about X (locked axis) -- cable follows
         ang = (ramp * 0.8) * wp.sin(w * ti)
         q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), ang)
     else:
-        # Rotate about Y (free axis) — cable ignores
+        # Rotate about Y (free axis) -- cable ignores
         ang = (ramp * 1.6) * wp.sin(w * ti + 0.7)
         q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang)
 
@@ -163,8 +163,8 @@ class Example:
     - For each driver, create a straight cable (rod) hanging down in world -Z.
     - Attach the first rod segment to the driver using a REVOLUTE joint (hinge axis Y).
     - Two side-by-side sets driven by rotation:
-        Left  (mode 0) — rotate about X (LOCKED): cable follows tilt.
-        Right (mode 1) — rotate about Y (FREE):   cable ignores rotation.
+        Left  (mode 0) -- rotate about X (LOCKED): cable follows tilt.
+        Right (mode 1) -- rotate about Y (FREE):   cable ignores rotation.
     """
 
     def __init__(self, viewer, args=None):
@@ -193,8 +193,8 @@ class Example:
         builder = newton.ModelBuilder()
 
         # Contacts.
-        builder.default_shape_cfg.ke = 5.0e4
-        builder.default_shape_cfg.kd = 5.0e1
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e1
         builder.default_shape_cfg.mu = 0.8
 
         # Load meshes for variety.
@@ -508,7 +508,7 @@ class Example:
             )
 
         # 3. Free-axis rotation exercised: "free" set only (driver rotates about Y,
-        #    cable ignores → large kappa_free proves hinge is free, not secretly fixed)
+        #    cable ignores -> large kappa_free proves hinge is free, not secretly fixed)
         if self._free_set_joint_indices:
             free_kappa = np.abs(kappa_free_np[self._free_set_joint_indices])
             max_kappa_free = float(np.max(free_kappa))

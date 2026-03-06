@@ -94,10 +94,10 @@ def _extract_prismatic_displacement(model, body_q_np, joint_index):
 class Example:
     """Two cables comparing prismatic joint drive with and without limits.
 
-    Each cable hangs from a kinematic sphere at z=4 via a prismatic joint (X-axis):
+    Each cable hangs from a kinematic box at z=4 via a prismatic joint (X-axis):
 
     - **Drive**: spring-damper (ke=5000, kd=200) tracks +/-0.3 m oscillation.
-    - **Drive+Limit**: same drive but joint limits clamp displacement to +/-0.1 m.
+    - **Drive+Limit**: same drive but joint limits clamp displacement to +/-0.05 m.
     """
 
     def __init__(self, viewer, args=None):
@@ -136,8 +136,8 @@ class Example:
         anchor_radius = 0.18
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.ke = 5.0e4
-        builder.default_shape_cfg.kd = 5.0e1
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e1
         builder.default_shape_cfg.mu = 0.8
 
         for i in range(2):

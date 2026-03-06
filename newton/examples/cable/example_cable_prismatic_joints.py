@@ -20,11 +20,10 @@
 # - Create multiple kinematic anchor bodies (sphere, capsule, box, bear mesh)
 # - Attach a cable (rod) to each anchor via a PRISMATIC joint (axis = X)
 # - Two sets of drivers side by side:
-#     Left column  (mode 0): translate in X (along free slider axis) — cable slides freely
-#     Right column (mode 1): translate in Y (perpendicular, locked) — cable follows
-# - Both sets use translation to showcase the prismatic's unique translational DOF.
-#   (Rotation-based driving is not used because the VBD prismatic solver
-#    requires small parent rotations for accurate perpendicular constraint.)
+#     Left column  (mode 0): translate in X (along free slider axis) -- cable slides freely
+#     Right column (mode 1): translate in Y (perpendicular, locked) -- cable follows
+# - Both sets use pure translation to directly showcase the prismatic's
+#   unique translational DOF (sliding vs. locked directions).
 #
 ###########################################################################
 
@@ -59,7 +58,7 @@ def compute_prismatic_joint_error(
       - Perpendicular position error: ||C_perp|| where C_perp is the component of
         the anchor difference perpendicular to the joint axis in world space.
       - Angular error: full rotation angle between joint frames.
-      - Along-axis displacement: |C_along| — expected to be nonzero for set 0
+      - Along-axis displacement: |C_along| -- expected to be nonzero for set 0
         drivers that slide the cable along the free axis.
     """
     i = wp.tid()
@@ -132,11 +131,11 @@ def move_kinematic_anchors(
     w = 1.5
 
     if m == 0:
-        # Translate in X (along free slider axis) — cable doesn't follow
+        # Translate in X (along free slider axis) -- cable doesn't follow
         dx = (ramp * 0.5) * wp.sin(w * ti)
         pos = wp.vec3(p0[0] + dx, p0[1], p0[2])
     else:
-        # Translate in Y (perpendicular, locked) — cable follows sideways
+        # Translate in Y (perpendicular, locked) -- cable follows sideways
         dy = (ramp * 0.5) * wp.sin(w * ti)
         pos = wp.vec3(p0[0], p0[1] + dy, p0[2])
 
@@ -160,8 +159,8 @@ class Example:
     - For each driver, create a straight cable (rod) hanging down in world -Z.
     - Attach the first rod segment to the driver using a PRISMATIC joint (slider axis X).
     - Two side-by-side sets driven by pure translation:
-        Left  (mode 0) — translate X (FREE axis):  cable slides, doesn't follow.
-        Right (mode 1) — translate Y (LOCKED):     cable follows sideways.
+        Left  (mode 0) -- translate X (FREE axis):  cable slides, doesn't follow.
+        Right (mode 1) -- translate Y (LOCKED):     cable follows sideways.
     """
 
     def __init__(self, viewer, args=None):
@@ -190,8 +189,8 @@ class Example:
         builder = newton.ModelBuilder()
 
         # Contacts.
-        builder.default_shape_cfg.ke = 5.0e4
-        builder.default_shape_cfg.kd = 5.0e1
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e1
         builder.default_shape_cfg.mu = 0.8
 
         # Load meshes for variety.
