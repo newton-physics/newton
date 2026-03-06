@@ -2067,7 +2067,7 @@ def parse_usd(
                 collider_is_visible = (
                     show_collider_by_policy or collider_has_visual_material
                 ) and not hide_collider_for_body
-                
+
                 shape_ke = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
