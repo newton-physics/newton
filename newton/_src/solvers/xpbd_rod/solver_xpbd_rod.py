@@ -47,6 +47,7 @@ from .kernels_collision import (
     _warp_compute_corrections_parallel,
     _warp_compute_inv_inertia_world,
     _warp_merge_delta_lambda,
+    _warp_set_root_orientation,
     _warp_zero_2d,
     _warp_zero_float,
     _warp_zero_vec3,
@@ -133,7 +134,7 @@ class _RodWorkspace:
 
         # Inverse inertia
         self.inv_inertia_wp = wp.zeros(alloc_points * 9, dtype=wp.float32, device=device)
-        self.inv_inertia_local_diag = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        self.inv_inertia_local_diag = wp.vec3(1.0, 1.0, 1.0)
 
         # Parallel correction workspace
         self.pos_corrections_wp = wp.zeros(alloc_points, dtype=wp.vec3, device=device)
@@ -150,7 +151,7 @@ class _RodWorkspace:
         # Material properties
         self.young_modulus = 1.0e6
         self.torsion_modulus = 1.0e6
-        self.gravity = np.array([0.0, 0.0, -9.81], dtype=np.float32)
+        self.gravity = wp.vec3(0.0, 0.0, -9.81)
 
 
 class SolverXPBDRod(SolverBase):
@@ -221,14 +222,10 @@ class SolverXPBDRod(SolverBase):
             ws.young_modulus = rod_young_moduli[rod_idx]
             ws.torsion_modulus = rod_torsion_moduli[rod_idx]
 
-            # Copy particle positions/masses from model
-            particle_q = model.particle_q.numpy()
-            pos_slice = particle_q[ps : ps + np_]
-            ws.positions_wp.assign(wp.array(pos_slice, dtype=wp.vec3, device=device))
-            ws.predicted_positions_wp.assign(wp.array(pos_slice, dtype=wp.vec3, device=device))
-
-            inv_mass_np = model.particle_inv_mass.numpy()[ps : ps + np_]
-            ws.inv_masses_wp.assign(wp.array(inv_mass_np, dtype=wp.float32, device=device))
+            # Copy particle positions/masses from model (GPU→GPU, no CPU roundtrip)
+            wp.copy(dest=ws.positions_wp, src=model.particle_q, dest_offset=0, src_offset=ps, count=np_)
+            wp.copy(dest=ws.predicted_positions_wp, src=model.particle_q, dest_offset=0, src_offset=ps, count=np_)
+            wp.copy(dest=ws.inv_masses_wp, src=model.particle_inv_mass, dest_offset=0, src_offset=ps, count=np_)
 
             # Copy rod-specific data
             orient_slice = np.array(all_orientations[orient_cursor : orient_cursor + np_], dtype=np.float32)
@@ -251,7 +248,7 @@ class SolverXPBDRod(SolverBase):
             # Gravity from model
             if model.gravity is not None:
                 g = model.gravity.numpy()
-                ws.gravity = np.array([g[0][0], g[0][1], g[0][2]], dtype=np.float32)
+                ws.gravity = wp.vec3(float(g[0][0]), float(g[0][1]), float(g[0][2]))
 
             orient_cursor += np_
             edge_cursor += ne
@@ -318,10 +315,25 @@ class SolverXPBDRod(SolverBase):
                 count=ws.num_points,
             )
 
+    def set_root_orientation(self, rod_idx: int, q: wp.quat) -> None:
+        """Set the root particle orientation for a rod directly on GPU.
+
+        Args:
+            rod_idx: Index of the rod in ``self._rods``.
+            q: New root orientation as a ``wp.quat``.
+        """
+        ws = self._rods[rod_idx]
+        wp.launch(
+            _warp_set_root_orientation,
+            dim=1,
+            inputs=[ws.orientations_wp, ws.predicted_orientations_wp, ws.prev_orientations_wp, q],
+            device=ws.device,
+        )
+
     def _step_rod(self, ws: _RodWorkspace, dt: float, device: wp.Device):
         """Run one XPBD step for a single rod."""
         # 1. Predict positions & rotations
-        gravity = wp.vec3(float(ws.gravity[0]), float(ws.gravity[1]), float(ws.gravity[2]))
+        gravity = ws.gravity
         wp.launch(
             _warp_predict_positions,
             dim=ws.num_points,
@@ -435,11 +447,7 @@ class SolverXPBDRod(SolverBase):
         )
 
         # Update inverse inertia
-        inv_inertia_local = wp.vec3(
-            float(ws.inv_inertia_local_diag[0]),
-            float(ws.inv_inertia_local_diag[1]),
-            float(ws.inv_inertia_local_diag[2]),
-        )
+        inv_inertia_local = ws.inv_inertia_local_diag
         wp.launch(
             _warp_compute_inv_inertia_world,
             dim=ws.num_points,

@@ -65,10 +65,9 @@ def _warp_apply_floor_collisions(
 ):
     """Apply floor collision constraints."""
     i = wp.tid()
-    pos = positions[i]
-    if pos.z < min_z:
-        clamped = wp.vec3(pos.x, pos.y, min_z)
-        positions[i] = clamped
+    pred = predicted[i]
+    if pred.z < min_z:
+        clamped = wp.vec3(pred.x, pred.y, min_z)
         predicted[i] = clamped
         vel = velocities[i]
         if vel.z < 0.0:

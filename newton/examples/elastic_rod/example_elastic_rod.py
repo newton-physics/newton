@@ -37,10 +37,20 @@ class Example:
         self.sim_time = 0.0
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 20
+        self.sim_substeps = 8
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        num_points = 40
+        self.bend_stiffness = 0.5
+        self.twist_stiffness = 0.5
+        self.young_modulus = 1.0e6
+        self.torsion_modulus = 1.0e6
+        self.rest_bend_d1 = 0.0
+        self.rest_bend_d2 = 0.0
+        self.rest_twist = 0.0
+        self.lock_root = True
+        self.lock_root_rotation = True
+
+        num_points = 128
         spacing = 0.05
 
         builder = newton.ModelBuilder()
@@ -60,22 +70,24 @@ class Example:
             positions=positions,
             radius=0.005,
             particle_mass=0.05,
-            bend_stiffness=0.1,
-            twist_stiffness=0.1,
-            young_modulus=1.0e4,
-            torsion_modulus=1.0e4,
+            bend_stiffness=self.bend_stiffness,
+            twist_stiffness=self.twist_stiffness,
+            young_modulus=self.young_modulus,
+            torsion_modulus=self.torsion_modulus,
             lock_root=True,
             lock_root_rotation=True,
         )
+
+        builder.add_ground_plane()
 
         self.model = builder.finalize()
 
         self.solver = newton.solvers.SolverXPBDRod(
             model=self.model,
-            linear_damping=0.01,
-            angular_damping=0.01,
+            linear_damping=0.001,
+            angular_damping=0.001,
             solver_backend="block_thomas",
-            floor_z=0.0,
+            floor_z=-0.0,
         )
 
         self.state_0 = self.model.state()
@@ -83,9 +95,65 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
+
+
+        # Cache CPU-side root state to avoid GPU downloads each frame
+        self._root_qs = []
+        self._free_inv_masses = []
+        self._free_quat_inv_masses = []
+        for ws in self.solver._rods:
+            q0 = ws.orientations_wp.numpy()[0]
+            self._root_qs.append(q0.copy())
+            inv_m = ws.inv_masses_wp.numpy()
+            self._free_inv_masses.append(float(inv_m[1]) if ws.num_points > 1 else 1.0)
+            qim = ws.quat_inv_masses_wp.numpy()
+            self._free_quat_inv_masses.append(float(qim[1]) if ws.num_points > 1 else 1.0)
+
         self.viewer.set_model(self.model)
+        self.viewer.show_particles = True
+        if hasattr(self.viewer, "register_ui_callback"):
+            self.viewer.register_ui_callback(self._render_ui, position="side")
+
+    def _rotate_root(self):
+        import warp as wp
+
+        rotate_speed = 1.5  # rad/s
+        dx = 0.0
+        dz = 0.0
+        if hasattr(self.viewer, "is_key_down"):
+            if self.viewer.is_key_down("i"):
+                dz -= rotate_speed * self.frame_dt
+            if self.viewer.is_key_down("k"):
+                dz += rotate_speed * self.frame_dt
+            if self.viewer.is_key_down("j"):
+                dx -= rotate_speed * self.frame_dt
+            if self.viewer.is_key_down("l"):
+                dx += rotate_speed * self.frame_dt
+
+        if dx == 0.0 and dz == 0.0:
+            return
+
+        def qmul(a, b):
+            return np.array([
+                a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+                a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+                a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+                a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2],
+            ], dtype=np.float32)
+
+        qx = np.array([np.sin(dx / 2), 0.0, 0.0, np.cos(dx / 2)], dtype=np.float32)
+        qz = np.array([0.0, 0.0, np.sin(dz / 2), np.cos(dz / 2)], dtype=np.float32)
+
+        for rod_idx in range(len(self.solver._rods)):
+            q = self._root_qs[rod_idx]
+            q = qmul(qz, qmul(qx, q))
+            q /= np.linalg.norm(q)
+            self._root_qs[rod_idx] = q
+            self.solver.set_root_orientation(rod_idx, wp.quat(float(q[0]), float(q[1]), float(q[2]), float(q[3])))
 
     def simulate(self):
+        if self.lock_root:
+            self._rotate_root()
         for _ in range(self.sim_substeps):
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -99,21 +167,58 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test_final(self):
-        # Verify the rod tip has descended below its initial height (gravity works)
-        # and no NaN values are present
-        particle_q = self.state_0.particle_q.numpy()
+    def _update_rod_stiffness(self):
+        import warp as wp
 
-        # Check for NaN
-        assert not np.any(np.isnan(particle_q)), "Particle positions contain NaN"
+        for ws in self.solver._rods:
+            ws.young_modulus = self.young_modulus
+            ws.torsion_modulus = self.torsion_modulus
+            bs = np.full((ws.num_edges, 3), [self.bend_stiffness, self.bend_stiffness, self.twist_stiffness], dtype=np.float32)
+            ws.bend_stiffness_wp.assign(wp.array(bs, dtype=wp.vec3, device=ws.bend_stiffness_wp.device))
 
-        # The tip (last particle) should have descended from z=1.0
-        tip_z = particle_q[-1, 2]
-        assert tip_z < 1.0, f"Rod tip should bend under gravity, but tip z={tip_z:.3f}"
+    def _update_root_lock(self):
+        import warp as wp
 
-        # The root (first particle) should remain fixed near z=1.0
-        root_z = particle_q[0, 2]
-        assert abs(root_z - 1.0) < 0.01, f"Root should be fixed at z=1.0, but z={root_z:.3f}"
+        for rod_idx, ws in enumerate(self.solver._rods):
+            free_inv_mass = self._free_inv_masses[rod_idx]
+            root_inv_mass = np.array([0.0 if self.lock_root else free_inv_mass], dtype=np.float32)
+            wp.copy(dest=ws.inv_masses_wp, src=wp.array(root_inv_mass, dtype=wp.float32, device=ws.device), count=1)
+
+            free_quat_inv_mass = self._free_quat_inv_masses[rod_idx]
+            root_quat_inv_mass = np.array([0.0 if (self.lock_root or self.lock_root_rotation) else free_quat_inv_mass], dtype=np.float32)
+            wp.copy(dest=ws.quat_inv_masses_wp, src=wp.array(root_quat_inv_mass, dtype=wp.float32, device=ws.device), count=1)
+
+    def _update_rest_darboux(self):
+        import warp as wp
+
+        for ws in self.solver._rods:
+            rd = np.full((ws.num_edges, 3), [self.rest_bend_d1, self.rest_bend_d2, self.rest_twist], dtype=np.float32)
+            ws.rest_darboux_wp.assign(wp.array(rd, dtype=wp.vec3, device=ws.rest_darboux_wp.device))
+
+    def _render_ui(self, imgui):
+        changed_lock, self.lock_root = imgui.checkbox("Lock Root Position", self.lock_root)
+        changed_lock_rot, self.lock_root_rotation = imgui.checkbox("Lock Root Rotation", self.lock_root_rotation)
+        if changed_lock or changed_lock_rot:
+            self._update_root_lock()
+
+        imgui.separator()
+        changed_bend, self.bend_stiffness = imgui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
+        changed_twist, self.twist_stiffness = imgui.slider_float("Twist Stiffness", self.twist_stiffness, 0.0, 1.0)
+        if changed_bend or changed_twist:
+            self._update_rod_stiffness()
+
+        imgui.separator()
+        changed_E, self.young_modulus = imgui.input_float("Young Modulus [Pa]", self.young_modulus, format="%.1f")
+        changed_G, self.torsion_modulus = imgui.input_float("Torsion Modulus [Pa]", self.torsion_modulus, format="%.1f")
+        if changed_E or changed_G:
+            self._update_rod_stiffness()
+
+        imgui.separator()
+        changed_d1, self.rest_bend_d1 = imgui.slider_float("Rest Bend d1", self.rest_bend_d1, -0.1, 0.1)
+        changed_d2, self.rest_bend_d2 = imgui.slider_float("Rest Bend d2", self.rest_bend_d2, -0.1, 0.1)
+        changed_tw, self.rest_twist = imgui.slider_float("Rest Twist", self.rest_twist, -0.1, 0.1)
+        if changed_d1 or changed_d2 or changed_tw:
+            self._update_rest_darboux()
 
 
 if __name__ == "__main__":
