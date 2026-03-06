@@ -3688,10 +3688,120 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
             )
 
 
+def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
+    """VBD: disabling a joint lets the cable detach; re-enabling pulls it back.
+
+    Uses a BALL joint between a kinematic anchor sphere and a short cable (rod).
+    The early-return guard in evaluate_joint_force_hessian / update_duals_joint
+    is joint-type-agnostic, so one joint type covers all.
+    """
+    builder = newton.ModelBuilder()
+
+    # Kinematic anchor sphere at height.
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    # Short cable (rod) hanging below the anchor.
+    num_elements = 6
+    segment_length = 0.05
+    rod_radius = 0.01
+    attach_offset = anchor_radius + rod_radius
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -attach_offset)
+
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements) * segment_length,
+        num_segments=num_elements,
+        twist_total=0.0,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e6,
+        stretch_damping=1.0e-2,
+        wrap_in_articulation=False,
+        label="test_joint_enabled_cable",
+    )
+
+    # BALL joint: anchor sphere → first rod body.
+    parent_anchor_local = wp.vec3(0.0, 0.0, -attach_offset)
+    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    j = builder.add_joint_ball(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+    )
+    builder.add_articulation([*rod_joints, j])
+
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    sim_dt = 1.0 / 60.0 / 4
+
+    def step_n(n):
+        nonlocal state0, state1
+        for _ in range(n):
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+    # Phase 1: joint enabled (default) — cable stays attached to anchor.
+    step_n(10)
+    err_connected = _compute_ball_joint_anchor_error(model, state0.body_q, j)
+    test.assertLess(err_connected, 1.0e-3, f"Phase 1 (enabled): pos error {err_connected:.6f} m > 1e-3")
+
+    # Phase 2: disable joint — cable detaches and falls under gravity.
+    enabled_np = model.joint_enabled.numpy()
+    enabled_np[j] = False
+    model.joint_enabled.assign(wp.array(enabled_np, dtype=bool, device=device))
+    step_n(10)
+    err_disabled = _compute_ball_joint_anchor_error(model, state0.body_q, j)
+    test.assertGreater(
+        err_disabled, 5.0e-3, f"Phase 2 (disabled): pos error {err_disabled:.6f} m — cable did not separate"
+    )
+
+    # Phase 3: re-enable joint — solver pulls cable back toward anchor.
+    enabled_np[j] = True
+    model.joint_enabled.assign(wp.array(enabled_np, dtype=bool, device=device))
+    step_n(10)
+    err_reenabled = _compute_ball_joint_anchor_error(model, state0.body_q, j)
+    test.assertLess(
+        err_reenabled,
+        err_disabled,
+        f"Phase 3 (re-enabled): pos error {err_reenabled:.6f} m did not decrease from {err_disabled:.6f} m",
+    )
+
+
 class TestCable(unittest.TestCase):
     pass
 
 
+add_function_test(
+    TestCable,
+    "test_joint_enabled_toggle",
+    _joint_enabled_toggle_impl,
+    devices=devices,
+)
 add_function_test(
     TestCable,
     "test_cable_chain_connectivity",

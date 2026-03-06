@@ -1550,6 +1550,7 @@ class SolverVBD(SolverBase):
                     kernel=compute_cable_dahl_parameters,
                     inputs=[
                         model.joint_type,
+                        model.joint_enabled,
                         model.joint_parent,
                         model.joint_child,
                         model.joint_X_p,
@@ -1979,6 +1980,7 @@ class SolverVBD(SolverBase):
                     model.body_com,
                     self.rigid_adjacency,
                     model.joint_type,
+                    model.joint_enabled,
                     model.joint_parent,
                     model.joint_child,
                     model.joint_X_p,
@@ -2079,6 +2081,7 @@ class SolverVBD(SolverBase):
                 dim=model.joint_count,
                 inputs=[
                     model.joint_type,
+                    model.joint_enabled,
                     model.joint_parent,
                     model.joint_child,
                     model.joint_X_p,
@@ -2272,6 +2275,7 @@ class SolverVBD(SolverBase):
                 kernel=update_cable_dahl_state,
                 inputs=[
                     model.joint_type,
+                    model.joint_enabled,
                     model.joint_parent,
                     model.joint_child,
                     model.joint_X_p,

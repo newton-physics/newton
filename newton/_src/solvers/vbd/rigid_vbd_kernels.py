@@ -1262,6 +1262,7 @@ def evaluate_joint_force_hessian(
     body_q_rest: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     joint_type: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -1324,6 +1325,9 @@ def evaluate_joint_force_hessian(
         and jt != JointType.PRISMATIC
         and jt != JointType.D6
     ):
+        return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
+
+    if not joint_enabled[joint_index]:
         return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
 
     parent_index = joint_parent[joint_index]
@@ -2357,6 +2361,7 @@ def warmstart_body_particle_contacts(
 def compute_cable_dahl_parameters(
     # Inputs
     joint_type: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -2383,6 +2388,11 @@ def compute_cable_dahl_parameters(
       - C_fric: tangent stiffness d(sigma)/d(kappa) (per component)
     """
     j = wp.tid()
+
+    if not joint_enabled[j]:
+        joint_sigma_start[j] = wp.vec3(0.0)
+        joint_C_fric[j] = wp.vec3(0.0)
+        return
 
     # Only process cable joints
     if joint_type[j] != JointType.CABLE:
@@ -2913,6 +2923,7 @@ def solve_rigid_body(
     adjacency: RigidForceElementAdjacencyInfo,
     # Joint data
     joint_type: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -3082,6 +3093,7 @@ def solve_rigid_body(
             body_q_rest,
             body_com,
             joint_type,
+            joint_enabled,
             joint_parent,
             joint_child,
             joint_X_p,
@@ -3203,6 +3215,7 @@ def copy_rigid_body_transforms_back(
 @wp.kernel
 def update_duals_joint(
     joint_type: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -3266,6 +3279,10 @@ def update_duals_joint(
         joint_limit_ke: Model limit stiffness (for conditional cap in drive/limit dual update)
     """
     j = wp.tid()
+
+    if not joint_enabled[j]:
+        return
+
     parent = joint_parent[j]
     child = joint_child[j]
 
@@ -3786,6 +3803,7 @@ def update_body_velocity(
 def update_cable_dahl_state(
     # Joint geometry
     joint_type: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -3824,6 +3842,9 @@ def update_cable_dahl_state(
         joint_tau: Memory decay length [rad] (scalar per joint)
     """
     j = wp.tid()
+
+    if not joint_enabled[j]:
+        return
 
     # Only update cable joints
     if joint_type[j] != JointType.CABLE:
