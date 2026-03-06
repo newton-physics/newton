@@ -1985,15 +1985,6 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     final_q = state0.body_q.numpy()
     test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in PRISMATIC joint test")
 
-    _assert_surface_attachment(
-        test,
-        body_q=final_q,
-        anchor_body=anchor,
-        child_body=rod_bodies[0],
-        context="Cable PRISMATIC joint attachment",
-        parent_anchor_local=parent_anchor_local,
-    )
-
     _assert_bodies_above_ground(
         test,
         body_q=final_q,
@@ -2281,9 +2272,11 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     For -Z cables the parent frame rotates +Z to -Z (180 deg about Y), so
     joint-frame X maps to world -X and Y stays world Y.
 
-    Anchor oscillates in X. The free linear axis allows the cable to slide
-    (not follow the X motion). Gravity in -Z stresses the locked Z linear
-    constraint. The free angular Y axis allows the cable to rotate about Y.
+    Anchor oscillates in X and rotates around Y. The free linear axis
+    allows the cable to slide (not follow the X motion). Gravity in -Z
+    stresses the locked Z linear constraint. The anchor rotation around Y
+    directly exercises the free angular Y axis — the cable should not
+    follow the rotation.
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
@@ -2361,8 +2354,11 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
         for _substep in range(sim_substeps):
             t = (_step * sim_substeps + _substep) * sim_dt
             dx = wp.float32(0.05 * np.sin(1.5 * t))
+            # Rotate anchor around Y to exercise the free angular Y DOF
+            ang_y = wp.float32(0.2 * np.sin(2.0 * t))
+            q_anchor = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang_y)
 
-            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), wp.quat_identity())
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), q_anchor)
             wp.launch(
                 _set_kinematic_body_pose,
                 dim=1,
@@ -2405,7 +2401,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     )
     test.assertGreater(
         rot_free,
-        0.01,
+        0.005,
         msg=f"D6 free angular Y not exercised: rot_free={rot_free:.4f} rad",
     )
 

@@ -31,6 +31,7 @@ Organization:
 
 import warp as wp
 
+from newton._src.core.types import MAXVAL
 from newton._src.math import quat_velocity
 from newton._src.sim import JointType
 from newton._src.solvers.solver import integrate_rigid_body
@@ -46,6 +47,11 @@ _SMALL_ANGLE_EPS = wp.constant(1.0e-7)
 
 _SMALL_ANGLE_EPS2 = _SMALL_ANGLE_EPS * _SMALL_ANGLE_EPS
 """Square of _SMALL_ANGLE_EPS"""
+
+_DRIVE_LIMIT_MODE_NONE = wp.constant(0)
+_DRIVE_LIMIT_MODE_LIMIT_LOWER = wp.constant(1)
+_DRIVE_LIMIT_MODE_LIMIT_UPPER = wp.constant(2)
+_DRIVE_LIMIT_MODE_DRIVE = wp.constant(3)
 
 _SMALL_LENGTH_EPS = wp.constant(1.0e-9)
 """Small length tolerance (e.g., segment length checks)"""
@@ -1167,6 +1173,87 @@ def compute_projected_isotropic_friction(
 
 
 @wp.func
+def resolve_drive_limit_mode(
+    q: float,
+    target_pos: float,
+    lim_lower: float,
+    lim_upper: float,
+    has_drive: bool,
+    has_limits: bool,
+):
+    mode = _DRIVE_LIMIT_MODE_NONE
+    err_pos = float(0.0)
+    if has_limits:
+        if q < lim_lower:
+            mode = _DRIVE_LIMIT_MODE_LIMIT_LOWER
+            err_pos = q - lim_lower
+        elif q > lim_upper:
+            mode = _DRIVE_LIMIT_MODE_LIMIT_UPPER
+            err_pos = q - lim_upper
+    if mode == _DRIVE_LIMIT_MODE_NONE and has_drive:
+        mode = _DRIVE_LIMIT_MODE_DRIVE
+        err_pos = q - target_pos
+    return mode, err_pos
+
+
+@wp.func
+def compute_kappa_and_jacobian(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    q_wp_rest: wp.quat,
+    q_wc_rest: wp.quat,
+):
+    kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+    Jr_inv = compute_right_jacobian_inverse(kappa)
+    R_wp = wp.quat_to_matrix(q_wp)
+    R_wc = wp.quat_to_matrix(q_wc)
+    R_wp_r = wp.quat_to_matrix(q_wp_rest)
+    R_wc_r = wp.quat_to_matrix(q_wc_rest)
+    R_rel = wp.transpose(R_wp) * R_wc
+    R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
+    R_align = R_rel * wp.transpose(R_rel_rest)
+    J_world = R_wp * (R_align * wp.transpose(Jr_inv))
+    return kappa, J_world
+
+
+@wp.func
+def apply_angular_drive_limit_torque(
+    a: wp.vec3,
+    J_world: wp.mat33,
+    is_parent: bool,
+    f_scalar: float,
+    H_scalar: float,
+):
+    f_local = f_scalar * a
+    H_local = H_scalar * wp.outer(a, a)
+    tau = J_world * f_local
+    Haa = J_world * (H_local * wp.transpose(J_world))
+    if not is_parent:
+        tau = -tau
+    return tau, Haa
+
+
+@wp.func
+def apply_linear_drive_limit_force(
+    axis_w: wp.vec3,
+    r: wp.vec3,
+    is_parent: bool,
+    f_scalar: float,
+    H_scalar: float,
+):
+    f_attachment = f_scalar * axis_w
+    aa = wp.outer(axis_w, axis_w)
+    K_point = H_scalar * aa
+    rx = wp.skew(r)
+    Hll = K_point
+    Hal = rx * K_point
+    Haa = wp.transpose(rx) * K_point * rx
+    force = f_attachment if is_parent else -f_attachment
+    torque = wp.cross(r, force)
+    return force, torque, Hll, Hal, Haa
+
+
+@wp.func
 def evaluate_joint_force_hessian(
     body_index: int,
     joint_index: int,
@@ -1209,9 +1296,10 @@ def evaluate_joint_force_hessian(
           - ``JointType.CABLE``: 2 scalars -> [stretch (linear), bend (angular)]
           - ``JointType.BALL``: 1 scalar  -> [linear]
           - ``JointType.FIXED``: 2 scalars -> [linear, angular]
-          - ``JointType.REVOLUTE``: 2 scalars -> [linear (isotropic), angular (2-DOF perpendicular)]
-          - ``JointType.PRISMATIC``: 2 scalars -> [linear (2-DOF perpendicular), angular (isotropic)]
-          - ``JointType.D6``: 2 scalars -> [linear (projected), angular (projected)]
+          - ``JointType.REVOLUTE``: 3 scalars -> [linear, angular, ang_drive_limit]
+          - ``JointType.PRISMATIC``: 3 scalars -> [linear, angular, lin_drive_limit]
+          - ``JointType.D6``: 2 + lin_count + ang_count scalars
+            -> [linear, angular, lin_dl_0, ..., ang_dl_0, ...]
 
     Damping:
         ``joint_penalty_kd`` stores a dimensionless Rayleigh-style coefficient used to build a
@@ -1341,40 +1429,49 @@ def evaluate_joint_force_hessian(
         # BALL: isotropic linear anchor-coincidence stored as a single scalar.
         k = joint_penalty_k[c_start]
         damping = joint_penalty_kd[c_start]
-        return evaluate_linear_constraint_force_hessian_isotropic(
-            X_wp,
-            X_wc,
-            X_wp_prev,
-            X_wc_prev,
-            parent_pose,
-            child_pose,
-            parent_com,
-            child_com,
-            is_parent_body,
-            k,
-            damping,
-            dt,
-        )
+        if k > 0.0:
+            return evaluate_linear_constraint_force_hessian_isotropic(
+                X_wp,
+                X_wc,
+                X_wp_prev,
+                X_wc_prev,
+                parent_pose,
+                child_pose,
+                parent_com,
+                child_com,
+                is_parent_body,
+                k,
+                damping,
+                dt,
+            )
+        return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
 
     elif jt == JointType.FIXED:
         # FIXED: isotropic linear anchor-coincidence + isotropic angular constraint.
         # Linear part (isotropic, same as BALL)
         k_lin = joint_penalty_k[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
-        f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_isotropic(
-            X_wp,
-            X_wc,
-            X_wp_prev,
-            X_wc_prev,
-            parent_pose,
-            child_pose,
-            parent_com,
-            child_com,
-            is_parent_body,
-            k_lin,
-            kd_lin,
-            dt,
-        )
+        if k_lin > 0.0:
+            f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_isotropic(
+                X_wp,
+                X_wc,
+                X_wp_prev,
+                X_wc_prev,
+                parent_pose,
+                child_pose,
+                parent_com,
+                child_com,
+                is_parent_body,
+                k_lin,
+                kd_lin,
+                dt,
+            )
+        else:
+            f_lin = wp.vec3(0.0)
+            t_lin = wp.vec3(0.0)
+            Hll_lin = wp.mat33(0.0)
+            Hal_lin = wp.mat33(0.0)
+            Haa_lin = wp.mat33(0.0)
 
         # Angular part (isotropic, same as CABLE bend without Dahl friction)
         k_ang = joint_penalty_k[c_start + 1]
@@ -1416,20 +1513,27 @@ def evaluate_joint_force_hessian(
         # Linear part (isotropic, same as BALL)
         k_lin = joint_penalty_k[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
-        f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_isotropic(
-            X_wp,
-            X_wc,
-            X_wp_prev,
-            X_wc_prev,
-            parent_pose,
-            child_pose,
-            parent_com,
-            child_com,
-            is_parent_body,
-            k_lin,
-            kd_lin,
-            dt,
-        )
+        if k_lin > 0.0:
+            f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_isotropic(
+                X_wp,
+                X_wc,
+                X_wp_prev,
+                X_wc_prev,
+                parent_pose,
+                child_pose,
+                parent_com,
+                child_com,
+                is_parent_body,
+                k_lin,
+                kd_lin,
+                dt,
+            )
+        else:
+            f_lin = wp.vec3(0.0)
+            t_lin = wp.vec3(0.0)
+            Hll_lin = wp.mat33(0.0)
+            Hal_lin = wp.mat33(0.0)
+            Haa_lin = wp.mat33(0.0)
 
         # Angular part (constrain 2 DOFs perpendicular to the joint axis)
         k_ang = joint_penalty_k[c_start + 1]
@@ -1472,17 +1576,23 @@ def evaluate_joint_force_hessian(
         # Drive + limits on free angular DOF
         # Read DOF-indexed drive/limit parameters
         dof_idx = joint_qd_start[joint_index]
-        drive_ke = joint_target_ke[dof_idx]
+        model_drive_ke = joint_target_ke[dof_idx]
         drive_kd = joint_target_kd[dof_idx]
         target_pos = joint_target_pos[dof_idx]
         target_vel = joint_target_vel[dof_idx]
         lim_lower = joint_limit_lower[dof_idx]
         lim_upper = joint_limit_upper[dof_idx]
-        lim_ke = joint_limit_ke[dof_idx]
+        model_limit_ke = joint_limit_ke[dof_idx]
         lim_kd = joint_limit_kd[dof_idx]
 
-        has_drive = drive_ke > 0.0 or drive_kd > 0.0
-        has_limits = lim_ke > 0.0 and (lim_lower > -1.0e18 or lim_upper < 1.0e18)
+        has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
+        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+        # AVBD per-mode clamping: use adaptive penalty clamped to the active mode's model stiffness.
+        # This prevents branch-switch overshoot when the slot carries a stale penalty from the other mode.
+        avbd_ke = joint_penalty_k[c_start + 2]
+        drive_ke = wp.min(avbd_ke, model_drive_ke)
+        lim_ke = wp.min(avbd_ke, model_limit_ke)
 
         if has_drive or has_limits:
             inv_dt = 1.0 / dt
@@ -1493,16 +1603,7 @@ def evaluate_joint_force_hessian(
                 kappa = kappa_cached
                 J_world = J_world_cached
             else:
-                kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
-                Jr_inv = compute_right_jacobian_inverse(kappa)
-                R_wp = wp.quat_to_matrix(q_wp)
-                R_wc = wp.quat_to_matrix(q_wc)
-                R_wp_r = wp.quat_to_matrix(q_wp_rest)
-                R_wc_r = wp.quat_to_matrix(q_wc_rest)
-                R_rel = wp.transpose(R_wp) * R_wc
-                R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
-                R_align = R_rel * wp.transpose(R_rel_rest)
-                J_world = R_wp * (R_align * wp.transpose(Jr_inv))
+                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             # Extract free-axis angle and velocity
             theta = wp.dot(kappa, a)
@@ -1511,35 +1612,20 @@ def evaluate_joint_force_hessian(
             dkappa_dt = compute_kappa_dot_analytic(q_wp, q_wc, q_wp_rest, q_wc_rest, omega_p, omega_c, kappa)
             dtheta_dt = wp.dot(dkappa_dt, a)
 
-            # Accumulate drive/limit force and Hessian in kappa-space
-            f_local = wp.vec3(0.0)
+            # Resolve drive/limit mode and compute force scalar
+            mode, err_pos = resolve_drive_limit_mode(theta, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            f_scalar = float(0.0)
             H_scalar = float(0.0)
-
-            limit_active = False
-            if has_limits:
-                if theta < lim_lower:
-                    err = theta - lim_lower
-                    f_local = (lim_ke * err + lim_kd * dtheta_dt) * a
-                    H_scalar = lim_ke + lim_kd * inv_dt
-                    limit_active = True
-                elif theta > lim_upper:
-                    err = theta - lim_upper
-                    f_local = (lim_ke * err + lim_kd * dtheta_dt) * a
-                    H_scalar = lim_ke + lim_kd * inv_dt
-                    limit_active = True
-
-            if not limit_active and has_drive:
-                err = theta - target_pos
+            if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
+                f_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
+                H_scalar = lim_ke + lim_kd * inv_dt
+            elif mode == _DRIVE_LIMIT_MODE_DRIVE:
                 vel_err = dtheta_dt - target_vel
-                f_local = (drive_ke * err + drive_kd * vel_err) * a
+                f_scalar = drive_ke * err_pos + drive_kd * vel_err
                 H_scalar = drive_ke + drive_kd * inv_dt
 
             if H_scalar > 0.0:
-                H_local = H_scalar * wp.outer(a, a)
-                tau_drive = J_world * f_local
-                Haa_drive = J_world * (H_local * wp.transpose(J_world))
-                if not is_parent_body:
-                    tau_drive = -tau_drive
+                tau_drive, Haa_drive = apply_angular_drive_limit_torque(a, J_world, is_parent_body, f_scalar, H_scalar)
                 t_ang = t_ang + tau_drive
                 Haa_ang = Haa_ang + Haa_drive
 
@@ -1552,21 +1638,28 @@ def evaluate_joint_force_hessian(
         # Linear part (constrain 2 DOFs perpendicular to the joint axis)
         k_lin = joint_penalty_k[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
-        f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_prismatic(
-            X_wp,
-            X_wc,
-            X_wp_prev,
-            X_wc_prev,
-            parent_pose,
-            child_pose,
-            parent_com,
-            child_com,
-            is_parent_body,
-            k_lin,
-            axis_local,
-            kd_lin,
-            dt,
-        )
+        if k_lin > 0.0:
+            f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_prismatic(
+                X_wp,
+                X_wc,
+                X_wp_prev,
+                X_wc_prev,
+                parent_pose,
+                child_pose,
+                parent_com,
+                child_com,
+                is_parent_body,
+                k_lin,
+                axis_local,
+                kd_lin,
+                dt,
+            )
+        else:
+            f_lin = wp.vec3(0.0)
+            t_lin = wp.vec3(0.0)
+            Hll_lin = wp.mat33(0.0)
+            Hal_lin = wp.mat33(0.0)
+            Haa_lin = wp.mat33(0.0)
 
         # Angular part (isotropic, same as FIXED)
         k_ang = joint_penalty_k[c_start + 1]
@@ -1600,17 +1693,22 @@ def evaluate_joint_force_hessian(
 
         # Drive + limits on free linear DOF
         dof_idx = joint_qd_start[joint_index]
-        drive_ke = joint_target_ke[dof_idx]
+        model_drive_ke = joint_target_ke[dof_idx]
         drive_kd = joint_target_kd[dof_idx]
         target_pos = joint_target_pos[dof_idx]
         target_vel = joint_target_vel[dof_idx]
         lim_lower = joint_limit_lower[dof_idx]
         lim_upper = joint_limit_upper[dof_idx]
-        lim_ke = joint_limit_ke[dof_idx]
+        model_limit_ke = joint_limit_ke[dof_idx]
         lim_kd = joint_limit_kd[dof_idx]
 
-        has_drive = drive_ke > 0.0 or drive_kd > 0.0
-        has_limits = lim_ke > 0.0 and (lim_lower > -1.0e18 or lim_upper < 1.0e18)
+        has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
+        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+        # AVBD per-mode clamping for PRISMATIC free linear DOF
+        avbd_ke = joint_penalty_k[c_start + 2]
+        drive_ke = wp.min(avbd_ke, model_drive_ke)
+        lim_ke = wp.min(avbd_ke, model_limit_ke)
 
         if has_drive or has_limits:
             inv_dt = 1.0 / dt
@@ -1622,7 +1720,7 @@ def evaluate_joint_force_hessian(
             q_wp_rot = wp.transform_get_rotation(X_wp)
             axis_w = wp.normalize(wp.quat_rotate(q_wp_rot, axis_local))
 
-            # Free-axis displacement and velocity (matches XPBD: q = dot(x_err, axis_p))
+            # Free-axis displacement and velocity
             d_along = wp.dot(C_vec, axis_w)
             x_p_prev = wp.transform_get_translation(X_wp_prev)
             x_c_prev = wp.transform_get_translation(X_wc_prev)
@@ -1630,33 +1728,19 @@ def evaluate_joint_force_hessian(
             dC_dt = (C_vec - C_vec_prev) * inv_dt
             dd_dt = wp.dot(dC_dt, axis_w)
 
-            # Accumulate drive/limit force along free axis
+            # Resolve drive/limit mode and compute force scalar
+            mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             f_scalar = float(0.0)
             H_scalar = float(0.0)
-
-            limit_active = False
-            if has_limits:
-                if d_along < lim_lower:
-                    err = d_along - lim_lower
-                    f_scalar = lim_ke * err + lim_kd * dd_dt
-                    H_scalar = lim_ke + lim_kd * inv_dt
-                    limit_active = True
-                elif d_along > lim_upper:
-                    err = d_along - lim_upper
-                    f_scalar = lim_ke * err + lim_kd * dd_dt
-                    H_scalar = lim_ke + lim_kd * inv_dt
-                    limit_active = True
-
-            if not limit_active and has_drive:
-                err = d_along - target_pos
+            if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
+                f_scalar = lim_ke * err_pos + lim_kd * dd_dt
+                H_scalar = lim_ke + lim_kd * inv_dt
+            elif mode == _DRIVE_LIMIT_MODE_DRIVE:
                 vel_err = dd_dt - target_vel
-                f_scalar = drive_ke * err + drive_kd * vel_err
+                f_scalar = drive_ke * err_pos + drive_kd * vel_err
                 H_scalar = drive_ke + drive_kd * inv_dt
 
             if H_scalar > 0.0:
-                # Force at attachment point along free axis
-                f_attachment = f_scalar * axis_w
-
                 # Moment arm from body COM to attachment point
                 if is_parent_body:
                     com_w = wp.transform_point(parent_pose, parent_com)
@@ -1665,16 +1749,9 @@ def evaluate_joint_force_hessian(
                     com_w = wp.transform_point(child_pose, child_com)
                     r = x_c - com_w
 
-                # Hessian blocks: rank-1 along axis_w
-                aa = wp.outer(axis_w, axis_w)
-                K_point = H_scalar * aa
-                rx = wp.skew(r)
-                Hll_drive = K_point
-                Hal_drive = rx * K_point
-                Haa_drive = wp.transpose(rx) * K_point * rx
-
-                force_drive = f_attachment if is_parent_body else -f_attachment
-                torque_drive = wp.cross(r, force_drive)
+                force_drive, torque_drive, Hll_drive, Hal_drive, Haa_drive = apply_linear_drive_limit_force(
+                    axis_w, r, is_parent_body, f_scalar, H_scalar
+                )
 
                 f_lin = f_lin + force_drive
                 t_lin = t_lin + torque_drive
@@ -1702,19 +1779,6 @@ def evaluate_joint_force_hessian(
         kd_lin = joint_penalty_kd[c_start + 0]
 
         if lin_count < 3 and k_lin > 0.0:
-            # Build projector P_lin = I - sum(outer(a_i_w, a_i_w)) for free linear axes
-            q_wp_rot = wp.transform_get_rotation(X_wp)
-            P_lin = wp.identity(3, float)
-            if lin_count > 0:
-                a0_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 0]))
-                P_lin = P_lin - wp.outer(a0_w, a0_w)
-            if lin_count > 1:
-                a1_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 1]))
-                P_lin = P_lin - wp.outer(a1_w, a1_w)
-            if lin_count > 2:
-                a2_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 2]))
-                P_lin = P_lin - wp.outer(a2_w, a2_w)
-
             if lin_count == 0:
                 # All 3 linear DOFs constrained (isotropic), same as BALL
                 f_l, t_l, Hll_l, Hal_l, Haa_l = evaluate_linear_constraint_force_hessian_isotropic(
@@ -1732,6 +1796,18 @@ def evaluate_joint_force_hessian(
                     dt,
                 )
             else:
+                # Build projector P_lin = I - sum(outer(a_i_w, a_i_w)) for free linear axes
+                q_wp_rot = wp.transform_get_rotation(X_wp)
+                P_lin = wp.identity(3, float)
+                if lin_count > 0:
+                    a0_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 0]))
+                    P_lin = P_lin - wp.outer(a0_w, a0_w)
+                if lin_count > 1:
+                    a1_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 1]))
+                    P_lin = P_lin - wp.outer(a1_w, a1_w)
+                if lin_count > 2:
+                    a2_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 2]))
+                    P_lin = P_lin - wp.outer(a2_w, a2_w)
                 f_l, t_l, Hll_l, Hal_l, Haa_l = evaluate_linear_constraint_force_hessian_d6(
                     X_wp,
                     X_wc,
@@ -1769,18 +1845,6 @@ def evaluate_joint_force_hessian(
         has_cached = False
 
         if ang_count < 3 and k_ang > 0.0:
-            # Build projector P_ang = I - sum(outer(a_i, a_i)) for free angular axes
-            P_ang = wp.identity(3, float)
-            if ang_count > 0:
-                a0 = wp.normalize(joint_axis[qd_start + lin_count + 0])
-                P_ang = P_ang - wp.outer(a0, a0)
-            if ang_count > 1:
-                a1 = wp.normalize(joint_axis[qd_start + lin_count + 1])
-                P_ang = P_ang - wp.outer(a1, a1)
-            if ang_count > 2:
-                a2 = wp.normalize(joint_axis[qd_start + lin_count + 2])
-                P_ang = P_ang - wp.outer(a2, a2)
-
             if ang_count == 0:
                 # All 3 angular DOFs constrained (isotropic), same as FIXED angular part
                 sigma0 = wp.vec3(0.0)
@@ -1800,6 +1864,17 @@ def evaluate_joint_force_hessian(
                     dt,
                 )
             else:
+                # Build projector P_ang = I - sum(outer(a_i, a_i)) for free angular axes
+                P_ang = wp.identity(3, float)
+                if ang_count > 0:
+                    a0 = wp.normalize(joint_axis[qd_start + lin_count + 0])
+                    P_ang = P_ang - wp.outer(a0, a0)
+                if ang_count > 1:
+                    a1 = wp.normalize(joint_axis[qd_start + lin_count + 1])
+                    P_ang = P_ang - wp.outer(a1, a1)
+                if ang_count > 2:
+                    a2 = wp.normalize(joint_axis[qd_start + lin_count + 2])
+                    P_ang = P_ang - wp.outer(a2, a2)
                 t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian_d6(
                     q_wp,
                     q_wc,
@@ -1842,56 +1917,45 @@ def evaluate_joint_force_hessian(
             for li in range(3):
                 if li < lin_count:
                     dof_idx = qd_start + li
-                    drive_ke = joint_target_ke[dof_idx]
+                    model_drive_ke = joint_target_ke[dof_idx]
                     drive_kd = joint_target_kd[dof_idx]
                     target_pos = joint_target_pos[dof_idx]
                     target_vel = joint_target_vel[dof_idx]
                     lim_lower = joint_limit_lower[dof_idx]
                     lim_upper = joint_limit_upper[dof_idx]
-                    lim_ke = joint_limit_ke[dof_idx]
-                    lim_kd_val = joint_limit_kd[dof_idx]
+                    model_limit_ke = joint_limit_ke[dof_idx]
+                    lim_kd = joint_limit_kd[dof_idx]
 
-                    has_drive = drive_ke > 0.0 or drive_kd > 0.0
-                    has_limits = lim_ke > 0.0 and (lim_lower > -1.0e18 or lim_upper < 1.0e18)
+                    has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
+                    has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+                    # AVBD per-mode clamping for D6 linear free DOF
+                    avbd_ke = joint_penalty_k[c_start + 2 + li]
+                    drive_ke = wp.min(avbd_ke, model_drive_ke)
+                    lim_ke = wp.min(avbd_ke, model_limit_ke)
 
                     if has_drive or has_limits:
                         axis_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[dof_idx]))
                         d_along = wp.dot(C_vec, axis_w)
                         dd_dt = wp.dot(dC_dt, axis_w)
 
+                        mode, err_pos = resolve_drive_limit_mode(
+                            d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                        )
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
-
-                        limit_active = False
-                        if has_limits:
-                            if d_along < lim_lower:
-                                err = d_along - lim_lower
-                                f_scalar = lim_ke * err + lim_kd_val * dd_dt
-                                H_scalar = lim_ke + lim_kd_val * inv_dt
-                                limit_active = True
-                            elif d_along > lim_upper:
-                                err = d_along - lim_upper
-                                f_scalar = lim_ke * err + lim_kd_val * dd_dt
-                                H_scalar = lim_ke + lim_kd_val * inv_dt
-                                limit_active = True
-
-                        if not limit_active and has_drive:
-                            err = d_along - target_pos
+                        if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
+                            f_scalar = lim_ke * err_pos + lim_kd * dd_dt
+                            H_scalar = lim_ke + lim_kd * inv_dt
+                        elif mode == _DRIVE_LIMIT_MODE_DRIVE:
                             vel_err = dd_dt - target_vel
-                            f_scalar = drive_ke * err + drive_kd * vel_err
+                            f_scalar = drive_ke * err_pos + drive_kd * vel_err
                             H_scalar = drive_ke + drive_kd * inv_dt
 
                         if H_scalar > 0.0:
-                            f_attachment = f_scalar * axis_w
-                            aa = wp.outer(axis_w, axis_w)
-                            K_point = H_scalar * aa
-                            rx = wp.skew(r_drive)
-                            Hll_drive = K_point
-                            Hal_drive = rx * K_point
-                            Haa_drive = wp.transpose(rx) * K_point * rx
-
-                            force_drive = f_attachment if is_parent_body else -f_attachment
-                            torque_drive = wp.cross(r_drive, force_drive)
+                            force_drive, torque_drive, Hll_drive, Hal_drive, Haa_drive = apply_linear_drive_limit_force(
+                                axis_w, r_drive, is_parent_body, f_scalar, H_scalar
+                            )
 
                             total_force = total_force + force_drive
                             total_torque = total_torque + torque_drive
@@ -1907,16 +1971,7 @@ def evaluate_joint_force_hessian(
                 kappa = kappa_cached
                 J_world = J_world_cached
             else:
-                kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
-                Jr_inv = compute_right_jacobian_inverse(kappa)
-                R_wp = wp.quat_to_matrix(q_wp)
-                R_wc = wp.quat_to_matrix(q_wc)
-                R_wp_r = wp.quat_to_matrix(q_wp_rest)
-                R_wc_r = wp.quat_to_matrix(q_wc_rest)
-                R_rel = wp.transpose(R_wp) * R_wc
-                R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
-                R_align = R_rel * wp.transpose(R_rel_rest)
-                J_world = R_wp * (R_align * wp.transpose(Jr_inv))
+                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             omega_p = quat_velocity(q_wp, q_wp_prev, dt)
             omega_c = quat_velocity(q_wc, q_wc_prev, dt)
@@ -1925,51 +1980,45 @@ def evaluate_joint_force_hessian(
             for ai in range(3):
                 if ai < ang_count:
                     dof_idx = qd_start + lin_count + ai
-                    drive_ke = joint_target_ke[dof_idx]
+                    model_drive_ke = joint_target_ke[dof_idx]
                     drive_kd = joint_target_kd[dof_idx]
                     target_pos = joint_target_pos[dof_idx]
                     target_vel = joint_target_vel[dof_idx]
                     lim_lower = joint_limit_lower[dof_idx]
                     lim_upper = joint_limit_upper[dof_idx]
-                    lim_ke = joint_limit_ke[dof_idx]
-                    lim_kd_val = joint_limit_kd[dof_idx]
+                    model_limit_ke = joint_limit_ke[dof_idx]
+                    lim_kd = joint_limit_kd[dof_idx]
 
-                    has_drive = drive_ke > 0.0 or drive_kd > 0.0
-                    has_limits = lim_ke > 0.0 and (lim_lower > -1.0e18 or lim_upper < 1.0e18)
+                    has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
+                    has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+                    # AVBD per-mode clamping for D6 angular free DOF
+                    avbd_ke = joint_penalty_k[c_start + 2 + lin_count + ai]
+                    drive_ke = wp.min(avbd_ke, model_drive_ke)
+                    lim_ke = wp.min(avbd_ke, model_limit_ke)
 
                     if has_drive or has_limits:
                         a = wp.normalize(joint_axis[dof_idx])
                         theta = wp.dot(kappa, a)
                         dtheta_dt = wp.dot(dkappa_dt, a)
 
-                        f_local = wp.vec3(0.0)
+                        mode, err_pos = resolve_drive_limit_mode(
+                            theta, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                        )
+                        f_scalar = float(0.0)
                         H_scalar = float(0.0)
-
-                        limit_active = False
-                        if has_limits:
-                            if theta < lim_lower:
-                                err = theta - lim_lower
-                                f_local = (lim_ke * err + lim_kd_val * dtheta_dt) * a
-                                H_scalar = lim_ke + lim_kd_val * inv_dt
-                                limit_active = True
-                            elif theta > lim_upper:
-                                err = theta - lim_upper
-                                f_local = (lim_ke * err + lim_kd_val * dtheta_dt) * a
-                                H_scalar = lim_ke + lim_kd_val * inv_dt
-                                limit_active = True
-
-                        if not limit_active and has_drive:
-                            err = theta - target_pos
+                        if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
+                            f_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
+                            H_scalar = lim_ke + lim_kd * inv_dt
+                        elif mode == _DRIVE_LIMIT_MODE_DRIVE:
                             vel_err = dtheta_dt - target_vel
-                            f_local = (drive_ke * err + drive_kd * vel_err) * a
+                            f_scalar = drive_ke * err_pos + drive_kd * vel_err
                             H_scalar = drive_ke + drive_kd * inv_dt
 
                         if H_scalar > 0.0:
-                            H_local = H_scalar * wp.outer(a, a)
-                            tau_drive = J_world * f_local
-                            Haa_drive = J_world * (H_local * wp.transpose(J_world))
-                            if not is_parent_body:
-                                tau_drive = -tau_drive
+                            tau_drive, Haa_drive = apply_angular_drive_limit_torque(
+                                a, J_world, is_parent_body, f_scalar, H_scalar
+                            )
                             total_torque = total_torque + tau_drive
                             total_H_aa = total_H_aa + Haa_drive
 
@@ -2344,7 +2393,7 @@ def compute_cable_dahl_parameters(
     parent = joint_parent[j]
     child = joint_child[j]
 
-    # Skip invalid joints
+    # World-parent joints are valid; child body must exist.
     if child < 0:
         joint_sigma_start[j] = wp.vec3(0.0)
         joint_C_fric[j] = wp.vec3(0.0)
@@ -2357,6 +2406,7 @@ def compute_cable_dahl_parameters(
     else:
         X_wp = joint_X_p[j]
         X_wp_rest = joint_X_p[j]
+
     X_wc = body_q[child] * joint_X_c[j]
     X_wc_rest = body_q_rest[child] * joint_X_c[j]
 
@@ -3166,17 +3216,33 @@ def update_duals_joint(
     beta: float,
     joint_penalty_k: wp.array(dtype=float),  # input/output
     joint_dof_dim: wp.array(dtype=int, ndim=2),
+    # Drive/limit parameters for adaptive drive/limit penalty growth
+    joint_target_ke: wp.array(dtype=float),
+    joint_target_pos: wp.array(dtype=float),
+    joint_limit_lower: wp.array(dtype=float),
+    joint_limit_upper: wp.array(dtype=float),
+    joint_limit_ke: wp.array(dtype=float),
 ):
     """
-    Update AVBD penalty parameters for joint constraints (per-iteration).
+    Update AVBD penalty parameters for joint constraints and drive/limits (per-iteration).
 
     Increases per-constraint penalties based on current constraint violation magnitudes,
     clamped by the per-constraint stiffness cap ``joint_penalty_k_max``.
 
+    For drive/limit slots, the cap is conditional on the active mode:
+    limit violated -> cap = ``model.joint_limit_ke``, drive active -> cap = ``model.joint_target_ke``.
+
+    Solver invariant: For each free DOF, drive and limit are mutually exclusive at runtime.
+    Limits have priority. The shared AVBD slot relies on this ordering.
+
     Notes:
       - For ``JointType.CABLE``, ``joint_penalty_k_max`` is populated from ``model.joint_target_ke`` (material/constraint tuning).
-      - For rigid constraints like ``JointType.BALL``, ``joint_penalty_k_max`` is populated from solver-level caps
-        (e.g. ``rigid_joint_linear_ke``).
+      - For rigid constraint slots like ``JointType.BALL``, ``JointType.FIXED``, ``JointType.REVOLUTE``,
+        ``JointType.PRISMATIC``, and ``JointType.D6``, ``joint_penalty_k_max`` is populated from solver-level caps
+        (e.g. ``rigid_joint_linear_ke`` / ``rigid_joint_angular_ke``).
+      - For drive/limit slots, ``joint_penalty_k_max`` stores the conservative warmstart ceiling
+        ``max(model.joint_target_ke, model.joint_limit_ke)``; the dual still clamps growth to the
+        active branch's cap (drive or limit) on each iteration.
 
     Args:
         joint_type: Joint types
@@ -3184,7 +3250,7 @@ def update_duals_joint(
         joint_child: Child body indices
         joint_X_p: Parent joint frames (local)
         joint_X_c: Child joint frames (local)
-        joint_axis: Joint axis directions (per-DOF, used by REVOLUTE/PRISMATIC)
+        joint_axis: Joint axis directions (per-DOF, used by REVOLUTE, PRISMATIC, and D6)
         joint_qd_start: Joint DOF start indices (used to index into joint_axis)
         joint_constraint_start: Start index per joint in the solver constraint layout
         joint_penalty_k_max: Per-constraint stiffness cap (used for penalty clamping)
@@ -3192,6 +3258,12 @@ def update_duals_joint(
         body_q_rest: Rest body transforms (world)
         beta: Adaptation rate
         joint_penalty_k: In/out per-constraint adaptive penalties
+        joint_dof_dim: Per-joint [lin_count, ang_count] for D6 joints
+        joint_target_ke: Model drive stiffness (for conditional cap in drive/limit dual update)
+        joint_target_pos: Control drive target position/angle (for drive violation computation)
+        joint_limit_lower: Model limit lower bound
+        joint_limit_upper: Model limit upper bound
+        joint_limit_ke: Model limit stiffness (for conditional cap in drive/limit dual update)
     """
     j = wp.tid()
     parent = joint_parent[j]
@@ -3318,6 +3390,29 @@ def update_duals_joint(
         C_ang = wp.length(kappa_perp)
         k_ang = joint_penalty_k[i_ang]
         joint_penalty_k[i_ang] = wp.min(k_ang + beta * C_ang, joint_penalty_k_max[i_ang])
+
+        # Drive/limit dual update for free angular DOF (slot c_start + 2)
+        dof_idx = joint_qd_start[j]
+        model_drive_ke = joint_target_ke[dof_idx]
+        model_limit_ke = joint_limit_ke[dof_idx]
+        lim_lower = joint_limit_lower[dof_idx]
+        lim_upper = joint_limit_upper[dof_idx]
+        has_drive = model_drive_ke > 0.0
+        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+        if has_drive or has_limits:
+            theta = wp.dot(kappa, a)
+            target_pos = joint_target_pos[dof_idx]
+            mode, err_pos = resolve_drive_limit_mode(theta, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            i_dl = c_start + 2
+            k_dl = joint_penalty_k[i_dl]
+            C_dl = wp.abs(err_pos)
+            cap = joint_penalty_k_max[i_dl]
+            if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
+                cap = model_limit_ke
+            elif mode == _DRIVE_LIMIT_MODE_DRIVE:
+                cap = model_drive_ke
+            joint_penalty_k[i_dl] = wp.min(k_dl + beta * C_dl, cap)
         return
 
     # PRISMATIC joint: perpendicular linear + isotropic angular penalties (2 scalars).
@@ -3345,6 +3440,30 @@ def update_duals_joint(
         C_ang = wp.length(kappa)
         k_ang = joint_penalty_k[i_ang]
         joint_penalty_k[i_ang] = wp.min(k_ang + beta * C_ang, joint_penalty_k_max[i_ang])
+
+        # Drive/limit dual update for free linear DOF (slot c_start + 2)
+        dof_idx = joint_qd_start[j]
+        model_drive_ke = joint_target_ke[dof_idx]
+        model_limit_ke = joint_limit_ke[dof_idx]
+        lim_lower = joint_limit_lower[dof_idx]
+        lim_upper = joint_limit_upper[dof_idx]
+        has_drive = model_drive_ke > 0.0
+        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+        if has_drive or has_limits:
+            axis_w_dl = wp.normalize(wp.quat_rotate(q_wp, axis_local))
+            d_along = wp.dot(C_vec, axis_w_dl)
+            target_pos = joint_target_pos[dof_idx]
+            mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            i_dl = c_start + 2
+            k_dl = joint_penalty_k[i_dl]
+            C_dl = wp.abs(err_pos)
+            cap = joint_penalty_k_max[i_dl]
+            if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
+                cap = model_limit_ke
+            elif mode == _DRIVE_LIMIT_MODE_DRIVE:
+                cap = model_drive_ke
+            joint_penalty_k[i_dl] = wp.min(k_dl + beta * C_dl, cap)
         return
 
     # D6 joint: projected linear + projected angular penalties (2 scalars).
@@ -3359,9 +3478,9 @@ def update_duals_joint(
         x_p = wp.transform_get_translation(X_wp)
         x_c = wp.transform_get_translation(X_wc)
         C_vec = x_c - x_p
+        q_wp_rot = wp.transform_get_rotation(X_wp)
 
         if lin_count < 3:
-            q_wp_rot = wp.transform_get_rotation(X_wp)
             P_lin = wp.identity(3, float)
             if lin_count > 0:
                 a0_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 0]))
@@ -3401,6 +3520,63 @@ def update_duals_joint(
             C_ang = 0.0
         k_ang = joint_penalty_k[i_ang]
         joint_penalty_k[i_ang] = wp.min(k_ang + beta * C_ang, joint_penalty_k_max[i_ang])
+
+        # Drive/limit dual update for D6 free DOFs
+        # Per free linear DOF
+        for li in range(3):
+            if li < lin_count:
+                dof_idx = qd_start + li
+                model_drive_ke = joint_target_ke[dof_idx]
+                model_limit_ke = joint_limit_ke[dof_idx]
+                lim_lower = joint_limit_lower[dof_idx]
+                lim_upper = joint_limit_upper[dof_idx]
+                has_drive = model_drive_ke > 0.0
+                has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+                if has_drive or has_limits:
+                    axis_w_dl = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[dof_idx]))
+                    d_along = wp.dot(C_vec, axis_w_dl)
+                    target_pos_dl = joint_target_pos[dof_idx]
+                    mode, err_pos = resolve_drive_limit_mode(
+                        d_along, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
+                    )
+                    i_dl = c_start + 2 + li
+                    k_dl = joint_penalty_k[i_dl]
+                    C_dl = wp.abs(err_pos)
+                    cap = joint_penalty_k_max[i_dl]
+                    if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
+                        cap = model_limit_ke
+                    elif mode == _DRIVE_LIMIT_MODE_DRIVE:
+                        cap = model_drive_ke
+                    joint_penalty_k[i_dl] = wp.min(k_dl + beta * C_dl, cap)
+
+        # Per free angular DOF
+        for ai in range(3):
+            if ai < ang_count:
+                dof_idx = qd_start + lin_count + ai
+                model_drive_ke = joint_target_ke[dof_idx]
+                model_limit_ke = joint_limit_ke[dof_idx]
+                lim_lower = joint_limit_lower[dof_idx]
+                lim_upper = joint_limit_upper[dof_idx]
+                has_drive = model_drive_ke > 0.0
+                has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+                if has_drive or has_limits:
+                    a_dl = wp.normalize(joint_axis[dof_idx])
+                    theta = wp.dot(kappa, a_dl)
+                    target_pos_dl = joint_target_pos[dof_idx]
+                    mode, err_pos = resolve_drive_limit_mode(
+                        theta, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
+                    )
+                    i_dl = c_start + 2 + lin_count + ai
+                    k_dl = joint_penalty_k[i_dl]
+                    C_dl = wp.abs(err_pos)
+                    cap = joint_penalty_k_max[i_dl]
+                    if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
+                        cap = model_limit_ke
+                    elif mode == _DRIVE_LIMIT_MODE_DRIVE:
+                        cap = model_drive_ke
+                    joint_penalty_k[i_dl] = wp.min(k_dl + beta * C_dl, cap)
         return
 
 
@@ -3657,7 +3833,7 @@ def update_cable_dahl_state(
     parent = joint_parent[j]
     child = joint_child[j]
 
-    # Skip invalid joints
+    # World-parent joints are valid; child body must exist.
     if child < 0:
         return
 
