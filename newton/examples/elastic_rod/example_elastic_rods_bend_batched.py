@@ -32,6 +32,8 @@ import newton.examples
 import newton.solvers
 from newton.solvers import xpbd_rod
 
+from newton.examples.elastic_rod.rod_mesher import BatchedRodMesher
+
 
 class Example:
     def __init__(self, viewer, args=None):
@@ -98,6 +100,17 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
+        # Batched rod mesher — single kernel launch for all rods
+        self._mesher = BatchedRodMesher(
+            num_rods=self.num_rods,
+            num_points=num_points,
+            radius=0.01,
+            resolution=8,
+            smoothing=3,
+            particle_offsets=self.solver._rod_particle_starts,
+            device=self.model.device,
+        )
+
         # Capture CUDA graph for the substep loop
         self.graph = None
         device = self.model.device
@@ -130,6 +143,17 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+
+        self._mesher.update(self.state_0.particle_q)
+        for idx in range(self.num_rods):
+            self.viewer.log_mesh(
+                f"/rod_mesh_{idx}",
+                self._mesher.rod_vertices(idx),
+                self._mesher.rod_indices(),
+                self._mesher.rod_normals(idx),
+                self._mesher.rod_uvs(),
+            )
+
         self.viewer.end_frame()
 
     def test_final(self):

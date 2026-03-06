@@ -31,6 +31,8 @@ import newton.examples
 import newton.solvers
 from newton.solvers import xpbd_rod
 
+from newton.examples.elastic_rod.rod_mesher import RodMesher
+
 
 class Example:
     def __init__(self, viewer, args=None):
@@ -98,6 +100,18 @@ class Example:
         self.contacts = self.model.contacts()
 
 
+
+        # Create rod meshers for tube visualization
+        self._meshers = []
+        for ws in self.solver._rods:
+            mesher = RodMesher(
+                num_points=ws.num_points,
+                radius=0.01,
+                resolution=8,
+                smoothing=3,
+                device=self.model.device,
+            )
+            self._meshers.append(mesher)
 
         # Cache CPU-side root state to avoid GPU downloads each frame
         self._root_qs = []
@@ -184,6 +198,18 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+
+        for idx, (ws, mesher) in enumerate(zip(self.solver._rods, self._meshers)):
+            ps = self.solver._rod_particle_starts[idx]
+            mesher.update(self.state_0.particle_q[ps : ps + ws.num_points])
+            self.viewer.log_mesh(
+                f"/rod_mesh_{idx}",
+                mesher.vertices,
+                mesher.indices,
+                mesher.normals,
+                mesher.uvs,
+            )
+
         self.viewer.end_frame()
 
     def _update_rod_stiffness(self):
