@@ -2043,6 +2043,25 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     err_msg=f"mocap_quat should track the fixed-root {body_kind} transform",
                 )
 
+                solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+                updated_body_pos = solver.mjw_data.xpos.numpy()[0, mjc_root_body]
+                updated_body_quat = solver.mjw_data.xquat.numpy()[0, mjc_root_body]
+
+                np.testing.assert_allclose(
+                    updated_body_pos,
+                    [new_position.x, new_position.y, new_position.z],
+                    atol=1e-6,
+                    err_msg=f"xpos should track the fixed-root {body_kind} transform",
+                )
+                if np.dot(updated_body_quat, expected_quat) < 0.0:
+                    expected_quat = -expected_quat
+                np.testing.assert_allclose(
+                    updated_body_quat,
+                    expected_quat,
+                    atol=1e-6,
+                    err_msg=f"xquat should track the fixed-root {body_kind} transform",
+                )
+
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_property_conversion(self):

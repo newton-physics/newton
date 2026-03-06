@@ -121,6 +121,58 @@ class TestKinematicLinks(unittest.TestCase):
         with self.assertRaises(ValueError, msg="Only root bodies"):
             builder.add_articulation([j0, j1, j2])
 
+    def test_imported_kinematic_root_attached_to_parent_raises(self):
+        """Sequential articulation composition preserves the root-only kinematic rule."""
+        builder = ModelBuilder()
+        parent = builder.add_body(mass=1.0, label="parent")
+        imported_root = builder.add_link(mass=1.0, is_kinematic=True, label="imported_root")
+        imported_joint = builder.add_joint_fixed(parent=parent, child=imported_root)
+
+        with self.assertRaises(ValueError, msg="Only root bodies"):
+            builder._finalize_imported_articulation([imported_joint], parent_body=parent)
+
+    def test_featherstone_rebuilds_mass_matrix_after_kinematic_toggle(self):
+        """notify_model_changed() should force a Featherstone mass-matrix rebuild."""
+        sim_dt = 1.0 / 60.0
+        applied_wrench = np.array([200.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+        builder = ModelBuilder(gravity=0.0)
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            is_kinematic=True,
+            label="toggle_body",
+        )
+        builder.add_shape_sphere(body, radius=0.1)
+
+        model = builder.finalize(requires_grad=False)
+        solver = newton.solvers.SolverFeatherstone(
+            model,
+            angular_damping=0.0,
+            update_mass_matrix_interval=100,
+        )
+
+        state_0, state_1 = model.state(), model.state()
+        state_0.clear_forces()
+        solver.step(state_0, state_1, None, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+        flags = model.body_flags.numpy()
+        flags[body] = int(BodyFlags.DYNAMIC)
+        model.body_flags.assign(flags)
+        solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+
+        state_0.clear_forces()
+        _set_body_wrench(state_0, body, applied_wrench)
+        solver.step(state_0, state_1, None, None, sim_dt)
+
+        pos_after_toggle = state_1.body_q.numpy()[body, :3]
+        self.assertGreater(
+            pos_after_toggle[0],
+            1.0e-2,
+            "Dynamic body should move on the first step after a kinematic toggle.",
+        )
+
 
 class TestKinematicLinksCanonical(unittest.TestCase):
     pass

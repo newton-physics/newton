@@ -126,6 +126,7 @@ class SolverFeatherstone(SolverBase):
         self.fuse_cholesky = fuse_cholesky
 
         self._step = 0
+        self._mass_matrix_dirty = False
 
         self._update_kinematic_state()
 
@@ -175,6 +176,7 @@ class SolverFeatherstone(SolverBase):
     def notify_model_changed(self, flags: int):
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
+            self._mass_matrix_dirty = True
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
@@ -526,7 +528,7 @@ class SolverFeatherstone(SolverBase):
                     # print("body_qd:")
                     # print(state_in.body_qd.numpy())
 
-                    if self._step % self.update_mass_matrix_interval == 0:
+                    if self._mass_matrix_dirty or self._step % self.update_mass_matrix_interval == 0:
                         # build J
                         wp.launch(
                             eval_rigid_jacobian,
@@ -676,6 +678,7 @@ class SolverFeatherstone(SolverBase):
                         # print(self.H.numpy())
                         # print("L:")
                         # print(self.L.numpy())
+                        self._mass_matrix_dirty = False
 
                     # solve for qdd
                     state_aug.joint_qdd.zero_()

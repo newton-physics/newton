@@ -1830,16 +1830,7 @@ class ModelBuilder:
             child_to_parent[child] = parent
 
         # Validate that only root bodies (parent == -1) can be kinematic
-        for joint_idx in joints:
-            child = self.joint_child[joint_idx]
-            parent = self.joint_parent[joint_idx]
-            if self.body_flags[child] & BodyFlags.KINEMATIC and parent != -1:
-                child_label = self.body_label[child]
-                parent_label = self.body_label[parent]
-                raise ValueError(
-                    f"Body {child} ('{child_label}') is kinematic but is attached to parent body {parent} "
-                    f"('{parent_label}'). Only root bodies (whose joint parent is the world) can be kinematic."
-                )
+        self._validate_kinematic_articulation_joints(joints)
 
         # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
@@ -7741,6 +7732,23 @@ class ModelBuilder:
                 stacklevel=3,
             )
 
+    def _validate_kinematic_joint_attachment(self, child: int, parent: int) -> None:
+        """Validate that kinematic bodies only attach to the world."""
+        if parent == -1 or not (int(self.body_flags[child]) & int(BodyFlags.KINEMATIC)):
+            return
+
+        child_label = self.body_label[child]
+        parent_label = self.body_label[parent]
+        raise ValueError(
+            f"Body {child} ('{child_label}') is kinematic but is attached to parent body {parent} "
+            f"('{parent_label}'). Only root bodies (whose joint parent is the world) can be kinematic."
+        )
+
+    def _validate_kinematic_articulation_joints(self, joint_indices: Iterable[int]) -> None:
+        """Validate that all kinematic joints in an articulation are rooted at the world."""
+        for joint_idx in joint_indices:
+            self._validate_kinematic_joint_attachment(self.joint_child[joint_idx], self.joint_parent[joint_idx])
+
     def _find_articulation_for_body(self, body_id: int) -> int | None:
         """
         Find which articulation (if any) contains the given body.
@@ -7922,6 +7930,7 @@ class ModelBuilder:
             parent_articulation = self._check_sequential_composition(parent_body=parent_body)
 
             if parent_articulation is not None:
+                self._validate_kinematic_articulation_joints(joint_indices)
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     self.joint_articulation[joint_idx] = parent_articulation
