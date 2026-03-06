@@ -809,7 +809,327 @@
 into a <a class="reference external" href="https://github.com/google-deepmind/mujoco">MuJoCo</a> model and steps it
 with <a class="reference external" href="https://github.com/google-deepmind/mujoco_warp">mujoco_warp</a>.
 Because MuJoCo has its own modelling conventions, some Newton properties are
-mapped differently or not at all.</p>
+mapped differently or not at all.  The sections below describe each conversion
+in detail.</p>
+<section id="coordinate-conventions">
+<h2>Coordinate conventions<a class="headerlink" href="#coordinate-conventions" title="Link to this heading">#</a></h2>
+<dl class="simple">
+<dt><strong>Quaternion order.</strong></dt><dd><p>Newton stores quaternions as <code class="docutils literal notranslate"><span class="pre">(x,</span> <span class="pre">y,</span> <span class="pre">z,</span> <span class="pre">w)</span></code>; MuJoCo uses <code class="docutils literal notranslate"><span class="pre">(w,</span> <span class="pre">x,</span> <span class="pre">y,</span> <span class="pre">z)</span></code>.
+The solver converts between the two automatically.  Be aware of this when
+inspecting raw MuJoCo model or data objects (e.g. via <code class="docutils literal notranslate"><span class="pre">save_to_mjcf</span></code> or
+the <code class="docutils literal notranslate"><span class="pre">mj_model</span></code>/<code class="docutils literal notranslate"><span class="pre">mj_data</span></code> attributes on the solver).</p>
+</dd>
+</dl>
+</section>
+<section id="joint-types">
+<h2>Joint types<a class="headerlink" href="#joint-types" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Newton type</p></th>
+<th class="head"><p>MuJoCo type(s)</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">FREE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjJNT_FREE</span></code></p></td>
+<td><p>Initial pose taken from <code class="docutils literal notranslate"><span class="pre">body_q</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BALL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjJNT_BALL</span></code></p></td>
+<td><p>Per-axis actuators mapped via <code class="docutils literal notranslate"><span class="pre">gear</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">REVOLUTE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjJNT_HINGE</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PRISMATIC</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjJNT_SLIDE</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">D6</span></code></p></td>
+<td><p>Up to 3 × <code class="docutils literal notranslate"><span class="pre">mjJNT_SLIDE</span></code> + 3 × <code class="docutils literal notranslate"><span class="pre">mjJNT_HINGE</span></code></p></td>
+<td><p>Each active linear/angular DOF becomes a separate MuJoCo joint
+(<code class="docutils literal notranslate"><span class="pre">_lin</span></code>/<code class="docutils literal notranslate"><span class="pre">_ang</span></code> suffixes, with numeric indices when multiple axes
+are active).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">FIXED</span></code></p></td>
+<td><p><em>(no joint)</em></p></td>
+<td><p>The child body is nested directly under its parent.  If the fixed joint
+connects to the world, the body is created as a <strong>mocap</strong> body.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="geometry-types">
+<h2>Geometry types<a class="headerlink" href="#geometry-types" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 25.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Newton type</p></th>
+<th class="head"><p>MuJoCo type</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SPHERE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_SPHERE</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CAPSULE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_CAPSULE</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CYLINDER</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_CYLINDER</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BOX</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_BOX</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ELLIPSOID</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_ELLIPSOID</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PLANE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_PLANE</span></code></p></td>
+<td><p>Must be attached to the world body.  Rendered size defaults to
+<code class="docutils literal notranslate"><span class="pre">5</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">5</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">HFIELD</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_HFIELD</span></code></p></td>
+<td><p>Heightfield data is normalized <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">1]</span></code>; the geom origin is shifted
+by <code class="docutils literal notranslate"><span class="pre">min_z</span></code> so the lowest point is at the correct world height.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MESH</span></code> / <code class="docutils literal notranslate"><span class="pre">CONVEX_MESH</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_MESH</span></code></p></td>
+<td><p>MuJoCo only supports <strong>convex</strong> collision meshes.  Non-convex meshes are
+convex-hulled automatically, which changes the collision boundary.
+<code class="docutils literal notranslate"><span class="pre">maxhullvert</span></code> is forwarded from the mesh source when set.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Sites</strong> (shapes with the <code class="docutils literal notranslate"><span class="pre">SITE</span></code> flag) are converted to MuJoCo sites, which
+are non-colliding reference frames used for sensor attachment and spatial
+tendons.</p>
+</section>
+<section id="shape-parameters">
+<h2>Shape parameters<a class="headerlink" href="#shape-parameters" title="Link to this heading">#</a></h2>
+<dl class="simple">
+<dt><strong>Friction.</strong></dt><dd><p>Newton’s <code class="docutils literal notranslate"><span class="pre">shape_material_mu</span></code>, <code class="docutils literal notranslate"><span class="pre">shape_material_mu_torsional</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">shape_material_mu_rolling</span></code> map directly to MuJoCo’s three-element
+geom <code class="docutils literal notranslate"><span class="pre">friction</span></code> vector: <code class="docutils literal notranslate"><span class="pre">(sliding,</span> <span class="pre">torsional,</span> <span class="pre">rolling)</span></code>.</p>
+</dd>
+<dt><strong>Stiffness and damping (solref).</strong></dt><dd><p>Newton’s <code class="docutils literal notranslate"><span class="pre">shape_material_ke</span></code> (stiffness) and <code class="docutils literal notranslate"><span class="pre">shape_material_kd</span></code>
+(damping) are converted to MuJoCo’s geom <code class="docutils literal notranslate"><span class="pre">solref</span></code> <code class="docutils literal notranslate"><span class="pre">(timeconst,</span> <span class="pre">dampratio)</span></code>
+pair.  When either value is zero or negative, the solver falls back to MuJoCo’s defaults
+(<code class="docutils literal notranslate"><span class="pre">timeconst</span> <span class="pre">=</span> <span class="pre">0.02</span></code>, <code class="docutils literal notranslate"><span class="pre">dampratio</span> <span class="pre">=</span> <span class="pre">1.0</span></code>).</p>
+</dd>
+<dt><strong>Joint-limit stiffness and damping (solref_limit).</strong></dt><dd><p><code class="docutils literal notranslate"><span class="pre">joint_limit_ke</span></code> and <code class="docutils literal notranslate"><span class="pre">joint_limit_kd</span></code> are forwarded as negative
+<code class="docutils literal notranslate"><span class="pre">solref_limit</span></code> values <code class="docutils literal notranslate"><span class="pre">(-ke,</span> <span class="pre">-kd)</span></code>, which MuJoCo interprets as direct
+stiffness/damping rather than time-constant/damp-ratio.</p>
+</dd>
+<dt><strong>Margin.</strong></dt><dd><p>Newton’s <code class="docutils literal notranslate"><span class="pre">shape_margin</span></code> maps to MuJoCo <code class="docutils literal notranslate"><span class="pre">geom_margin</span></code>.</p>
+</dd>
+<dt><strong>MuJoCo-specific custom attributes.</strong></dt><dd><p>Many MuJoCo-specific parameters are stored in Newton’s <code class="docutils literal notranslate"><span class="pre">mujoco</span></code>
+custom-attribute namespace and forwarded to the MuJoCo model when present.
+These cover geom properties (<code class="docutils literal notranslate"><span class="pre">condim</span></code>, <code class="docutils literal notranslate"><span class="pre">geom_priority</span></code>, <code class="docutils literal notranslate"><span class="pre">geom_solimp</span></code>,
+<code class="docutils literal notranslate"><span class="pre">geom_solmix</span></code>), joint properties (<code class="docutils literal notranslate"><span class="pre">dof_passive_stiffness</span></code>,
+<code class="docutils literal notranslate"><span class="pre">dof_passive_damping</span></code>, <code class="docutils literal notranslate"><span class="pre">jnt_actgravcomp</span></code>, <code class="docutils literal notranslate"><span class="pre">dof_springref</span></code>, <code class="docutils literal notranslate"><span class="pre">dof_ref</span></code>,
+<code class="docutils literal notranslate"><span class="pre">limit_margin</span></code>, <code class="docutils literal notranslate"><span class="pre">solimplimit</span></code>, <code class="docutils literal notranslate"><span class="pre">solreffriction</span></code>, <code class="docutils literal notranslate"><span class="pre">solimpfriction</span></code>),
+equality constraints (<code class="docutils literal notranslate"><span class="pre">eq_solref</span></code>), tendons, general actuators, and solver
+options.  See <a class="reference internal" href="../concepts/custom_attributes.html"><span class="doc">Custom Attributes</span></a> for the full list.</p>
+</dd>
+</dl>
+</section>
+<section id="collision-filtering">
+<h2>Collision filtering<a class="headerlink" href="#collision-filtering" title="Link to this heading">#</a></h2>
+<p>Newton uses integer <code class="docutils literal notranslate"><span class="pre">shape_collision_group</span></code> labels to control which shapes
+can collide.  MuJoCo uses <code class="docutils literal notranslate"><span class="pre">contype</span></code>/<code class="docutils literal notranslate"><span class="pre">conaffinity</span></code> bitmasks with a different
+semantic: two geoms collide when
+<code class="docutils literal notranslate"><span class="pre">(contype_A</span> <span class="pre">&amp;</span> <span class="pre">conaffinity_B)</span> <span class="pre">||</span> <span class="pre">(contype_B</span> <span class="pre">&amp;</span> <span class="pre">conaffinity_A)</span></code> is non-zero.</p>
+<p>The solver bridges the two systems with <strong>graph coloring</strong>.  Shapes that must
+<em>not</em> collide are assigned the same color; each color maps to one bit in
+<code class="docutils literal notranslate"><span class="pre">contype</span></code>.  <code class="docutils literal notranslate"><span class="pre">conaffinity</span></code> is set to the complement so that same-color
+geoms never match.  Up to 32 colors are supported (one per <code class="docutils literal notranslate"><span class="pre">contype</span></code> bit).
+If the graph requires more than 32 colors, shapes with color index ≥ 32 fall
+back to MuJoCo defaults (<code class="docutils literal notranslate"><span class="pre">contype=1</span></code>, <code class="docutils literal notranslate"><span class="pre">conaffinity=1</span></code>) and will collide
+with all other shapes, silently bypassing the intended filtering.</p>
+<p>Non-colliding shapes (no <code class="docutils literal notranslate"><span class="pre">COLLIDE_SHAPES</span></code> flag, or <code class="docutils literal notranslate"><span class="pre">collision_group</span> <span class="pre">==</span> <span class="pre">0</span></code>)
+get <code class="docutils literal notranslate"><span class="pre">contype</span> <span class="pre">=</span> <span class="pre">conaffinity</span> <span class="pre">=</span> <span class="pre">0</span></code>.</p>
+<p>Additionally, body pairs for which all shape-shape combinations are filtered
+are registered as <code class="docutils literal notranslate"><span class="pre">&lt;exclude&gt;</span></code> elements.</p>
+</section>
+<section id="mass-and-inertia">
+<h2>Mass and inertia<a class="headerlink" href="#mass-and-inertia" title="Link to this heading">#</a></h2>
+<p>Bodies with positive mass have their mass, center-of-mass offset (<code class="docutils literal notranslate"><span class="pre">ipos</span></code>),
+and inertia tensor set explicitly (<code class="docutils literal notranslate"><span class="pre">explicitinertial=&quot;true&quot;</span></code>).  When the
+inertia tensor is diagonal the solver uses <code class="docutils literal notranslate"><span class="pre">diaginertia</span></code>; otherwise it uses
+<code class="docutils literal notranslate"><span class="pre">fullinertia</span></code>.</p>
+<p>Zero-mass bodies (e.g. sensor frames) omit mass and inertia entirely, letting
+MuJoCo derive them from child geoms (<code class="docutils literal notranslate"><span class="pre">inertiafromgeom=&quot;auto&quot;</span></code>).</p>
+</section>
+<section id="actuators">
+<h2>Actuators<a class="headerlink" href="#actuators" title="Link to this heading">#</a></h2>
+<p>Newton’s per-DOF <code class="docutils literal notranslate"><span class="pre">joint_target_mode</span></code> determines which MuJoCo general
+actuators are created:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 75.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Mode</p></th>
+<th class="head"><p>MuJoCo actuator(s)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">POSITION</span></code></p></td>
+<td><p>One actuator: <code class="docutils literal notranslate"><span class="pre">gainprm</span> <span class="pre">=</span> <span class="pre">[kp]</span></code>, <code class="docutils literal notranslate"><span class="pre">biasprm</span> <span class="pre">=</span> <span class="pre">[0,</span> <span class="pre">-kp,</span> <span class="pre">-kd]</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">VELOCITY</span></code></p></td>
+<td><p>One actuator: <code class="docutils literal notranslate"><span class="pre">gainprm</span> <span class="pre">=</span> <span class="pre">[kd]</span></code>, <code class="docutils literal notranslate"><span class="pre">biasprm</span> <span class="pre">=</span> <span class="pre">[0,</span> <span class="pre">0,</span> <span class="pre">-kd]</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">POSITION_VELOCITY</span></code></p></td>
+<td><p>Two actuators — a position actuator (<code class="docutils literal notranslate"><span class="pre">gainprm</span> <span class="pre">=</span> <span class="pre">[kp]</span></code>,
+<code class="docutils literal notranslate"><span class="pre">biasprm</span> <span class="pre">=</span> <span class="pre">[0,</span> <span class="pre">-kp,</span> <span class="pre">0]</span></code>) and a velocity actuator
+(<code class="docutils literal notranslate"><span class="pre">gainprm</span> <span class="pre">=</span> <span class="pre">[kd]</span></code>, <code class="docutils literal notranslate"><span class="pre">biasprm</span> <span class="pre">=</span> <span class="pre">[0,</span> <span class="pre">0,</span> <span class="pre">-kd]</span></code>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NONE</span></code></p></td>
+<td><p>No actuator created for this DOF.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">joint_effort_limit</span></code> is forwarded as <code class="docutils literal notranslate"><span class="pre">actfrcrange</span></code> on the joint (for
+prismatic, revolute, and D6 joints) or as <code class="docutils literal notranslate"><span class="pre">forcerange</span></code> on the actuator (for
+ball joints).</p>
+<p>Additional MuJoCo general actuators (motors, etc.) can be attached through
+custom attributes and are appended after the joint-target actuators.</p>
+</section>
+<section id="equality-constraints">
+<h2>Equality constraints<a class="headerlink" href="#equality-constraints" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 20.0%" />
+<col style="width: 60.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Newton type</p></th>
+<th class="head"><p>MuJoCo type</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CONNECT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjEQ_CONNECT</span></code></p></td>
+<td><p>Anchor forwarded in <code class="docutils literal notranslate"><span class="pre">data[0:3]</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">WELD</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjEQ_WELD</span></code></p></td>
+<td><p>Relative pose and torque scale forwarded.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">JOINT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjEQ_JOINT</span></code></p></td>
+<td><p>Polynomial coefficients forwarded in <code class="docutils literal notranslate"><span class="pre">data[0:5]</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Mimic</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjEQ_JOINT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">coef0</span></code> / <code class="docutils literal notranslate"><span class="pre">coef1</span></code> mapped to polynomial coefficients.
+Only <code class="docutils literal notranslate"><span class="pre">REVOLUTE</span></code> and <code class="docutils literal notranslate"><span class="pre">PRISMATIC</span></code> joints are supported.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">eq_solref</span></code> custom attributes are forwarded when present.</p>
+</section>
+<section id="solver-options">
+<h2>Solver options<a class="headerlink" href="#solver-options" title="Link to this heading">#</a></h2>
+<p>Solver parameters follow a three-level resolution priority:</p>
+<ol class="arabic simple">
+<li><p><strong>Constructor argument</strong> — value passed to <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>.</p></li>
+<li><p><strong>Custom attribute</strong> (<code class="docutils literal notranslate"><span class="pre">model.mujoco.&lt;option&gt;</span></code>) — supports per-world values.
+These attributes are typically populated automatically when importing USD or
+MJCF assets.</p></li>
+<li><p><strong>Default</strong> — the table below lists Newton defaults alongside MuJoCo
+defaults for reference.</p></li>
+</ol>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 25.0%" />
+<col style="width: 25.0%" />
+<col style="width: 25.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Option</p></th>
+<th class="head"><p>Newton default</p></th>
+<th class="head"><p>MuJoCo default</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">solver</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">newton</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">newton</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">integrator</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">implicitfast</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">euler</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">implicitfast</span></code> provides better stability for stiff systems.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cone</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pyramidal</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pyramidal</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">iterations</span></code></p></td>
+<td><p>100</p></td>
+<td><p>100</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ls_iterations</span></code></p></td>
+<td><p>50</p></td>
+<td><p>50</p></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="multi-world-support">
+<h2>Multi-world support<a class="headerlink" href="#multi-world-support" title="Link to this heading">#</a></h2>
+<p>When <code class="docutils literal notranslate"><span class="pre">separate_worlds=True</span></code> (the default for GPU mode with multiple worlds),
+the solver builds a
+MuJoCo model from the <strong>first world</strong> only and replicates it across all worlds
+via <code class="docutils literal notranslate"><span class="pre">mujoco_warp</span></code>.  This requires all Newton worlds to be structurally
+identical (same bodies, joints, and shapes).  Global entities (those with a
+negative world index) may only include static shapes — they are shared across
+all worlds without replication.</p>
+</section>
+<section id="collision-pipeline">
+<h2>Collision pipeline<a class="headerlink" href="#collision-pipeline" title="Link to this heading">#</a></h2>
+<p>By default <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> uses MuJoCo’s built-in
+collision detection (<code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts=True</span></code>).  Alternatively, you can set
+<code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts=False</span></code> and pass contacts computed by Newton’s own
+collision pipeline into <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.step" title="newton.solvers.SolverMuJoCo.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a>.  Newton’s
+pipeline supports non-convex meshes, SDF-based contacts, and hydroelastic
+contacts, which are not available through MuJoCo’s collision detection.</p>
+</section>
 <section id="caveats">
 <h2>Caveats<a class="headerlink" href="#caveats" title="Link to this heading">#</a></h2>
 <dl class="simple">
@@ -827,6 +1147,16 @@ not forwarded to the MuJoCo solver.</p>
 </dd>
 <dt><strong>shape_collision_radius is ignored.</strong></dt><dd><p>MuJoCo computes bounding-sphere radii (<code class="docutils literal notranslate"><span class="pre">geom_rbound</span></code>) internally from the
 geometry definition.  Newton’s <code class="docutils literal notranslate"><span class="pre">shape_collision_radius</span></code> is not forwarded.</p>
+</dd>
+<dt><strong>Non-convex meshes are convex-hulled.</strong></dt><dd><p>MuJoCo only supports convex collision geometry.  If a Newton <code class="docutils literal notranslate"><span class="pre">MESH</span></code> shape
+is non-convex, MuJoCo will automatically compute its convex hull, changing
+the effective collision boundary.</p>
+</dd>
+<dt><strong>Velocity limits are not forwarded.</strong></dt><dd><p>Newton’s <code class="docutils literal notranslate"><span class="pre">joint_velocity_limit</span></code> has no MuJoCo equivalent and is ignored.</p>
+</dd>
+<dt><strong>Body ordering must be depth-first.</strong></dt><dd><p>The solver sorts joints in depth-first topological order for MuJoCo’s
+kinematic tree.  If the Newton model’s joint order differs, a warning is
+emitted because kinematics may diverge.</p>
 </dd>
 </dl>
 </section>
@@ -892,6 +1222,17 @@ to synchronize the updated fixed-root poses into MuJoCo.</p>
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#coordinate-conventions">Coordinate conventions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#joint-types">Joint types</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#geometry-types">Geometry types</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shape-parameters">Shape parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-filtering">Collision filtering</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mass-and-inertia">Mass and inertia</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#actuators">Actuators</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#equality-constraints">Equality constraints</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-options">Solver options</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-world-support">Multi-world support</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-pipeline">Collision pipeline</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#caveats">Caveats</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#kinematic-links-and-fixed-roots">Kinematic Links and Fixed Roots</a></li>
 </ul>
