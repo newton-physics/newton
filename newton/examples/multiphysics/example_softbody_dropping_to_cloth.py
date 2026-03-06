@@ -32,9 +32,9 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, args=None, solver_type: str = "vbd"):
+    def __init__(self, viewer, args):
         self.viewer = viewer
-        self.solver_type = solver_type
+        self.solver_type = args.solver
         self.sim_time = 0.0
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -162,28 +162,21 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--solver",
+            help="Type of solver (only 'vbd' supports volumetric soft bodies in this example)",
+            type=str,
+            choices=["vbd"],
+            default="vbd",
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser with base arguments
-    parser = newton.examples.create_parser()
-
-    # Add solver-specific arguments
-    parser.add_argument(
-        "--solver",
-        help="Type of solver (only 'vbd' supports volumetric soft bodies in this example)",
-        type=str,
-        choices=["vbd"],
-        default="vbd",
-    )
-
-    # Parse arguments and initialize viewer
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-
-    # Create example and run
-    example = Example(
-        viewer=viewer,
-        args=args,
-        solver_type=args.solver,
-    )
-
+    example = Example(viewer, args)
     newton.examples.run(example, args)

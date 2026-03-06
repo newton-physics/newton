@@ -37,7 +37,7 @@ from newton.tests.unittest_utils import find_nonfinite_members
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
@@ -126,6 +126,7 @@ class Example:
         self.state_0.clear_forces()
         self.viewer.apply_forces(self.state_0)
         self.solver.step(self.state_0, self.state_0, self.control, None, self.sim_dt)
+        self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.sim_time >= self.next_reset:
@@ -139,8 +140,6 @@ class Example:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
-
-        self.solver.update_contacts(self.contacts, self.state_0)
         self.plate_contact_sensor.update(self.state_0, self.contacts)
 
         net_force = self.plate_contact_sensor.net_force.numpy()
@@ -167,6 +166,7 @@ class Example:
         self.next_reset = self.sim_time + self.reset_interval
         self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
         self.plates_touched = 2 * [False]
+        self.plot_window.reset()
 
         print("Resetting")
         # Restore initial joint positions and velocities in-place.
@@ -222,6 +222,10 @@ class ViewerPlot:
             self.data = np.roll(self.data, -1)
             self.cache.clear()
 
+    def reset(self):
+        self.data.fill(0)
+        self.cache.clear()
+
     def render(self, imgui):
         """
         Render the replay UI controls.
@@ -245,7 +249,10 @@ class ViewerPlot:
 
         if imgui.begin(self.title, flags=flags):
             imgui.text("Flap contact force")
-            imgui.plot_lines("Force", self.data, **self.plot_kwargs)
+            avail = imgui.get_content_region_avail()
+            plot_kwargs = dict(self.plot_kwargs)
+            plot_kwargs["graph_size"] = (avail.x, plot_kwargs.get("graph_size", (0, 0))[1])
+            imgui.plot_lines("##force", self.data, **plot_kwargs)
         imgui.end()
 
 
@@ -254,6 +261,6 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

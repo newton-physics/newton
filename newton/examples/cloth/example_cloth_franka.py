@@ -147,7 +147,7 @@ def compute_body_jacobian(
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # parameters
         #   simulation (centimeter scale)
         self.add_cloth = True

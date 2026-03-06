@@ -3088,12 +3088,14 @@ class SolverMuJoCo(SolverBase):
             if need_length_range or need_const_fixed or need_const_0:
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
         else:
-            if need_length_range:
-                self._mujoco_warp.set_length_range(self.mjw_model, self.mjw_data)
-            if need_const_fixed:
-                self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
-            if need_const_0:
-                self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+            if need_length_range or need_const_fixed or need_const_0:
+                with wp.ScopedDevice(self.model.device):
+                    if need_length_range:
+                        self._mujoco_warp.set_length_range(self.mjw_model, self.mjw_data)
+                    if need_const_fixed:
+                        self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
+                    if need_const_0:
+                        self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
 
     def _create_inverse_shape_mapping(self):
         """
@@ -6090,7 +6092,8 @@ class SolverMuJoCo(SolverBase):
 
         if self._viewer.is_running():
             if not self.use_mujoco_cpu:
-                self._mujoco_warp.get_data_into(self.mj_data, self.mj_model, self.mjw_data)
+                with wp.ScopedDevice(self.model.device):
+                    self._mujoco_warp.get_data_into(self.mj_data, self.mj_model, self.mjw_data)
 
             self._viewer.sync()
 

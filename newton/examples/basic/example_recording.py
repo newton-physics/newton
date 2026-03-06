@@ -29,14 +29,14 @@
 import numpy as np
 import warp as wp
 
-wp.config.enable_backward = False
+wp.set_module_options({"enable_backward": False})
 
 import newton
 import newton.examples
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, _args):
         # Setup simulation parameters
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -135,11 +135,14 @@ if __name__ == "__main__":
     print(f"Recording simulation to: {recording_file}")
     print("ViewerFile will automatically save when the simulation ends.")
 
+    parser = newton.examples.create_parser()
+    args = parser.parse_args()
+
     # Create ViewerFile with auto_save=False to only save at the end
     viewer = newton.viewer.ViewerFile(recording_file, auto_save=False)
 
     # Create example
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     # Run for a reasonable number of frames
     max_frames = 1000

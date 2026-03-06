@@ -32,7 +32,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -53,6 +53,15 @@ class Example:
         self.graph = None
         self.model = franka.finalize()
         self.viewer.set_model(self.model)
+
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(0.0, -2.0, 1.0),
+            pitch=0.0,
+            yaw=90.0,
+        )
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 90.0
 
         # states
         self.state = self.model.state()
@@ -95,7 +104,7 @@ class Example:
         )
 
         # Variables the solver will update
-        self.joint_q = wp.array(self.model.joint_q, shape=(1, self.model.joint_coord_count))
+        self.joint_q = self.model.joint_q.reshape((1, self.model.joint_coord_count))
 
         self.ik_iters = 24
         self.solver = ik.IKSolver(
@@ -120,11 +129,12 @@ class Example:
 
     def simulate(self):
         self.solver.step(self.joint_q, self.joint_q, iterations=self.ik_iters)
-        wp.copy(self.model.joint_q, self.joint_q)
 
     def _push_targets_from_gizmos(self):
         """Read gizmo-updated transform and push into IK objectives."""
-        self.pos_obj.set_target_position(0, wp.transform_get_translation(self.ee_tf))
+        pos = wp.transform_get_translation(self.ee_tf)
+        pos = wp.vec3(pos[0], pos[1], max(pos[2], 0.11))
+        self.pos_obj.set_target_position(0, pos)
         q = wp.transform_get_rotation(self.ee_tf)
         self.rot_obj.set_target_rotation(0, wp.vec4(q[0], q[1], q[2], q[3]))
 
@@ -159,5 +169,5 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)
