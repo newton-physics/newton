@@ -24,7 +24,23 @@ from ...math import (
     vec_min,
     velocity_at_point,
 )
-from ...sim import JointType
+from ...sim import BodyFlags, JointType
+
+
+@wp.kernel
+def copy_kinematic_body_state_kernel(
+    body_flags: wp.array(dtype=wp.int32),
+    body_q_in: wp.array(dtype=wp.transform),
+    body_qd_in: wp.array(dtype=wp.spatial_vector),
+    body_q_out: wp.array(dtype=wp.transform),
+    body_qd_out: wp.array(dtype=wp.spatial_vector),
+):
+    """Copy prescribed maximal state through the solve for kinematic bodies."""
+    tid = wp.tid()
+    if (body_flags[tid] & int(BodyFlags.KINEMATIC)) == 0:
+        return
+    body_q_out[tid] = body_q_in[tid]
+    body_qd_out[tid] = body_qd_in[tid]
 
 
 @wp.kernel
@@ -2048,6 +2064,7 @@ def compute_angular_correction(
 def solve_body_contact_positions(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_flags: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
     body_m_inv: wp.array(dtype=float),
     body_I_inv: wp.array(dtype=wp.mat33),
@@ -2192,10 +2209,23 @@ def solve_body_contact_positions(
         delta = bx_b - bx_a
         friction_delta = delta - wp.dot(n, delta) * n
 
-        perp = wp.normalize(friction_delta)
-
         r_a = bx_a - wp.transform_point(X_wb_a, com_a)
         r_b = bx_b - wp.transform_point(X_wb_b, com_b)
+
+        # Add only prescribed kinematic surface motion here.
+        # Dynamic-body tangential motion is already reflected in the
+        # positional slip `delta`; adding full relative velocity would
+        # double-count ordinary ground friction and destabilize contacts.
+        rel_v_kin_t = wp.vec3(0.0)
+        if body_a >= 0 and (body_flags[body_a] & int(BodyFlags.KINEMATIC)) != 0:
+            v_a = velocity_at_point(body_qd[body_a], r_a)
+            rel_v_kin_t = rel_v_kin_t - (v_a - wp.dot(n, v_a) * n)
+        if body_b >= 0 and (body_flags[body_b] & int(BodyFlags.KINEMATIC)) != 0:
+            v_b = velocity_at_point(body_qd[body_b], r_b)
+            rel_v_kin_t = rel_v_kin_t + (v_b - wp.dot(n, v_b) * n)
+        friction_delta += rel_v_kin_t * dt
+
+        perp = wp.normalize(friction_delta)
 
         angular_a = -wp.cross(r_a, perp)
         angular_b = wp.cross(r_b, perp)

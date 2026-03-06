@@ -23,15 +23,36 @@ from newton._src.viewer.picking import Picking
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
-def _make_single_sphere_model(device=None):
+def _make_single_sphere_model(device=None, *, is_kinematic: bool = False):
     """Model with one body and one sphere at origin (radius 0.5)."""
     builder = newton.ModelBuilder()
     builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        is_kinematic=is_kinematic,
     )
     builder.add_shape_sphere(body=0, radius=0.5)
+    return builder.finalize(device=device)
+
+
+def _make_kinematic_front_dynamic_back_model(device=None):
+    """Model with a kinematic sphere in front and dynamic sphere behind it."""
+    builder = newton.ModelBuilder()
+    builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        is_kinematic=True,
+    )
+    builder.add_shape_sphere(body=0, radius=0.5)
+
+    builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+    )
+    builder.add_shape_sphere(body=1, radius=0.5)
     return builder.finalize(device=device)
 
 
@@ -107,6 +128,32 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(picking.pick_body.numpy()[0], 0)
         self.assertGreater(picking.pick_dist, 0.0)
         self.assertLess(picking.pick_dist, 1.0e10)
+
+    def test_pick_kinematic_body_remains_inactive(self):
+        """pick() ignores kinematic bodies so no body is selected."""
+        model = _make_single_sphere_model(device="cpu", is_kinematic=True)
+        state = model.state()
+        picking = Picking(model)
+
+        ray_start = wp.vec3(0.0, 0.0, -2.0)
+        ray_dir = wp.vec3(0.0, 0.0, 1.0)
+        picking.pick(state, ray_start, ray_dir)
+
+        self.assertFalse(picking.is_picking())
+        self.assertEqual(picking.pick_body.numpy()[0], -1)
+
+    def test_pick_kinematic_occludes_dynamic(self):
+        """pick() does not pick dynamic bodies occluded by kinematic bodies."""
+        model = _make_kinematic_front_dynamic_back_model(device="cpu")
+        state = model.state()
+        picking = Picking(model)
+
+        ray_start = wp.vec3(0.0, 0.0, -3.0)
+        ray_dir = wp.vec3(0.0, 0.0, 1.0)
+        picking.pick(state, ray_start, ray_dir)
+
+        self.assertFalse(picking.is_picking())
+        self.assertEqual(picking.pick_body.numpy()[0], -1)
 
     def test_pick_empty_model_no_crash(self):
         """pick() with a model that has no shapes returns without error."""

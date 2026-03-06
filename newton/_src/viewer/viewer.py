@@ -34,75 +34,11 @@ class ViewerBase(ABC):
     def __init__(self):
         """Initialize shared viewer state and rendering caches."""
         self.time = 0.0
-
         self.device = wp.get_device()
-        self.model = None
-        self.model_changed = True
+        self.picking_enabled = True
 
-        # map from shape hash -> Instances
-        self._shape_instances = {}
-
-        # inertia box instances -- created on-demand
-        self._inertia_box_instances: ViewerBase.ShapeInstances | None = None
-
-        # cache for geometry created via log_shapes()
-        # maps from geometry hash -> mesh path
-        self._geometry_cache: dict[int, str] = {}
-
-        # line vertices for contact visualization
-        self._contact_points0 = None
-        self._contact_points1 = None
-
-        # line vertices for joint basis vectors (3 lines per joint)
-        self._joint_points0 = None
-        self._joint_points1 = None
-        self._joint_colors = None
-
-        self._com_positions = None
-        self._com_colors = None
-        self._com_radii = None
-
-        # World offset support
-        self.world_offsets = None  # Array of vec3 offsets per world
-        self.max_worlds = None  # Limit on worlds to render (None = all)
-
-        # Display options as individual boolean attributes
-        self.show_joints = False
-        self.show_com = False
-        self.show_particles = False
-        self.show_contacts = False
-        self.show_springs = False
-        self.show_triangles = True
-        self.show_collision = False  # force show collision shapes
-        self.show_visual = True  # show visual shapes (non collider)
-        self.show_static = False  # force static shapes to be visible
-        self.show_inertia_boxes = False
-        self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
-        """Whether to show the hydroelastic contact surface wireframe."""
-        self.picking_enabled = True  # enable interactive picking via mouse
-
-        # cache for hydroelastic contact surface line rendering (lazily allocated)
-        self._hydro_surface_line_starts: wp.array | None = None
-        self._hydro_surface_line_ends: wp.array | None = None
-        self._hydro_surface_line_colors: wp.array | None = None
-
-        self.model_shape_color: wp.array(dtype=wp.vec3) = None
-        """Color of shapes created from :attr:`model`, shape ``(model.shape_count,)``."""
-        # map from shape index to the slot in the contiguous shape color array ``self.model_shape_color``
-        self._shape_to_slot: nparray | None = None
-        # map from shape index -> Instances
-        self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
-
-        # cache for isomeshes (computed on demand for collision shapes with SDF volumes)
-        # keyed by volume.id (uint64) to deduplicate when multiple shapes share the same SDF volume
-        self._isomesh_cache: dict[int, newton.Mesh | None] = {}
-
-        # SDF isomesh instances -- created on-demand for collision visualization
-        self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
-        self._sdf_isomesh_populated: bool = False  # lazy flag for SDF isomesh population
-        # Host mirror of per-shape SDF table indices. Filled once in set_model()
-        # to avoid repeated device->host copies in shape population loops.
-        self._shape_sdf_index_host: nparray | None = None
+        # All model-dependent state is initialized by clear_model()
+        self.clear_model()
 
     def is_running(self) -> bool:
         """Report whether the viewer backend should keep running.
@@ -131,6 +67,73 @@ class ViewerBase(ABC):
         """
         return False
 
+    def clear_model(self) -> None:
+        """Reset all model-dependent state to defaults.
+
+        Called from ``__init__`` to establish initial values and whenever the
+        current model needs to be discarded (e.g. before :meth:`set_model` or
+        when switching examples).
+        """
+        self.model = None
+        self.model_changed = True
+
+        # Shape instance batches (shape hash -> ShapeInstances)
+        self._shape_instances = {}
+        self._inertia_box_instances: ViewerBase.ShapeInstances | None = None
+
+        # Geometry mesh cache (geometry hash -> mesh path)
+        self._geometry_cache: dict[int, str] = {}
+
+        # Contact line vertices
+        self._contact_points0 = None
+        self._contact_points1 = None
+
+        # Joint basis line vertices (3 lines per joint)
+        self._joint_points0 = None
+        self._joint_points1 = None
+        self._joint_colors = None
+
+        # Center-of-mass visualization
+        self._com_positions = None
+        self._com_colors = None
+        self._com_radii = None
+
+        # World offset support
+        self.world_offsets = None
+        self.max_worlds = None
+
+        # Picking
+        self.picking_enabled = True
+
+        # Display options
+        self.show_joints = False
+        self.show_com = False
+        self.show_particles = False
+        self.show_contacts = False
+        self.show_springs = False
+        self.show_triangles = True
+        self.show_collision = False
+        self.show_visual = True
+        self.show_static = False
+        self.show_inertia_boxes = False
+        self.show_hydro_contact_surface = False
+
+        # Hydroelastic contact surface line cache
+        self._hydro_surface_line_starts: wp.array | None = None
+        self._hydro_surface_line_ends: wp.array | None = None
+        self._hydro_surface_line_colors: wp.array | None = None
+
+        # Per-shape color buffer and indexing
+        self.model_shape_color: wp.array(dtype=wp.vec3) = None
+        self._shape_to_slot: nparray | None = None
+        self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
+
+        # Isomesh cache for SDF collision visualization
+        self._isomesh_cache: dict[int, newton.Mesh | None] = {}
+        self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
+        self._sdf_isomesh_populated: bool = False
+        self._shape_sdf_index_host: nparray | None = None
+
     def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
         """
         Set the model to be visualized.
@@ -141,7 +144,7 @@ class ViewerBase(ABC):
                         Useful for performance when training with many environments.
         """
         if self.model is not None:
-            raise RuntimeError("Viewer set_model() can be called only once.")
+            self.clear_model()
 
         self.model = model
         self.max_worlds = max_worlds

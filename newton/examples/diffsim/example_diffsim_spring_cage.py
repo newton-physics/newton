@@ -54,7 +54,7 @@ def apply_gradient_kernel(
 
 
 class Example:
-    def __init__(self, viewer, verbose=False):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 30
         self.frame = 0
@@ -63,7 +63,7 @@ class Example:
         self.sim_substeps = 1
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.verbose = verbose
+        self.verbose = args.verbose
 
         # setup training parameters
         self.train_iter = 0
@@ -285,19 +285,20 @@ class Example:
 
             self.frame += 1
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--verbose", action="store_true", help="Print out additional status messages during execution."
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
-    parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
-
-    # Parse arguments and initialize viewer
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     if isinstance(viewer, newton.viewer.ViewerGL):
         viewer.show_particles = True
 
-    # Create example
-    example = Example(viewer, verbose=args.verbose)
-
-    # Run example
+    example = Example(viewer, args)
     newton.examples.run(example, args)

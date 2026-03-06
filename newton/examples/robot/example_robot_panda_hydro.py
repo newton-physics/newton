@@ -63,9 +63,9 @@ def broadcast_ik_solution_kernel(
 
 
 class Example:
-    def __init__(self, viewer, scene=SceneType.PEN, world_count=1, test_mode=False):
-        self.scene = SceneType(scene)
-        self.test_mode = test_mode
+    def __init__(self, viewer, args):
+        self.scene = SceneType(args.scene)
+        self.test_mode = args.test
         self.show_isosurface = False  # Disabled by default for performance
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -73,7 +73,7 @@ class Example:
         self.sim_substeps = 10
         self.collide_substeps = 2  # run collision detection every X simulation steps
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.world_count = world_count
+        self.world_count = args.world_count
         self.viewer = viewer
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
@@ -528,29 +528,25 @@ class Example:
             )
             self.waypoints.extend(wps)
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(num_frames=720)
+        parser.set_defaults(world_count=1)
+        parser.add_argument(
+            "--scene",
+            type=str,
+            choices=[scene.value for scene in SceneType],
+            default=SceneType.PEN.value,
+            help="Scene type to load (pen, cube)",
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    # Parse arguments and initialize viewer
-    parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=720)
-    parser.add_argument(
-        "--scene",
-        type=str,
-        choices=[scene.value for scene in SceneType],
-        default=SceneType.PEN.value,
-        help="Scene type to load (pen, cube)",
-    )
-    parser.add_argument(
-        "--world-count",
-        type=int,
-        default=1,
-        help="Number of parallel worlds to simulate",
-    )
-
-    args = parser.parse_known_args()[0]
-
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, scene=args.scene, world_count=args.world_count, test_mode=args.test)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

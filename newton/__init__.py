@@ -57,6 +57,7 @@ __all__ += [
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
+    BodyFlags,
     CollisionPipeline,
     Contacts,
     Control,
@@ -73,6 +74,7 @@ from ._src.sim import (  # noqa: E402
 )
 
 __all__ += [
+    "BodyFlags",
     "CollisionPipeline",
     "Contacts",
     "Control",
