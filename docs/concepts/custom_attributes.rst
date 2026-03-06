@@ -27,9 +27,9 @@ Overview
 
 Newton organizes simulation data into four primary objects, each containing flat arrays indexed by simulation entities: 
 
-* **Model Object** - Static configuration and physical properties that remain constant during simulation
-* **State Object** - Dynamic quantities that evolve during simulation
-* **Control Object** - Control inputs and actuator commands
+* **Model Object** (:class:`~newton.Model`) - Static configuration and physical properties that remain constant during simulation
+* **State Object** (:class:`~newton.State`) - Dynamic quantities that evolve during simulation
+* **Control Object** (:class:`~newton.Control`) - Control inputs and actuator commands
 * **Contact Object** (:class:`~newton.Contacts`) - Contact-specific properties
 
 Custom attributes extend these objects with user-defined arrays that follow the same indexing scheme as Newton's built-in attributes. The ``CONTACT`` assignment attaches attributes to the :class:`~newton.Contacts` object created during collision detection.
