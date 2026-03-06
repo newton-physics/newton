@@ -170,6 +170,23 @@ def integrate_bodies(
     body_qd_new[tid] = qd_new
 
 
+@wp.kernel
+def _update_effective_inv_mass_inertia(
+    body_flags: wp.array(dtype=wp.int32),
+    model_inv_mass: wp.array(dtype=float),
+    model_inv_inertia: wp.array(dtype=wp.mat33),
+    eff_inv_mass: wp.array(dtype=float),
+    eff_inv_inertia: wp.array(dtype=wp.mat33),
+):
+    tid = wp.tid()
+    if (body_flags[tid] & BodyFlags.KINEMATIC) != 0:
+        eff_inv_mass[tid] = 0.0
+        eff_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    else:
+        eff_inv_mass[tid] = model_inv_mass[tid]
+        eff_inv_inertia[tid] = model_inv_inertia[tid]
+
+
 class SolverBase:
     """Generic base class for solvers.
 
@@ -191,6 +208,31 @@ class SolverBase:
             wp.Device: The device used by the solver.
         """
         return self.model.device
+
+    def _init_kinematic_state(self):
+        """Allocate and populate effective inverse mass/inertia arrays."""
+        model = self.model
+        self.body_inv_mass_effective = wp.empty_like(model.body_inv_mass)
+        self.body_inv_inertia_effective = wp.empty_like(model.body_inv_inertia)
+        if model.body_count:
+            self._refresh_kinematic_state()
+
+    def _refresh_kinematic_state(self):
+        """Update effective arrays from model, zeroing kinematic bodies."""
+        model = self.model
+        if model.body_count:
+            wp.launch(
+                kernel=_update_effective_inv_mass_inertia,
+                dim=model.body_count,
+                inputs=[
+                    model.body_flags,
+                    model.body_inv_mass,
+                    model.body_inv_inertia,
+                    self.body_inv_mass_effective,
+                    self.body_inv_inertia_effective,
+                ],
+                device=model.device,
+            )
 
     def integrate_bodies(
         self,

@@ -275,6 +275,7 @@ def parse_usd(
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
+    default_joint_velocity_limit = builder.default_joint_cfg.velocity_limit
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -736,6 +737,13 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
+        joint_velocity_limit = R.get_value(
+            joint_prim,
+            prim_type=PrimType.JOINT,
+            key="velocity_limit",
+            default=None,
+            verbose=verbose,
+        )
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
@@ -783,6 +791,7 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
+            joint_params["velocity_limit"] = joint_velocity_limit
             if joint_desc.drive.enabled:
                 target_vel = joint_desc.drive.targetVelocity
                 target_pos = joint_desc.drive.targetPosition
@@ -835,6 +844,8 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
+                if joint_params["velocity_limit"] is not None:
+                    joint_params["velocity_limit"] *= DegreesToRadian
 
                 joint_index = builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -960,6 +971,9 @@ def parse_usd(
                             target_kd=target_kd,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            velocity_limit=joint_velocity_limit
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
@@ -1012,6 +1026,9 @@ def parse_usd(
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            velocity_limit=joint_velocity_limit * DegreesToRadian
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
