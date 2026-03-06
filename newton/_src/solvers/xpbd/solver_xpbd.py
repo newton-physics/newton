@@ -565,6 +565,7 @@ class SolverXPBD(SolverBase):
                             inputs=[
                                 body_q,
                                 body_qd,
+                                model.body_flags,
                                 model.body_com,
                                 self.body_inv_mass_effective,
                                 self.body_inv_inertia_effective,

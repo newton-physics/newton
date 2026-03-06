@@ -35,6 +35,7 @@ def copy_kinematic_body_state_kernel(
     body_q_out: wp.array(dtype=wp.transform),
     body_qd_out: wp.array(dtype=wp.spatial_vector),
 ):
+    """Copy prescribed maximal state through the solve for kinematic bodies."""
     tid = wp.tid()
     if (body_flags[tid] & int(BodyFlags.KINEMATIC)) == 0:
         return
@@ -2063,6 +2064,7 @@ def compute_angular_correction(
 def solve_body_contact_positions(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_flags: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
     body_m_inv: wp.array(dtype=float),
     body_I_inv: wp.array(dtype=wp.mat33),
@@ -2210,20 +2212,18 @@ def solve_body_contact_positions(
         r_a = bx_a - wp.transform_point(X_wb_a, com_a)
         r_b = bx_b - wp.transform_point(X_wb_b, com_b)
 
-        # Include tangential relative surface motion so moving kinematic
-        # bodies (e.g. conveyor belts) can transmit traction to dynamics.
-        # Only applied when at least one body is kinematic (inv_mass == 0)
-        # to avoid changing friction behavior for all-dynamic contacts.
-        if m_inv_a == 0.0 or m_inv_b == 0.0:
-            v_a = wp.vec3(0.0)
-            v_b = wp.vec3(0.0)
-            if body_a >= 0:
-                v_a = velocity_at_point(body_qd[body_a], r_a)
-            if body_b >= 0:
-                v_b = velocity_at_point(body_qd[body_b], r_b)
-            rel_v = v_b - v_a
-            rel_v_t = rel_v - wp.dot(n, rel_v) * n
-            friction_delta += rel_v_t * dt
+        # Add only prescribed kinematic surface motion here.
+        # Dynamic-body tangential motion is already reflected in the
+        # positional slip `delta`; adding full relative velocity would
+        # double-count ordinary ground friction and destabilize contacts.
+        rel_v_kin_t = wp.vec3(0.0)
+        if body_a >= 0 and (body_flags[body_a] & int(BodyFlags.KINEMATIC)) != 0:
+            v_a = velocity_at_point(body_qd[body_a], r_a)
+            rel_v_kin_t = rel_v_kin_t - (v_a - wp.dot(n, v_a) * n)
+        if body_b >= 0 and (body_flags[body_b] & int(BodyFlags.KINEMATIC)) != 0:
+            v_b = velocity_at_point(body_qd[body_b], r_b)
+            rel_v_kin_t = rel_v_kin_t + (v_b - wp.dot(n, v_b) * n)
+        friction_delta += rel_v_kin_t * dt
 
         perp = wp.normalize(friction_delta)
 

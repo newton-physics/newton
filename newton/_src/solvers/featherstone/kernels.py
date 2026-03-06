@@ -64,6 +64,7 @@ def zero_kinematic_body_forces(
     body_flags: wp.array(dtype=wp.int32),
     body_f: wp.array(dtype=wp.spatial_vector),
 ):
+    """Zero accumulated spatial forces for kinematic bodies."""
     tid = wp.tid()
     if (body_flags[tid] & BodyFlags.KINEMATIC) == 0:
         return
@@ -1399,6 +1400,7 @@ def zero_kinematic_joint_qdd(
     joint_qd_start: wp.array(dtype=int),
     joint_qdd: wp.array(dtype=float),
 ):
+    """Zero joint accelerations for joints whose child body is kinematic."""
     joint_id = wp.tid()
     child = joint_child[joint_id]
     if (body_flags[child] & BodyFlags.KINEMATIC) == 0:
@@ -1421,6 +1423,7 @@ def copy_kinematic_joint_state(
     joint_q_out: wp.array(dtype=float),
     joint_qd_out: wp.array(dtype=float),
 ):
+    """Copy prescribed joint state through the solve for kinematic child bodies."""
     joint_id = wp.tid()
     child = joint_child[joint_id]
     if (body_flags[child] & BodyFlags.KINEMATIC) == 0:

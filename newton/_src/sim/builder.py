@@ -8287,6 +8287,22 @@ class ModelBuilder:
         body_count = self.body_count
         joint_count = self.joint_count
 
+        # Validate per-body flags: each body must be either dynamic or
+        # kinematic. Filter masks such as BodyFlags.ALL are not valid stored
+        # body states.
+        if len(self.body_flags) != body_count:
+            raise ValueError(f"Invalid body_flags length: expected {body_count} entries, got {len(self.body_flags)}.")
+        if body_count > 0:
+            body_flags = np.array(self.body_flags, dtype=np.int32)
+            valid_mask = (body_flags == int(BodyFlags.DYNAMIC)) | (body_flags == int(BodyFlags.KINEMATIC))
+            if not np.all(valid_mask):
+                idx = int(np.where(~valid_mask)[0][0])
+                body_label = self.body_label[idx] if idx < len(self.body_label) else f"body_{idx}"
+                raise ValueError(
+                    f"Invalid body flag for body {idx} ('{body_label}'): got {int(body_flags[idx])}, "
+                    f"but expected exactly one of BodyFlags.DYNAMIC or BodyFlags.KINEMATIC."
+                )
+
         # Validate shape_body references: must be in [-1, body_count-1]
         if self.shape_count > 0:
             shape_body = np.array(self.shape_body, dtype=np.int32)

@@ -559,7 +559,7 @@ class SolverFeatherstone(SolverBase):
                             # reshape arrays
                             M_tiled = self.M.reshape((-1, 6 * self.joint_count, 6 * self.joint_count))
                             J_tiled = self.J.reshape((-1, 6 * self.joint_count, self.dof_count))
-                            R_tiled = model.joint_armature.reshape((-1, self.dof_count))
+                            R_tiled = self.joint_armature_effective.reshape((-1, self.dof_count))
                             H_tiled = self.H.reshape((-1, self.dof_count, self.dof_count))
                             L_tiled = self.L.reshape((-1, self.dof_count, self.dof_count))
                             assert H_tiled.shape == (model.articulation_count, 18, 18)

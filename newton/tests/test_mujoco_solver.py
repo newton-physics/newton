@@ -1854,6 +1854,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
 
 class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
+    KINEMATIC_ARMATURE = 1.0e10
+
     @staticmethod
     def _build_model(*, root_kinematic: bool) -> tuple[newton.Model, int]:
         builder = newton.ModelBuilder()
@@ -1884,7 +1886,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 dof_to_body[dof_start : dof_start + dof_count] = int(joint_child[joint_idx])
         return dof_to_body
 
-    def _assert_armature_matches_flags(self, model: newton.Model, solver: SolverMuJoCo, *, kinematic_armature: float):
+    def _assert_armature_matches_flags(self, model: newton.Model, solver: SolverMuJoCo):
         dof_to_body = self._compute_dof_to_body(model)
         body_flags = model.body_flags.numpy()
         joint_armature = model.joint_armature.numpy()
@@ -1901,7 +1903,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
                 body_idx = int(dof_to_body[newton_dof])
                 is_kinematic = body_idx >= 0 and (int(body_flags[body_idx]) & int(BodyFlags.KINEMATIC)) != 0
-                expected_armature = float(kinematic_armature if is_kinematic else joint_armature[newton_dof])
+                expected_armature = float(self.KINEMATIC_ARMATURE if is_kinematic else joint_armature[newton_dof])
                 actual_armature = float(dof_armature[world_idx, mjc_dof])
 
                 self.assertAlmostEqual(
@@ -1937,44 +1939,41 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         initial_armature = np.linspace(0.1, 0.1 * model.joint_dof_count, model.joint_dof_count, dtype=np.float32)
         model.joint_armature.assign(initial_armature)
 
-        kinematic_armature = 6.5e8
-        solver = SolverMuJoCo(model, kinematic_armature=kinematic_armature, iterations=1, disable_contacts=True)
-        self._assert_armature_matches_flags(model, solver, kinematic_armature=kinematic_armature)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        self._assert_armature_matches_flags(model, solver)
 
     def test_kinematic_body_applies_high_armature_on_conversion(self):
         model, _ = self._build_model(root_kinematic=True)
         initial_armature = np.linspace(0.1, 0.1 * model.joint_dof_count, model.joint_dof_count, dtype=np.float32)
         model.joint_armature.assign(initial_armature)
 
-        kinematic_armature = 7.5e8
-        solver = SolverMuJoCo(model, kinematic_armature=kinematic_armature, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
-        self._assert_armature_matches_flags(model, solver, kinematic_armature=kinematic_armature)
+        self._assert_armature_matches_flags(model, solver)
 
     def test_body_properties_runtime_update_and_dof_updates(self):
         model, root_body = self._build_model(root_kinematic=False)
         initial_armature = np.linspace(0.2, 0.2 * model.joint_dof_count, model.joint_dof_count, dtype=np.float32)
         model.joint_armature.assign(initial_armature)
 
-        kinematic_armature = 9.0e8
-        solver = SolverMuJoCo(model, kinematic_armature=kinematic_armature, iterations=1, disable_contacts=True)
-        self._assert_armature_matches_flags(model, solver, kinematic_armature=kinematic_armature)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        self._assert_armature_matches_flags(model, solver)
 
         body_flags = model.body_flags.numpy()
         body_flags[root_body] = int(BodyFlags.KINEMATIC)
         model.body_flags.assign(body_flags)
         solver.notify_model_changed(SolverNotifyFlags.BODY_PROPERTIES)
-        self._assert_armature_matches_flags(model, solver, kinematic_armature=kinematic_armature)
+        self._assert_armature_matches_flags(model, solver)
 
         updated_armature = initial_armature + 3.0
         model.joint_armature.assign(updated_armature)
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
-        self._assert_armature_matches_flags(model, solver, kinematic_armature=kinematic_armature)
+        self._assert_armature_matches_flags(model, solver)
 
         body_flags[root_body] = int(BodyFlags.DYNAMIC)
         model.body_flags.assign(body_flags)
         solver.notify_model_changed(SolverNotifyFlags.BODY_PROPERTIES)
-        self._assert_armature_matches_flags(model, solver, kinematic_armature=kinematic_armature)
+        self._assert_armature_matches_flags(model, solver)
 
     def test_kinematic_fixed_root_attached_to_world_uses_mocap_and_tracks_pose(self):
         builder = newton.ModelBuilder()

@@ -219,7 +219,8 @@ Rigid-body solver behavior
 
 The rigid-body solvers (:class:`~newton.solvers.SolverMuJoCo`,
 :class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverXPBD`,
-:class:`~newton.solvers.SolverSemiImplicit`) follow the same kinematic conventions:
+:class:`~newton.solvers.SolverSemiImplicit`) support the same user-facing
+kinematic authoring model:
 
 - Kinematic links keep their declared joint type (free/revolute/etc.).
 - A kinematic root attached to world by a fixed joint remains fixed (zero DOFs).
@@ -232,15 +233,20 @@ Implementation details differ by coordinate formulation:
   :class:`~newton.solvers.SolverFeatherstone`) treat kinematic motion through prescribed joint state.
 - Maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`,
   :class:`~newton.solvers.SolverSemiImplicit`) use prescribed body transforms/twists.
+- Contact handling is not identical across all four solvers. :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverMuJoCo`, and :class:`~newton.solvers.SolverFeatherstone`
+  treat kinematic bodies like infinite-mass colliders for contact response, while
+  :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
+  does not zero inverse mass/inertia inside its contact solver. Contacts against
+  kinematic bodies can therefore be softer under SemiImplicit.
 
-In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a large armature value.
-You can tune this through the ``kinematic_armature`` constructor argument;
-see :meth:`~newton.solvers.SolverMuJoCo.__init__`.
+In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
+large internal armature value.
 
 During Newton-to-MuJoCo conversion, :class:`~newton.solvers.SolverMuJoCo` handles kinematic roots in two ways:
 
 - Kinematic roots with non-fixed joints are exported as regular MuJoCo joints and use
-  ``kinematic_armature`` regularization on their DOFs.
+  this armature regularization on their DOFs.
 - Kinematic roots attached to world with a fixed joint are exported as MuJoCo mocap bodies
   (no MuJoCo joint DOFs), and their poses are synchronized from the Newton joint transforms.
 

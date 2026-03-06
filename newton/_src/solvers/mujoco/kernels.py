@@ -408,17 +408,33 @@ def convert_mj_coords_to_warp_kernel(
     joint_child: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
     dof_ref: wp.array(dtype=wp.float32),
+    body_flags: wp.array(dtype=wp.int32),
+    joint_q_in: wp.array(dtype=wp.float32),
+    joint_qd_in: wp.array(dtype=wp.float32),
     # outputs
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
 
-    type = joint_type[jntid]
+    joint_id = joints_per_world * worldid + jntid
+    type = joint_type[joint_id]
     q_i = joint_q_start[jntid]
     qd_i = joint_qd_start[jntid]
-    wq_i = joint_q_start[joints_per_world * worldid + jntid]
-    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    wq_i = joint_q_start[joint_id]
+    wqd_i = joint_qd_start[joint_id]
+    child = joint_child[joint_id]
+
+    if (body_flags[child] & BodyFlags.KINEMATIC) != 0:
+        # Previous joint states pass through for kinematic bodies
+        wq_end = joint_q_start[joint_id + 1]
+        for i in range(wq_i, wq_end):
+            joint_q[i] = joint_q_in[i]
+
+        wqd_end = joint_qd_start[joint_id + 1]
+        for i in range(wqd_i, wqd_end):
+            joint_qd[i] = joint_qd_in[i]
+        return
 
     if type == JointType.FREE:
         # convert position components
@@ -450,7 +466,6 @@ def convert_mj_coords_to_warp_kernel(
         w_world = wp.quat_rotate(rot, w_body)
 
         # Get CoM offset in world frame
-        child = joint_child[jntid]
         com_local = body_com[child]
         com_world = wp.quat_rotate(rot, com_local)
 
@@ -485,7 +500,7 @@ def convert_mj_coords_to_warp_kernel(
             # convert velocity components
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
     else:
-        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
             ref = float(0.0)
             if dof_ref:
@@ -781,6 +796,7 @@ def apply_mjc_control_kernel(
 @wp.kernel
 def apply_mjc_body_f_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
     body_f: wp.array(dtype=wp.spatial_vector),
     # outputs
     xfrc_applied: wp.array2d(dtype=wp.spatial_vector),
@@ -792,17 +808,22 @@ def apply_mjc_body_f_kernel(
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body >= 0:
-        f = body_f[newton_body]
-        v = wp.vec3(f[0], f[1], f[2])
-        w = wp.vec3(f[3], f[4], f[5])
-        xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+        xfrc_applied[world, mjc_body] = wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
+        return
+
+    f = body_f[newton_body]
+    v = wp.vec3(f[0], f[1], f[2])
+    w = wp.vec3(f[3], f[4], f[5])
+    xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
 
 
 @wp.kernel
 def apply_mjc_qfrc_kernel(
     joint_f: wp.array(dtype=wp.float32),
     joint_type: wp.array(dtype=wp.int32),
+    joint_child: wp.array(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array2d(dtype=wp.int32),
     joints_per_world: int,
@@ -814,7 +835,16 @@ def apply_mjc_qfrc_kernel(
     qd_i = joint_qd_start[jntid]
     # wq_i = joint_q_start[joints_per_world * worldid + jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    joint_id = joints_per_world * worldid + jntid
     jtype = joint_type[jntid]
+    dof_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+
+    for i in range(dof_count):
+        qfrc_applied[worldid, qd_i + i] = 0.0
+
+    if (body_flags[joint_child[joint_id]] & BodyFlags.KINEMATIC) != 0:
+        return
+
     # Free/DISTANCE joint forces are routed via xfrc_applied in a separate kernel
     # to preserve COM-wrench semantics; skip them here.
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
@@ -824,13 +854,14 @@ def apply_mjc_qfrc_kernel(
         qfrc_applied[worldid, qd_i + 1] = joint_f[wqd_i + 1]
         qfrc_applied[worldid, qd_i + 2] = joint_f[wqd_i + 2]
     else:
-        for i in range(joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]):
+        for i in range(dof_count):
             qfrc_applied[worldid, qd_i + i] = joint_f[wqd_i + i]
 
 
 @wp.kernel
 def apply_mjc_free_joint_f_to_body_f_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
     body_free_qd_start: wp.array(dtype=wp.int32),
     joint_f: wp.array(dtype=wp.float32),
     # outputs
@@ -838,7 +869,7 @@ def apply_mjc_free_joint_f_to_body_f_kernel(
 ):
     worldid, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[worldid, mjc_body]
-    if newton_body < 0:
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
         return
 
     qd_start = body_free_qd_start[newton_body]

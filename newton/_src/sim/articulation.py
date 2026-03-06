@@ -439,7 +439,8 @@ def eval_fk(
         indices: Integer indices of articulations to update. If None, updates all articulations.
             Cannot be used together with mask parameter.
         body_flag_filter: Body flag filter controlling which bodies are written to in ``state.body_q`` and
-            ``state.body_qd``. Default updates both dynamic and kinematic bodies.
+            ``state.body_qd``. Default updates both dynamic and kinematic bodies. Bodies that do not
+            match the filter retain their existing values; they are not zeroed or invalidated.
     """
     # Validate inputs
     if mask is not None and indices is not None:
@@ -787,7 +788,8 @@ def eval_ik(
         mask: Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).
         indices: Integer indices of articulations to update. If None, updates all articulations.
         body_flag_filter: Body flag filter controlling which joints are written based on each joint's child
-            body flag. Default updates joints for both dynamic and kinematic child bodies.
+            body flag. Default updates joints for both dynamic and kinematic child bodies. Entries that
+            do not match the filter retain their existing values in ``joint_q`` and ``joint_qd``.
 
     Note:
         The mask and indices parameters are mutually exclusive. If both are provided, a ValueError is raised.

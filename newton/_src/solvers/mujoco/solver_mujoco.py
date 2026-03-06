@@ -147,6 +147,8 @@ class SolverMuJoCo(SolverBase):
             solver.render_mujoco_viewer()
     """
 
+    _KINEMATIC_ARMATURE = 1.0e10
+
     class CtrlSource(IntEnum):
         """Control source for MuJoCo actuators.
 
@@ -2769,7 +2771,6 @@ class SolverMuJoCo(SolverBase):
         viscosity: float | None = None,
         wind: tuple | None = None,
         magnetic: tuple | None = None,
-        kinematic_armature: float = 1.0e10,
         use_mujoco_cpu: bool = False,
         disable_contacts: bool = False,
         update_data_interval: int = 1,
@@ -2808,8 +2809,6 @@ class SolverMuJoCo(SolverBase):
             viscosity: Medium viscosity for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
             wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
-            kinematic_armature: Armature value applied to MuJoCo DOFs whose child body has
-                :class:`~newton.BodyFlags.KINEMATIC`.
             use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts: If True, disable contact computation in MuJoCo.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
@@ -2901,9 +2900,6 @@ class SolverMuJoCo(SolverBase):
         if disable_contacts:
             disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
         self.use_mujoco_cpu = use_mujoco_cpu
-        self.kinematic_armature = float(kinematic_armature)
-        if not np.isfinite(self.kinematic_armature) or self.kinematic_armature < 0.0:
-            raise ValueError("kinematic_armature must be a finite, non-negative float.")
         if separate_worlds is None:
             separate_worlds = not use_mujoco_cpu and model.world_count > 1
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
@@ -2931,7 +2927,6 @@ class SolverMuJoCo(SolverBase):
                 magnetic=magnetic,
                 solver=solver,
                 integrator=integrator,
-                kinematic_armature=self.kinematic_armature,
                 target_filename=save_to_mjcf,
                 ls_parallel=ls_parallel,
                 include_sites=include_sites,
@@ -2957,7 +2952,7 @@ class SolverMuJoCo(SolverBase):
                 self._update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
             self._mujoco.mj_step(self.mj_model, self.mj_data)
-            self._update_newton_state(self.model, state_out, self.mj_data)
+            self._update_newton_state(self.model, state_out, self.mj_data, state_in)
         else:
             self._enable_rne_postconstraint(state_out)
             self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
@@ -2971,7 +2966,7 @@ class SolverMuJoCo(SolverBase):
                     self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
                     self._mujoco_warp_step()
 
-            self._update_newton_state(self.model, state_out, self.mjw_data)
+            self._update_newton_state(self.model, state_out, self.mjw_data, state_in)
         self._step += 1
         return state_out
 
@@ -3080,12 +3075,25 @@ class SolverMuJoCo(SolverBase):
             need_const_0 = True
             need_length_range = True
 
-        if need_length_range:
-            self._mujoco_warp.set_length_range(self.mjw_model, self.mjw_data)
-        if need_const_fixed:
-            self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
-        if need_const_0:
-            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+        if self.use_mujoco_cpu:
+            if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
+                self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
+                self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
+                self.mj_model.dof_damping[:] = self.mjw_model.dof_damping.numpy()[0]
+                self.mj_model.dof_solimp[:] = self.mjw_model.dof_solimp.numpy()[0]
+                self.mj_model.dof_solref[:] = self.mjw_model.dof_solref.numpy()[0]
+                self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
+                self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
+
+            if need_length_range or need_const_fixed or need_const_0:
+                self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+        else:
+            if need_length_range:
+                self._mujoco_warp.set_length_range(self.mjw_model, self.mjw_data)
+            if need_const_fixed:
+                self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
+            if need_const_0:
+                self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
 
     def _create_inverse_shape_mapping(self):
         """
@@ -3166,6 +3174,8 @@ class SolverMuJoCo(SolverBase):
                 inputs=[
                     control.joint_f,
                     model.joint_type,
+                    model.joint_child,
+                    model.body_flags,
                     model.joint_qd_start,
                     model.joint_dof_dim,
                     joints_per_world,
@@ -3184,6 +3194,7 @@ class SolverMuJoCo(SolverBase):
                 dim=(nworld, nbody),
                 inputs=[
                     self.mjc_body_to_newton,
+                    model.body_flags,
                     state.body_f,
                 ],
                 outputs=[
@@ -3199,6 +3210,7 @@ class SolverMuJoCo(SolverBase):
                 dim=(nworld, nbody),
                 inputs=[
                     self.mjc_body_to_newton,
+                    model.body_flags,
                     self.body_free_qd_start,
                     control.joint_f,
                 ],
@@ -3214,6 +3226,7 @@ class SolverMuJoCo(SolverBase):
 
     def _update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
+        single_world_template = False
         if is_mjwarp:
             # we have an MjWarp Data object
             qpos = mj_data.qpos
@@ -3221,8 +3234,12 @@ class SolverMuJoCo(SolverBase):
             nworld = mj_data.nworld
         else:
             # we have an MjData object from Mujoco
-            assert len(mj_data.qpos) >= model.joint_coord_count, (
-                f"MuJoCo qpos size ({len(mj_data.qpos)}) < Newton joint_coord_count ({model.joint_coord_count})"
+            single_world_template = len(mj_data.qpos) < model.joint_coord_count
+            expected_qpos = (
+                model.joint_coord_count // model.world_count if single_world_template else model.joint_coord_count
+            )
+            assert len(mj_data.qpos) >= expected_qpos, (
+                f"MuJoCo qpos size ({len(mj_data.qpos)}) < expected joint coords ({expected_qpos})"
             )
             qpos = wp.empty((1, len(mj_data.qpos)), dtype=wp.float32, device=model.device)
             qvel = wp.empty((1, len(mj_data.qvel)), dtype=wp.float32, device=model.device)
@@ -3233,7 +3250,9 @@ class SolverMuJoCo(SolverBase):
         else:
             joint_q = state.joint_q
             joint_qd = state.joint_qd
-        joints_per_world = model.joint_count // nworld
+        joints_per_world = (
+            model.joint_count // model.world_count if single_world_template else model.joint_count // nworld
+        )
         mujoco_attrs = getattr(model, "mujoco", None)
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         wp.launch(
@@ -3264,6 +3283,7 @@ class SolverMuJoCo(SolverBase):
         model: Model,
         state: State,
         mj_data: MjWarpData | MjData,
+        state_in: State,
     ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
@@ -3293,6 +3313,9 @@ class SolverMuJoCo(SolverBase):
                 model.joint_child,
                 model.body_com,
                 dof_ref,
+                model.body_flags,
+                state_in.joint_q,
+                state_in.joint_qd,
             ],
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
@@ -3548,7 +3571,6 @@ class SolverMuJoCo(SolverBase):
         magnetic: tuple | None = None,
         cone: int | str | None = None,
         jacobian: int | str | None = None,
-        kinematic_armature: float = 1.0e10,
         target_filename: str | None = None,
         skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
@@ -3585,8 +3607,6 @@ class SolverMuJoCo(SolverBase):
             magnetic: Magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo default (0, -0.5, 0).
             cone: Friction cone type ("pyramidal" or "elliptic"). If None, uses model custom attribute or Newton's default ("pyramidal").
             jacobian: Jacobian computation method ("dense", "sparse", or "auto"). If None, uses model custom attribute or MuJoCo default ("auto").
-            kinematic_armature: Armature value to apply to DOFs whose child body is
-                marked :class:`~newton.BodyFlags.KINEMATIC`.
             target_filename: Optional path to save generated MJCF file.
             skip_visual_only_geoms: If True, skip geoms that are visual-only.
             include_sites: If True, include sites in the model.
@@ -4214,6 +4234,11 @@ class SolverMuJoCo(SolverBase):
             body_mapping[child] = len(mj_bodies)
 
             j_type = joint_type[j]
+            # Only kinematic fixed-root links need MuJoCo mocap bodies: they
+            # have no MuJoCo joint DOFs, but their pose can still be updated
+            # from Newton each step. Dynamic fixed-root links remain at their
+            # authored pose, and static world-attached shapes are exported
+            # separately rather than as articulated bodies.
             is_kinematic_fixed_root = parent == -1 and j_type == JointType.FIXED and child_is_kinematic
 
             # Compute body transform for the MjSpec body pos/quat.
@@ -4304,7 +4329,7 @@ class SolverMuJoCo(SolverBase):
                     pos=joint_pos,
                     damping=0.0,
                     limited=False,
-                    armature=kinematic_armature if child_is_kinematic else joint_armature[qd_start],
+                    armature=self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start],
                     frictionloss=joint_friction[qd_start],
                 )
                 mjc_joint_names.append(name)
@@ -4367,7 +4392,7 @@ class SolverMuJoCo(SolverBase):
                     axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
 
                     joint_params = {
-                        "armature": kinematic_armature if child_is_kinematic else joint_armature[qd_start + i],
+                        "armature": self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start + i],
                         "pos": joint_pos,
                     }
                     # Set friction
@@ -4465,7 +4490,7 @@ class SolverMuJoCo(SolverBase):
                     axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
 
                     joint_params = {
-                        "armature": kinematic_armature if child_is_kinematic else joint_armature[qd_start + i],
+                        "armature": self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start + i],
                         "pos": joint_pos,
                     }
                     # Set friction
@@ -4884,7 +4909,10 @@ class SolverMuJoCo(SolverBase):
             self.body_free_qd_start = wp.array(body_free_qd_start_np, dtype=wp.int32)
 
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index.
-            # These mocap bodies correspond to kinematic fixed-root links (FIXED joint to world).
+            # These mocap bodies exist only for BodyFlags.KINEMATIC links
+            # attached to world by a FIXED joint. Static world shapes are not
+            # represented here, and dynamic fixed-root links do not need mocap
+            # because their pose is not user-driven at runtime.
             nmocap = self.mj_model.nmocap
             if nmocap > 0:
                 mjc_mocap_to_newton_jnt_np = np.full((nworld, nmocap), -1, dtype=np.int32)
@@ -5316,7 +5344,7 @@ class SolverMuJoCo(SolverBase):
                 self.newton_dof_to_body,
                 self.model.body_flags,
                 self.model.joint_armature,
-                self.kinematic_armature,
+                self._KINEMATIC_ARMATURE,
             ],
             outputs=[self.mjw_model.dof_armature],
             device=self.model.device,

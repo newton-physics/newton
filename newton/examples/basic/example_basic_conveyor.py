@@ -16,9 +16,9 @@
 ###########################################################################
 # Example Basic Conveyor
 #
-# Baggage-claim style conveyor built from one rotating belt mesh that is
-# attached to a kinematic body which has a prescribed angular velocity.
-# Two static annular boundary meshes keep dynamic "bags" on the belt.
+# Baggage-claim style conveyor built from one rotating belt mesh attached
+# to a kinematic root link with a prescribed revolute joint motion. Two
+# static annular boundary meshes keep dynamic "bags" on the belt.
 #
 # Command: uv run -m newton.examples basic_conveyor
 #
@@ -32,7 +32,6 @@ import warp as wp
 import newton
 import newton.examples
 
-KINEMATIC_ARMATURE = 1.0e10
 BELT_CENTER_Z = 0.55
 BELT_RING_RADIUS = 1.8
 BELT_HALF_WIDTH = 0.24
@@ -147,32 +146,15 @@ def set_conveyor_belt_state(
     belt_joint_q_start: int,
     belt_joint_qd_start: int,
     sim_time: wp.array(dtype=wp.float32),
-    belt_center_z: float,
     belt_angular_speed: float,
     # outputs
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
 ):
-    """Set kinematic pose/velocity for one rotating free-joint belt body."""
+    """Set prescribed state for the belt's revolute root joint."""
     angle = belt_angular_speed * sim_time[0]
-    half_angle = 0.5 * angle
-
-    # Free joint q: [tx, ty, tz, qx, qy, qz, qw] (xyzw quaternion)
-    joint_q[belt_joint_q_start + 0] = 0.0
-    joint_q[belt_joint_q_start + 1] = 0.0
-    joint_q[belt_joint_q_start + 2] = belt_center_z
-    joint_q[belt_joint_q_start + 3] = 0.0
-    joint_q[belt_joint_q_start + 4] = 0.0
-    joint_q[belt_joint_q_start + 5] = wp.sin(half_angle)
-    joint_q[belt_joint_q_start + 6] = wp.cos(half_angle)
-
-    # Free joint qd: [vx, vy, vz, wx, wy, wz]
-    joint_qd[belt_joint_qd_start + 0] = 0.0
-    joint_qd[belt_joint_qd_start + 1] = 0.0
-    joint_qd[belt_joint_qd_start + 2] = 0.0
-    joint_qd[belt_joint_qd_start + 3] = 0.0
-    joint_qd[belt_joint_qd_start + 4] = 0.0
-    joint_qd[belt_joint_qd_start + 5] = belt_angular_speed
+    joint_q[belt_joint_q_start] = angle
+    joint_qd[belt_joint_qd_start] = belt_angular_speed
 
 
 @wp.kernel
@@ -193,7 +175,6 @@ class Example:
         self.belt_angular_speed = belt_speed / BELT_RING_RADIUS
 
         builder = newton.ModelBuilder()
-        Dof = newton.ModelBuilder.JointDofConfig
 
         ground_shape = builder.add_ground_plane()
 
@@ -261,9 +242,7 @@ class Example:
         )
 
         self.belt_body = builder.add_link(
-            xform=wp.transform(p=wp.vec3(0.0, 0.0, BELT_CENTER_Z), q=wp.quat_identity()),
             mass=15.0,
-            armature=0.1,
             is_kinematic=True,
             label="conveyor_belt",
         )
@@ -273,25 +252,15 @@ class Example:
             cfg=belt_cfg,
             label="conveyor_belt_mesh",
         )
-        self.belt_joint = builder.add_joint(
-            joint_type=newton.JointType.FREE,
+        self.belt_joint = builder.add_joint_revolute(
             parent=-1,
             child=self.belt_body,
-            linear_axes=[
-                Dof(axis=newton.Axis.X, armature=KINEMATIC_ARMATURE),
-                Dof(axis=newton.Axis.Y, armature=KINEMATIC_ARMATURE),
-                Dof(axis=newton.Axis.Z, armature=KINEMATIC_ARMATURE),
-            ],
-            angular_axes=[
-                Dof(axis=newton.Axis.X, armature=KINEMATIC_ARMATURE),
-                Dof(axis=newton.Axis.Y, armature=KINEMATIC_ARMATURE),
-                Dof(axis=newton.Axis.Z, armature=KINEMATIC_ARMATURE),
-            ],
+            axis=newton.Axis.Z,
+            parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, BELT_CENTER_Z), q=wp.quat_identity()),
+            label="conveyor_belt_joint",
         )
-        q_start = builder.joint_q_start[self.belt_joint]
-        builder.joint_q[q_start : q_start + 7] = list(builder.body_q[self.belt_body])
         qd_start = builder.joint_qd_start[self.belt_joint]
-        builder.joint_qd[qd_start + 5] = self.belt_angular_speed
+        builder.joint_qd[qd_start] = self.belt_angular_speed
         builder.add_articulation([self.belt_joint], label="conveyor_belt")
 
         for rail_mesh, rail_label in (
@@ -337,7 +306,6 @@ class Example:
                     q=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), bag_yaw),
                 ),
                 mass=2.8 + 0.1 * i,
-                armature=0.2,
                 label=f"bag_{i}",
             )
             # Important: negative groups collide with everything except the exact same
@@ -403,7 +371,6 @@ class Example:
                     self.belt_joint_q_start,
                     self.belt_joint_qd_start,
                     self.sim_time_wp,
-                    BELT_CENTER_Z,
                     self.belt_angular_speed,
                 ],
                 outputs=[self.state_0.joint_q, self.state_0.joint_qd],

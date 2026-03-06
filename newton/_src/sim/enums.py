@@ -19,17 +19,22 @@ from enum import IntEnum
 # Body flags
 class BodyFlags(IntEnum):
     """
-    Flags for body properties.
+    Per-body dynamic state flags.
+
+    Each body must store exactly one runtime state flag:
+    :attr:`DYNAMIC` or :attr:`KINEMATIC`. :attr:`ALL` is a convenience
+    filter mask for APIs such as :func:`newton.eval_fk` and is not a valid
+    stored body state.
     """
 
     DYNAMIC = 1 << 0
-    """Default flag indicating a dynamic body that participates in simulation dynamics."""
+    """Dynamic body that participates in simulation dynamics."""
 
     KINEMATIC = 1 << 1
-    """Indicates that the body is kinematic and does not respond to forces."""
+    """User-prescribed body that does not respond to applied forces."""
 
     ALL = DYNAMIC | KINEMATIC
-    """Bitmask selecting both dynamic and kinematic bodies."""
+    """Filter bitmask selecting both dynamic and kinematic bodies."""
 
 
 # Types of joints linking rigid bodies

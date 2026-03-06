@@ -41,6 +41,37 @@ class TestKinematicLinks(unittest.TestCase):
         self.assertTrue(flags[1] & BodyFlags.KINEMATIC)
         self.assertEqual(flags[2], BodyFlags.DYNAMIC)
 
+    def test_invalid_body_flag_raises_during_finalize(self):
+        """finalize() rejects stored body flags that are not a single body state."""
+        builder = ModelBuilder()
+        builder.add_body(mass=1.0, label="invalid_body")
+        builder.body_flags[0] = int(BodyFlags.ALL)
+
+        with self.assertRaises(ValueError) as exc_info:
+            builder.finalize()
+
+        self.assertIn("invalid_body", str(exc_info.exception))
+        self.assertIn("BodyFlags.DYNAMIC", str(exc_info.exception))
+        self.assertIn("BodyFlags.KINEMATIC", str(exc_info.exception))
+
+    def test_body_flags_survive_collapse_fixed_joints(self):
+        """Kinematic flags remain attached to retained bodies after collapse."""
+        builder = ModelBuilder()
+        root = builder.add_link(mass=1.0, is_kinematic=True, label="kinematic_root")
+        child = builder.add_link(mass=2.0, label="fixed_child")
+
+        j0 = builder.add_joint_free(parent=-1, child=root)
+        j1 = builder.add_joint_fixed(parent=root, child=child)
+        builder.add_articulation([j0, j1])
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.body_flags[0], BodyFlags.KINEMATIC)
+
+        model = builder.finalize()
+        np.testing.assert_array_equal(model.body_flags.numpy(), np.array([BodyFlags.KINEMATIC], dtype=np.int32))
+
     def test_kinematic_root_link_in_articulation(self):
         """A kinematic root link with dynamic children should be valid."""
         builder = ModelBuilder()
@@ -575,14 +606,13 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-        if "mujoco" not in solver_name:
-            add_function_test(
-                TestKinematicLinksCanonical,
-                f"test_kinematic_runtime_toggle_{solver_name}",
-                test_kinematic_runtime_toggle,
-                devices=[device],
-                solver_fn=solver_fn,
-            )
+        add_function_test(
+            TestKinematicLinksCanonical,
+            f"test_kinematic_runtime_toggle_{solver_name}",
+            test_kinematic_runtime_toggle,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
 
 
 if __name__ == "__main__":
