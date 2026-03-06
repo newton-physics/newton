@@ -923,6 +923,16 @@ Windows (PowerShell)</label><div class="sd-tab-content docutils">
 </div>
 </div>
 </div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Users on Python 3.10 may experience issues when installing <code class="docutils literal notranslate"><span class="pre">imgui_bundle</span></code> (a dependency of the
+<code class="docutils literal notranslate"><span class="pre">examples</span></code> extra). If you encounter installation errors, we recommend either upgrading to a later
+Python version or using <a class="reference external" href="https://docs.astral.sh/uv/">uv</a> to install Newton:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv venv</span>
+<span class="go">uv pip install --pre newton[dev]</span>
+</pre></div>
+</div>
+</div>
 <section id="running-examples">
 <h3>Running Examples<a class="headerlink" href="#running-examples" title="Link to this heading">#</a></h3>
 <p>After installing Newton with the <code class="docutils literal notranslate"><span class="pre">examples</span></code> extra, run an example with:</p>
