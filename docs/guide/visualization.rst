@@ -11,9 +11,14 @@ All viewer backends share a common interface with ``set_model()``, ``begin_frame
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance. 
 All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
 
-.. code-block:: python
+.. testcode:: viewer-max-worlds
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0)
+    model = builder.finalize()
 
     # Only render the first 4 environments
+    viewer = newton.viewer.ViewerNull()
     viewer.set_model(model, max_worlds=4)
 
 Real-time Viewers
@@ -36,8 +41,9 @@ The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.
     viewer.log_state(state)
     viewer.end_frame()
 
-    # pause the simulation (blocks the control flow):
-    viewer.pause = True
+    # check if the simulation is paused (toggled with SPACE key):
+    if viewer.is_paused():
+        pass  # simulation stepping is paused
 
 Keyboard shortcuts when working with the OpenGL Viewer (aka newton.viewer.ViewerGL):
 
@@ -93,45 +99,57 @@ To use binary format, install the optional dependency:
 
 **Recording a simulation:**
 
-.. code-block:: python
+.. testcode:: viewer-file
 
-    # Record to binary format (more efficient, requires cbor2)
-    viewer = newton.viewer.ViewerFile("simulation.bin", auto_save=True, save_interval=100)
-    
-    # Or record to JSON format (human-readable, no extra dependencies)
-    viewer = newton.viewer.ViewerFile("simulation.json")
+    import tempfile, os
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0)
+    model = builder.finalize()
+    state = model.state()
+
+    # Record to JSON format (human-readable, no extra dependencies)
+    output_path = os.path.join(tempfile.mkdtemp(), "simulation.json")
+    viewer = newton.viewer.ViewerFile(output_path)
 
     viewer.set_model(model)
 
-    # at every frame:
-    viewer.begin_frame(sim_time)
-    viewer.log_state(state)
-    viewer.end_frame()
+    sim_time = 0.0
+    for _ in range(5):
+        viewer.begin_frame(sim_time)
+        viewer.log_state(state)
+        viewer.end_frame()
+        sim_time += 1.0 / 60.0
 
     # Close to save the recording
     viewer.close()
+
+.. testoutput:: viewer-file
+   :options: +NORMALIZE_WHITESPACE, +ELLIPSIS
+
+    ...
 
 **Loading and playing back recordings:**
 
 Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the model and state for a given frame. Use :class:`~newton.viewer.ViewerGL` (or another rendering viewer) to visualize.
 
-.. code-block:: python
+.. testcode:: viewer-file
 
     # Load a recording for playback
-    viewer_file = newton.viewer.ViewerFile("simulation.bin")
+    viewer_file = newton.viewer.ViewerFile(output_path)
     viewer_file.load_recording()
 
     # Restore the model and state from the recording
     model = newton.Model()
     viewer_file.load_model(model)
+    print(f"Frames: {viewer_file.get_frame_count()}")
 
     state = model.state()
-    viewer_file.load_state(state, frame_id=10)  # frame index in [0, get_frame_count())
+    viewer_file.load_state(state, frame_id=0)  # frame index in [0, get_frame_count())
 
-    # Use ViewerGL for visualization
-    viewer = newton.viewer.ViewerGL()
-    viewer.set_model(model)
-    viewer.log_state(state)
+.. testoutput:: viewer-file
+
+    Frames: 5
 
 For a complete example with UI controls for scrubbing and playback, see ``newton/examples/basic/example_replay_viewer.py``.
 
@@ -351,17 +369,28 @@ Null Viewer
 The :class:`~newton.viewer.ViewerNull` provides a no-operation viewer for headless environments or automated testing where visualization is not required.
 It simply counts frames and provides stub implementations for all viewer methods.
 
-.. code-block:: python
+.. testcode:: viewer-null
 
-    # Run for 1000 frames without visualization
-    viewer = newton.viewer.ViewerNull(num_frames=1000)
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0)
+    model = builder.finalize()
+    state = model.state()
+    sim_time = 0.0
 
+    viewer = newton.viewer.ViewerNull(num_frames=10)
     viewer.set_model(model)
 
     while viewer.is_running():
         viewer.begin_frame(sim_time)
         viewer.log_state(state)
         viewer.end_frame()
+        sim_time += 1.0 / 60.0
+
+    print(f"Ran {viewer.frame_count} frames")
+
+.. testoutput:: viewer-null
+
+    Ran 10 frames
 
 This is particularly useful for:
 
