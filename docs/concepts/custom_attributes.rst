@@ -40,7 +40,7 @@ Declaring Custom Attributes
 Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies:
 
 * **name**: Attribute name
-* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``) or a string for custom frequencies
+* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``) or a string for custom frequencies
 * **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.)
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)
 * **default** (optional): Default value for unspecified entities
@@ -191,7 +191,7 @@ Before loading assets, register solver-specific attributes:
    assert hasattr(model_mujoco, "mujoco")
    assert hasattr(model_mujoco.mujoco, "condim")
 
-MuJoCo boolean values in custom attribute transformers are parsed with ``parse_bool``.
+MuJoCo boolean custom attributes use a ``parse_bool`` transformer (registered by :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes`) that handles strings (``"true"``/``"false"``), integers, and native booleans.
 
 Authoring Custom Attributes
 ----------------------------
@@ -421,11 +421,10 @@ After importing the USD file, attributes are accessible following the same patte
    # Access default namespace attributes
    float_values = model.float_attr.numpy()
    vec3_values = state.vec3_attr.numpy()
-   
+
    # Access namespaced attributes
-   namespace_a_floats = model.namespace_a.float_attr.numpy()
-   namespace_b_floats = state.namespace_b.float_attr.numpy()
-   control_floats = control.namespace_a.float_attr_dof.numpy()
+   namespace_a_floats = control.namespace_a.some_attrib.numpy()
+   namespace_a_bools = model.namespace_a.bool_attr.numpy()
 
 For more information about USD integration and the schema resolver system, see :doc:`usd_parsing`.
 
@@ -705,7 +704,7 @@ When using ``add_world()`` to create multi-world simulations, the :attr:`~newton
 
 Supported reference types:
 
-* ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"`` — offset by entity count
+* Any built-in entity type (e.g., ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``) — offset by entity count
 * ``"world"`` — replaced with ``current_world``
 * Custom frequency keys (e.g., ``"mujoco:pair"``) — offset by that frequency's count
 
