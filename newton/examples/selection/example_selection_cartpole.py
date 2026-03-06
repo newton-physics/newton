@@ -231,6 +231,8 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        newton.examples.add_max_worlds_arg(parser)
         parser.set_defaults(world_count=16)
         return parser
 

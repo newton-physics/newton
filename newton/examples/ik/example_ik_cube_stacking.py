@@ -700,6 +700,8 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        newton.examples.add_mujoco_contacts_arg(parser)
         parser.set_defaults(world_count=16)
         parser.add_argument("--cube-count", type=int, default=3, help="Total number of cubes to stack.")
         parser.add_argument("--verbose", action="store_true", help="Enable verbose output.")
