@@ -174,19 +174,20 @@ When entities don't explicitly specify custom attribute values, the default valu
 
 Before loading assets, register solver-specific attributes:
 
-.. code-block:: python
+.. testcode:: custom-attrs-solver
 
+   from newton import ModelBuilder
    from newton.solvers import SolverMuJoCo
 
    builder_mujoco = ModelBuilder()
    SolverMuJoCo.register_custom_attributes(builder_mujoco)
-   
+
    # Now build your scene...
    body = builder_mujoco.add_link()
    joint = builder_mujoco.add_joint_free(body)
    builder_mujoco.add_articulation([joint])
    shape = builder_mujoco.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
-   
+
    model_mujoco = builder_mujoco.finalize()
    assert hasattr(model_mujoco, "mujoco")
    assert hasattr(model_mujoco.mujoco, "condim")
@@ -450,7 +451,12 @@ Registering Custom Frequencies
 
 Custom frequencies must be **registered before use** via :meth:`~newton.ModelBuilder.add_custom_frequency` using a :class:`~newton.ModelBuilder.CustomFrequency` object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.
 
-.. code-block:: python
+.. testsetup:: custom-freqs
+
+   from newton import Model, ModelBuilder
+   builder = ModelBuilder()
+
+.. testcode:: custom-freqs
 
    # Register a custom frequency
    builder.add_custom_frequency(
@@ -467,13 +473,13 @@ Declaring Custom Frequency Attributes
 
 Once a custom frequency is registered, pass a string instead of an enum for the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` parameter when adding attributes:
 
-.. code-block:: python
+.. testcode:: custom-freqs
 
    # First register the custom frequency
    builder.add_custom_frequency(
        ModelBuilder.CustomFrequency(name="pair", namespace="mujoco")
    )
-   
+
    # Then add attributes using that frequency
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
@@ -492,19 +498,16 @@ Adding Values
 
 Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custom_values`:
 
-.. code-block:: python
+.. testcode:: custom-freqs
 
-   # Register and declare attributes sharing a frequency
-   builder.add_custom_frequency(
-       ModelBuilder.CustomFrequency(name="item", namespace="myns")
-   )
+   # Declare attributes sharing the "myns:item" frequency
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(name="item_id", frequency="myns:item", dtype=wp.int32, namespace="myns")
    )
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(name="item_value", frequency="myns:item", dtype=wp.float32, namespace="myns")
    )
-   
+
    # Append values together
    builder.add_custom_values(**{
        "myns:item_id": 100,
@@ -514,10 +517,20 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
        "myns:item_id": 101,
        "myns:item_value": 3.0,
    })
-   
+
+   # Finalize (requires at least one articulation)
+   _body = builder.add_link()
+   _joint = builder.add_joint_free(_body)
+   builder.add_articulation([_joint])
    model = builder.finalize()
-   print(model.myns.item_id.numpy())    # [100, 101]
-   print(model.myns.item_value.numpy()) # [2.5, 3.0]
+
+   print(model.myns.item_id.numpy())
+   print(model.myns.item_value.numpy())
+
+.. testoutput:: custom-freqs
+
+   [100 101]
+   [2.5 3. ]
 
 **Validation:** All attributes sharing a custom frequency must have the same count at ``finalize()`` time. This catches synchronization bugs early.
 
@@ -681,8 +694,14 @@ Multi-World Merging
 
 When using ``add_world()`` to create multi-world simulations, the :attr:`~newton.ModelBuilder.CustomAttribute.references` field specifies how attribute values should be transformed:
 
-.. code-block:: python
+.. testcode:: custom-merge
 
+   from newton import Model, ModelBuilder
+
+   builder = ModelBuilder()
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(name="pair", namespace="mujoco")
+   )
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="pair_world",
@@ -713,11 +732,16 @@ Querying Counts
 
 Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a custom frequency (raises ``KeyError`` if unknown):
 
-.. code-block:: python
+.. testcode:: custom-merge
 
+   # Finalize (requires at least one articulation)
+   _body = builder.add_link()
+   _joint = builder.add_joint_free(_body)
+   builder.add_articulation([_joint])
    model = builder.finalize()
+
    pair_count = model.get_custom_frequency_count("mujoco:pair")
-   
+
    # Or check directly without raising:
    pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
 
@@ -727,4 +751,4 @@ Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a cust
 ArticulationView Limitations
 ----------------------------
 
-Custom frequency attributes are not accessible via :class:`~newton.ArticulationView` because they represent entity types that aren't tied to articulation structure. For per-articulation data, use enum frequencies like ``ARTICULATION``, ``JOINT``, or ``BODY``.
+Custom frequency attributes are generally not accessible via :class:`~newton.selection.ArticulationView` because they represent entity types that aren't tied to articulation structure. The one exception is the ``mujoco:tendon`` frequency, which is supported. For per-articulation data, use enum frequencies like ``ARTICULATION``, ``JOINT``, or ``BODY``.
