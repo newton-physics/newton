@@ -32,7 +32,6 @@ import newton.solvers
 from newton.solvers import xpbd_rod
 
 from newton.examples.elastic_rod.rod_mesher import RodMesher
-from newton.examples.cosserat2.kernels.visualization import compute_director_lines_kernel
 
 
 class Example:
@@ -214,7 +213,7 @@ class Example:
     def _build_director_lines(self, idx, ws):
         ps = self.solver._rod_particle_starts[idx]
         wp.launch(
-            compute_director_lines_kernel,
+            xpbd_rod.compute_director_lines_kernel,
             dim=ws.num_edges * 3,
             inputs=[
                 self.state_0.particle_q[ps : ps + ws.num_points],
