@@ -510,8 +510,9 @@ class ParallelJunitTestResult(unittest.TextTestResult):
 
     def stopTest(self, test):
         super().stopTest(test)
-        # Release unused CUDA mempool memory back to the OS after each test
-        # to reduce peak host RSS in parallel test runs (see issue #1881).
+        # Force garbage collection of CPU-side allocations and release unused
+        # CUDA mempool memory to reduce peak host RSS in parallel test runs
+        # (see issue #1881).
         import gc  # noqa: PLC0415
 
         gc.collect()
