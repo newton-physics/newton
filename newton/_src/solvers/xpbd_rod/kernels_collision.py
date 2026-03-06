@@ -407,6 +407,92 @@ def _warp_compute_corrections_parallel(
 
 
 @wp.kernel
+def _warp_compute_corrections_parallel_batched(
+    predicted_positions: wp.array(dtype=wp.vec3),
+    inv_masses: wp.array(dtype=wp.float32),
+    quat_inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia: wp.array(dtype=wp.float32),
+    jacobian_pos: wp.array(dtype=wp.float32),
+    jacobian_rot: wp.array(dtype=wp.float32),
+    delta_lambda: wp.array(dtype=wp.float32),
+    lambda_sum: wp.array(dtype=wp.float32),
+    rod_offsets: wp.array(dtype=wp.int32),
+    edge_offsets: wp.array(dtype=wp.int32),
+    edge_rod_id: wp.array(dtype=wp.int32),
+    pos_corrections: wp.array(dtype=wp.vec3),
+    rot_corrections: wp.array(dtype=wp.vec3),
+    max_delta_out: wp.array(dtype=wp.float32),
+    max_corr_out: wp.array(dtype=wp.float32),
+):
+    """Compute position and rotation corrections for all rods in a single launch.
+
+    This batched version uses rod_offsets and edge_offsets to map global edge
+    indices to the correct particle indices in concatenated arrays.
+    """
+    global_edge = wp.tid()
+    rod_id = edge_rod_id[global_edge]
+    local_edge = global_edge - edge_offsets[rod_id]
+    p0_idx = rod_offsets[rod_id] + local_edge
+    p1_idx = p0_idx + 1
+
+    base_idx = global_edge * 6
+    dl0 = delta_lambda[base_idx + 0]
+    dl1 = delta_lambda[base_idx + 1]
+    dl2 = delta_lambda[base_idx + 2]
+    dl3 = delta_lambda[base_idx + 3]
+    dl4 = delta_lambda[base_idx + 4]
+    dl5 = delta_lambda[base_idx + 5]
+
+    lambda_sum[base_idx + 0] = lambda_sum[base_idx + 0] + dl0
+    lambda_sum[base_idx + 1] = lambda_sum[base_idx + 1] + dl1
+    lambda_sum[base_idx + 2] = lambda_sum[base_idx + 2] + dl2
+    lambda_sum[base_idx + 3] = lambda_sum[base_idx + 3] + dl3
+    lambda_sum[base_idx + 4] = lambda_sum[base_idx + 4] + dl4
+    lambda_sum[base_idx + 5] = lambda_sum[base_idx + 5] + dl5
+
+    local_max_delta = wp.max(
+        wp.max(wp.max(wp.abs(dl0), wp.abs(dl1)), wp.max(wp.abs(dl2), wp.abs(dl3))),
+        wp.max(wp.abs(dl4), wp.abs(dl5)),
+    )
+    wp.atomic_max(max_delta_out, 0, local_max_delta)
+
+    inv_m0 = inv_masses[p0_idx]
+    inv_m1 = inv_masses[p1_idx]
+
+    if inv_m0 > 0.0:
+        dp0_x = _warp_jacobian_dot(jacobian_pos, global_edge, 0, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp0_y = _warp_jacobian_dot(jacobian_pos, global_edge, 1, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp0_z = _warp_jacobian_dot(jacobian_pos, global_edge, 2, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp0 = wp.vec3(dp0_x * inv_m0, dp0_y * inv_m0, dp0_z * inv_m0)
+        wp.atomic_add(pos_corrections, p0_idx, dp0)
+
+    if inv_m1 > 0.0:
+        dp1_x = _warp_jacobian_dot(jacobian_pos, global_edge, 3, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp1_y = _warp_jacobian_dot(jacobian_pos, global_edge, 4, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp1_z = _warp_jacobian_dot(jacobian_pos, global_edge, 5, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp1 = wp.vec3(dp1_x * inv_m1, dp1_y * inv_m1, dp1_z * inv_m1)
+        wp.atomic_add(pos_corrections, p1_idx, dp1)
+
+    if quat_inv_masses[p0_idx] > 0.0:
+        j_t0_delta = wp.vec3(
+            _warp_jacobian_dot(jacobian_rot, global_edge, 0, dl0, dl1, dl2, dl3, dl4, dl5),
+            _warp_jacobian_dot(jacobian_rot, global_edge, 1, dl0, dl1, dl2, dl3, dl4, dl5),
+            _warp_jacobian_dot(jacobian_rot, global_edge, 2, dl0, dl1, dl2, dl3, dl4, dl5),
+        )
+        dtheta0 = _inv_inertia_mul_vec_kernels(inv_inertia, p0_idx, j_t0_delta)
+        wp.atomic_add(rot_corrections, p0_idx, dtheta0)
+
+    if quat_inv_masses[p1_idx] > 0.0:
+        j_t1_delta = wp.vec3(
+            _warp_jacobian_dot(jacobian_rot, global_edge, 3, dl0, dl1, dl2, dl3, dl4, dl5),
+            _warp_jacobian_dot(jacobian_rot, global_edge, 4, dl0, dl1, dl2, dl3, dl4, dl5),
+            _warp_jacobian_dot(jacobian_rot, global_edge, 5, dl0, dl1, dl2, dl3, dl4, dl5),
+        )
+        dtheta1 = _inv_inertia_mul_vec_kernels(inv_inertia, p1_idx, j_t1_delta)
+        wp.atomic_add(rot_corrections, p1_idx, dtheta1)
+
+
+@wp.kernel
 def _warp_apply_accumulated_corrections(
     predicted_positions: wp.array(dtype=wp.vec3),
     predicted_orientations: wp.array(dtype=wp.quat),

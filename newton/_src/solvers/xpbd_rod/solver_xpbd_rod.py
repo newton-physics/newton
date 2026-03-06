@@ -37,14 +37,17 @@ from .kernels_assembly import (
     _warp_assemble_darboux_blocks,
     _warp_assemble_jmjt_banded,
     _warp_assemble_jmjt_blocks,
+    _warp_assemble_jmjt_blocks_batched,
     _warp_assemble_jmjt_dense,
     _warp_assemble_stretch_blocks,
+    _warp_compute_inv_inertia_world_batched,
     _warp_pad_diagonal,
 )
 from .kernels_collision import (
     _warp_apply_accumulated_corrections,
     _warp_apply_floor_collisions,
     _warp_compute_corrections_parallel,
+    _warp_compute_corrections_parallel_batched,
     _warp_compute_inv_inertia_world,
     _warp_merge_delta_lambda,
     _warp_set_root_orientation,
@@ -56,19 +59,27 @@ from .kernels_constraints import (
     _warp_build_rhs,
     _warp_build_rhs_darboux,
     _warp_build_rhs_stretch,
+    _warp_compute_jacobians_batched,
     _warp_compute_jacobians_direct,
     _warp_prepare_compliance,
+    _warp_prepare_compliance_batched,
+    _warp_update_constraints_batched_v2,
     _warp_update_constraints_direct,
 )
 from .kernels_integration import (
     _warp_integrate_positions,
+    _warp_integrate_positions_batched,
     _warp_integrate_rotations,
+    _warp_integrate_rotations_batched,
     _warp_predict_positions,
+    _warp_predict_positions_batched,
     _warp_predict_rotations,
+    _warp_predict_rotations_batched,
 )
 from .kernels_solvers import (
     _warp_block_thomas_solve,
     _warp_block_thomas_solve_3x3,
+    _warp_block_thomas_solve_batched,
     _warp_cholesky_solve_tile,
     _warp_solve_blocks_jacobi,
     _warp_spbsv_u11_1rhs,
@@ -152,6 +163,114 @@ class _RodWorkspace:
         self.young_modulus = 1.0e6
         self.torsion_modulus = 1.0e6
         self.gravity = wp.vec3(0.0, 0.0, -9.81)
+
+
+class _BatchedRodWorkspace:
+    """Concatenated GPU workspace for all rods, enabling batched kernel launches."""
+
+    def __init__(self, rods: list[_RodWorkspace], device: wp.Device):
+        n_rods = len(rods)
+        self.n_rods = n_rods
+
+        # Build offset arrays on CPU
+        rod_offsets_cpu = [0]
+        edge_offsets_cpu = [0]
+        for ws in rods:
+            rod_offsets_cpu.append(rod_offsets_cpu[-1] + ws.num_points)
+            edge_offsets_cpu.append(edge_offsets_cpu[-1] + ws.num_edges)
+
+        self.rod_offsets_cpu = rod_offsets_cpu
+        self.edge_offsets_cpu = edge_offsets_cpu
+        self.total_particles = rod_offsets_cpu[-1]
+        self.total_edges = edge_offsets_cpu[-1]
+        self.total_dofs = self.total_edges * 6
+
+        # Upload index arrays
+        self.rod_offsets = wp.array(rod_offsets_cpu, dtype=wp.int32, device=device)
+        self.edge_offsets = wp.array(edge_offsets_cpu, dtype=wp.int32, device=device)
+
+        # Build particle_rod_id and edge_rod_id
+        particle_rod_id_cpu = []
+        edge_rod_id_cpu = []
+        for i, ws in enumerate(rods):
+            particle_rod_id_cpu.extend([i] * ws.num_points)
+            edge_rod_id_cpu.extend([i] * ws.num_edges)
+        self.particle_rod_id = wp.array(particle_rod_id_cpu, dtype=wp.int32, device=device)
+        self.edge_rod_id = wp.array(edge_rod_id_cpu, dtype=wp.int32, device=device)
+
+        # Per-rod property arrays
+        gravity_cpu = [list(ws.gravity) for ws in rods]
+        self.gravity = wp.array(gravity_cpu, dtype=wp.vec3, device=device)
+        self.young_modulus = wp.array([ws.young_modulus for ws in rods], dtype=wp.float32, device=device)
+        self.torsion_modulus = wp.array([ws.torsion_modulus for ws in rods], dtype=wp.float32, device=device)
+        self.inv_inertia_local_diag = wp.array(
+            [list(ws.inv_inertia_local_diag) for ws in rods], dtype=wp.vec3, device=device
+        )
+
+        tp = self.total_particles
+        te = self.total_edges
+        td = self.total_dofs
+
+        # Concatenated per-particle arrays
+        self.positions = wp.zeros(tp, dtype=wp.vec3, device=device)
+        self.predicted_positions = wp.zeros(tp, dtype=wp.vec3, device=device)
+        self.velocities = wp.zeros(tp, dtype=wp.vec3, device=device)
+        self.forces = wp.zeros(tp, dtype=wp.vec3, device=device)
+        self.orientations = wp.zeros(tp, dtype=wp.quat, device=device)
+        self.predicted_orientations = wp.zeros(tp, dtype=wp.quat, device=device)
+        self.prev_orientations = wp.zeros(tp, dtype=wp.quat, device=device)
+        self.angular_velocities = wp.zeros(tp, dtype=wp.vec3, device=device)
+        self.torques = wp.zeros(tp, dtype=wp.vec3, device=device)
+        self.inv_masses = wp.zeros(tp, dtype=wp.float32, device=device)
+        self.quat_inv_masses = wp.zeros(tp, dtype=wp.float32, device=device)
+        self.inv_inertia = wp.zeros(tp * 9, dtype=wp.float32, device=device)
+        self.pos_corrections = wp.zeros(tp, dtype=wp.vec3, device=device)
+        self.rot_corrections = wp.zeros(tp, dtype=wp.vec3, device=device)
+
+        # Concatenated per-edge arrays
+        self.rest_lengths = wp.zeros(te, dtype=wp.float32, device=device)
+        self.rest_darboux = wp.zeros(te, dtype=wp.vec3, device=device)
+        self.bend_stiffness = wp.zeros(te, dtype=wp.vec3, device=device)
+        self.constraint_values = wp.zeros(td, dtype=wp.float32, device=device)
+        self.compliance = wp.zeros(td, dtype=wp.float32, device=device)
+        self.lambda_sum = wp.zeros(td, dtype=wp.float32, device=device)
+        self.jacobian_pos = wp.zeros(te * 36, dtype=wp.float32, device=device)
+        self.jacobian_rot = wp.zeros(te * 36, dtype=wp.float32, device=device)
+
+        # Solver workspace
+        self.rhs = wp.zeros(td, dtype=wp.float32, device=device)
+        self.delta_lambda = wp.zeros(td, dtype=wp.float32, device=device)
+        self.diag_blocks = wp.zeros(te * 36, dtype=wp.float32, device=device)
+        self.offdiag_blocks = wp.zeros(te * 36, dtype=wp.float32, device=device)
+        self.c_blocks = wp.zeros(te * 36, dtype=wp.float32, device=device)
+        self.d_prime = wp.zeros(te * 6, dtype=wp.float32, device=device)
+
+        # Diagnostics
+        self._delta_lambda_max = wp.zeros(1, dtype=wp.float32, device=device)
+        self._correction_max = wp.zeros(1, dtype=wp.float32, device=device)
+
+        # Copy data from individual workspaces into concatenated arrays
+        for i, ws in enumerate(rods):
+            po = rod_offsets_cpu[i]
+            eo = edge_offsets_cpu[i]
+            np_ = ws.num_points
+            ne = ws.num_edges
+
+            wp.copy(dest=self.positions, src=ws.positions_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.predicted_positions, src=ws.predicted_positions_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.velocities, src=ws.velocities_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.forces, src=ws.forces_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.orientations, src=ws.orientations_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.predicted_orientations, src=ws.predicted_orientations_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.prev_orientations, src=ws.prev_orientations_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.angular_velocities, src=ws.angular_velocities_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.torques, src=ws.torques_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.inv_masses, src=ws.inv_masses_wp, dest_offset=po, src_offset=0, count=np_)
+            wp.copy(dest=self.quat_inv_masses, src=ws.quat_inv_masses_wp, dest_offset=po, src_offset=0, count=np_)
+
+            wp.copy(dest=self.rest_lengths, src=ws.rest_lengths_wp, dest_offset=eo, src_offset=0, count=ne)
+            wp.copy(dest=self.rest_darboux, src=ws.rest_darboux_wp, dest_offset=eo, src_offset=0, count=ne)
+            wp.copy(dest=self.bend_stiffness, src=ws.bend_stiffness_wp, dest_offset=eo, src_offset=0, count=ne)
 
 
 class SolverXPBDRod(SolverBase):
@@ -258,6 +377,11 @@ class SolverXPBDRod(SolverBase):
         # Store particle start indices for syncing back
         self._rod_particle_starts = list(rod_particle_starts) if rod_num_points else []
 
+        # Build batched workspace for multi-rod parallelism
+        self._batched_ws = None
+        if len(self._rods) > 1 and self.solver_backend == DIRECT_SOLVE_BLOCK_THOMAS:
+            self._batched_ws = _BatchedRodWorkspace(self._rods, device)
+
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Register rod-specific data storage on the builder.
@@ -297,6 +421,21 @@ class SolverXPBDRod(SolverBase):
         dt: float,
     ):
         device = self.model.device
+
+        if self._batched_ws is not None:
+            bws = self._batched_ws
+            self._step_batched(bws, dt, device)
+            # Sync positions back to state_out using precomputed offsets
+            for rod_idx, ws in enumerate(self._rods):
+                ps = self._rod_particle_starts[rod_idx]
+                wp.copy(
+                    dest=state_out.particle_q,
+                    src=bws.positions,
+                    dest_offset=ps,
+                    src_offset=bws.rod_offsets_cpu[rod_idx],
+                    count=ws.num_points,
+                )
+            return
 
         for rod_idx, ws in enumerate(self._rods):
             if ws.num_edges == 0:
@@ -410,6 +549,232 @@ class SolverXPBDRod(SolverBase):
                 ws.angular_velocities_wp,
                 ws.quat_inv_masses_wp,
                 float(dt),
+            ],
+            device=device,
+        )
+
+    def _step_batched(self, bws: _BatchedRodWorkspace, dt: float, device: wp.Device):
+        """Run one XPBD step for all rods using batched kernel launches."""
+        tp = bws.total_particles
+        te = bws.total_edges
+        td = bws.total_dofs
+
+        # 1. Predict positions & rotations
+        wp.launch(
+            _warp_predict_positions_batched,
+            dim=tp,
+            inputs=[
+                bws.positions,
+                bws.velocities,
+                bws.forces,
+                bws.inv_masses,
+                bws.gravity,
+                bws.particle_rod_id,
+                float(dt),
+                float(self.linear_damping),
+                bws.predicted_positions,
+            ],
+            device=device,
+        )
+        wp.launch(
+            _warp_predict_rotations_batched,
+            dim=tp,
+            inputs=[
+                bws.orientations,
+                bws.angular_velocities,
+                bws.torques,
+                bws.quat_inv_masses,
+                float(dt),
+                float(self.angular_damping),
+                bws.predicted_orientations,
+            ],
+            device=device,
+        )
+
+        # 2. Prepare constraints
+        wp.launch(_warp_zero_float, dim=td, inputs=[bws.lambda_sum], device=device)
+        wp.launch(
+            _warp_prepare_compliance_batched,
+            dim=te,
+            inputs=[
+                bws.rest_lengths,
+                bws.bend_stiffness,
+                bws.edge_rod_id,
+                bws.young_modulus,
+                bws.torsion_modulus,
+                float(dt),
+                bws.compliance,
+            ],
+            device=device,
+        )
+
+        # 3. Project constraints
+        self._project_direct_batched(bws, device)
+
+        # 4. Floor collision (optional)
+        if self.floor_z is not None:
+            wp.launch(
+                _warp_apply_floor_collisions,
+                dim=tp,
+                inputs=[bws.positions, bws.predicted_positions, bws.velocities, float(self.floor_z), 0.0],
+                device=device,
+            )
+
+        # 5. Integrate
+        wp.launch(
+            _warp_integrate_positions_batched,
+            dim=tp,
+            inputs=[bws.positions, bws.predicted_positions, bws.velocities, bws.inv_masses, float(dt)],
+            device=device,
+        )
+        wp.launch(
+            _warp_integrate_rotations_batched,
+            dim=tp,
+            inputs=[
+                bws.orientations,
+                bws.predicted_orientations,
+                bws.prev_orientations,
+                bws.angular_velocities,
+                bws.quat_inv_masses,
+                float(dt),
+            ],
+            device=device,
+        )
+
+    def _project_direct_batched(self, bws: _BatchedRodWorkspace, device: wp.Device):
+        """Project constraints using batched block Thomas solver."""
+        tp = bws.total_particles
+        te = bws.total_edges
+        td = bws.total_dofs
+
+        # Update constraints
+        wp.launch(
+            _warp_update_constraints_batched_v2,
+            dim=te,
+            inputs=[
+                bws.predicted_positions,
+                bws.predicted_orientations,
+                bws.rest_lengths,
+                bws.rest_darboux,
+                bws.rod_offsets,
+                bws.edge_offsets,
+                bws.edge_rod_id,
+                bws.constraint_values,
+            ],
+            device=device,
+        )
+
+        # Compute Jacobians
+        wp.launch(
+            _warp_compute_jacobians_batched,
+            dim=te,
+            inputs=[
+                bws.predicted_orientations,
+                bws.rest_lengths,
+                bws.rod_offsets,
+                bws.edge_offsets,
+                bws.edge_rod_id,
+                bws.jacobian_pos,
+                bws.jacobian_rot,
+            ],
+            device=device,
+        )
+
+        # Update inverse inertia
+        wp.launch(
+            _warp_compute_inv_inertia_world_batched,
+            dim=tp,
+            inputs=[
+                bws.predicted_orientations,
+                bws.quat_inv_masses,
+                bws.inv_inertia_local_diag,
+                bws.particle_rod_id,
+                bws.inv_inertia,
+            ],
+            device=device,
+        )
+
+        # Assemble JMJT blocks
+        wp.launch(
+            _warp_assemble_jmjt_blocks_batched,
+            dim=te,
+            inputs=[
+                bws.jacobian_pos,
+                bws.jacobian_rot,
+                bws.compliance,
+                bws.inv_masses,
+                bws.inv_inertia,
+                bws.rod_offsets,
+                bws.edge_offsets,
+                bws.edge_rod_id,
+                bws.diag_blocks,
+                bws.offdiag_blocks,
+            ],
+            device=device,
+        )
+
+        # Build RHS
+        wp.launch(
+            _warp_build_rhs,
+            dim=td,
+            inputs=[bws.constraint_values, bws.compliance, bws.lambda_sum, int(td), bws.rhs],
+            device=device,
+        )
+
+        # Batched Thomas solve (one thread per rod)
+        wp.launch(
+            _warp_block_thomas_solve_batched,
+            dim=bws.n_rods,
+            inputs=[
+                bws.diag_blocks,
+                bws.offdiag_blocks,
+                bws.rhs,
+                bws.edge_offsets,
+                int(bws.n_rods),
+                bws.c_blocks,
+                bws.d_prime,
+                bws.delta_lambda,
+            ],
+            device=device,
+        )
+
+        # Apply corrections (parallel two-phase)
+        wp.launch(_warp_zero_vec3, dim=tp, inputs=[bws.pos_corrections], device=device)
+        wp.launch(_warp_zero_vec3, dim=tp, inputs=[bws.rot_corrections], device=device)
+        wp.launch(_warp_zero_float, dim=1, inputs=[bws._delta_lambda_max], device=device)
+        wp.launch(_warp_zero_float, dim=1, inputs=[bws._correction_max], device=device)
+
+        wp.launch(
+            _warp_compute_corrections_parallel_batched,
+            dim=te,
+            inputs=[
+                bws.predicted_positions,
+                bws.inv_masses,
+                bws.quat_inv_masses,
+                bws.inv_inertia,
+                bws.jacobian_pos,
+                bws.jacobian_rot,
+                bws.delta_lambda,
+                bws.lambda_sum,
+                bws.rod_offsets,
+                bws.edge_offsets,
+                bws.edge_rod_id,
+                bws.pos_corrections,
+                bws.rot_corrections,
+                bws._delta_lambda_max,
+                bws._correction_max,
+            ],
+            device=device,
+        )
+        wp.launch(
+            _warp_apply_accumulated_corrections,
+            dim=tp,
+            inputs=[
+                bws.predicted_positions,
+                bws.predicted_orientations,
+                bws.pos_corrections,
+                bws.rot_corrections,
+                int(tp),
             ],
             device=device,
         )

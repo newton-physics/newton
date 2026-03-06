@@ -24,6 +24,7 @@
 ###########################################################################
 
 import numpy as np
+import warp as wp
 
 import newton
 import newton.examples
@@ -47,6 +48,7 @@ class Example:
         self.rest_bend_d1 = 0.0
         self.rest_bend_d2 = 0.0
         self.rest_twist = 0.0
+        self.rest_length = 0.05
         self.lock_root = True
         self.lock_root_rotation = True
 
@@ -109,6 +111,17 @@ class Example:
             qim = ws.quat_inv_masses_wp.numpy()
             self._free_quat_inv_masses.append(float(qim[1]) if ws.num_points > 1 else 1.0)
 
+        # Capture CUDA graph for the substep loop
+        self.graph = None
+        device = self.model.device
+        if device.is_cuda and wp.is_mempool_enabled(device):
+            with wp.ScopedCapture(device=device) as capture:
+                self._simulate_substeps()
+            self.graph = capture.graph
+            print("CUDA graph captured for simulation substeps")
+        else:
+            print("CUDA graph not available, using standard kernel launches")
+
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
         if hasattr(self.viewer, "register_ui_callback"):
@@ -151,12 +164,18 @@ class Example:
             self._root_qs[rod_idx] = q
             self.solver.set_root_orientation(rod_idx, wp.quat(float(q[0]), float(q[1]), float(q[2]), float(q[3])))
 
-    def simulate(self):
-        if self.lock_root:
-            self._rotate_root()
+    def _simulate_substeps(self):
         for _ in range(self.sim_substeps):
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
+
+    def simulate(self):
+        if self.lock_root:
+            self._rotate_root()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self._simulate_substeps()
 
     def step(self):
         self.simulate()
@@ -188,6 +207,13 @@ class Example:
             root_quat_inv_mass = np.array([0.0 if (self.lock_root or self.lock_root_rotation) else free_quat_inv_mass], dtype=np.float32)
             wp.copy(dest=ws.quat_inv_masses_wp, src=wp.array(root_quat_inv_mass, dtype=wp.float32, device=ws.device), count=1)
 
+    def _update_rest_lengths(self):
+        import warp as wp
+
+        for ws in self.solver._rods:
+            rl = np.full(ws.num_edges, self.rest_length, dtype=np.float32)
+            ws.rest_lengths_wp.assign(wp.array(rl, dtype=wp.float32, device=ws.rest_lengths_wp.device))
+
     def _update_rest_darboux(self):
         import warp as wp
 
@@ -212,6 +238,11 @@ class Example:
         changed_G, self.torsion_modulus = imgui.input_float("Torsion Modulus [Pa]", self.torsion_modulus, format="%.1f")
         if changed_E or changed_G:
             self._update_rod_stiffness()
+
+        imgui.separator()
+        changed_rl, self.rest_length = imgui.slider_float("Rest Length", self.rest_length, 0.01, 0.1)
+        if changed_rl:
+            self._update_rest_lengths()
 
         imgui.separator()
         changed_d1, self.rest_bend_d1 = imgui.slider_float("Rest Bend d1", self.rest_bend_d1, -0.1, 0.1)
