@@ -6,9 +6,35 @@ Visualization
 
 Newton provides multiple viewer backends for different visualization needs, from real-time rendering to offline recording and external integrations.
 
-All viewer backends share a common interface with ``set_model()``, ``begin_frame()``, ``log_state()``, and ``end_frame()`` methods.
+Common Interface
+----------------
 
-**Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance. 
+All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a common interface:
+
+**Core loop methods** — every viewer uses the same simulation loop pattern:
+
+- :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` and optionally limit the number of rendered worlds with ``max_worlds``
+- :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
+- :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
+- :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
+- :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
+- :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
+- :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
+
+**Camera and layout:**
+
+- :meth:`~newton.viewer.ViewerBase.set_camera` — set camera position, pitch, and yaw
+- :meth:`~newton.viewer.ViewerBase.set_world_offsets` — arrange multiple worlds in a grid with a given spacing along each axis
+
+**Custom visualization** — draw debug overlays on top of the simulation:
+
+- :meth:`~newton.viewer.ViewerBase.log_lines` — draw line segments (e.g. rays, normals, force vectors)
+- :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
+- :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
+- :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
+- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
+
+**Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
 
 .. testcode:: viewer-max-worlds
@@ -30,6 +56,13 @@ OpenGL Viewer
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
 The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
 
+Constructor parameters:
+
+- ``width``: Window width in pixels (default: ``1920``)
+- ``height``: Window height in pixels (default: ``1080``)
+- ``vsync``: Enable vertical sync (default: ``False``)
+- ``headless``: Run without a visible window, useful for off-screen rendering (default: ``False``)
+
 .. code-block:: python
 
     viewer = newton.viewer.ViewerGL()
@@ -45,7 +78,55 @@ The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.
     if viewer.is_paused():
         pass  # simulation stepping is paused
 
-Keyboard shortcuts when working with the OpenGL Viewer (aka newton.viewer.ViewerGL):
+**Interactive forces and input:**
+
+:meth:`~newton.viewer.ViewerGL.apply_forces` applies viewer-driven forces (object picking with right-click, wind) to the simulation state.
+Call it each frame before stepping the solver:
+
+.. code-block:: python
+
+    viewer.apply_forces(state)
+    solver.step(model, state, ...)
+
+:meth:`~newton.viewer.ViewerGL.is_key_down` queries whether a key is currently pressed.
+Keys can be specified as single-character strings (``'w'``), special key names (``'space'``, ``'escape'``), or pyglet key constants:
+
+.. code-block:: python
+
+    if viewer.is_key_down('r'):
+        state = model.state()  # reset
+
+**Headless mode and frame capture:**
+
+In headless mode (``headless=True``), the viewer renders off-screen without opening a window.
+Use :meth:`~newton.viewer.ViewerGL.get_frame` to retrieve the rendered image as a GPU array:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerGL(headless=True)
+    viewer.set_model(model)
+
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
+    # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
+    frame = viewer.get_frame()
+
+**Custom UI panels:**
+
+:meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
+The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``:
+
+.. code-block:: python
+
+    def my_ui(ui):
+        import imgui_bundle.imgui as imgui
+        imgui.text("Hello from custom UI!")
+
+    viewer.register_ui_callback(my_ui, position="side")
+
+Keyboard shortcuts when working with the OpenGL Viewer:
 
 .. list-table:: Keyboard Shortcuts
     :header-rows: 1
@@ -158,11 +239,20 @@ Key parameters:
 - ``output_path``: Path to the output file (format determined by extension: .json or .bin)
 - ``auto_save``: If True, automatically save periodically during recording (default: ``True``)
 - ``save_interval``: Number of frames between auto-saves when auto_save=True (default: ``100``)
+- ``max_history_size``: Maximum number of frames to keep in memory (default: ``None`` for unlimited)
 
 Rendering to USD
 ~~~~~~~~~~~~~~~~
 
 Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the :class:`~newton.viewer.ViewerUSD` backend.
+
+Constructor parameters:
+
+- ``output_path``: Path to the output USD file
+- ``fps``: Frames per second for time sampling (default: ``60``)
+- ``up_axis``: USD up axis, ``"Y"`` or ``"Z"`` (default: ``"Z"``)
+- ``num_frames``: Maximum number of frames to record, or ``None`` for unlimited (default: ``100``)
+- ``scaling``: Uniform scaling applied to the scene root (default: ``1.0``)
 
 .. code-block:: python
 
@@ -193,18 +283,29 @@ enabling real-time or offline visualization with advanced features like time scr
 
     pip install rerun-sdk
 
+Constructor parameters:
+
+- ``app_id``: Application ID for Rerun (default: ``"newton-viewer"``). Use different IDs to differentiate between parallel viewer instances.
+- ``address``: Optional server address to connect to a remote Rerun server. If provided, connects to the specified server.
+- ``serve_web_viewer``: Serve a web viewer over HTTP and open it in the browser (default: ``True``). If ``False``, spawns a native Rerun viewer.
+- ``web_port``: Port for the web viewer (default: ``9090``)
+- ``grpc_port``: Port for the gRPC server (default: ``9876``)
+- ``keep_historical_data``: Keep historical state data in the viewer for time scrubbing (default: ``False``)
+- ``keep_scalar_history``: Keep scalar time-series history (default: ``True``)
+- ``record_to_rrd``: Optional path to save a ``.rrd`` recording file
+
 **Usage**:
 
 .. code-block:: python
 
     # Default usage: spawns a local viewer
     viewer = newton.viewer.ViewerRerun(
-        app_id="newton-simulation" # Optional application identifier to differentiate multiple parallel instances.
+        app_id="newton-simulation"
     )
 
     # Or specify a custom server address for remote viewing
     viewer = newton.viewer.ViewerRerun(
-        address="rerun+http://127.0.0.1:9876/proxy", # Optional server address to connect to a remote rerun server.
+        address="rerun+http://127.0.0.1:9876/proxy",
         app_id="newton-simulation"
     )
 
@@ -398,6 +499,71 @@ This is particularly useful for:
 - Automated testing in CI/CD pipelines
 - Running simulations on headless servers
 - Batch processing of simulations
+
+Custom Visualization
+--------------------
+
+In addition to rendering simulation state with :meth:`~newton.viewer.ViewerBase.log_state`, you can draw custom debug overlays using the ``log_*`` methods available on all viewers.
+
+**Drawing lines:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_lines` to draw line segments — useful for visualizing forces, rays, or normals:
+
+.. code-block:: python
+
+    # Draw force vectors at body positions
+    viewer.log_lines(
+        "/debug/forces",
+        starts=positions,       # wp.array(dtype=wp.vec3)
+        ends=positions + forces, # wp.array(dtype=wp.vec3)
+        colors=(1.0, 0.0, 0.0), # red
+        width=0.005,
+    )
+
+**Drawing points:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_points` to draw a point cloud:
+
+.. code-block:: python
+
+    viewer.log_points(
+        "/debug/targets",
+        points=target_positions, # wp.array(dtype=wp.vec3)
+        radii=0.02,              # uniform radius, or wp.array(dtype=wp.float32)
+        colors=(0.0, 1.0, 0.0), # green
+    )
+
+**Visualizing contacts:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_contacts` to draw contact normals from a :class:`~newton.Contacts` object.
+The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.ViewerGL` sidebar) controls visibility:
+
+.. code-block:: python
+
+    viewer.log_contacts(contacts, state)
+
+**Transform gizmos:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gizmo at a given transform:
+
+.. code-block:: python
+
+    viewer.log_gizmo("/debug/target_frame", wp.transform(pos, rot))
+
+**Camera and world layout:**
+
+Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`:
+
+.. code-block:: python
+
+    viewer.set_camera(pos=wp.vec3(5.0, 2.0, 3.0), pitch=-0.3, yaw=0.5)
+
+When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world_offsets` to arrange them in a grid
+(must be called after :meth:`~newton.viewer.ViewerBase.set_model`):
+
+.. code-block:: python
+
+    viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
 
 Choosing the Right Viewer
 -------------------------
