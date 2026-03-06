@@ -1975,67 +1975,71 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         solver.notify_model_changed(SolverNotifyFlags.BODY_PROPERTIES)
         self._assert_armature_matches_flags(model, solver)
 
-    def test_kinematic_fixed_root_attached_to_world_uses_mocap_and_tracks_pose(self):
-        builder = newton.ModelBuilder()
-        root = builder.add_link(
-            mass=1.0,
-            com=wp.vec3(0.0, 0.0, 0.0),
-            inertia=wp.mat33(np.eye(3)),
-            is_kinematic=True,
-            label="fixed_root",
-        )
-        root_joint = builder.add_joint_fixed(parent=-1, child=root)
-        builder.add_articulation([root_joint])
+    def test_fixed_root_attached_to_world_uses_mocap_and_tracks_pose(self):
+        for is_kinematic in (False, True):
+            with self.subTest(is_kinematic=is_kinematic):
+                builder = newton.ModelBuilder()
+                root = builder.add_link(
+                    mass=1.0,
+                    com=wp.vec3(0.0, 0.0, 0.0),
+                    inertia=wp.mat33(np.eye(3)),
+                    is_kinematic=is_kinematic,
+                    label="fixed_root",
+                )
+                root_joint = builder.add_joint_fixed(parent=-1, child=root)
+                builder.add_articulation([root_joint])
 
-        model = builder.finalize(requires_grad=False)
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+                model = builder.finalize(requires_grad=False)
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
-        # Fixed-root kinematic links should be exported as MuJoCo mocap bodies.
-        self.assertEqual(solver.mj_model.nmocap, 1)
-        body_mocapid = solver.mjw_model.body_mocapid.numpy()
+                body_kind = "kinematic" if is_kinematic else "dynamic"
 
-        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
-        matching_bodies = np.where(mjc_body_to_newton[0] == root)[0]
-        self.assertEqual(len(matching_bodies), 1, "Expected a unique MuJoCo body for the fixed root")
-        mjc_root_body = int(matching_bodies[0])
-        mocap_idx = int(body_mocapid[mjc_root_body])
-        self.assertGreaterEqual(mocap_idx, 0, "Fixed-root kinematic body should be exported as mocap")
+                # Fixed-root links should be exported as MuJoCo mocap bodies.
+                self.assertEqual(solver.mj_model.nmocap, 1)
+                body_mocapid = solver.mjw_model.body_mocapid.numpy()
 
-        jnt_bodyid = solver.mjw_model.jnt_bodyid.numpy()
-        joints_on_root = np.where(jnt_bodyid == mjc_root_body)[0]
-        self.assertEqual(len(joints_on_root), 0, "Fixed-root kinematic body should not create a MuJoCo joint")
+                mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+                matching_bodies = np.where(mjc_body_to_newton[0] == root)[0]
+                self.assertEqual(len(matching_bodies), 1, "Expected a unique MuJoCo body for the fixed root")
+                mjc_root_body = int(matching_bodies[0])
+                mocap_idx = int(body_mocapid[mjc_root_body])
+                self.assertGreaterEqual(mocap_idx, 0, f"Fixed-root {body_kind} body should be exported as mocap")
 
-        initial_mocap_pos = np.array(solver.mjw_data.mocap_pos.numpy()[0, mocap_idx], copy=True)
-        initial_mocap_quat = np.array(solver.mjw_data.mocap_quat.numpy()[0, mocap_idx], copy=True)
+                jnt_bodyid = solver.mjw_model.jnt_bodyid.numpy()
+                joints_on_root = np.where(jnt_bodyid == mjc_root_body)[0]
+                self.assertEqual(len(joints_on_root), 0, f"Fixed-root {body_kind} body should not create a MuJoCo joint")
 
-        new_position = wp.vec3(0.2, -0.1, 0.3)
-        new_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.35)
-        model.joint_X_p.assign([wp.transform(new_position, new_rotation)])
+                initial_mocap_pos = np.array(solver.mjw_data.mocap_pos.numpy()[0, mocap_idx], copy=True)
+                initial_mocap_quat = np.array(solver.mjw_data.mocap_quat.numpy()[0, mocap_idx], copy=True)
 
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+                new_position = wp.vec3(0.2, -0.1, 0.3)
+                new_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.35)
+                model.joint_X_p.assign([wp.transform(new_position, new_rotation)])
 
-        updated_mocap_pos = solver.mjw_data.mocap_pos.numpy()[0, mocap_idx]
-        updated_mocap_quat = solver.mjw_data.mocap_quat.numpy()[0, mocap_idx]
+                solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
 
-        self.assertFalse(np.allclose(updated_mocap_pos, initial_mocap_pos, atol=1e-6))
-        self.assertFalse(np.allclose(updated_mocap_quat, initial_mocap_quat, atol=1e-6))
+                updated_mocap_pos = solver.mjw_data.mocap_pos.numpy()[0, mocap_idx]
+                updated_mocap_quat = solver.mjw_data.mocap_quat.numpy()[0, mocap_idx]
 
-        np.testing.assert_allclose(
-            updated_mocap_pos,
-            [new_position.x, new_position.y, new_position.z],
-            atol=1e-6,
-            err_msg="mocap_pos should track the fixed-root kinematic transform",
-        )
+                self.assertFalse(np.allclose(updated_mocap_pos, initial_mocap_pos, atol=1e-6))
+                self.assertFalse(np.allclose(updated_mocap_quat, initial_mocap_quat, atol=1e-6))
 
-        expected_quat = np.array([new_rotation.w, new_rotation.x, new_rotation.y, new_rotation.z])
-        if np.dot(updated_mocap_quat, expected_quat) < 0.0:
-            expected_quat = -expected_quat
-        np.testing.assert_allclose(
-            updated_mocap_quat,
-            expected_quat,
-            atol=1e-6,
-            err_msg="mocap_quat should track the fixed-root kinematic transform",
-        )
+                np.testing.assert_allclose(
+                    updated_mocap_pos,
+                    [new_position.x, new_position.y, new_position.z],
+                    atol=1e-6,
+                    err_msg=f"mocap_pos should track the fixed-root {body_kind} transform",
+                )
+
+                expected_quat = np.array([new_rotation.w, new_rotation.x, new_rotation.y, new_rotation.z])
+                if np.dot(updated_mocap_quat, expected_quat) < 0.0:
+                    expected_quat = -expected_quat
+                np.testing.assert_allclose(
+                    updated_mocap_quat,
+                    expected_quat,
+                    atol=1e-6,
+                    err_msg=f"mocap_quat should track the fixed-root {body_kind} transform",
+                )
 
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):

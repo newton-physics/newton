@@ -4236,12 +4236,11 @@ class SolverMuJoCo(SolverBase):
             body_mapping[child] = len(mj_bodies)
 
             j_type = joint_type[j]
-            # Only kinematic fixed-root links need MuJoCo mocap bodies: they
-            # have no MuJoCo joint DOFs, but their pose can still be updated
-            # from Newton each step. Dynamic fixed-root links remain at their
-            # authored pose, and static world-attached shapes are exported
-            # separately rather than as articulated bodies.
-            is_kinematic_fixed_root = parent == -1 and j_type == JointType.FIXED and child_is_kinematic
+            # Export every world-fixed root as a MuJoCo mocap body: fixed
+            # roots have no MuJoCo joint DOFs, but Newton can still update
+            # their pose through joint_X_p/joint_X_c. Static world-attached
+            # shapes are exported separately rather than as articulated bodies.
+            is_fixed_root = parent == -1 and j_type == JointType.FIXED
 
             # Compute body transform for the MjSpec body pos/quat.
             # For free joints, the parent/child xforms are identity and the
@@ -4272,7 +4271,7 @@ class SolverMuJoCo(SolverBase):
             # MuJoCo requires positive-definite inertia. For zero-mass bodies
             # (sensor frames, reference links), omit mass and inertia entirely
             # and let MuJoCo handle them natively.
-            body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": is_kinematic_fixed_root}
+            body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": is_fixed_root}
             if mass > 0.0:
                 body_kwargs["mass"] = mass
                 body_kwargs["ipos"] = body_com[child, :]
@@ -4911,10 +4910,8 @@ class SolverMuJoCo(SolverBase):
             self.body_free_qd_start = wp.array(body_free_qd_start_np, dtype=wp.int32)
 
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index.
-            # These mocap bodies exist only for BodyFlags.KINEMATIC links
-            # attached to world by a FIXED joint. Static world shapes are not
-            # represented here, and dynamic fixed-root links do not need mocap
-            # because their pose is not user-driven at runtime.
+            # These mocap bodies are Newton roots attached to world by a
+            # FIXED joint. Static world shapes are not represented here.
             nmocap = self.mj_model.nmocap
             if nmocap > 0:
                 mjc_mocap_to_newton_jnt_np = np.full((nworld, nmocap), -1, dtype=np.int32)
@@ -5484,7 +5481,7 @@ class SolverMuJoCo(SolverBase):
         if self.model.joint_count == 0:
             return
 
-        # Update mocap body transforms first (fixed-root kinematic links have no MuJoCo joints).
+        # Update mocap body transforms first (fixed-root bodies have no MuJoCo joints).
         if self.mjc_mocap_to_newton_jnt is not None and self.mjc_mocap_to_newton_jnt.shape[1] > 0:
             nworld = self.mjc_mocap_to_newton_jnt.shape[0]
             nmocap = self.mjc_mocap_to_newton_jnt.shape[1]
