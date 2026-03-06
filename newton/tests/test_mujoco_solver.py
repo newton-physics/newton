@@ -5348,7 +5348,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
 
         # Use _update_newton_state to get body transforms from MuJoCo
-        solver._update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
 
         # Compare Newton's body_q (now from MuJoCo) with MuJoCo's xpos/xquat
         newton_body_q = state.body_q.numpy()
@@ -6824,7 +6824,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         solver.mjw_data.qpos.assign(qpos)
         state = model.state()
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver._update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
         joint_q = state.joint_q.numpy()
         np.testing.assert_allclose(joint_q[0], 0.1, atol=1e-5)
 
@@ -6862,7 +6862,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         # MuJoCo → Newton
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         state2 = model.state()
-        solver._update_newton_state(model, state2, solver.mjw_data)
+        solver._update_newton_state(model, state2, solver.mjw_data, state_prev=state)
         np.testing.assert_allclose(state2.joint_q.numpy()[0], test_q, atol=1e-5)
 
     def test_free_joint_position_roundtrip(self):
@@ -6887,7 +6887,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         # Newton → MuJoCo → Newton
         solver._update_mjc_data(solver.mjw_data, model, state)
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver._update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
         roundtrip_q = state.joint_q.numpy()
 
         np.testing.assert_allclose(roundtrip_q[:3], original_q[:3], atol=1e-5)
@@ -6908,7 +6908,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         """
         solver._update_mjc_data(solver.mjw_data, model, state)
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver._update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
 
         newton_body_q = state.body_q.numpy()
         mjc_body_to_newton = solver.mjc_body_to_newton.numpy()

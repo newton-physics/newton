@@ -2952,7 +2952,7 @@ class SolverMuJoCo(SolverBase):
                 self._update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
             self._mujoco.mj_step(self.mj_model, self.mj_data)
-            self._update_newton_state(self.model, state_out, self.mj_data, state_in)
+            self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in)
         else:
             self._enable_rne_postconstraint(state_out)
             self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
@@ -2966,7 +2966,7 @@ class SolverMuJoCo(SolverBase):
                     self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
                     self._mujoco_warp_step()
 
-            self._update_newton_state(self.model, state_out, self.mjw_data, state_in)
+            self._update_newton_state(self.model, state_out, self.mjw_data, state_prev=state_in)
         self._step += 1
         return state_out
 
@@ -3285,8 +3285,18 @@ class SolverMuJoCo(SolverBase):
         model: Model,
         state: State,
         mj_data: MjWarpData | MjData,
-        state_in: State,
+        state_prev: State,
     ):
+        """Update a Newton state from MuJoCo coordinates and kinematics.
+
+        Args:
+            model: Newton model that defines the joint and body layout.
+            state: Output Newton state to populate from MuJoCo data.
+            mj_data: MuJoCo runtime data source, either CPU `MjData` or Warp data.
+            state_prev: Previous Newton state. Kinematic joint coordinates and
+                velocities are copied from this state because MuJoCo does not
+                independently integrate those DOFs.
+        """
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have an MjWarp Data object
@@ -3316,8 +3326,8 @@ class SolverMuJoCo(SolverBase):
                 model.body_com,
                 dof_ref,
                 model.body_flags,
-                state_in.joint_q,
-                state_in.joint_qd,
+                state_prev.joint_q,
+                state_prev.joint_qd,
             ],
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
