@@ -906,7 +906,7 @@ to transfer pixel data entirely on the GPU, avoiding expensive CPU-GPU transfers
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>target_image</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a><em> | </em><em>None</em>) – Optional pre-allocated Warp array with shape <cite>(height, width, 3)</cite>
+<li><p><strong>target_image</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><em>array</em></a><em> | </em><em>None</em>) – Optional pre-allocated Warp array with shape <cite>(height, width, 3)</cite>
 and dtype <cite>wp.uint8</cite>. If <cite>None</cite>, a new array will be created.</p></li>
 <li><p><strong>render_ui</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to render the UI.</p></li>
 </ul>
@@ -1016,7 +1016,7 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique gizmo path/name.</p></li>
-<li><p><strong>transform</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.transformf.html#warp.transformf" title="(in Warp v1.11.1)"><em>transformf</em></a>) – Gizmo world transform.</p></li>
+<li><p><strong>transform</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.transformf.html#warp.transformf" title="(in Warp v1.12.0)"><em>transformf</em></a>) – Gizmo world transform.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1273,7 +1273,7 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>pos</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – The camera position.</p></li>
+<li><p><strong>pos</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.12.0)"><em>vec3f</em></a>) – The camera position.</p></li>
 <li><p><strong>pitch</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The camera pitch.</p></li>
 <li><p><strong>yaw</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The camera yaw.</p></li>
 </ul>
@@ -1301,7 +1301,7 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dd><p>Set world offsets and update the picking system.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>spacing</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a>) – Spacing between worlds along each axis.</p>
+<dd class="field-odd"><p><strong>spacing</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.12.0)"><em>vec3f</em></a>) – Spacing between worlds along each axis.</p>
 </dd>
 </dl>
 </dd></dl>

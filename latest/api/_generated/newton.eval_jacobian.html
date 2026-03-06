@@ -818,12 +818,12 @@ each articulation in the model.</p>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – The model containing articulation definitions.</p></li>
 <li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The state containing body transforms (body_q).</p></li>
-<li><p><strong>J</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a><em> | </em><em>None</em>) – Optional output array for the Jacobian, shape (articulation_count, max_links*6, max_dofs).
+<li><p><strong>J</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><em>array</em></a><em> | </em><em>None</em>) – Optional output array for the Jacobian, shape (articulation_count, max_links*6, max_dofs).
 If None, allocates internally.</p></li>
-<li><p><strong>joint_S_s</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a><em> | </em><em>None</em>) – Optional pre-allocated temp array for motion subspaces,
+<li><p><strong>joint_S_s</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><em>array</em></a><em> | </em><em>None</em>) – Optional pre-allocated temp array for motion subspaces,
 shape (joint_dof_count,), dtype wp.spatial_vector.
 If None, allocates internally.</p></li>
-<li><p><strong>mask</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a><em> | </em><em>None</em>) – Optional boolean mask to select which articulations to compute.
+<li><p><strong>mask</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><em>array</em></a><em> | </em><em>None</em>) – Optional boolean mask to select which articulations to compute.
 Shape [articulation_count]. If None, computes for all articulations.</p></li>
 </ul>
 </dd>
@@ -831,7 +831,7 @@ Shape [articulation_count]. If None, computes for all articulations.</p></li>
 <dd class="field-even"><p>The Jacobian array J, or None if the model has no articulations.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a> | None</p>
+<dd class="field-odd"><p><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><em>array</em></a> | None</p>
 </dd>
 </dl>
 </dd></dl>
