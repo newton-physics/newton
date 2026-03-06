@@ -69,11 +69,12 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
+        use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             njmax=100,
             nconmax=65,
-            use_mujoco_contacts=args.use_mujoco_contacts,
+            use_mujoco_contacts=use_mujoco_contacts,
         )
 
         self.state_0 = self.model.state()
