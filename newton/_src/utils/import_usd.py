@@ -2067,16 +2067,30 @@ def parse_usd(
                 collider_is_visible = (
                     show_collider_by_policy or collider_has_visual_material
                 ) and not hide_collider_for_body
+
+                shape_ke = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="ke",
+                    verbose=verbose,
+                )
+                if shape_ke is None:
+                    shape_ke = builder.default_shape_cfg.ke
+                shape_kd = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="kd",
+                    verbose=verbose,
+                )
+                if shape_kd is None:
+                    shape_kd = builder.default_shape_cfg.kd
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
-                        ke=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_ke", builder.default_shape_cfg.ke
-                        ),
-                        kd=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_kd", builder.default_shape_cfg.kd
-                        ),
+                        ke=shape_ke,
+                        kd=shape_kd,
                         kf=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
                         ),
