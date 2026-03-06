@@ -46,7 +46,8 @@ Joint types
    * - ``D6``
      - Up to 3 × ``mjJNT_SLIDE`` + 3 × ``mjJNT_HINGE``
      - Each active linear/angular DOF becomes a separate MuJoCo joint
-       (``_lin0``/``_ang0`` suffixes).
+       (``_lin``/``_ang`` suffixes, with numeric indices when multiple axes
+       are active).
    * - ``FIXED``
      - *(no joint)*
      - The child body is nested directly under its parent.  If the fixed joint
@@ -108,7 +109,7 @@ Shape parameters
 **Stiffness and damping (solref).**
   Newton's ``shape_material_ke`` (stiffness) and ``shape_material_kd``
   (damping) are converted to MuJoCo's geom ``solref`` ``(timeconst, dampratio)``
-  pair.  When either value is zero, the solver falls back to MuJoCo's defaults
+  pair.  When either value is zero or negative, the solver falls back to MuJoCo's defaults
   (``timeconst = 0.02``, ``dampratio = 1.0``).
 
 **Joint-limit stiffness and damping (solref_limit).**
@@ -230,6 +231,8 @@ Solver parameters follow a three-level resolution priority:
 
 1. **Constructor argument** — value passed to :class:`~newton.solvers.SolverMuJoCo`.
 2. **Custom attribute** (``model.mujoco.<option>``) — supports per-world values.
+   These attributes are typically populated automatically when importing USD or
+   MJCF assets.
 3. **Default** — the table below lists Newton defaults alongside MuJoCo
    defaults for reference.
 
@@ -243,12 +246,12 @@ Solver parameters follow a three-level resolution priority:
      - Notes
    * - ``solver``
      - ``newton``
-     - ``CG``
+     - ``newton``
      -
    * - ``integrator``
      - ``implicitfast``
      - ``euler``
-     -
+     - ``implicitfast`` provides better stability for stiff systems.
    * - ``cone``
      - ``pyramidal``
      - ``pyramidal``
@@ -266,12 +269,24 @@ Solver parameters follow a three-level resolution priority:
 Multi-world support
 -------------------
 
-When ``separate_worlds=True`` (the default for GPU mode), the solver builds a
+When ``separate_worlds=True`` (the default for GPU mode with multiple worlds),
+the solver builds a
 MuJoCo model from the **first world** only and replicates it across all worlds
 via ``mujoco_warp``.  This requires all Newton worlds to be structurally
 identical (same bodies, joints, and shapes).  Global entities (those with a
 negative world index) may only include static shapes — they are shared across
 all worlds without replication.
+
+
+Collision pipeline
+------------------
+
+By default :class:`~newton.solvers.SolverMuJoCo` uses MuJoCo's built-in
+collision detection (``use_mujoco_contacts=True``).  Alternatively, you can set
+``use_mujoco_contacts=False`` and pass contacts computed by Newton's own
+collision pipeline into :meth:`~newton.solvers.SolverMuJoCo.step`.  Newton's
+pipeline supports non-convex meshes, SDF-based contacts, and hydroelastic
+contacts, which are not available through MuJoCo's collision detection.
 
 
 Caveats
