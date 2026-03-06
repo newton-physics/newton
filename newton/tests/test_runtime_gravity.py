@@ -217,7 +217,7 @@ def test_runtime_gravity_with_cuda_graph(test, device):
 
     except Exception as e:
         # Make sure to end capture if something goes wrong
-        wp.capture_end()
+        wp.capture_end(device=device)
         raise e
 
 

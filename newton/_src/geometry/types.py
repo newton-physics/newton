@@ -680,7 +680,7 @@ class Mesh:
 
         Args:
             device: CUDA device for SDF allocation. When ``None``, uses the
-                current :func:`wp.ScopedDevice` or the Warp default device.
+                current :class:`wp.ScopedDevice` or the Warp default device.
             narrow_band_range: Signed narrow-band distance range [m] as
                 ``(inner, outer)``. Uses ``(-0.1, 0.1)`` when not provided.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided,

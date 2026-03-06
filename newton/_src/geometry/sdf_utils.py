@@ -120,7 +120,7 @@ class SDF:
             points: Vertex positions [m], shape ``(N, 3)``.
             indices: Triangle vertex indices [index], flattened or shape ``(M, 3)``.
             device: CUDA device for SDF allocation. When ``None``, uses the
-                current :func:`wp.ScopedDevice` or the Warp default device.
+                current :class:`wp.ScopedDevice` or the Warp default device.
             narrow_band_range: Signed narrow-band distance range [m] as ``(inner, outer)``.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided, takes
                 precedence over ``max_resolution``.
@@ -162,7 +162,7 @@ class SDF:
         Args:
             mesh: Source mesh geometry.
             device: CUDA device for SDF allocation. When ``None``, uses the
-                current :func:`wp.ScopedDevice` or the Warp default device.
+                current :class:`wp.ScopedDevice` or the Warp default device.
             narrow_band_range: Signed narrow-band distance range [m] as
                 ``(inner, outer)``.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided,
@@ -493,7 +493,7 @@ def _compute_sdf_from_shape_impl(
         bake_scale: If True, bake shape_scale into the SDF. If False, use (1,1,1) scale.
         verbose: Print debug info.
         device: CUDA device for all GPU allocations. When ``None``, uses the
-            current :func:`wp.ScopedDevice` or the Warp default device.
+            current :class:`wp.ScopedDevice` or the Warp default device.
 
     Returns:
         Tuple of (sdf_data, sparse_volume, coarse_volume, block_coords) where:
@@ -723,7 +723,7 @@ def compute_sdf_from_shape(
         bake_scale: If ``True``, bake ``shape_scale`` into generated SDF data.
         verbose: If ``True``, print debug information during SDF construction.
         device: CUDA device for SDF allocation. When ``None``, uses the
-            current :func:`wp.ScopedDevice` or the Warp default device.
+            current :class:`wp.ScopedDevice` or the Warp default device.
 
     Returns:
         Tuple ``(sdf_data, sparse_volume, coarse_volume, block_coords)``.
