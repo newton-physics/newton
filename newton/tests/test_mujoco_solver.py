@@ -13,8 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import tempfile
 import time
 import unittest
+import xml.etree.ElementTree as ET
 
 import numpy as np  # For numerical operations and random values
 import warp as wp
@@ -763,9 +766,8 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"dof_invweight0 should be >= 0 for world {world_idx}, dof {dof_idx}",
                 )
 
-
     def test_body_gravcomp_spec_conversion(self):
-        """Test that body gravcomp is correctly written to the MuJoCo spec and compiled into mj_model."""
+        """Test that body gravcomp is correctly written to the MuJoCo spec and saved XML."""
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
 
@@ -791,12 +793,23 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
         model = builder.finalize()
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
 
-        # mj_model is compiled from the spec — body 0 is the world body, then body1, body2
-        mj_gravcomp = solver.mj_model.body_gravcomp
-        self.assertAlmostEqual(float(mj_gravcomp[1]), 0.5, places=5)
-        self.assertAlmostEqual(float(mj_gravcomp[2]), 1.0, places=5)
+            # Verify compiled mj_model has correct values
+            mj_gravcomp = solver.mj_model.body_gravcomp
+            self.assertAlmostEqual(float(mj_gravcomp[1]), 0.5, places=5)
+            self.assertAlmostEqual(float(mj_gravcomp[2]), 1.0, places=5)
+
+            # Parse the saved XML and verify gravcomp is on the correct bodies
+            tree = ET.parse(xml_path)
+            bodies = {b.get("name"): b for b in tree.iter("body")}
+            self.assertAlmostEqual(float(bodies["body_0"].get("gravcomp")), 0.5, places=5)
+            self.assertAlmostEqual(float(bodies["body_1"].get("gravcomp")), 1.0, places=5)
+        finally:
+            os.unlink(xml_path)
 
 
 class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
