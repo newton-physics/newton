@@ -29,7 +29,7 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import Mesh
 from ..sim import ModelBuilder
-from ..sim.joints import JointTargetMode
+from ..sim.enums import JointTargetMode
 from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
 from .mesh import load_meshes_from_file
@@ -92,9 +92,9 @@ def parse_urdf(
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        source (str): The filename of the URDF file to parse, or the URDF XML string content.
-        xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-        override_root_xform (bool): If ``True``, the articulation root's world-space
+        source: The filename of the URDF file to parse, or the URDF XML string content.
+        xform: The transform to apply to the root body. If None, the transform is set to identity.
+        override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
             for cloning articulations at explicit positions. When a ``base_joint`` is
@@ -102,7 +102,7 @@ def parse_urdf(
             rotation) rather than splitting position/rotation. Not intended for
             sources containing multiple articulations, as all roots would be placed
             at the same ``xform``. Defaults to ``False``.
-        floating (bool or None): Controls the base joint type for the root body.
+        floating: Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
             - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
@@ -110,13 +110,13 @@ def parse_urdf(
             - ``False``: Creates a FIXED joint (0 DOF).
 
             Cannot be specified together with ``base_joint``.
-        base_joint (dict): Custom joint specification for connecting the root body to the world
+        base_joint: Custom joint specification for connecting the root body to the world
             (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
             custom mobility. Dictionary with joint parameters as accepted by
             :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
             Cannot be specified together with ``floating``.
-        parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+        parent_body: Parent body index for hierarchical composition. If specified, attaches the
             imported root body to this existing body, making them part of the same kinematic articulation.
             The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
             the root connects to the world frame. **Restriction**: Only the most recently added
@@ -167,18 +167,18 @@ def parse_urdf(
                     - ``body_idx``
                     - ❌ Error: FREE joints require world frame
 
-        scale (float): The scaling factor to apply to the imported mechanism.
-        hide_visuals (bool): If True, hide visual shapes.
-        parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
-        up_axis (AxisType): The up axis of the URDF. This is used to transform the URDF to the builder's up axis. It also determines the up axis of capsules and cylinders in the URDF. The default is Z.
-        force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
-        enable_self_collisions (bool): If True, self-collisions are enabled.
-        ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
-        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
-        bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
-        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
-        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
+        scale: The scaling factor to apply to the imported mechanism.
+        hide_visuals: If True, hide visual shapes.
+        parse_visuals_as_colliders: If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
+        up_axis: The up axis of the URDF. This is used to transform the URDF to the builder's up axis. It also determines the up axis of capsules and cylinders in the URDF. The default is Z.
+        force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
+        enable_self_collisions: If True, self-collisions are enabled.
+        ignore_inertial_definitions: If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
+        joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
+        bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
+        collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+        mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
+        force_position_velocity_actuation: If True and both position (stiffness) and velocity
             (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only

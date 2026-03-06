@@ -15,6 +15,7 @@
 
 import math
 import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -1166,6 +1167,54 @@ class TestImportUsdPhysics(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mass_fallback_instanced_colliders(self):
+        """Regression test: bodies with PhysicsMassAPI but no authored mass properties
+        and instanceable collision shapes must get positive mass from shape accumulation.
+
+        When collision shapes live inside instanceable prims, USD's
+        ComputeMassProperties cannot traverse into them and returns invalid results
+        (mass < 0). The importer must fall back to the mass properties already
+        accumulated by the builder during add_shape_*() calls, and respect the
+        body-level authored density instead of the builder's default shape density.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create a prototype with a collision sphere (outside the body hierarchy).
+        stage.OverridePrim("/Prototype_Collisions")
+        radius = 0.5
+        sphere = UsdGeom.Sphere.Define(stage, "/Prototype_Collisions/sphere")
+        sphere.CreateRadiusAttr().Set(radius)
+        UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+
+        # Create a rigid body with MassAPI applied and only density authored.
+        body_density = 5.0
+        body_xform = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body_xform.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+        mass_api.CreateDensityAttr().Set(body_density)
+
+        # Reference the collision prototype as an instanceable prim.
+        collisions = stage.DefinePrim("/World/Body/collisions")
+        collisions.GetReferences().AddInternalReference("/Prototype_Collisions")
+        collisions.SetInstanceable(True)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 1)
+        # Expected mass = body_density * sphere_volume = 5 * (4/3 * pi * 0.5^3).
+        expected_mass = body_density * (4.0 / 3.0 * np.pi * radius**3)
+        np.testing.assert_allclose(builder.body_mass[0], expected_mass, rtol=1e-5)
+        # Verify inertia is also positive (not garbage).
+        inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
+        self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_cube_cylinder_joint_count(self):
         builder = newton.ModelBuilder()
         import_results = builder.add_usd(
@@ -2169,7 +2218,7 @@ def PhysicsRevoluteJoint "Joint2"
         """Test that JointTargetMode is correctly inferred from USD joint drives."""
         from pxr import Usd
 
-        from newton._src.sim.joints import JointTargetMode  # noqa: PLC0415
+        from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
 
         usd_content = """#usda 1.0
 (
@@ -6224,14 +6273,19 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
 
-        # hide_collision_shapes=True: no VISIBLE flag on any collision shape
+        # hide_collision_shapes=True: hide colliders on bodies that have visuals
+        # but keep colliders visible on bodies with no visual-only geometry.
         builder3 = newton.ModelBuilder()
         result3 = builder3.add_usd(stage, hide_collision_shapes=True)
         path_shape_map3 = result3["path_shape_map"]
 
-        for path in ["/BodyWithVisuals/CollisionBox", "/BodyWithoutVisuals/CollisionSphere"]:
-            flags_hidden = builder3.shape_flags[path_shape_map3[path]]
-            self.assertFalse(flags_hidden & ShapeFlags.VISIBLE)
+        flags_hidden_with_visual = builder3.shape_flags[path_shape_map3["/BodyWithVisuals/CollisionBox"]]
+        self.assertTrue(flags_hidden_with_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_hidden_with_visual & ShapeFlags.VISIBLE)
+
+        flags_fallback_no_visual = builder3.shape_flags[path_shape_map3["/BodyWithoutVisuals/CollisionSphere"]]
+        self.assertTrue(flags_fallback_no_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_fallback_no_visual & ShapeFlags.VISIBLE)
 
         # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
         builder4 = newton.ModelBuilder()
@@ -6242,6 +6296,148 @@ def Xform "BodyWithoutVisuals" (
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+    @staticmethod
+    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
+        """Create a stage with a rigid body containing a collision mesh with PBR material."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        if add_visual_sphere:
+            visual_sphere = UsdGeom.Sphere.Define(stage, "/Body/VisualSphere")
+            visual_sphere.CreateRadiusAttr().Set(0.1)
+
+        collision_mesh = UsdGeom.Mesh.Define(stage, "/Body/CollisionMesh")
+        collision_mesh_prim = collision_mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collision_mesh_prim)
+        collision_mesh.CreatePointsAttr().Set(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ]
+        )
+        collision_mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        collision_mesh.CreateFaceVertexIndicesAttr().Set([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+
+        material = UsdShade.Material.Define(stage, "/Materials/PBR")
+        shader = UsdShade.Shader.Define(stage, "/Materials/PBR/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set(color)
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(collision_mesh_prim).Bind(material)
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_inherits_visual_material_properties(self):
+        """Visible fallback collider meshes should carry resolved visual material data."""
+        stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        np.testing.assert_allclose(np.array(mesh.color), np.array([0.2, 0.4, 0.6]), atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(mesh.roughness, 0.35, places=6)
+        self.assertAlmostEqual(mesh.metallic, 0.75, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_texture_does_not_change_body_mass(self):
+        """Render-only UV loading must not perturb collider mass or inertia."""
+        stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)
+
+        base_vertices = np.array(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
+        physics_mesh = newton.Mesh(base_vertices, indices)
+        render_mesh = newton.Mesh(base_vertices * 4.0, indices)
+        render_mesh._uvs = np.zeros((render_mesh.vertices.shape[0], 2), dtype=np.float32)
+
+        def _mock_get_mesh(_prim, *, load_uvs=False, load_normals=False):
+            del load_normals
+            return render_mesh if load_uvs else physics_mesh
+
+        with (
+            mock.patch(
+                "newton._src.utils.import_usd.usd.resolve_material_properties_for_prim",
+                return_value={
+                    "color": None,
+                    "roughness": 0.35,
+                    "metallic": 0.75,
+                    "texture": "dummy.png",
+                },
+            ),
+            mock.patch(
+                "newton._src.utils.import_usd.usd.get_mesh",
+                side_effect=_mock_get_mesh,
+            ),
+        ):
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(stage, hide_collision_shapes=True)
+
+        body_idx = result["path_body_map"]["/Body"]
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+        expected_density = builder.default_shape_cfg.density
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], physics_mesh.mass * expected_density, places=6)
+        self.assertNotAlmostEqual(builder.body_mass[body_idx], render_mesh.mass * expected_density, places=3)
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        self.assertEqual(mesh.texture, "dummy.png")
+        self.assertIsNotNone(mesh.uvs)
+        np.testing.assert_allclose(mesh.vertices, render_mesh.vertices, atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(mesh.mass, physics_mesh.mass, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visualized_collision_mesh_remains_visible_when_body_has_visual_shapes(self):
+        """Mesh colliders with visual material data stay visible even when body visuals exist."""
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.9, 0.1, 0.2), roughness=0.55, metallic=0.25, add_visual_sphere=True
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        path_shape_map = result["path_shape_map"]
+
+        self.assertIn("/Body/VisualSphere", path_shape_map)
+        visual_shape = path_shape_map["/Body/VisualSphere"]
+        self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.COLLIDE_SHAPES)
+
+        collision_shape = path_shape_map["/Body/CollisionMesh"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        np.testing.assert_allclose(np.array(mesh.color), np.array([0.9, 0.1, 0.2]), atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(mesh.roughness, 0.55, places=6)
+        self.assertAlmostEqual(mesh.metallic, 0.25, places=6)
 
 
 class TestImportUsdMimicJoint(unittest.TestCase):
@@ -6883,6 +7079,52 @@ class TestOverrideRootXform(unittest.TestCase):
 
         return stage
 
+    @staticmethod
+    def _make_stage_with_empty_world_body0_joint():
+        """Create a USD stage where a root fixed joint leaves physics:body0 empty."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/env/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/env/Robot/Base")
+        base.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.5))
+        base.AddOrientOp().Set(
+            Gf.Quatf(0.70710677, 0.18898223, 0.37796447, 0.5669467)
+        )  # 90-deg rotation around normalized axis (1,2,3)
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/env/Robot/WorldJointEmpty")
+        fixed.CreateBody1Rel().SetTargets(["/World/env/Robot/Base"])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        rev = UsdPhysics.RevoluteJoint.Define(stage, "/World/env/Robot/RevJoint")
+        rev.CreateBody0Rel().SetTargets(["/World/env/Robot/Base"])
+        rev.CreateBody1Rel().SetTargets(["/World/env/Robot/Link"])
+        rev.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        rev.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        rev.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        rev.CreateAxisAttr().Set("Z")
+
+        return stage
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_default_xform(self):
         """Root joint from non-body prim: default xform composes with ancestor transforms."""
@@ -6901,6 +7143,41 @@ class TestOverrideRootXform(unittest.TestCase):
         base_idx = builder.body_label.index("/World/env/Robot/Base")
         # xform (5,0,0) composed with Ground world xform (100,200,0.5) => (105, 200, 0.5)
         np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_empty_body0_uses_child_pose(self):
+        """Root fixed joint with empty body0 keeps joint_X_p aligned with imported root pose."""
+        stage = self._make_stage_with_empty_world_body0_joint()
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertIn("/World/env/Robot/WorldJointEmpty", builder.joint_label)
+        root_joint_idx = builder.joint_label.index("/World/env/Robot/WorldJointEmpty")
+        base_idx = builder.body_label.index("/World/env/Robot/Base")
+        assert_np_equal(
+            np.array(builder.joint_X_p[root_joint_idx].p),
+            np.array(builder.body_q[base_idx].p),
+            tol=1e-4,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        body_q = state.body_q.numpy()
+        np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
+        # Verify rotation is preserved (sign-invariant: q and -q are equivalent)
+        # Gf.Quatf stores (w, x, y, z); body_q uses xyzw.
+        expected_quat = np.array([0.18898223, 0.37796447, 0.5669467, 0.70710677])
+        actual_quat = body_q[base_idx, 3:]
+        if np.dot(actual_quat, expected_quat) < 0:
+            actual_quat = -actual_quat
+        np.testing.assert_allclose(
+            actual_quat,
+            expected_quat,
+            atol=1e-4,
+            err_msg="Root body rotation must match USD prim orientation",
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_override_root_xform(self):
@@ -7060,6 +7337,626 @@ def Mesh "cube"
         normals = np.asarray(mesh.normals)
         lengths = np.linalg.norm(normals, axis=1)
         np.testing.assert_allclose(lengths, 1.0, atol=1e-5)
+
+
+class TestTetMesh(unittest.TestCase):
+    def test_tetmesh_basic(self):
+        """Test TetMesh construction from raw arrays."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+
+        self.assertEqual(tm.vertex_count, 5)
+        self.assertEqual(tm.tet_count, 2)
+        self.assertEqual(tm.vertices.shape, (5, 3))
+        self.assertEqual(len(tm.tet_indices), 8)
+        self.assertIsNone(tm.k_mu)
+        self.assertIsNone(tm.density)
+
+    def test_tetmesh_surface_triangles(self):
+        """Test that surface triangles are correctly extracted from a single tet."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+
+        # A single tet has 4 boundary faces = 4 surface triangles
+        self.assertEqual(len(tm.surface_tri_indices), 4 * 3)
+
+    def test_tetmesh_surface_triangles_shared_face(self):
+        """Test that shared faces between adjacent tets are eliminated."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+
+        # 2 tets * 4 faces = 8 total, minus 2 shared (face 1-2-3 appears in both) = 6 boundary
+        self.assertEqual(len(tm.surface_tri_indices), 6 * 3)
+
+        # Verify original winding is preserved (not lexicographically sorted)
+        tris = tm.surface_tri_indices.reshape(-1, 3)
+        sorted_tris = np.sort(tris, axis=1)
+        has_unsorted = np.any(tris != sorted_tris)
+        self.assertTrue(has_unsorted, "Surface triangles should preserve winding, not be sorted")
+
+    def test_tetmesh_material_scalar_broadcast(self):
+        """Test that scalar material values are broadcast to per-element arrays."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices, k_mu=1000.0, k_lambda=2000.0, k_damp=5.0, density=1.0)
+
+        self.assertEqual(tm.k_mu.shape, (2,))
+        assert_np_equal(tm.k_mu, np.array([1000.0, 1000.0], dtype=np.float32))
+        assert_np_equal(tm.k_lambda, np.array([2000.0, 2000.0], dtype=np.float32))
+        assert_np_equal(tm.k_damp, np.array([5.0, 5.0], dtype=np.float32))
+        self.assertEqual(tm.density, 1.0)
+
+    def test_tetmesh_material_per_element(self):
+        """Test per-element material arrays."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        k_mu = np.array([1000.0, 5000.0], dtype=np.float32)
+        tm = newton.TetMesh(vertices, tet_indices, k_mu=k_mu)
+
+        assert_np_equal(tm.k_mu, k_mu)
+
+    def test_tetmesh_invalid_tet_indices_length(self):
+        """Test that non-multiple-of-4 tet_indices raises ValueError."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        with self.assertRaises(ValueError):
+            newton.TetMesh(vertices, np.array([0, 1, 2], dtype=np.int32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_simple.usda"))
+        prim = stage.GetPrimAtPath("/SimpleTetMesh")
+        tm = usd.get_tetmesh(prim)
+
+        self.assertEqual(tm.vertex_count, 5)
+        self.assertEqual(tm.tet_count, 2)
+        self.assertEqual(tm.vertices.dtype, np.float32)
+        self.assertEqual(tm.tet_indices.dtype, np.int32)
+
+        # Check vertices
+        assert_np_equal(tm.vertices[0], np.array([0.0, 0.0, 0.0], dtype=np.float32))
+        assert_np_equal(tm.vertices[4], np.array([1.0, 1.0, 1.0], dtype=np.float32))
+
+        # Check tet indices (flattened)
+        assert_np_equal(tm.tet_indices[:4], np.array([0, 1, 2, 3], dtype=np.int32))
+        assert_np_equal(tm.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_tetmesh_create_from_usd(self):
+        """Test TetMesh.create_from_usd() static factory method."""
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_simple.usda"))
+        prim = stage.GetPrimAtPath("/SimpleTetMesh")
+        tm = newton.TetMesh.create_from_usd(prim)
+
+        self.assertIsInstance(tm, newton.TetMesh)
+        self.assertEqual(tm.tet_count, 2)
+        self.assertEqual(tm.vertex_count, 5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_missing_points(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def TetMesh "Empty" ()
+{
+    int4[] tetVertexIndices = [(0, 1, 2, 3)]
+}
+"""
+        )
+        prim = stage.GetPrimAtPath("/Empty")
+        with self.assertRaises(ValueError):
+            usd.get_tetmesh(prim)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_missing_tet_indices(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def TetMesh "NoTets" ()
+{
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+}
+"""
+        )
+        prim = stage.GetPrimAtPath("/NoTets")
+        with self.assertRaises(ValueError):
+            usd.get_tetmesh(prim)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_find_tetmesh_prims(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_multi.usda"))
+        prims = usd.find_tetmesh_prims(stage)
+
+        # Should find TetA and TetB, but not NotATetMesh
+        self.assertEqual(len(prims), 2)
+        paths = sorted(str(p.GetPath()) for p in prims)
+        self.assertEqual(paths, ["/Root/TetA", "/Root/TetB"])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_find_tetmesh_prims_load_all(self):
+        """Test loading all TetMesh prims from a multi-mesh stage."""
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_multi.usda"))
+        prims = usd.find_tetmesh_prims(stage)
+        tetmeshes = [usd.get_tetmesh(p) for p in prims]
+
+        self.assertEqual(len(tetmeshes), 2)
+        # TetA: 4 verts, 1 tet; TetB: 5 verts, 2 tets
+        counts = sorted((tm.vertex_count, tm.tet_count) for tm in tetmeshes)
+        self.assertEqual(counts, [(4, 1), (5, 2)])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_find_tetmesh_prims_empty_stage(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Mesh "JustAMesh" ()
+{
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+}
+"""
+        )
+        prims = usd.find_tetmesh_prims(stage)
+        self.assertEqual(len(prims), 0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_with_material(self):
+        """Test that physics material properties are read from USD."""
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_material.usda"))
+        prim = stage.GetPrimAtPath("/World/SoftBody")
+        tm = usd.get_tetmesh(prim)
+
+        # E = 300000, nu = 0.3
+        # k_mu = E / (2 * (1 + nu)) = 300000 / 2.6 = 115384.615...
+        # k_lambda = E * nu / ((1 + nu) * (1 - 2*nu)) = 90000 / (1.3 * 0.4) = 173076.923...
+        self.assertIsNotNone(tm.k_mu)
+        self.assertIsNotNone(tm.k_lambda)
+        self.assertAlmostEqual(tm.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(tm.k_lambda[0], 300000.0 * 0.3 / (1.3 * 0.4), places=0)
+        self.assertAlmostEqual(tm.density, 40.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_no_material(self):
+        """Test that TetMesh without material binding has None material properties."""
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_simple.usda"))
+        prim = stage.GetPrimAtPath("/SimpleTetMesh")
+        tm = usd.get_tetmesh(prim)
+
+        self.assertIsNone(tm.k_mu)
+        self.assertIsNone(tm.k_lambda)
+        self.assertIsNone(tm.density)
+
+    def test_tetmesh_save_load_npz(self):
+        """Test TetMesh round-trip save/load via .npz."""
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices, k_mu=1000.0, k_lambda=2000.0, density=40.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
+            path = f.name
+
+        try:
+            tm.save(path)
+            tm2 = newton.TetMesh.create_from_file(path)
+
+            assert_np_equal(tm2.vertices, tm.vertices)
+            assert_np_equal(tm2.tet_indices, tm.tet_indices)
+            assert_np_equal(tm2.k_mu, tm.k_mu)
+            assert_np_equal(tm2.k_lambda, tm.k_lambda)
+            self.assertAlmostEqual(tm2.density, 40.0)
+        finally:
+            os.unlink(path)
+
+    def test_tetmesh_save_load_vtk(self):
+        """Test TetMesh round-trip save/load via .vtk (meshio)."""
+
+        try:
+            import meshio  # noqa: F401
+        except ImportError:
+            self.skipTest("meshio not installed")
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        per_tet_region = np.array([10, 20], dtype=np.int32)
+        per_vertex_temp = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            k_mu=1000.0,
+            k_lambda=2000.0,
+            density=40.0,
+            custom_attributes={"regionId": per_tet_region, "temperature": per_vertex_temp},
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".vtk", delete=False) as f:
+            path = f.name
+
+        try:
+            tm.save(path)
+            tm2 = newton.TetMesh.create_from_file(path)
+
+            self.assertEqual(tm2.vertex_count, 5)
+            self.assertEqual(tm2.tet_count, 2)
+            assert_np_equal(tm2.tet_indices[:4], np.array([0, 1, 2, 3], dtype=np.int32))
+            assert_np_equal(tm2.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
+
+            # Material arrays round-trip
+            self.assertIsNotNone(tm2.k_mu)
+            assert_np_equal(tm2.k_mu, np.array([1000.0, 1000.0], dtype=np.float32))
+            assert_np_equal(tm2.k_lambda, np.array([2000.0, 2000.0], dtype=np.float32))
+            self.assertAlmostEqual(tm2.density, 40.0)
+
+            # Custom attributes round-trip (check values, not just keys)
+            self.assertIn("regionId", tm2.custom_attributes)
+            self.assertIn("temperature", tm2.custom_attributes)
+            region_arr, _region_freq = tm2.custom_attributes["regionId"]
+            temp_arr, _temp_freq = tm2.custom_attributes["temperature"]
+            assert_np_equal(region_arr.flatten(), per_tet_region)
+            assert_np_equal(temp_arr.flatten(), per_vertex_temp)
+        finally:
+            os.unlink(path)
+
+    def test_tetmesh_custom_attributes_reserved_name(self):
+        """Test that reserved custom attribute names are rejected."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+
+        for reserved in ("vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"):
+            with self.assertRaisesRegex(ValueError, "reserved", msg=f"Should reject reserved name '{reserved}'"):
+                newton.TetMesh(vertices, tet_indices, custom_attributes={reserved: np.array([1.0])})
+
+    def test_tetmesh_custom_attributes_constructor(self):
+        """Test TetMesh stores custom attributes passed at construction."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        temperature = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
+        region_id = np.array([7], dtype=np.int32)
+
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            custom_attributes={
+                "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
+                "regionId": region_id,
+            },
+        )
+
+        self.assertIn("temperature", tm.custom_attributes)
+        self.assertIn("regionId", tm.custom_attributes)
+        arr, freq = tm.custom_attributes["temperature"]
+        assert_np_equal(arr, temperature)
+        self.assertEqual(freq, newton.Model.AttributeFrequency.PARTICLE)
+        arr, freq = tm.custom_attributes["regionId"]
+        assert_np_equal(arr, region_id)
+        self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
+
+    def test_tetmesh_custom_attributes_empty_by_default(self):
+        """Test TetMesh has empty custom_attributes when none are provided."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        tm = newton.TetMesh(vertices, tet_indices)
+        self.assertEqual(len(tm.custom_attributes), 0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_tetmesh_custom_attributes_from_usd(self):
+        """Test that custom primvars are parsed from USD into custom_attributes."""
+        from pxr import Usd
+
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        stage = Usd.Stage.Open(os.path.join(assets_dir, "tetmesh_custom_attrs.usda"))
+        prim = stage.GetPrimAtPath("/TetMeshWithAttrs")
+        tm = newton.TetMesh.create_from_usd(prim)
+
+        self.assertEqual(tm.vertex_count, 5)
+        self.assertEqual(tm.tet_count, 2)
+
+        # Per-vertex temperature primvar
+        self.assertIn("temperature", tm.custom_attributes)
+        arr, freq = tm.custom_attributes["temperature"]
+        assert_np_equal(arr, np.array([100, 200, 300, 400, 500], dtype=np.float32))
+        self.assertEqual(freq, newton.Model.AttributeFrequency.PARTICLE)
+
+        # Per-tet regionId primvar
+        self.assertIn("regionId", tm.custom_attributes)
+        arr, freq = tm.custom_attributes["regionId"]
+        assert_np_equal(arr, np.array([0, 1], dtype=np.int32))
+        self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
+
+        # Per-vertex vector primvar
+        self.assertIn("velocityField", tm.custom_attributes)
+        arr, freq = tm.custom_attributes["velocityField"]
+        self.assertEqual(arr.shape, (5, 3))
+        self.assertEqual(freq, newton.Model.AttributeFrequency.PARTICLE)
+
+    def test_tetmesh_custom_attributes_npz_roundtrip(self):
+        """Test custom attributes survive save/load via .npz."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        temperature = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
+        region_id = np.array([3], dtype=np.int32)
+
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            custom_attributes={
+                "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
+                "regionId": region_id,
+            },
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
+            path = f.name
+
+        try:
+            tm.save(path)
+            tm2 = newton.TetMesh.create_from_file(path)
+
+            self.assertIn("temperature", tm2.custom_attributes)
+            arr, freq = tm2.custom_attributes["temperature"]
+            assert_np_equal(arr, temperature)
+            self.assertEqual(freq, newton.Model.AttributeFrequency.PARTICLE)
+            self.assertIn("regionId", tm2.custom_attributes)
+            arr, freq = tm2.custom_attributes["regionId"]
+            assert_np_equal(arr, region_id)
+            self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
+        finally:
+            os.unlink(path)
+
+    def test_tetmesh_custom_attributes_to_model(self):
+        """Test custom attributes flow from TetMesh through add_soft_mesh into the finalized Model."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+
+        # Per-vertex attribute (5 vertices)
+        temperature = np.array([100.0, 200.0, 300.0, 400.0, 500.0], dtype=np.float32)
+        # Per-tet attribute (2 tets)
+        region_id = np.array([0, 1], dtype=np.int32)
+
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            custom_attributes={
+                "temperature": temperature,
+                "regionId": region_id,
+            },
+        )
+
+        builder = newton.ModelBuilder()
+
+        # Register custom attributes before calling add_soft_mesh
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="temperature",
+                dtype=wp.float32,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="regionId",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.TETRAHEDRON,
+            )
+        )
+
+        builder.add_soft_mesh(
+            mesh=tm,
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+        )
+
+        model = builder.finalize()
+
+        # Verify per-vertex attribute (PARTICLE frequency)
+        self.assertTrue(hasattr(model, "temperature"))
+        temp_arr = model.temperature.numpy()
+        self.assertEqual(len(temp_arr), model.particle_count)
+        np.testing.assert_allclose(temp_arr, temperature)
+
+        # Verify per-tet attribute (TETRAHEDRON frequency)
+        self.assertTrue(hasattr(model, "regionId"))
+        region_arr = model.regionId.numpy()
+        self.assertEqual(len(region_arr), model.tet_count)
+        np.testing.assert_array_equal(region_arr, region_id)
+
+    def test_mesh_create_from_file_obj(self):
+        """Test Mesh.create_from_file with an OBJ file."""
+
+        # Write a minimal OBJ file (single triangle)
+        obj_content = "v 0.0 0.0 0.0\nv 1.0 0.0 0.0\nv 0.0 1.0 0.0\nf 1 2 3\n"
+
+        with tempfile.NamedTemporaryFile(suffix=".obj", delete=False, mode="w") as f:
+            f.write(obj_content)
+            path = f.name
+
+        try:
+            mesh = newton.Mesh.create_from_file(path)
+
+            self.assertIsInstance(mesh, newton.Mesh)
+            self.assertEqual(len(mesh.vertices), 3)
+            self.assertEqual(len(mesh.indices), 3)
+        finally:
+            os.unlink(path)
+
+    def test_mesh_create_from_file_not_found(self):
+        """Test Mesh.create_from_file raises on missing file."""
+        with self.assertRaises(FileNotFoundError):
+            newton.Mesh.create_from_file("nonexistent_file.obj")
+
+    def test_tetmesh_create_from_file_not_found(self):
+        """Test TetMesh.create_from_file raises on missing file."""
+        with self.assertRaises(FileNotFoundError):
+            newton.TetMesh.create_from_file("nonexistent_file.vtk")
+
+    # ------------------------------------------------------------------
+    # add_soft_mesh(mesh=TetMesh) builder integration
+    # ------------------------------------------------------------------
+
+    def _make_two_tet_mesh(self, **kwargs):
+        """Helper: 5 vertices, 2 tets sharing face (1,2,3)."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
+        return newton.TetMesh(vertices, tet_indices, **kwargs)
+
+    def test_add_soft_mesh_with_tetmesh(self):
+        """Test add_soft_mesh accepts a TetMesh and populates the builder."""
+        tm = self._make_two_tet_mesh()
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        self.assertEqual(len(builder.particle_q), 5)
+        self.assertEqual(len(builder.tet_indices), 2)
+        # 6 boundary triangles (2 tets * 4 faces - 2 shared)
+        self.assertEqual(len(builder.tri_indices), 6)
+
+    def test_add_soft_mesh_tetmesh_density_override(self):
+        """Test that explicit density overrides TetMesh density."""
+        tm = self._make_two_tet_mesh(density=10.0)
+
+        # Build with TetMesh density (10.0)
+        builder_base = newton.ModelBuilder()
+        builder_base.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        mass_base = sum(builder_base.particle_mass)
+
+        # Build with overridden density (99.0)
+        builder_override = newton.ModelBuilder()
+        builder_override.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+            density=99.0,
+        )
+        mass_override = sum(builder_override.particle_mass)
+
+        # Mass should scale with density ratio
+        self.assertGreater(mass_base, 0.0)
+        self.assertAlmostEqual(mass_override / mass_base, 99.0 / 10.0, places=4)
+
+    def test_add_soft_mesh_tetmesh_per_element_materials(self):
+        """Test per-element material arrays flow through to the builder."""
+        tm = self._make_two_tet_mesh(
+            k_mu=np.array([100.0, 200.0], dtype=np.float32),
+            k_lambda=np.array([300.0, 400.0], dtype=np.float32),
+            k_damp=np.array([0.1, 0.2], dtype=np.float32),
+        )
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        # Verify per-element values are stored
+        self.assertAlmostEqual(builder.tet_materials[0][0], 100.0)
+        self.assertAlmostEqual(builder.tet_materials[1][0], 200.0)
+        self.assertAlmostEqual(builder.tet_materials[0][1], 300.0)
+        self.assertAlmostEqual(builder.tet_materials[1][1], 400.0)
+
+    def test_add_soft_mesh_backward_compat(self):
+        """Test raw vertices/indices still work (backward compatibility)."""
+        vertices = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        indices = [0, 1, 2, 3]
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            vertices=vertices,
+            indices=indices,
+            density=1.0,
+            k_mu=1000.0,
+            k_lambda=1000.0,
+            k_damp=0.0,
+        )
+        self.assertEqual(len(builder.particle_q), 4)
+        self.assertEqual(len(builder.tet_indices), 1)
+        self.assertEqual(len(builder.tri_indices), 4)
+
+    def test_add_soft_mesh_no_input_raises(self):
+        """Test ValueError when neither mesh nor vertices/indices provided."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_soft_mesh(
+                pos=(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=(0.0, 0.0, 0.0),
+            )
+
+    def test_add_soft_mesh_invalid_mesh_type(self):
+        """Test TypeError when mesh is not a TetMesh."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(TypeError):
+            builder.add_soft_mesh(
+                pos=(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=(0.0, 0.0, 0.0),
+                mesh="not_a_tetmesh",
+            )
+
+    def test_add_soft_mesh_instancing(self):
+        """Test adding the same TetMesh twice creates independent instances."""
+        tm = self._make_two_tet_mesh(k_mu=500.0, k_lambda=500.0, density=1.0)
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        builder.add_soft_mesh(
+            pos=(2.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            mesh=tm,
+        )
+        self.assertEqual(len(builder.particle_q), 10)
+        self.assertEqual(len(builder.tet_indices), 4)
+        self.assertEqual(len(builder.tri_indices), 12)
 
 
 if __name__ == "__main__":

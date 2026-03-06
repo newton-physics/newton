@@ -476,6 +476,92 @@ def test_ik_error_mask_and_indices(test, device):
     test.assertIn("mutually exclusive", str(cm.exception))
 
 
+def _build_dynamic_and_kinematic_single_joint_model(device):
+    builder = newton.ModelBuilder()
+
+    dynamic_body = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    dynamic_joint = builder.add_joint_revolute(
+        parent=-1,
+        child=dynamic_body,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([dynamic_joint], label="dynamic_articulation")
+
+    kinematic_body = builder.add_link(
+        xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()),
+        is_kinematic=True,
+    )
+    kinematic_joint = builder.add_joint_revolute(
+        parent=-1,
+        child=kinematic_body,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([kinematic_joint], label="kinematic_articulation")
+
+    return builder.finalize(device=device)
+
+
+def test_fk_body_flag_filter_dynamic_only(test, device):
+    model = _build_dynamic_and_kinematic_single_joint_model(device)
+    state = model.state()
+
+    joint_qd = wp.zeros(model.joint_dof_count, dtype=float, device=device)
+    zero_q = wp.zeros(model.joint_coord_count, dtype=float, device=device)
+    newton.eval_fk(model, zero_q, joint_qd, state)
+    initial_body_q = state.body_q.numpy().copy()
+
+    joint_q = wp.array(np.array([0.35, -0.45]), dtype=float, device=device)
+    newton.eval_fk(
+        model,
+        joint_q,
+        joint_qd,
+        state,
+        body_flag_filter=int(newton.BodyFlags.DYNAMIC),
+    )
+    body_q = state.body_q.numpy()
+
+    # dynamic body should be updated by FK
+    dynamic_quat_dot = abs(float(np.dot(initial_body_q[0, 3:7], body_q[0, 3:7])))
+    test.assertLess(dynamic_quat_dot, 0.999)
+
+    # kinematic body should be restored to the previous state
+    assert_np_equal(initial_body_q[1], body_q[1], tol=1e-8)
+
+
+def test_ik_body_flag_filter_dynamic_only(test, device):
+    model = _build_dynamic_and_kinematic_single_joint_model(device)
+    state = model.state()
+
+    joint_q = wp.array(np.array([0.2, -0.4]), dtype=float, device=device)
+    joint_qd = wp.zeros(model.joint_dof_count, dtype=float, device=device)
+    newton.eval_fk(model, joint_q, joint_qd, state)
+
+    recovered_q = wp.full(model.joint_coord_count, 7.0, dtype=float, device=device)
+    recovered_qd = wp.full(model.joint_dof_count, 3.0, dtype=float, device=device)
+    newton.eval_ik(
+        model,
+        state,
+        recovered_q,
+        recovered_qd,
+        body_flag_filter=int(newton.BodyFlags.DYNAMIC),
+    )
+
+    recovered_q_np = recovered_q.numpy()
+    recovered_qd_np = recovered_qd.numpy()
+
+    # dynamic articulation is updated
+    test.assertAlmostEqual(float(recovered_q_np[0]), 0.2, places=5)
+    test.assertAlmostEqual(float(recovered_qd_np[0]), 0.0, places=6)
+
+    # kinematic articulation is preserved from the previous values
+    test.assertAlmostEqual(float(recovered_q_np[1]), 7.0, places=6)
+    test.assertAlmostEqual(float(recovered_qd_np[1]), 3.0, places=6)
+
+
 devices = get_test_devices()
 
 
@@ -494,6 +580,18 @@ add_function_test(TestSimKinematics, "test_isaac_lab_use_case", test_isaac_lab_u
 add_function_test(TestSimKinematics, "test_bounds_checking", test_bounds_checking, devices=devices)
 add_function_test(TestSimKinematics, "test_ik_with_mask", test_ik_with_mask, devices=devices)
 add_function_test(TestSimKinematics, "test_ik_error_mask_and_indices", test_ik_error_mask_and_indices, devices=devices)
+add_function_test(
+    TestSimKinematics,
+    "test_fk_body_flag_filter_dynamic_only",
+    test_fk_body_flag_filter_dynamic_only,
+    devices=devices,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_ik_body_flag_filter_dynamic_only",
+    test_ik_body_flag_filter_dynamic_only,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":

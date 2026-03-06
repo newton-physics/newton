@@ -443,12 +443,12 @@ def transform_inertia(mass: float, inertia: wp.mat33, offset: wp.vec3, quat: wp.
     where :math:`\\mathbf{I}_3` is the :math:`3\\times3` identity matrix.
 
     Args:
-        mass (float): Mass of the rigid body.
-        inertia (wp.mat33): Inertia tensor expressed in the body's local frame, relative
+        mass: Mass of the rigid body.
+        inertia: Inertia tensor expressed in the body's local frame, relative
             to its center of mass.
-        offset (wp.vec3): Position vector from the new frame's origin to the body's
+        offset: Position vector from the new frame's origin to the body's
             center of mass.
-        quat (wp.quat): Orientation of the body relative to the new frame, expressed
+        quat: Orientation of the body relative to the new frame, expressed
             as a quaternion.
 
     Returns:

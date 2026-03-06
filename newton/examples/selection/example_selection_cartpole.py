@@ -56,7 +56,7 @@ def apply_forces_kernel(joint_q: wp.array3d(dtype=float), joint_f: wp.array3d(dt
 
 
 class Example:
-    def __init__(self, viewer, world_count=16, max_worlds=None, verbose=True):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -64,7 +64,9 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
+        max_worlds = args.max_worlds
+        verbose = True
 
         world = newton.ModelBuilder()
         world.add_usd(
@@ -98,13 +100,13 @@ class Example:
         if USE_TORCH:
             import torch  # noqa: PLC0415
 
-            cart_positions = 2.0 - 4.0 * torch.rand(world_count)
-            pole1_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(world_count)
-            pole2_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(world_count)
+            cart_positions = 2.0 - 4.0 * torch.rand(self.world_count)
+            pole1_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(self.world_count)
+            pole2_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(self.world_count)
             joint_q = torch.stack([cart_positions, pole1_angles, pole2_angles], dim=1)
         else:
             joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
-            wp.launch(randomize_states_kernel, dim=world_count, inputs=[joint_q, 42])
+            wp.launch(randomize_states_kernel, dim=self.world_count, inputs=[joint_q, 42])
 
         self.cartpoles.set_attribute("joint_q", self.state_0, joint_q)
 
@@ -112,7 +114,14 @@ class Example:
             self.cartpoles.eval_fk(self.state_0)
 
         self.viewer.set_model(self.model, max_worlds=max_worlds)
-        self.viewer.set_world_offsets((2.0, 0.0, 0.0))
+        self.viewer.set_world_offsets((1.0, 0.0, 0.0))
+
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(-15.0, 1.0, 3.0),
+            pitch=-15.0,
+            yaw=0.0,
+        )
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(
@@ -219,15 +228,15 @@ class Example:
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=16)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument(
-        "--world-count",
-        type=int,
-        default=16,
-        help="Total number of simulated worlds.",
-    )
+    parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
 
@@ -236,6 +245,6 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, world_count=args.world_count, max_worlds=args.max_worlds)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

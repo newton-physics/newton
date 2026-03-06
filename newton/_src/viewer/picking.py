@@ -42,10 +42,10 @@ class Picking:
         Initializes the picking system.
 
         Args:
-            model (newton.Model): The model to pick from.
-            pick_stiffness (float): The stiffness that will be used to compute the force applied to the picked body.
-            pick_damping (float): The damping that will be used to compute the force applied to the picked body.
-            world_offsets (wp.array | None): Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
+            model: The model to pick from.
+            pick_stiffness: The stiffness that will be used to compute the force applied to the picked body.
+            pick_damping: The damping that will be used to compute the force applied to the picked body.
+            world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
         """
         self.model = model
         self.pick_stiffness = pick_stiffness
@@ -81,7 +81,7 @@ class Picking:
         Applies a force to the picked body.
 
         Args:
-            state (newton.State): The simulation state.
+            state: The simulation state.
         """
         if self.model is None:
             return
@@ -96,6 +96,7 @@ class Picking:
                 state.body_f,
                 self.pick_body,
                 self.pick_state,
+                self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
             ],
@@ -122,8 +123,8 @@ class Picking:
         This function is used to track the force that needs to be applied to the picked body as the mouse is dragged.
 
         Args:
-            ray_start (wp.vec3f): The start point of the ray.
-            ray_dir (wp.vec3f): The direction of the ray.
+            ray_start: The start point of the ray.
+            ray_dir: The direction of the ray.
         """
         if not self.is_picking():
             return
@@ -158,9 +159,9 @@ class Picking:
         will be applied to the picked body.
 
         Args:
-            state (newton.State): The simulation state.
-            ray_start (wp.vec3f): The start point of the ray.
-            ray_dir (wp.vec3f): The direction of the ray.
+            state: The simulation state.
+            ray_start: The start point of the ray.
+            ray_dir: The direction of the ray.
         """
 
         if self.model is None:
@@ -241,7 +242,7 @@ class Picking:
             wp.launch(
                 kernel=compute_pick_state_kernel,
                 dim=1,
-                inputs=[state.body_q, body_index, hit_point_world],
+                inputs=[state.body_q, self.model.body_flags, body_index, hit_point_world],
                 outputs=[self.pick_body, self.pick_state],
                 device=self.model.device,
             )

@@ -26,6 +26,10 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from pxr import Usd
 
+    UsdStage = Usd.Stage
+else:
+    UsdStage = Any
+
 import numpy as np
 import warp as wp
 
@@ -33,7 +37,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.joints import JointTargetMode
+from ..sim.enums import JointTargetMode
 from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -45,7 +49,7 @@ AttributeFrequency = Model.AttributeFrequency
 
 def parse_usd(
     builder: ModelBuilder,
-    source,
+    source: str | UsdStage,
     *,
     xform: Transform | None = None,
     floating: bool | None = None,
@@ -81,15 +85,15 @@ def parse_usd(
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
-        xform (Transform): The transform to apply to the entire scene.
-        override_root_xform (bool): If ``True``, the articulation root's world-space
+        source: The file path to the USD file, or an existing USD stage instance.
+        xform: The transform to apply to the entire scene.
+        override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
             for cloning articulations at explicit positions. Not intended for sources
             containing multiple articulations, as all roots would be placed at the
             same ``xform``. Defaults to ``False``.
-        floating (bool or None): Controls the base joint type for the root body (bodies not connected as
+        floating: Controls the base joint type for the root body (bodies not connected as
             a child to any joint).
 
             - ``None`` (default): Uses format-specific default (creates a FREE joint for USD bodies without joints).
@@ -98,13 +102,13 @@ def parse_usd(
             - ``False``: Creates a FIXED joint (0 DOF).
 
             Cannot be specified together with ``base_joint``.
-        base_joint (dict): Custom joint specification for connecting the root body to the world
+        base_joint: Custom joint specification for connecting the root body to the world
             (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
             custom mobility. Dictionary with joint parameters as accepted by
             :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
             Cannot be specified together with ``floating``.
-        parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+        parent_body: Parent body index for hierarchical composition. If specified, attaches the
             imported root body to this existing body, making them part of the same kinematic articulation.
             The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
             the root connects to the world frame. **Restriction**: Only the most recently added
@@ -155,28 +159,34 @@ def parse_usd(
                     - ``body_idx``
                     - ❌ Error: FREE joints require world frame
 
-        only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
-        only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-        joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
-        verbose (bool): If True, print additional information about the parsed USD file. Default is False.
-        ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions (bool): Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
-        apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
-        root_path (str): The USD path to import, defaults to "/".
-        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
-        bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
-        skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-        load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
-        load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-        hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
-        force_show_colliders (bool): If True, collision shapes get the VISIBLE flag
+        only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+        only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
+        joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+        verbose: If True, print additional information about the parsed USD file. Default is False.
+        ignore_paths: A list of regular expressions matching prim paths to ignore.
+        collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
+        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+        apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
+        root_path: The USD path to import, defaults to "/".
+        joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
+        bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
+        skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
+        load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+        hide_collision_shapes: If True, collision shapes on bodies that already
+            have visual-only geometry are hidden. Collision shapes on bodies
+            without visual-only geometry remain visible as a rendering fallback.
+            Mesh colliders with authored PBR material data (texture,
+            roughness, or metallic) also remain visible so collision-only
+            render meshes are not lost.
+            Default is False.
+        force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
-            ``hide_collision_shapes=True`` still takes precedence and will suppress
-            the VISIBLE flag even when this option is set. Default is False.
-        parse_mujoco_options (bool): Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
-        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
-        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
+            ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
+            colliders on bodies with visual-only geometry. Default is False.
+        parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+        schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
             These include namespaced attributes such as ``newton:*``, ``physx*``
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
@@ -186,7 +196,7 @@ def parse_usd(
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
-        force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
+        force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
@@ -265,6 +275,7 @@ def parse_usd(
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
+    default_joint_velocity_limit = builder.default_joint_cfg.velocity_limit
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -333,7 +344,7 @@ def parse_usd(
     # cache for resolved material properties (keyed by prim path)
     material_props_cache: dict[str, dict[str, Any]] = {}
     # cache for mesh data loaded from USD prims
-    mesh_cache: dict[tuple[str, bool], Mesh] = {}
+    mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -382,6 +393,51 @@ def parse_usd(
         mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
         mesh_cache[key] = mesh
         return mesh
+
+    def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
+        """Load a renderable mesh without changing physics mass properties."""
+        material_props = _get_material_props_cached(prim)
+        texture = material_props.get("texture")
+        physics_mesh = _get_mesh_cached(prim)
+        if texture is not None:
+            render_mesh = _get_mesh_cached(prim, load_uvs=True)
+            # Texture UV expansion is render-only. Preserve the collision mesh's
+            # mass/inertia so visibility changes do not perturb simulation.
+            mesh = Mesh(
+                render_mesh.vertices,
+                render_mesh.indices,
+                normals=render_mesh.normals,
+                uvs=render_mesh.uvs,
+                compute_inertia=False,
+                is_solid=physics_mesh.is_solid,
+                maxhullvert=physics_mesh.maxhullvert,
+                sdf=physics_mesh.sdf,
+            )
+            mesh.mass = physics_mesh.mass
+            mesh.com = physics_mesh.com
+            mesh.inertia = physics_mesh.inertia
+            mesh.has_inertia = physics_mesh.has_inertia
+        else:
+            mesh = physics_mesh.copy(recompute_inertia=False)
+        if texture:
+            mesh.texture = texture
+        if mesh.texture is not None and mesh.uvs is None:
+            warnings.warn(
+                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                stacklevel=2,
+            )
+            mesh.texture = None
+        if material_props.get("color") is not None and mesh.texture is None:
+            mesh.color = material_props["color"]
+        if material_props.get("roughness") is not None:
+            mesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            mesh.metallic = material_props["metallic"]
+        return mesh
+
+    def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
+        # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
+        return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
 
     bodies_with_visual_shapes: set[int] = set()
 
@@ -537,25 +593,7 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "mesh":
-                # Resolve material properties first (cached) to determine if we need UVs
-                material_props = _get_material_props_cached(prim)
-                texture = material_props.get("texture")
-                # Only load UVs if we have a texture to avoid expensive faceVarying expansion
-                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None))
-                if texture:
-                    mesh.texture = texture
-                if mesh.texture is not None and mesh.uvs is None:
-                    warnings.warn(
-                        f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                        stacklevel=2,
-                    )
-                    mesh.texture = None
-                if material_props.get("color") is not None and mesh.texture is None:
-                    mesh.color = material_props["color"]
-                if material_props.get("roughness") is not None:
-                    mesh.roughness = material_props["roughness"]
-                if material_props.get("metallic") is not None:
-                    mesh.metallic = material_props["metallic"]
+                mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
@@ -699,6 +737,13 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
+        joint_velocity_limit = R.get_value(
+            joint_prim,
+            prim_type=PrimType.JOINT,
+            key="velocity_limit",
+            default=None,
+            verbose=verbose,
+        )
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
@@ -746,6 +791,7 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
+            joint_params["velocity_limit"] = joint_velocity_limit
             if joint_desc.drive.enabled:
                 target_vel = joint_desc.drive.targetVelocity
                 target_pos = joint_desc.drive.targetPosition
@@ -798,6 +844,8 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
+                if joint_params["velocity_limit"] is not None:
+                    joint_params["velocity_limit"] *= DegreesToRadian
 
                 joint_index = builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -923,6 +971,9 @@ def parse_usd(
                             target_kd=target_kd,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            velocity_limit=joint_velocity_limit
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
@@ -975,6 +1026,9 @@ def parse_usd(
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            velocity_limit=joint_velocity_limit * DegreesToRadian
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
@@ -1586,13 +1640,59 @@ def parse_usd(
                         root_joint_desc = joint_descriptions[joint_names[i]]
                         b0 = str(root_joint_desc.body0)
                         b1 = str(root_joint_desc.body1)
-                        world_body_path = b0 if body_ids.get(b0, -1) == -1 else b1
+                        # Determine the world-facing side from this articulation's body set.
+                        # path_body_map includes previously imported articulations, so using
+                        # it here can misidentify the world-side path for the current root
+                        # joint when b0 references an external rigid body.
+                        if b0 not in body_ids:
+                            world_body_path = b0
+                        elif b1 not in body_ids:
+                            world_body_path = b1
+                        else:
+                            # Defensive fallback; root joints should have exactly one side
+                            # outside the articulation.
+                            world_body_path = b0
                         world_body_prim = stage.GetPrimAtPath(world_body_path) if world_body_path else None
                         if world_body_prim is not None and world_body_prim.IsValid():
                             world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
                         else:
-                            # world-side path can be empty (body0 == ""); localPose0 already carries world-side pose
-                            world_body_xform = wp.transform_identity()
+                            # body0/body1 can resolve to world with an empty path (""),
+                            # leaving no world-side prim to query.
+                            # If the authored world-side local pose is identity, recover
+                            # the missing world-side frame from the resolved child body
+                            # pose and local poses so root-joint FK stays consistent with
+                            # imported body_q.
+                            # If the world-side local pose is non-identity, keep the
+                            # previous identity fallback: USD often bakes non-rigid world
+                            # anchors directly into localPose0/localPose1 in this case.
+                            _, child_local_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+                                root_joint_desc,
+                                body_ids,
+                                get_transforms=True,
+                            )
+                            assert parent_tf is not None and child_tf is not None
+                            identity_tf = wp.transform_identity()
+                            parent_pos = np.array(parent_tf.p, dtype=float)
+                            parent_quat = np.array(parent_tf.q, dtype=float)
+                            identity_pos = np.array(identity_tf.p, dtype=float)
+                            identity_quat = np.array(identity_tf.q, dtype=float)
+                            parent_pos_is_identity = np.allclose(parent_pos, identity_pos, atol=1e-6)
+                            # q and -q represent the same rotation
+                            parent_rot_is_identity = abs(np.dot(parent_quat, identity_quat)) > 1.0 - 1e-6
+                            if (
+                                parent_pos_is_identity
+                                and parent_rot_is_identity
+                                and 0 <= child_local_id < len(body_labels)
+                            ):
+                                child_path = body_labels[child_local_id]
+                                child_prim = stage.GetPrimAtPath(child_path)
+                            else:
+                                child_prim = None
+                            if child_prim is not None and child_prim.IsValid():
+                                child_world_xform = usd.get_transform(child_prim, local=False, xform_cache=xform_cache)
+                                world_body_xform = child_world_xform * child_tf * wp.transform_inverse(parent_tf)
+                            else:
+                                world_body_xform = wp.transform_identity()
                         root_frame_xform = (
                             wp.transform_inverse(articulation_root_xform)
                             if override_root_xform
@@ -1951,6 +2051,22 @@ def parse_usd(
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
 
+                has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
+                collider_has_visual_material = (
+                    key == UsdPhysics.ObjectType.MeshShape
+                    and _has_visual_material_properties(_get_material_props_cached(prim))
+                )
+
+                hide_collider_for_body = (
+                    hide_collision_shapes and has_body_visual_shapes and not collider_has_visual_material
+                )
+                show_collider_by_policy = should_show_collider(
+                    force_show_colliders,
+                    has_visual_shapes=has_body_visual_shapes,
+                )
+                collider_is_visible = (
+                    show_collider_by_policy or collider_has_visual_material
+                ) and not hide_collider_for_body
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -1975,11 +2091,7 @@ def parse_usd(
                         mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
-                        is_visible=should_show_collider(
-                            force_show_colliders,
-                            has_visual_shapes=load_visual_shapes and body_id in bodies_with_visual_shapes,
-                        )
-                        and not hide_collision_shapes,
+                        is_visible=collider_is_visible,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2042,7 +2154,12 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    mesh = _get_mesh_cached(prim)
+                    if collider_is_visible:
+                        # Visible colliders should render with the same visual material metadata
+                        # as visual-only mesh imports.
+                        mesh = _get_mesh_with_visual_material(prim, path_name=path)
+                    else:
+                        mesh = _get_mesh_cached(prim)
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
@@ -2113,7 +2230,6 @@ def parse_usd(
                         shape_geo_type = GeoType.MESH
                         shape_scale = wp.vec3(*shape_spec.meshScale)
                         shape_src = _get_mesh_cached(prim)
-
                     if shape_geo_type is not None:
                         expected_fallback_collider_paths.add(path)
                         shape_axis = getattr(shape_spec, "axis", None)
@@ -2221,6 +2337,28 @@ def parse_usd(
                 cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
                     _get_collision_mass_information
                 )
+                if cmp_mass < 0.0:
+                    # ComputeMassProperties failed to discover colliders (e.g. shapes
+                    # created by schema resolvers are not real USD prims). Fall back to
+                    # builder-accumulated mass properties from add_shape_*() calls.
+                    cmp_mass = builder.body_mass[body_id]
+                    cmp_com = builder.body_com[body_id]
+                    # When the body has an authored density, rescale accumulated mass
+                    # and inertia from the builder's default shape density to the
+                    # body-level density (USD body density overrides per-shape density).
+                    body_density_attr = mass_api.GetDensityAttr()
+                    if (
+                        body_density_attr.HasAuthoredValue()
+                        and float(body_density_attr.Get()) > 0.0
+                        and default_shape_density > 0.0
+                    ):
+                        density_scale = float(body_density_attr.Get()) / default_shape_density
+                        cmp_mass *= density_scale
+                        builder.body_inertia[body_id] = wp.mat33(
+                            np.array(builder.body_inertia[body_id]) * density_scale
+                        )
+                    cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
+                    cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
             # Inertia: authored diagonal + principal axes take precedence over mass computer.
             # When mass is authored but inertia is not, keep accumulated inertia

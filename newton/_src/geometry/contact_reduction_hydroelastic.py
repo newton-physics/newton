@@ -461,11 +461,11 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         axis = wp.normalize(wp.cross(selected_dir, perp))
                         rotation_q = wp.quat_from_axis_angle(axis, 3.14159265359)
 
-            # Get transform and margin (same for all contacts in the entry)
+            # Get transform and gap sum (same for all contacts in the entry)
             transform_b = shape_transform[shape_b_first]
-            margin_a = shape_gap[shape_a_first]
-            margin_b = shape_gap[shape_b_first]
-            margin = margin_a + margin_b
+            gap_a = shape_gap[shape_a_first]
+            gap_b = shape_gap[shape_b_first]
+            gap_sum = gap_a + gap_b
 
             # === Second pass: export contacts ===
             for idx in range(num_exported):
@@ -516,7 +516,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.margin_b = 0.0
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
-                contact_data.margin = margin
+                contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = c_stiffness
                 contact_data.contact_friction_scale = wp.float32(1.0)
 
@@ -542,7 +542,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.margin_b = 0.0
                 contact_data.shape_a = shape_a_first
                 contact_data.shape_b = shape_b_first
-                contact_data.margin = margin
+                contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = shared_stiffness
                 contact_data.contact_friction_scale = wp.float32(1.0)
 

@@ -1,0 +1,23 @@
+name: Documentation
+description: Report an error or suggest improvements for the documentation.
+title: "[DOCS] "
+labels: ["docs"]
+body:
+  - type: dropdown
+    attributes:
+      label: Category
+      description: What kind of documentation issue is this?
+      options:
+        - Error in existing documentation
+        - Missing documentation
+        - Improvement suggestion
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Description
+      description: >-
+        Describe the issue. Include links to the relevant documentation pages
+        if applicable.
+    validations:
+      required: true

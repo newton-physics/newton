@@ -111,6 +111,138 @@ Since :meth:`~newton.ModelBuilder.add_body` automatically adds a free joint, the
 
 This scene can now be simulated by both maximal-coordinate and generalized-coordinate solvers.
 
+Kinematic links and bodies
+--------------------------
+
+Newton distinguishes three motion modes for rigid bodies:
+
+**Static**
+  Does not move. Typical examples are world-attached shapes or links attached to world with a fixed joint.
+
+**Kinematic**
+  Moves only from user-prescribed state updates. It can have joint DOFs (free, revolute, etc.), but external forces do not accelerate it.
+
+**Dynamic**
+  Moves from forces, constraints, and contacts during solver integration.
+
+Kinematic bodies are created through the ``is_kinematic=True`` flag on :meth:`~newton.ModelBuilder.add_link`
+or :meth:`~newton.ModelBuilder.add_body`. Only root links (joint parent ``-1``) may be kinematic.
+Setting a non-root link to kinematic raises a :class:`ValueError` during articulation construction.
+
+Common combinations
+^^^^^^^^^^^^^^^^^^^
+
+The following patterns are valid and commonly used:
+
+1. **Kinematic free-base body**: ``add_body(is_kinematic=True)`` (free joint root).
+2. **Kinematic articulated root**: root link is kinematic and attached to world with a non-fixed joint
+   (for example revolute), with dynamic descendants.
+3. **Static fixed-root body**: root link is kinematic and attached to world with a fixed joint.
+   This has zero joint DOFs and behaves as static.
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+
+   # 1) Kinematic free-base body (add_body creates free joint + articulation)
+   kinematic_free = builder.add_body(is_kinematic=True, mass=1.0)
+
+   # 2) Kinematic revolute root with a dynamic child
+   root = builder.add_link(is_kinematic=True, mass=1.0)
+   child = builder.add_link(mass=1.0)
+   j_root = builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)
+   j_child = builder.add_joint_revolute(parent=root, child=child, axis=newton.Axis.Z)
+   builder.add_articulation([j_root, j_child])
+
+   # 3) Static fixed-root body (zero joint DOFs)
+   static_root = builder.add_link(is_kinematic=True, mass=1.0)
+   j_static = builder.add_joint_fixed(parent=-1, child=static_root)
+   builder.add_articulation([j_static])
+
+.. list-table:: Static vs kinematic vs dynamic bodies/links
+   :header-rows: 1
+   :widths: 22 26 26 26
+
+   * - Property
+     - Static
+     - Kinematic
+     - Dynamic
+   * - Typical definition
+     - World-attached shape, or root link fixed to world
+     - ``is_kinematic=True`` on a root link/body with free/revolute/etc. joint
+     - Default link/body (no kinematic flag)
+   * - Joint DOFs
+     - 0 for fixed-root links
+     - Joint-dependent (free/revolute/D6/etc.)
+     - Joint-dependent
+   * - Position/velocity state
+     - Constant (not integrated)
+     - User-prescribed ``q``/``qd`` (or ``body_q``/``body_qd`` depending on solver coordinates)
+     - Integrated by solver from dynamics
+   * - Response to applied force/torque
+     - No acceleration
+     - No acceleration (force-immune for own motion)
+     - Accelerates according to dynamics
+   * - Collision/contact participation
+     - Yes (acts as obstacle/support)
+     - Yes (can push dynamic bodies while following prescribed motion)
+     - Yes
+   * - Mass/inertia
+     - Not used for motion when fixed
+     - Preserved for body properties and future dynamic switching
+     - Fully used by dynamics
+   * - Mass matrix / constraint role
+     - No active DOFs when fixed to world
+     - Solver-dependent infinite-mass approximation along kinematic DOFs
+     - Standard articulated mass matrix
+   * - Typical applications
+     - Environment geometry, fixtures
+     - Conveyors, robot bases on trajectories, scripted mechanism roots
+     - Physically simulated robots and objects
+
+Velocity consistency for prescribed motion
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For prescribed motion, it is up to the user to keep position and velocity updates consistent across time.
+In particular, ``qd`` should be consistent with the finite-differenced motion implied by ``q``.
+For scalar coordinates, this is the familiar ``q_next = q + qd * dt`` relation; quaternion-based coordinates
+(for example FREE/BALL) require manifold-consistent quaternion integration instead of direct addition.
+
+When writing kinematic state values:
+
+- For generalized-coordinate workflows, write :attr:`newton.State.joint_q` and :attr:`newton.State.joint_qd`,
+  then call :func:`newton.eval_fk` so maximal coordinates (for collisions and body-space consumers) are current.
+- For maximal-coordinate workflows, write :attr:`newton.State.body_q` and :attr:`newton.State.body_qd` directly.
+
+Rigid-body solver behavior
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The rigid-body solvers (:class:`~newton.solvers.SolverMuJoCo`,
+:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverXPBD`,
+:class:`~newton.solvers.SolverSemiImplicit`) support the same user-facing
+kinematic authoring model:
+
+- Kinematic links keep their declared joint type (free/revolute/etc.).
+- A kinematic root attached to world by a fixed joint remains fixed (zero DOFs).
+- Kinematic links participate in collisions/contacts and can impart motion to dynamic bodies.
+- Applied forces do not drive kinematic motion; motion is user-prescribed.
+
+Implementation details differ by coordinate formulation:
+
+- Generalized-coordinate solvers (:class:`~newton.solvers.SolverMuJoCo`,
+  :class:`~newton.solvers.SolverFeatherstone`) treat kinematic motion through prescribed joint state.
+- Maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverSemiImplicit`) use prescribed body transforms/twists.
+- Contact handling is not identical across all four solvers. :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverMuJoCo`, and :class:`~newton.solvers.SolverFeatherstone`
+  treat kinematic bodies like infinite-mass colliders for contact response, while
+  :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
+  does not zero inverse mass/inertia inside its contact solver. Contacts against
+  kinematic bodies can therefore be softer under SemiImplicit.
+
+In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
+large internal armature value.
+
 .. _Joint types:
 
 Joint types

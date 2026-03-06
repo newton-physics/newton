@@ -63,11 +63,11 @@ def reset_materials_kernel(mu: wp.array3d(dtype=float), seed: int, shape_count: 
     else:
         rng = wp.rand_init(seed, world * shape_count + shape)
 
-    mu[world, arti, shape] = wp.randf(rng)  # random coefficient of friction
+    mu[world, arti, shape] = 0.5 + 0.5 * wp.randf(rng)  # random coefficient of friction
 
 
 class Example:
-    def __init__(self, viewer, world_count=16):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -75,7 +75,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         world_template = newton.ModelBuilder()
         world_template.add_mjcf(
@@ -86,7 +86,7 @@ class Example:
 
         scene = newton.ModelBuilder()
 
-        scene.add_ground_plane()
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
         scene.replicate(world_template, world_count=self.world_count)
 
         # finalize model
@@ -148,6 +148,13 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(18.0, 0.0, 2.0),
+            pitch=0.0,
+            yaw=-180.0,
+        )
+
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
@@ -205,9 +212,11 @@ class Example:
 
             # randomize materials
             if RANDOMIZE_PER_WORLD:
-                material_mu = torch.rand(self.ants.count, 1).unsqueeze(1).repeat(1, 1, self.ants.shape_count)
+                material_mu = 0.5 + 0.5 * torch.rand(self.ants.count, 1).unsqueeze(1).repeat(
+                    1, 1, self.ants.shape_count
+                )
             else:
-                material_mu = torch.rand((self.ants.count, 1, self.ants.shape_count))
+                material_mu = 0.5 + 0.5 * torch.rand((self.ants.count, 1, self.ants.shape_count))
         else:
             # flip velocities
             if self.reset_count % 2 == 0:
@@ -258,15 +267,15 @@ class Example:
             lambda q, qd: q[2] > 0.01,
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=16)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument(
-        "--world-count",
-        type=int,
-        default=16,
-        help="Total number of simulated worlds.",
-    )
+    parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
 
@@ -275,6 +284,6 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, world_count=args.world_count)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

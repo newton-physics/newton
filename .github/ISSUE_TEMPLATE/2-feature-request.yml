@@ -1,0 +1,26 @@
+name: Feature Request
+description: Suggest an idea for Newton.
+title: "[REQ] "
+labels: ["feature request"]
+body:
+  - type: textarea
+    attributes:
+      label: Description
+      description: >-
+        Describe the feature you'd like added or changed.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Motivation / Use Case
+      description: >-
+        Why would this be useful? What problem does it solve?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives Considered
+      description: >-
+        Have you considered any alternative approaches or workarounds?
+    validations:
+      required: false

@@ -150,7 +150,7 @@ class Example:
     - Kinematically animate the drivers and verify the FIXED joint keeps the joint frames coincident.
     """
 
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.args = args
 

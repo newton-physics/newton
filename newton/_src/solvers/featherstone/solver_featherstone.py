@@ -13,10 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
+from ...sim import BodyFlags, Contacts, Control, Model, State
+from ..flags import SolverNotifyFlags
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -36,6 +38,7 @@ from .kernels import (
     compute_com_transforms,
     compute_spatial_inertia,
     convert_body_force_com_to_origin,
+    copy_kinematic_joint_state,
     create_inertia_matrix_cholesky_kernel,
     create_inertia_matrix_kernel,
     eval_dense_cholesky_batched,
@@ -48,6 +51,8 @@ from .kernels import (
     eval_rigid_mass,
     eval_rigid_tau,
     integrate_generalized_joints,
+    zero_kinematic_body_forces,
+    zero_kinematic_joint_qdd,
 )
 
 
@@ -105,12 +110,12 @@ class SolverFeatherstone(SolverBase):
     ):
         """
         Args:
-            model (Model): the model to be simulated.
-            angular_damping (float, optional): Angular damping factor. Defaults to 0.05.
-            update_mass_matrix_interval (int, optional): How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
-            friction_smoothing (float, optional): The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
-            use_tile_gemm (bool, optional): Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
-            fuse_cholesky (bool, optional): Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
+            model: The model to be simulated.
+            angular_damping: Angular damping factor. Defaults to 0.05.
+            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
+            friction_smoothing: The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
+            use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
+            fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
         """
         super().__init__(model)
 
@@ -121,6 +126,9 @@ class SolverFeatherstone(SolverBase):
         self.fuse_cholesky = fuse_cholesky
 
         self._step = 0
+        self._mass_matrix_dirty = False
+
+        self._update_kinematic_state()
 
         self._compute_articulation_indices(model)
         self._allocate_model_aux_vars(model)
@@ -139,6 +147,36 @@ class SolverFeatherstone(SolverBase):
             # ensure matrix is reloaded since otherwise an unload can happen during graph capture
             # todo: should not be necessary?
             wp.load_module(device=wp.get_device())
+
+    def _update_kinematic_state(self):
+        """Recompute cached kinematic body/joint flags and effective armature."""
+        model = self.model
+        self.has_kinematic_bodies = False
+        self.has_kinematic_joints = False
+        self.joint_armature_effective = model.joint_armature
+        if model.body_count:
+            body_flags = model.body_flags.numpy()
+            kinematic_mask = (body_flags & int(BodyFlags.KINEMATIC)) != 0
+            self.has_kinematic_bodies = bool(np.any(kinematic_mask))
+            if model.joint_count and self.has_kinematic_bodies:
+                joint_child = model.joint_child.numpy()
+                joint_qd_start = model.joint_qd_start.numpy()
+                joint_armature = model.joint_armature.numpy().copy()
+                for joint_idx in range(model.joint_count):
+                    if not kinematic_mask[joint_child[joint_idx]]:
+                        continue
+                    self.has_kinematic_joints = True
+                    dof_start = int(joint_qd_start[joint_idx])
+                    dof_end = int(joint_qd_start[joint_idx + 1])
+                    joint_armature[dof_start:dof_end] = 1.0e10
+                if self.has_kinematic_joints:
+                    self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
+
+    @override
+    def notify_model_changed(self, flags: int):
+        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
+            self._update_kinematic_state()
+            self._mass_matrix_dirty = True
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
@@ -438,6 +476,15 @@ class SolverFeatherstone(SolverBase):
                         device=model.device,
                     )
 
+                if self.has_kinematic_bodies and body_f is not None:
+                    wp.launch(
+                        zero_kinematic_body_forces,
+                        dim=model.body_count,
+                        inputs=[model.body_flags],
+                        outputs=[body_f],
+                        device=model.device,
+                    )
+
                 if model.articulation_count:
                     # evaluate joint torques
                     state_aug.body_ft_s.zero_()
@@ -481,7 +528,7 @@ class SolverFeatherstone(SolverBase):
                     # print("body_qd:")
                     # print(state_in.body_qd.numpy())
 
-                    if self._step % self.update_mass_matrix_interval == 0:
+                    if self._mass_matrix_dirty or self._step % self.update_mass_matrix_interval == 0:
                         # build J
                         wp.launch(
                             eval_rigid_jacobian,
@@ -514,7 +561,7 @@ class SolverFeatherstone(SolverBase):
                             # reshape arrays
                             M_tiled = self.M.reshape((-1, 6 * self.joint_count, 6 * self.joint_count))
                             J_tiled = self.J.reshape((-1, 6 * self.joint_count, self.dof_count))
-                            R_tiled = model.joint_armature.reshape((-1, self.dof_count))
+                            R_tiled = self.joint_armature_effective.reshape((-1, self.dof_count))
                             H_tiled = self.H.reshape((-1, self.dof_count, self.dof_count))
                             L_tiled = self.L.reshape((-1, self.dof_count, self.dof_count))
                             assert H_tiled.shape == (model.articulation_count, 18, 18)
@@ -547,8 +594,9 @@ class SolverFeatherstone(SolverBase):
                                     inputs=[
                                         self.articulation_H_start,
                                         self.articulation_H_rows,
+                                        self.articulation_dof_start,
                                         self.H,
-                                        model.joint_armature,
+                                        self.joint_armature_effective,
                                     ],
                                     outputs=[self.L],
                                     device=model.device,
@@ -616,8 +664,9 @@ class SolverFeatherstone(SolverBase):
                                 inputs=[
                                     self.articulation_H_start,
                                     self.articulation_H_rows,
+                                    self.articulation_dof_start,
                                     self.H,
-                                    model.joint_armature,
+                                    self.joint_armature_effective,
                                 ],
                                 outputs=[self.L],
                                 device=model.device,
@@ -631,6 +680,7 @@ class SolverFeatherstone(SolverBase):
                         # print(self.H.numpy())
                         # print("L:")
                         # print(self.L.numpy())
+                        self._mass_matrix_dirty = False
 
                     # solve for qdd
                     state_aug.joint_qdd.zero_()
@@ -651,6 +701,15 @@ class SolverFeatherstone(SolverBase):
                         ],
                         device=model.device,
                     )
+
+                    if self.has_kinematic_joints:
+                        wp.launch(
+                            zero_kinematic_joint_qdd,
+                            dim=model.joint_count,
+                            inputs=[model.joint_child, model.body_flags, model.joint_qd_start],
+                            outputs=[state_aug.joint_qdd],
+                            device=model.device,
+                        )
                     # print("joint_qdd:")
                     # print(state_aug.joint_qdd.numpy())
                     # print("\n\n")
@@ -675,6 +734,22 @@ class SolverFeatherstone(SolverBase):
                     outputs=[state_out.joint_q, state_out.joint_qd],
                     device=model.device,
                 )
+
+                if self.has_kinematic_joints:
+                    wp.launch(
+                        copy_kinematic_joint_state,
+                        dim=model.joint_count,
+                        inputs=[
+                            model.joint_child,
+                            model.body_flags,
+                            model.joint_q_start,
+                            model.joint_qd_start,
+                            state_in.joint_q,
+                            state_in.joint_qd,
+                        ],
+                        outputs=[state_out.joint_q, state_out.joint_qd],
+                        device=model.device,
+                    )
 
                 # update maximal coordinates using FK with velocity conversion
                 eval_fk_with_velocity_conversion(model, state_out.joint_q, state_out.joint_qd, state_out)
