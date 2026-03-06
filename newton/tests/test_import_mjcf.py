@@ -3698,7 +3698,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
     def test_actuator_mode_inference_from_actuator_type(self):
         """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
-        from newton._src.sim.joints import JointTargetMode  # noqa: PLC0415
+        from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
 
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_actuator_modes">
