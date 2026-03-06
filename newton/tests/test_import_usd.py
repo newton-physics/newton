@@ -2917,14 +2917,14 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
 
         usd_quat = usd.value_to_warp(shape_spec.localRot)
         newton_pos = newton_transform[:3]
-        newton_quat = newton_transform[3:7]
+        newton_quat = wp.quat(*newton_transform[3:7])
 
         for i, (n_pos, u_pos) in enumerate(zip(newton_pos, shape_spec.localPos, strict=False)):
             test.assertAlmostEqual(
                 n_pos, u_pos, places=5, msg=f"Shape {sid} position[{i}]: USD={u_pos}, Newton={n_pos}"
             )
 
-        if newton_type in [3, 5]:
+        if newton_type in {newton.GeoType.CAPSULE, newton.GeoType.CYLINDER, newton.GeoType.CONE}:
             usd_axis = int(shape_spec.axis) if hasattr(shape_spec, "axis") else 2
             axis_quat = (
                 quat_between_axes(newton.Axis.Z, newton.Axis.X)
