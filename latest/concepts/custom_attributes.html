@@ -821,24 +821,25 @@
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
 <p>Newton organizes simulation data into four primary objects, each containing flat arrays indexed by simulation entities:</p>
 <ul class="simple">
-<li><p><strong>Model Object</strong> - Static configuration and physical properties that remain constant during simulation</p></li>
-<li><p><strong>State Object</strong> - Dynamic quantities that evolve during simulation</p></li>
-<li><p><strong>Control Object</strong> - Control inputs and actuator commands</p></li>
-<li><p><strong>Contact Object</strong> - Contact-specific properties</p></li>
+<li><p><strong>Model Object</strong> (<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>) - Static configuration and physical properties that remain constant during simulation</p></li>
+<li><p><strong>State Object</strong> (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a>) - Dynamic quantities that evolve during simulation</p></li>
+<li><p><strong>Control Object</strong> (<a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">Control</span></code></a>) - Control inputs and actuator commands</p></li>
+<li><p><strong>Contact Object</strong> (<a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a>) - Contact-specific properties</p></li>
 </ul>
-<p>Custom attributes extend these objects with user-defined arrays that follow the same indexing scheme as Newton’s built-in attributes.</p>
+<p>Custom attributes extend these objects with user-defined arrays that follow the same indexing scheme as Newton’s built-in attributes. The <code class="docutils literal notranslate"><span class="pre">CONTACT</span></code> assignment attaches attributes to the <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> object created during collision detection.</p>
 </section>
 <section id="declaring-custom-attributes">
 <h2>Declaring Custom Attributes<a class="headerlink" href="#declaring-custom-attributes" title="Link to this heading">#</a></h2>
 <p>Custom attributes must be declared before use via the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_attribute" title="newton.ModelBuilder.add_custom_attribute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_custom_attribute()</span></code></a> method. Each declaration specifies:</p>
 <ul class="simple">
 <li><p><strong>name</strong>: Attribute name</p></li>
-<li><p><strong>frequency</strong>: Determines array size and indexing—either a <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.AttributeFrequency" title="newton.Model.AttributeFrequency"><code class="xref py py-class docutils literal notranslate"><span class="pre">AttributeFrequency</span></code></a> enum value (<code class="docutils literal notranslate"><span class="pre">BODY</span></code>, <code class="docutils literal notranslate"><span class="pre">SHAPE</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT_DOF</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT_COORD</span></code>, <code class="docutils literal notranslate"><span class="pre">ARTICULATION</span></code>) or a string for custom frequencies</p></li>
-<li><p><strong>dtype</strong>: Warp data type (<code class="docutils literal notranslate"><span class="pre">wp.float32</span></code>, <code class="docutils literal notranslate"><span class="pre">wp.vec3</span></code>, <code class="docutils literal notranslate"><span class="pre">wp.quat</span></code>, etc.)</p></li>
+<li><p><strong>frequency</strong>: Determines array size and indexing—either a <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.AttributeFrequency" title="newton.Model.AttributeFrequency"><code class="xref py py-class docutils literal notranslate"><span class="pre">AttributeFrequency</span></code></a> enum value (e.g., <code class="docutils literal notranslate"><span class="pre">BODY</span></code>, <code class="docutils literal notranslate"><span class="pre">SHAPE</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT_DOF</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT_COORD</span></code>, <code class="docutils literal notranslate"><span class="pre">ARTICULATION</span></code>, <code class="docutils literal notranslate"><span class="pre">ONCE</span></code>) or a string for custom frequencies</p></li>
+<li><p><strong>dtype</strong>: Warp data type (<code class="docutils literal notranslate"><span class="pre">wp.float32</span></code>, <code class="docutils literal notranslate"><span class="pre">wp.vec3</span></code>, <code class="docutils literal notranslate"><span class="pre">wp.quat</span></code>, etc.) or <code class="docutils literal notranslate"><span class="pre">str</span></code> for string attributes stored as Python lists</p></li>
 <li><p><strong>assignment</strong>: Which simulation object owns the attribute (<code class="docutils literal notranslate"><span class="pre">MODEL</span></code>, <code class="docutils literal notranslate"><span class="pre">STATE</span></code>, <code class="docutils literal notranslate"><span class="pre">CONTROL</span></code>, <code class="docutils literal notranslate"><span class="pre">CONTACT</span></code>)</p></li>
-<li><p><strong>default</strong> (optional): Default value for unspecified entities</p></li>
+<li><p><strong>default</strong> (optional): Default value for unspecified entities. When omitted, a sensible zero-value is derived from the dtype (<code class="docutils literal notranslate"><span class="pre">0</span></code> for scalars, identity for quaternions, <code class="docutils literal notranslate"><span class="pre">False</span></code> for booleans, <code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code> for strings)</p></li>
 <li><p><strong>namespace</strong> (optional): Hierarchical organization for grouping related attributes</p></li>
 <li><p><strong>references</strong> (optional): For multi-world merging, specifies how values are transformed (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;body&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;shape&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;world&quot;</span></code>, or a custom frequency key)</p></li>
+<li><p><strong>values</strong> (optional): Pre-populated values — <code class="docutils literal notranslate"><span class="pre">dict[int,</span> <span class="pre">Any]</span></code> for enum frequencies or <code class="docutils literal notranslate"><span class="pre">list[Any]</span></code> for custom string frequencies</p></li>
 </ul>
 <p>When <strong>no namespace</strong> is specified, attributes are added directly to their assignment object (e.g., <code class="docutils literal notranslate"><span class="pre">model.temperature</span></code>). When a <strong>namespace</strong> is provided, Newton creates a namespace container (e.g., <code class="docutils literal notranslate"><span class="pre">model.mujoco.damping</span></code>).</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">Model</span><span class="p">,</span> <span class="n">ModelBuilder</span>
@@ -905,6 +906,30 @@
     <span class="p">)</span>
 <span class="p">)</span>
 <span class="c1"># → Accessible as: model.articulation_stiffness</span>
+
+<span class="c1"># ONCE frequency attributes - a single global value</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;gravity_scale&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">ONCE</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+        <span class="n">assignment</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeAssignment</span><span class="o">.</span><span class="n">MODEL</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="c1"># → Accessible as: model.gravity_scale (array of length 1)</span>
+
+<span class="c1"># String dtype attributes - stored as Python lists, not Warp arrays</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;body_description&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">BODY</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="s2">&quot;unnamed&quot;</span><span class="p">,</span>
+        <span class="n">assignment</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeAssignment</span><span class="o">.</span><span class="n">MODEL</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="c1"># → Accessible as: model.body_description (Python list[str])</span>
 </pre></div>
 </div>
 <p><strong>Default Value Behavior:</strong></p>
@@ -961,7 +986,8 @@ Last articulation stiffness: 200.0
 </div>
 <p><strong>Registering Solver Attributes:</strong></p>
 <p>Before loading assets, register solver-specific attributes:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers</span><span class="w"> </span><span class="kn">import</span> <span class="n">SolverMuJoCo</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">ModelBuilder</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers</span><span class="w"> </span><span class="kn">import</span> <span class="n">SolverMuJoCo</span>
 
 <span class="n">builder_mujoco</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
 <span class="n">SolverMuJoCo</span><span class="o">.</span><span class="n">register_custom_attributes</span><span class="p">(</span><span class="n">builder_mujoco</span><span class="p">)</span>
@@ -977,7 +1003,7 @@ Last articulation stiffness: 200.0
 <span class="k">assert</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">model_mujoco</span><span class="o">.</span><span class="n">mujoco</span><span class="p">,</span> <span class="s2">&quot;condim&quot;</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>MuJoCo boolean values in custom attribute transformers are parsed with <code class="docutils literal notranslate"><span class="pre">parse_bool</span></code>.</p>
+<p>MuJoCo boolean custom attributes use a <code class="docutils literal notranslate"><span class="pre">parse_bool</span></code> transformer (registered by <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.register_custom_attributes" title="newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a>) that handles strings (<code class="docutils literal notranslate"><span class="pre">&quot;true&quot;</span></code>/<code class="docutils literal notranslate"><span class="pre">&quot;false&quot;</span></code>), integers, and native booleans.</p>
 </section>
 <section id="authoring-custom-attributes">
 <h2>Authoring Custom Attributes<a class="headerlink" href="#authoring-custom-attributes" title="Link to this heading">#</a></h2>
@@ -1191,12 +1217,35 @@ Namespace A shape bool: True
 <span class="n">vec3_values</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">vec3_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
 
 <span class="c1"># Access namespaced attributes</span>
-<span class="n">namespace_a_floats</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">float_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
-<span class="n">namespace_b_floats</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">namespace_b</span><span class="o">.</span><span class="n">float_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
-<span class="n">control_floats</span> <span class="o">=</span> <span class="n">control</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">float_attr_dof</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">namespace_a_floats</span> <span class="o">=</span> <span class="n">control</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">some_attrib</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">namespace_a_bools</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">bool_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
 </pre></div>
 </div>
 <p>For more information about USD integration and the schema resolver system, see <a class="reference internal" href="usd_parsing.html"><span class="doc">USD Parsing and Schema Resolver System</span></a>.</p>
+</section>
+<section id="mjcf-and-urdf-integration">
+<h2>MJCF and URDF Integration<a class="headerlink" href="#mjcf-and-urdf-integration" title="Link to this heading">#</a></h2>
+<p>Custom attributes can also be parsed from MJCF and URDF files. Each <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomAttribute" title="newton.ModelBuilder.CustomAttribute"><code class="xref py py-class docutils literal notranslate"><span class="pre">CustomAttribute</span></code></a> has optional fields for controlling how values are extracted from these formats:</p>
+<ul class="simple">
+<li><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">mjcf_attribute_name</span></code> — name of the XML attribute to read (defaults to the attribute <code class="docutils literal notranslate"><span class="pre">name</span></code>)</p></li>
+<li><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">mjcf_value_transformer</span></code> — callable that converts the XML string value to the target dtype</p></li>
+<li><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">urdf_attribute_name</span></code> — name of the XML attribute to read (defaults to the attribute <code class="docutils literal notranslate"><span class="pre">name</span></code>)</p></li>
+<li><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">urdf_value_transformer</span></code> — callable that converts the XML string value to the target dtype</p></li>
+</ul>
+<p>These are primarily used by solver integrations (e.g., <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.register_custom_attributes" title="newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a> registers MJCF transformers for MuJoCo-specific attributes like <code class="docutils literal notranslate"><span class="pre">condim</span></code>, <code class="docutils literal notranslate"><span class="pre">priority</span></code>, and <code class="docutils literal notranslate"><span class="pre">solref</span></code>). When no transformer is provided, values are parsed using a generic string-to-Warp converter.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Example: register an attribute that reads &quot;damping&quot; from MJCF joint elements</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;custom_damping&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">JOINT_DOF</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">,</span>
+        <span class="n">mjcf_attribute_name</span><span class="o">=</span><span class="s2">&quot;damping&quot;</span><span class="p">,</span>  <span class="c1"># reads &lt;joint damping=&quot;...&quot;/&gt;</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+</pre></div>
+</div>
 </section>
 <section id="validation-and-constraints">
 <h2>Validation and Constraints<a class="headerlink" href="#validation-and-constraints" title="Link to this heading">#</a></h2>
@@ -1254,10 +1303,7 @@ Namespace A shape bool: True
 <section id="adding-values">
 <h2>Adding Values<a class="headerlink" href="#adding-values" title="Link to this heading">#</a></h2>
 <p>Custom frequency values are appended using <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_values" title="newton.ModelBuilder.add_custom_values"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_custom_values()</span></code></a>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Register and declare attributes sharing a frequency</span>
-<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_frequency</span><span class="p">(</span>
-    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomFrequency</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item&quot;</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
-<span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Declare attributes sharing the &quot;myns:item&quot; frequency</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
     <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_id&quot;</span><span class="p">,</span> <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;myns:item&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
 <span class="p">)</span>
@@ -1275,9 +1321,25 @@ Namespace A shape bool: True
     <span class="s2">&quot;myns:item_value&quot;</span><span class="p">:</span> <span class="mf">3.0</span><span class="p">,</span>
 <span class="p">})</span>
 
+<span class="c1"># Finalize (requires at least one articulation)</span>
+<span class="n">_body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">()</span>
+<span class="n">_joint</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_free</span><span class="p">(</span><span class="n">_body</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">_joint</span><span class="p">])</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">myns</span><span class="o">.</span><span class="n">item_id</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>    <span class="c1"># [100, 101]</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">myns</span><span class="o">.</span><span class="n">item_value</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span> <span class="c1"># [2.5, 3.0]</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">myns</span><span class="o">.</span><span class="n">item_id</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">myns</span><span class="o">.</span><span class="n">item_value</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>[100 101]
+[2.5 3. ]
+</pre></div>
+</div>
+<p>For convenience, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_values_batch" title="newton.ModelBuilder.add_custom_values_batch"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_custom_values_batch()</span></code></a> appends multiple rows in a single call:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_custom_values_batch</span><span class="p">([</span>
+    <span class="p">{</span><span class="s2">&quot;myns:item_id&quot;</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span> <span class="s2">&quot;myns:item_value&quot;</span><span class="p">:</span> <span class="mf">2.5</span><span class="p">},</span>
+    <span class="p">{</span><span class="s2">&quot;myns:item_id&quot;</span><span class="p">:</span> <span class="mi">101</span><span class="p">,</span> <span class="s2">&quot;myns:item_value&quot;</span><span class="p">:</span> <span class="mf">3.0</span><span class="p">},</span>
+<span class="p">])</span>
 </pre></div>
 </div>
 <p><strong>Validation:</strong> All attributes sharing a custom frequency must have the same count at <code class="docutils literal notranslate"><span class="pre">finalize()</span></code> time. This catches synchronization bugs early.</p>
@@ -1436,7 +1498,13 @@ to a body index through <code class="docutils literal notranslate"><span class="
 <section id="multi-world-merging">
 <h2>Multi-World Merging<a class="headerlink" href="#multi-world-merging" title="Link to this heading">#</a></h2>
 <p>When using <code class="docutils literal notranslate"><span class="pre">add_world()</span></code> to create multi-world simulations, the <code class="xref py py-attr docutils literal notranslate"><span class="pre">references</span></code> field specifies how attribute values should be transformed:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">Model</span><span class="p">,</span> <span class="n">ModelBuilder</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_frequency</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomFrequency</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair&quot;</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">)</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
     <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
         <span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair_world&quot;</span><span class="p">,</span>
         <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;mujoco:pair&quot;</span><span class="p">,</span>
@@ -1458,7 +1526,7 @@ to a body index through <code class="docutils literal notranslate"><span class="
 </div>
 <p>Supported reference types:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">&quot;body&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;shape&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint_dof&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint_coord&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;articulation&quot;</span></code> — offset by entity count</p></li>
+<li><p>Any built-in entity type (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;body&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;shape&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint_dof&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint_coord&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;articulation&quot;</span></code>) — offset by entity count</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">&quot;world&quot;</span></code> — replaced with <code class="docutils literal notranslate"><span class="pre">current_world</span></code></p></li>
 <li><p>Custom frequency keys (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:pair&quot;</span></code>) — offset by that frequency’s count</p></li>
 </ul>
@@ -1466,7 +1534,12 @@ to a body index through <code class="docutils literal notranslate"><span class="
 <section id="querying-counts">
 <h2>Querying Counts<a class="headerlink" href="#querying-counts" title="Link to this heading">#</a></h2>
 <p>Use <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.get_custom_frequency_count" title="newton.Model.get_custom_frequency_count"><code class="xref py py-meth docutils literal notranslate"><span class="pre">get_custom_frequency_count()</span></code></a> to get the count for a custom frequency (raises <code class="docutils literal notranslate"><span class="pre">KeyError</span></code> if unknown):</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Finalize (requires at least one articulation)</span>
+<span class="n">_body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">()</span>
+<span class="n">_joint</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_free</span><span class="p">(</span><span class="n">_body</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">_joint</span><span class="p">])</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
 <span class="n">pair_count</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">get_custom_frequency_count</span><span class="p">(</span><span class="s2">&quot;mujoco:pair&quot;</span><span class="p">)</span>
 
 <span class="c1"># Or check directly without raising:</span>
@@ -1480,7 +1553,7 @@ to a body index through <code class="docutils literal notranslate"><span class="
 </section>
 <section id="articulationview-limitations">
 <h2>ArticulationView Limitations<a class="headerlink" href="#articulationview-limitations" title="Link to this heading">#</a></h2>
-<p>Custom frequency attributes are not accessible via <code class="xref py py-class docutils literal notranslate"><span class="pre">ArticulationView</span></code> because they represent entity types that aren’t tied to articulation structure. For per-articulation data, use enum frequencies like <code class="docutils literal notranslate"><span class="pre">ARTICULATION</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, or <code class="docutils literal notranslate"><span class="pre">BODY</span></code>.</p>
+<p>Custom frequency attributes are generally not accessible via <a class="reference internal" href="../api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView" title="newton.selection.ArticulationView"><code class="xref py py-class docutils literal notranslate"><span class="pre">ArticulationView</span></code></a> because they represent entity types that aren’t tied to articulation structure. The one exception is the <code class="docutils literal notranslate"><span class="pre">mujoco:tendon</span></code> frequency, which is supported. For per-articulation data, use enum frequencies like <code class="docutils literal notranslate"><span class="pre">ARTICULATION</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, or <code class="docutils literal notranslate"><span class="pre">BODY</span></code>.</p>
 </section>
 </section>
 
@@ -1514,6 +1587,7 @@ to a body index through <code class="docutils literal notranslate"><span class="
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#authoring-custom-attributes">Authoring Custom Attributes</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#accessing-custom-attributes">Accessing Custom Attributes</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usd-integration">USD Integration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mjcf-and-urdf-integration">MJCF and URDF Integration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#validation-and-constraints">Validation and Constraints</a></li>
 </ul>
 </li>
