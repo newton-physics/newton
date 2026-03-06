@@ -594,6 +594,7 @@ class SolverFeatherstone(SolverBase):
                                     inputs=[
                                         self.articulation_H_start,
                                         self.articulation_H_rows,
+                                        self.articulation_dof_start,
                                         self.H,
                                         self.joint_armature_effective,
                                     ],
@@ -663,6 +664,7 @@ class SolverFeatherstone(SolverBase):
                                 inputs=[
                                     self.articulation_H_start,
                                     self.articulation_H_rows,
+                                    self.articulation_dof_start,
                                     self.H,
                                     self.joint_armature_effective,
                                 ],

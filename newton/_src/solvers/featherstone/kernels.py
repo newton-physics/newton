@@ -1247,6 +1247,7 @@ def adj_dense_cholesky(
 def eval_dense_cholesky_batched(
     A_starts: wp.array(dtype=int),
     A_dim: wp.array(dtype=int),
+    R_starts: wp.array(dtype=int),
     A: wp.array(dtype=float),
     R: wp.array(dtype=float),
     L: wp.array(dtype=float),
@@ -1255,7 +1256,7 @@ def eval_dense_cholesky_batched(
 
     n = A_dim[batch]
     A_start = A_starts[batch]
-    R_start = n * batch
+    R_start = R_starts[batch]
 
     dense_cholesky(n, A, R, A_start, R_start, L)
 
