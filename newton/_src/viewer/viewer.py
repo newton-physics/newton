@@ -73,12 +73,12 @@ class ViewerBase(ABC):
         self.show_contacts = False
         self.show_springs = False
         self.show_triangles = True
+        self.show_gaussians = False
         self.show_collision = False  # force show collision shapes
         self.show_visual = True  # show visual shapes (non collider)
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
         self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
-        self.show_gaussians = False
         """Whether to show the hydroelastic contact surface wireframe."""
         self.picking_enabled = True  # enable interactive picking via mouse
 
