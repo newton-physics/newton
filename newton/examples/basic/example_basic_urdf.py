@@ -34,7 +34,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, world_count, args=None):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -42,7 +42,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         self.viewer = viewer
 
@@ -150,16 +150,18 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=100)
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=100, help="Total number of simulated worlds.")
+    parser = Example.create_parser()
 
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create viewer and run
-    example = Example(viewer, args.world_count, args)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

@@ -72,7 +72,7 @@ def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravi
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.device = wp.get_device()
         self.torch_device = wp.device_to_torch(self.device)
@@ -170,8 +170,7 @@ class Example:
             builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-
-        use_mujoco_contacts = args.use_mujoco_contacts if args else False
+        use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,

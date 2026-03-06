@@ -195,7 +195,7 @@ def advance_task_kernel(
 
 
 class Example:
-    def __init__(self, viewer, world_count=4, headless=False, args=None):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -203,14 +203,13 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.collide_substeps = False
-        self.world_count = world_count
-        self.headless = headless
-        self.verbose = getattr(args, "verbose", False)
+        self.world_count = args.world_count
+        self.headless = args.headless
+        self.verbose = args.verbose
 
         self.viewer = viewer
 
-        # Parameters
-        self.cube_count = getattr(args, "cube_count", 3)  # Tested from 1 to 3 cubes
+        self.cube_count = args.cube_count
         self.cube_size = 0.05
 
         self.table_height = 0.1
@@ -234,7 +233,7 @@ class Example:
         self.model = scene.finalize()
         self.num_bodies_per_world = self.model.body_count // self.world_count
 
-        use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
+        use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             solver="newton",
@@ -698,14 +697,20 @@ class Example:
         else:
             print(f"World success rate: {success_rate}")
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=16)
+        parser.add_argument("--cube-count", type=int, default=3, help="Total number of cubes to stack.")
+        parser.add_argument("--verbose", action="store_true", help="Enable verbose output.")
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=16, help="Total number of simulated worlds.")
-    parser.add_argument("--cube-count", type=int, default=3, help="Total number of cubes to stack.")
+    parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, world_count=args.world_count, headless=args.headless, args=args)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

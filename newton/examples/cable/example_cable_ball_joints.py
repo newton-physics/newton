@@ -139,7 +139,7 @@ class Example:
     - Kinematically animate the drivers and verify the BALL joint keeps the two anchor points coincident.
     """
 
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.args = args
 

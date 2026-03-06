@@ -14,18 +14,18 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Integrated Viewer
+# Example Replay Viewer
 #
 # Shows how to use the replay UI with ViewerGL to load and
 # display previously recorded simulation data.
 #
-# Recording is done automatically using ViewerFile (like ViewerUSD):
-#   viewer = newton.viewer.ViewerFile("my_recording.json")
+# Recording is done automatically using ViewerFile:
+#   viewer = newton.viewer.ViewerFile("my_recording.bin")
 #   viewer.set_model(model)
 #   viewer.log_state(state)  # Records automatically
 #   viewer.close()  # Saves automatically
 #
-# Command: python -m newton.examples.example_replay_viewer
+# Command: python -m newton.examples replay_viewer
 #
 ###########################################################################
 
@@ -50,11 +50,11 @@ class ReplayUI:
         viewer.register_ui_callback(replay_ui.render, "free")
     """
 
-    def __init__(self, viewer=None):
+    def __init__(self, viewer):
         """Initialize the ReplayUI extension.
 
         Args:
-            viewer: The ViewerGL instance this UI will be attached to (optional)
+            viewer: The ViewerGL instance this UI will be attached to.
         """
         # Store reference to viewer for accessing viewer functionality
         self.viewer = viewer
@@ -67,10 +67,6 @@ class ReplayUI:
         self.selected_file = ""
         self.status_message = ""
         self.status_color = (1.0, 1.0, 1.0, 1.0)  # White by default
-
-    def set_viewer(self, viewer):
-        """Set the viewer reference after initialization."""
-        self.viewer = viewer
 
     def render(self, imgui):
         """
@@ -205,7 +201,7 @@ class ReplayUI:
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         """Initialize the integrated viewer example with replay UI."""
         self.viewer = viewer
 
@@ -236,6 +232,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create example and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

@@ -20,6 +20,7 @@ wp.config.quiet = True
 
 
 import newton
+import newton.examples
 from newton.examples.selection.example_selection_cartpole import Example
 
 
@@ -29,9 +30,13 @@ class FastExampleSelectionCartpoleMuJoCo:
 
     def setup(self):
         self.num_frames = 200
-        self.example = Example(
-            viewer=newton.viewer.ViewerNull(num_frames=self.num_frames), world_count=16, verbose=False
-        )
+        if hasattr(newton.examples, "default_args") and hasattr(Example, "create_parser"):
+            args = newton.examples.default_args(Example.create_parser())
+            self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), args)
+        else:
+            self.example = Example(
+                viewer=newton.viewer.ViewerNull(num_frames=self.num_frames), world_count=16, verbose=False
+            )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
