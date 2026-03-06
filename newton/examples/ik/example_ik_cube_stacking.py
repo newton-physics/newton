@@ -209,7 +209,7 @@ class Example:
 
         self.viewer = viewer
 
-        self.cube_count = args.cube_count
+        self.cube_count = 3
         self.cube_size = 0.05
 
         self.table_height = 0.1
@@ -701,7 +701,6 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.set_defaults(world_count=16)
-        parser.add_argument("--cube-count", type=int, default=3, help="Total number of cubes to stack.")
         parser.add_argument("--verbose", action="store_true", help="Enable verbose output.")
         return parser
 
