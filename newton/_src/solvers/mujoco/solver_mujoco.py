@@ -3591,6 +3591,10 @@ class SolverMuJoCo(SolverBase):
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
 
+        See ``docs/integrations/mujoco.rst`` for user-facing documentation of
+        all conversions performed here.  Keep that file in sync when changing
+        this method.
+
         Solver options (e.g., ``impratio``) follow this resolution priority:
 
         1. **Constructor argument** - If provided, same value is used for all worlds.
@@ -3881,6 +3885,7 @@ class SolverMuJoCo(SolverBase):
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
         joint_damping = get_custom_attribute("dof_passive_damping")
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
+        body_gravcomp = get_custom_attribute("gravcomp")
         joint_springref = get_custom_attribute("dof_springref")
         joint_ref = get_custom_attribute("dof_ref")
 
@@ -4282,6 +4287,8 @@ class SolverMuJoCo(SolverBase):
             # (sensor frames, reference links), omit mass and inertia entirely
             # and let MuJoCo handle them natively.
             body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": is_fixed_root}
+            if body_gravcomp is not None and body_gravcomp[child] != 0.0:
+                body_kwargs["gravcomp"] = float(body_gravcomp[child])
             if mass > 0.0:
                 body_kwargs["mass"] = mass
                 body_kwargs["ipos"] = body_com[child, :]
