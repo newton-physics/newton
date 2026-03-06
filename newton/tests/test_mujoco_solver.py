@@ -2007,7 +2007,9 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
                 jnt_bodyid = solver.mjw_model.jnt_bodyid.numpy()
                 joints_on_root = np.where(jnt_bodyid == mjc_root_body)[0]
-                self.assertEqual(len(joints_on_root), 0, f"Fixed-root {body_kind} body should not create a MuJoCo joint")
+                self.assertEqual(
+                    len(joints_on_root), 0, f"Fixed-root {body_kind} body should not create a MuJoCo joint"
+                )
 
                 initial_mocap_pos = np.array(solver.mjw_data.mocap_pos.numpy()[0, mocap_idx], copy=True)
                 initial_mocap_quat = np.array(solver.mjw_data.mocap_quat.numpy()[0, mocap_idx], copy=True)
