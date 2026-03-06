@@ -21,7 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -2100,11 +2100,17 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
             load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-            hide_collision_shapes: If True, collision shapes are hidden. Default is False.
+            hide_collision_shapes: If True, collision shapes on bodies that already
+                have visual-only geometry are hidden. Collision shapes on bodies
+                without visual-only geometry remain visible as a rendering fallback.
+                Mesh colliders with authored PBR material data (texture,
+                roughness, or metallic) also remain visible so collision-only
+                render meshes are not lost.
+                Default is False.
             force_show_colliders: If True, collision shapes get the VISIBLE flag
                 regardless of whether visual shapes exist on the same body. Note that
-                ``hide_collision_shapes=True`` still takes precedence and will suppress
-                the VISIBLE flag even when this option is set. Default is False.
+                ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
+                colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -5765,6 +5771,22 @@ class ModelBuilder:
                 shape_tf = wp.transform(*self.shape_transform[shape])
                 self.shape_transform[shape] = shape_tf * tf
                 remeshed_shapes.add(shape)
+
+        # Hide approximated primitives on bodies that have other visible shapes.
+        # Primitives (box, sphere) can't carry visual materials, so they should
+        # not be visible when the body already has dedicated visual geometry.
+        visible_count_per_body = Counter(
+            self.shape_body[i] for i in range(len(self.shape_body)) if self.shape_flags[i] & ShapeFlags.VISIBLE
+        )
+        for shape in remeshed_shapes:
+            if self.shape_type[shape] in (GeoType.MESH, GeoType.CONVEX_MESH):
+                continue
+            if not (self.shape_flags[shape] & ShapeFlags.VISIBLE):
+                continue
+            body = self.shape_body[shape]
+            if visible_count_per_body.get(body, 0) > 1:
+                self.shape_flags[shape] &= ~ShapeFlags.VISIBLE
+                visible_count_per_body[body] -= 1
 
         return remeshed_shapes
 

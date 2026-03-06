@@ -173,11 +173,17 @@ def parse_usd(
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
         load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-        hide_collision_shapes: If True, collision shapes are hidden. Default is False.
+        hide_collision_shapes: If True, collision shapes on bodies that already
+            have visual-only geometry are hidden. Collision shapes on bodies
+            without visual-only geometry remain visible as a rendering fallback.
+            Mesh colliders with authored PBR material data (texture,
+            roughness, or metallic) also remain visible so collision-only
+            render meshes are not lost.
+            Default is False.
         force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
-            ``hide_collision_shapes=True`` still takes precedence and will suppress
-            the VISIBLE flag even when this option is set. Default is False.
+            ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
+            colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -337,7 +343,7 @@ def parse_usd(
     # cache for resolved material properties (keyed by prim path)
     material_props_cache: dict[str, dict[str, Any]] = {}
     # cache for mesh data loaded from USD prims
-    mesh_cache: dict[tuple[str, bool], Mesh] = {}
+    mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -386,6 +392,51 @@ def parse_usd(
         mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
         mesh_cache[key] = mesh
         return mesh
+
+    def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
+        """Load a renderable mesh without changing physics mass properties."""
+        material_props = _get_material_props_cached(prim)
+        texture = material_props.get("texture")
+        physics_mesh = _get_mesh_cached(prim)
+        if texture is not None:
+            render_mesh = _get_mesh_cached(prim, load_uvs=True)
+            # Texture UV expansion is render-only. Preserve the collision mesh's
+            # mass/inertia so visibility changes do not perturb simulation.
+            mesh = Mesh(
+                render_mesh.vertices,
+                render_mesh.indices,
+                normals=render_mesh.normals,
+                uvs=render_mesh.uvs,
+                compute_inertia=False,
+                is_solid=physics_mesh.is_solid,
+                maxhullvert=physics_mesh.maxhullvert,
+                sdf=physics_mesh.sdf,
+            )
+            mesh.mass = physics_mesh.mass
+            mesh.com = physics_mesh.com
+            mesh.inertia = physics_mesh.inertia
+            mesh.has_inertia = physics_mesh.has_inertia
+        else:
+            mesh = physics_mesh.copy(recompute_inertia=False)
+        if texture:
+            mesh.texture = texture
+        if mesh.texture is not None and mesh.uvs is None:
+            warnings.warn(
+                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                stacklevel=2,
+            )
+            mesh.texture = None
+        if material_props.get("color") is not None and mesh.texture is None:
+            mesh.color = material_props["color"]
+        if material_props.get("roughness") is not None:
+            mesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            mesh.metallic = material_props["metallic"]
+        return mesh
+
+    def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
+        # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
+        return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
 
     bodies_with_visual_shapes: set[int] = set()
 
@@ -541,25 +592,7 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "mesh":
-                # Resolve material properties first (cached) to determine if we need UVs
-                material_props = _get_material_props_cached(prim)
-                texture = material_props.get("texture")
-                # Only load UVs if we have a texture to avoid expensive faceVarying expansion
-                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None))
-                if texture:
-                    mesh.texture = texture
-                if mesh.texture is not None and mesh.uvs is None:
-                    warnings.warn(
-                        f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                        stacklevel=2,
-                    )
-                    mesh.texture = None
-                if material_props.get("color") is not None and mesh.texture is None:
-                    mesh.color = material_props["color"]
-                if material_props.get("roughness") is not None:
-                    mesh.roughness = material_props["roughness"]
-                if material_props.get("metallic") is not None:
-                    mesh.metallic = material_props["metallic"]
+                mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
@@ -2001,6 +2034,22 @@ def parse_usd(
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
 
+                has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
+                collider_has_visual_material = (
+                    key == UsdPhysics.ObjectType.MeshShape
+                    and _has_visual_material_properties(_get_material_props_cached(prim))
+                )
+
+                hide_collider_for_body = (
+                    hide_collision_shapes and has_body_visual_shapes and not collider_has_visual_material
+                )
+                show_collider_by_policy = should_show_collider(
+                    force_show_colliders,
+                    has_visual_shapes=has_body_visual_shapes,
+                )
+                collider_is_visible = (
+                    show_collider_by_policy or collider_has_visual_material
+                ) and not hide_collider_for_body
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -2025,11 +2074,7 @@ def parse_usd(
                         mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
-                        is_visible=should_show_collider(
-                            force_show_colliders,
-                            has_visual_shapes=load_visual_shapes and body_id in bodies_with_visual_shapes,
-                        )
-                        and not hide_collision_shapes,
+                        is_visible=collider_is_visible,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2092,7 +2137,12 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    mesh = _get_mesh_cached(prim)
+                    if collider_is_visible:
+                        # Visible colliders should render with the same visual material metadata
+                        # as visual-only mesh imports.
+                        mesh = _get_mesh_with_visual_material(prim, path_name=path)
+                    else:
+                        mesh = _get_mesh_cached(prim)
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
