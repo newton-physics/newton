@@ -1,4 +1,0 @@
-Radius = 1.0
-RestLength = 0.33
-Young Modulus = 1e+08
-Torsion Modulus = 1e+08
