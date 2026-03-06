@@ -13,11 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import BodyFlags, Contacts, Control, Model, State
+from ...sim import Contacts, Control, Model, State
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
@@ -99,7 +98,7 @@ class SolverXPBD(SolverBase):
 
         self.compute_body_velocity_from_position_delta = False
 
-        self._update_kinematic_state()
+        self._init_kinematic_state()
 
         # helper variables to track constraint resolution vars
         self._particle_delta_counter = 0
@@ -110,28 +109,10 @@ class SolverXPBD(SolverBase):
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
 
-    def _update_kinematic_state(self):
-        """Recompute cached kinematic body flags and effective inverse mass/inertia."""
-        model = self.model
-        self.has_kinematic_bodies = False
-        self.body_inv_mass_effective = model.body_inv_mass
-        self.body_inv_inertia_effective = model.body_inv_inertia
-        if model.body_count:
-            body_flags = model.body_flags.numpy()
-            kinematic_mask = (body_flags & int(BodyFlags.KINEMATIC)) != 0
-            self.has_kinematic_bodies = bool(np.any(kinematic_mask))
-            if self.has_kinematic_bodies:
-                inv_mass = model.body_inv_mass.numpy().copy()
-                inv_inertia = model.body_inv_inertia.numpy().copy()
-                inv_mass[kinematic_mask] = 0.0
-                inv_inertia[kinematic_mask] = 0.0
-                self.body_inv_mass_effective = wp.array(inv_mass, dtype=float, device=model.device)
-                self.body_inv_inertia_effective = wp.array(inv_inertia, dtype=wp.mat33, device=model.device)
-
     @override
     def notify_model_changed(self, flags: int):
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
-            self._update_kinematic_state()
+            self._refresh_kinematic_state()
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
         if model.body_count == 0:
@@ -719,7 +700,7 @@ class SolverXPBD(SolverBase):
                         device=model.device,
                     )
 
-            if self.has_kinematic_bodies and model.body_count:
+            if model.body_count:
                 self.copy_kinematic_body_state(model, state_in, state_out)
 
             return state_out

@@ -22,7 +22,6 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import (
-    BodyFlags,
     Contacts,
     Control,
     JointType,
@@ -564,8 +563,8 @@ class SolverVBD(SolverBase):
         self.body_particle_contact_material_mu = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
 
         # Kinematic body support: create effective inv_mass / inv_inertia arrays
-        # with kinematic bodies zeroed out (matching XPBD pattern).
-        self._update_kinematic_state()
+        # with kinematic bodies zeroed out.
+        self._init_kinematic_state()
 
         # Validation
         has_bodies = self.model.body_count > 0
@@ -577,31 +576,10 @@ class SolverVBD(SolverBase):
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
 
-    def _update_kinematic_state(self):
-        """Recompute effective inverse mass/inertia arrays for kinematic bodies.
-
-        Must be called whenever ``model.body_flags``, ``model.body_inv_mass``,
-        or ``model.body_inv_inertia`` change.  This happens automatically in
-        ``_init_rigid_system`` and via :meth:`notify_model_changed`.
-        """
-        model = self.model
-        self.body_inv_mass_effective = model.body_inv_mass
-        self.body_inv_inertia_effective = model.body_inv_inertia
-        if model.body_count:
-            body_flags = model.body_flags.numpy()
-            kinematic_mask = (body_flags & int(BodyFlags.KINEMATIC)) != 0
-            if np.any(kinematic_mask):
-                inv_mass = model.body_inv_mass.numpy().copy()
-                inv_inertia = model.body_inv_inertia.numpy().copy()
-                inv_mass[kinematic_mask] = 0.0
-                inv_inertia[kinematic_mask] = 0.0
-                self.body_inv_mass_effective = wp.array(inv_mass, dtype=float, device=model.device)
-                self.body_inv_inertia_effective = wp.array(inv_inertia, dtype=wp.mat33, device=model.device)
-
     @override
     def notify_model_changed(self, flags: int):
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
-            self._update_kinematic_state()
+            self._refresh_kinematic_state()
 
     # =====================================================
     # Initialization Helper Methods
