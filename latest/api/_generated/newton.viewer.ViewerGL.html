@@ -872,6 +872,14 @@ model introspection and visualization options.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.viewer.ViewerGL.clear_model">
+<span class="sig-name descname"><span class="pre">clear_model</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.clear_model" title="Link to this definition">#</a></dt>
+<dd><p>Reset GL-specific model-dependent state to defaults.</p>
+<p>Called from <code class="docutils literal notranslate"><span class="pre">__init__</span></code> (via <code class="docutils literal notranslate"><span class="pre">super().__init__</span></code> → <code class="docutils literal notranslate"><span class="pre">clear_model</span></code>)
+and whenever the current model is discarded.</p>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.close">
 <span class="sig-name descname"><span class="pre">close</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.close" title="Link to this definition">#</a></dt>
 <dd><p>Close the viewer and clean up resources.</p>
@@ -1248,10 +1256,11 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>callback</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable" title="(in Python v3.14)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a><em>]</em><em>, </em><em>None</em><em>]</em>) – Function to be called during UI rendering</p></li>
-<li><p><strong>position</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><em>Literal</em></a><em>[</em><em>'side'</em><em>, </em><em>'stats'</em><em>, </em><em>'free'</em><em>]</em>) – Position where the UI should be rendered. One of:
+<li><p><strong>position</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><em>Literal</em></a><em>[</em><em>'side'</em><em>, </em><em>'stats'</em><em>, </em><em>'free'</em><em>, </em><em>'panel'</em><em>]</em>) – Position where the UI should be rendered. One of:
 “side” - Side callback (default)
 “stats” - Stats/metrics area
-“free” - Free-floating UI elements</p></li>
+“free” - Free-floating UI elements
+“panel” - Top-level collapsing headers in left panel</p></li>
 </ul>
 </dd>
 </dl>
@@ -1342,6 +1351,7 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.__init__"><code class="docutils literal notranslate"><span class="pre">ViewerGL.__init__()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.apply_forces"><code class="docutils literal notranslate"><span class="pre">ViewerGL.apply_forces()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.begin_frame"><code class="docutils literal notranslate"><span class="pre">ViewerGL.begin_frame()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.clear_model"><code class="docutils literal notranslate"><span class="pre">ViewerGL.clear_model()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.close"><code class="docutils literal notranslate"><span class="pre">ViewerGL.close()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.end_frame"><code class="docutils literal notranslate"><span class="pre">ViewerGL.end_frame()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.get_frame"><code class="docutils literal notranslate"><span class="pre">ViewerGL.get_frame()</span></code></a></li>
