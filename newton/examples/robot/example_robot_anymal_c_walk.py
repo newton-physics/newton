@@ -26,8 +26,6 @@
 import torch
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
 import newton.examples
 import newton.utils

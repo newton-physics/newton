@@ -29,8 +29,6 @@
 import numpy as np
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
 import newton.examples
 
