@@ -32,6 +32,7 @@ import newton.solvers
 from newton.solvers import xpbd_rod
 
 from newton.examples.elastic_rod.rod_mesher import RodMesher
+from newton.examples.cosserat2.kernels.visualization import compute_director_lines_kernel
 
 
 class Example:
@@ -100,6 +101,21 @@ class Example:
         self.contacts = self.model.contacts()
 
 
+
+        # Director visualization state
+        self.show_directors = False
+        self.director_scale = 0.03
+
+        # Pre-allocate GPU arrays for director line visualization
+        self._director_starts = []
+        self._director_ends = []
+        self._director_colors = []
+        for ws in self.solver._rods:
+            n = ws.num_edges * 3
+            device = self.model.device
+            self._director_starts.append(wp.zeros(n, dtype=wp.vec3, device=device))
+            self._director_ends.append(wp.zeros(n, dtype=wp.vec3, device=device))
+            self._director_colors.append(wp.zeros(n, dtype=wp.vec3, device=device))
 
         # Create rod meshers for tube visualization
         self._meshers = []
@@ -195,6 +211,24 @@ class Example:
         self.simulate()
         self.sim_time += self.frame_dt
 
+    def _build_director_lines(self, idx, ws):
+        ps = self.solver._rod_particle_starts[idx]
+        wp.launch(
+            compute_director_lines_kernel,
+            dim=ws.num_edges * 3,
+            inputs=[
+                self.state_0.particle_q[ps : ps + ws.num_points],
+                ws.orientations_wp,
+                ws.num_edges,
+                self.director_scale,
+            ],
+            outputs=[
+                self._director_starts[idx],
+                self._director_ends[idx],
+                self._director_colors[idx],
+            ],
+        )
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
@@ -209,6 +243,20 @@ class Example:
                 mesher.normals,
                 mesher.uvs,
             )
+
+        for idx, ws in enumerate(self.solver._rods):
+            name = f"/rod_directors_{idx}"
+            if self.show_directors:
+                self._build_director_lines(idx, ws)
+                self.viewer.log_lines(
+                    name,
+                    self._director_starts[idx],
+                    self._director_ends[idx],
+                    self._director_colors[idx],
+                    width=0.005,
+                )
+            else:
+                self.viewer.log_lines(name, None, None, None, hidden=True)
 
         self.viewer.end_frame()
 
@@ -276,6 +324,10 @@ class Example:
         changed_tw, self.rest_twist = imgui.slider_float("Rest Twist", self.rest_twist, -0.1, 0.1)
         if changed_d1 or changed_d2 or changed_tw:
             self._update_rest_darboux()
+
+        imgui.separator()
+        _, self.show_directors = imgui.checkbox("Show Material Frames", self.show_directors)
+        _, self.director_scale = imgui.slider_float("Director Scale", self.director_scale, 0.01, 0.1)
 
 
 if __name__ == "__main__":
