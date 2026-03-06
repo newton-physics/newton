@@ -209,8 +209,7 @@ class Example:
 
         self.viewer = viewer
 
-        # Parameters
-        self.cube_count = getattr(args, "cube_count", 3)  # Tested from 1 to 3 cubes
+        self.cube_count = 3
         self.cube_size = 0.05
 
         self.table_height = 0.1
@@ -714,6 +713,13 @@ class Example:
             raise ValueError(f"World success rate is {success_rate}, expected 0.7 or higher")
         else:
             print(f"World success rate: {success_rate}")
+
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=16)
+        parser.add_argument("--verbose", action="store_true", help="Enable verbose output.")
+        return parser
 
 
 if __name__ == "__main__":
