@@ -132,7 +132,9 @@ class Example:
 
     def _push_targets_from_gizmos(self):
         """Read gizmo-updated transform and push into IK objectives."""
-        self.pos_obj.set_target_position(0, wp.transform_get_translation(self.ee_tf))
+        pos = wp.transform_get_translation(self.ee_tf)
+        pos = wp.vec3(pos[0], pos[1], max(pos[2], 0.11))
+        self.pos_obj.set_target_position(0, pos)
         q = wp.transform_get_rotation(self.ee_tf)
         self.rot_obj.set_target_rotation(0, wp.vec4(q[0], q[1], q[2], q[3]))
 

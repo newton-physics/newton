@@ -65,7 +65,7 @@ def _collision_residuals(
     # Softplus of penetration depth to keep it smooth
     dist = wp.length(ee_pos - c)
     delta = (link_radius + r_obs) - dist
-    margin = 0.05
+    margin = 0.15
     pen = wp.log(1.0 + wp.exp(delta / margin)) * margin
 
     residuals[row_idx, start_idx] = weight * pen
@@ -238,7 +238,7 @@ class Example:
                     link_radius=link_radius,
                     obstacle_centers=self.obstacle_centers,
                     obstacle_radii=self.obstacle_radii,
-                    weight=10.0,
+                    weight=50.0,
                 )
             )
 
@@ -282,8 +282,10 @@ class Example:
 
     def _push_targets_from_gizmos(self):
         """Read gizmo-updated transforms and push into IK objectives."""
-        # Update EE target
-        self.pos_obj.set_target_position(0, wp.transform_get_translation(self.ee_tf))
+        # Update EE target (clamp z to ground)
+        pos = wp.transform_get_translation(self.ee_tf)
+        pos = wp.vec3(pos[0], pos[1], max(pos[2], 0.11))
+        self.pos_obj.set_target_position(0, pos)
         q = wp.transform_get_rotation(self.ee_tf)
         self.rot_obj.set_target_rotation(0, wp.vec4(q[0], q[1], q[2], q[3]))
 
