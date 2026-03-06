@@ -44,6 +44,7 @@ and MuJoCo physics solvers when importing USD files. Tests cover:
 - `humanoid.usda`: mujoco humanoid with D6 joints and Newton state attributes
 """
 
+import math
 import unittest
 from pathlib import Path
 from typing import Any
@@ -156,6 +157,34 @@ class TestSchemaResolver(unittest.TestCase):
                 armature_values_found.append(armature)
         for _i, armature in enumerate(armature_values_found):
             self.assertAlmostEqual(armature, 0.01, places=3)
+
+    def test_physx_joint_velocity_limit(self):
+        """
+        Test PhysX joint velocity limit (maxJointVelocity) resolution.
+
+        Verifies that physxJoint:maxJointVelocity values (100.0 deg/s) are correctly
+        resolved from ant_mixed.usda and converted to rad/s for revolute joints.
+        """
+        test_dir = Path(__file__).parent
+        assets_dir = test_dir / "assets"
+        ant_mixed_path = assets_dir / "ant_mixed.usda"
+        self.assertTrue(ant_mixed_path.exists(), f"Missing mixed USD: {ant_mixed_path}")
+
+        builder = ModelBuilder()
+        builder.add_usd(
+            source=str(ant_mixed_path),
+            schema_resolvers=[SchemaResolverPhysx()],
+            verbose=False,
+        )
+        expected_velocity_limit = 100.0 * math.pi / 180.0  # 100 deg/s -> rad/s
+        velocity_limits_found = []
+        for i in range(6, builder.joint_dof_count):
+            vel_limit = builder.joint_velocity_limit[i]
+            if vel_limit < 1e5:  # filter out default 1e6 values
+                velocity_limits_found.append(vel_limit)
+        self.assertGreater(len(velocity_limits_found), 0, "No velocity limits found from USD")
+        for vel_limit in velocity_limits_found:
+            self.assertAlmostEqual(vel_limit, expected_velocity_limit, places=3)
 
     def test_schema_attrs_collection(self):
         """
