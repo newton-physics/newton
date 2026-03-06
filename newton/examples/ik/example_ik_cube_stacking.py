@@ -225,6 +225,7 @@ class Example:
         self.task_drop_off_pos = self.table_top_center + wp.vec3(0.0, -0.15, 0.5 * self.cube_size)
 
         # Build scene
+        self.use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
         franka_with_table = self.build_franka_with_table()
         scene = self.build_scene(franka_with_table)
         self.robot_body_count = franka_with_table.body_count
@@ -233,7 +234,6 @@ class Example:
         self.model = scene.finalize()
         self.num_bodies_per_world = self.model.body_count // self.world_count
 
-        use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             solver="newton",
@@ -244,7 +244,7 @@ class Example:
             njmax=2000,
             cone="elliptic",
             impratio=1000.0,
-            use_mujoco_contacts=use_mujoco_contacts,
+            use_mujoco_contacts=self.use_mujoco_contacts,
         )
 
         self.state_0 = self.model.state()
@@ -405,7 +405,7 @@ class Example:
         for body_idx in range(2, 14):
             gravcomp_body.values[body_idx] = 1.0
 
-        shape_cfg = newton.ModelBuilder.ShapeConfig(margin=1e-3, density=1000.0)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(margin=0.0, density=1000.0)
         shape_cfg.ke = 5.0e4
         shape_cfg.kd = 5.0e2
         shape_cfg.kf = 1.0e3
@@ -420,6 +420,15 @@ class Example:
             xform=wp.transform(self.table_pos, wp.quat_identity()),
             cfg=shape_cfg,
         )
+
+        if self.use_mujoco_contacts:
+            # Set condim=4 (torsional friction) on finger shapes
+            condim_attr = builder.custom_attributes["mujoco:condim"]
+            if condim_attr.values is None:
+                condim_attr.values = {}
+            for shape_idx in range(builder.shape_count):
+                if builder.shape_body[shape_idx] in (12, 13):  # left/right finger bodies
+                    condim_attr.values[shape_idx] = 4
 
         return builder
 
@@ -465,7 +474,7 @@ class Example:
         rng: np.random.Generator,
     ):
         density = rng.uniform(density_range[0], density_range[1])
-        shape_cfg = newton.ModelBuilder.ShapeConfig(density=density, margin=1e-3)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=density, margin=0.0)
 
         def get_random_pos():
             random_x = rng.uniform(x_range[0], x_range[1])
@@ -499,7 +508,15 @@ class Example:
             mesh_body = scene.add_body(xform=body_xform)
 
             half_size = 0.5 * self.cube_size
+            cube_shape_idx = scene.shape_count
             scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, label=key)
+
+            if self.use_mujoco_contacts:
+                # Set condim=4 (torsional friction) on cube shapes
+                condim_attr = scene.custom_attributes["mujoco:condim"]
+                if condim_attr.values is None:
+                    condim_attr.values = {}
+                condim_attr.values[cube_shape_idx] = 4
 
             # Set the color of the cube based on the index
             if i == 0:
