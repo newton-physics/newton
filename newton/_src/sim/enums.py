@@ -16,6 +16,27 @@
 from enum import IntEnum
 
 
+# Body flags
+class BodyFlags(IntEnum):
+    """
+    Per-body dynamic state flags.
+
+    Each body must store exactly one runtime state flag:
+    :attr:`DYNAMIC` or :attr:`KINEMATIC`. :attr:`ALL` is a convenience
+    filter mask for APIs such as :func:`newton.eval_fk` and is not a valid
+    stored body state.
+    """
+
+    DYNAMIC = 1 << 0
+    """Dynamic body that participates in simulation dynamics."""
+
+    KINEMATIC = 1 << 1
+    """User-prescribed body that does not respond to applied forces."""
+
+    ALL = DYNAMIC | KINEMATIC
+    """Filter bitmask selecting both dynamic and kinematic bodies."""
+
+
 # Types of joints linking rigid bodies
 class JointType(IntEnum):
     """
@@ -192,6 +213,7 @@ class JointTargetMode(IntEnum):
 
 
 __all__ = [
+    "BodyFlags",
     "EqType",
     "JointTargetMode",
     "JointType",
