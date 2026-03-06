@@ -764,6 +764,41 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
 
+    def test_body_gravcomp_spec_conversion(self):
+        """Test that body gravcomp is correctly written to the MuJoCo spec and compiled into mj_model."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        body1 = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+            custom_attributes={"mujoco:gravcomp": 0.5},
+        )
+        body2 = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+            custom_attributes={"mujoco:gravcomp": 1.0},
+        )
+
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body2, hx=0.1, hy=0.1, hz=0.1)
+
+        joint1 = builder.add_joint_revolute(-1, body1, axis=(0.0, 0.0, 1.0))
+        joint2 = builder.add_joint_revolute(body1, body2, axis=(0.0, 1.0, 0.0))
+        builder.add_articulation([joint1, joint2])
+
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # mj_model is compiled from the spec — body 0 is the world body, then body1, body2
+        mj_gravcomp = solver.mj_model.body_gravcomp
+        self.assertAlmostEqual(float(mj_gravcomp[1]), 0.5, places=5)
+        self.assertAlmostEqual(float(mj_gravcomp[2]), 1.0, places=5)
+
+
 class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
     def test_joint_attributes_registration_and_updates(self):
         """
