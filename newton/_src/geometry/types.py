@@ -682,8 +682,9 @@ class Mesh:
                 ``(inner, outer)``. Uses ``(-0.1, 0.1)`` when not provided.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided,
                 takes precedence over ``max_resolution``.
-            max_resolution: Maximum sparse-grid dimension [voxel] when
-                ``target_voxel_size`` is not provided.
+            max_resolution: Maximum sparse-grid dimension [voxel] along the longest
+                AABB axis, used when ``target_voxel_size`` is not provided. Must be
+                divisible by 8.
             margin: Extra AABB padding [m] added before discretization. Uses
                 ``0.05`` when not provided.
             shape_margin: Shape margin offset [m] to subtract from SDF values.
