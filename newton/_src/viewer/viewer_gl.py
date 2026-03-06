@@ -247,6 +247,7 @@ class ViewerGL(ViewerBase):
         else:
             self.ui = None
         self._gizmo_log = None
+        self.gizmo_is_using = False
 
         # Performance tracking
         self._fps_history = []
@@ -1536,6 +1537,7 @@ class ViewerGL(ViewerBase):
         giz.set_gizmo_size_clip_space(0.07)
         giz.set_axis_limit(0.0)
         giz.set_plane_limit(0.0)
+        giz.allow_axis_flip(False)
 
         # Camera matrices
         view = self.camera.get_view_matrix().reshape(4, 4).transpose()
@@ -1563,6 +1565,8 @@ class ViewerGL(ViewerBase):
             transform[:] = wp.transform_from_matrix(M)
 
             giz.pop_id()
+
+        self.gizmo_is_using = giz.is_using_any()
 
     def _render_ui(self):
         """
