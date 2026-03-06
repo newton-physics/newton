@@ -227,7 +227,7 @@ add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=t
 add_example_test(
     TestBasicExamples,
     name="basic.example_basic_shapes",
-    devices=test_devices,
+    devices=cuda_test_devices,
     use_viewer=True,
     test_options={"num-frames": 150},
 )
@@ -372,9 +372,8 @@ add_example_test(
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_d",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
-    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 add_example_test(

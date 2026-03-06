@@ -31,7 +31,13 @@ from newton._src.geometry.kernels import (
 from newton._src.solvers.vbd.particle_vbd_kernels import leq_n_ring_vertices
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector
 from newton.solvers import SolverVBD
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
+    add_function_test,
+    assert_np_equal,
+    get_selected_cuda_test_devices,
+    get_test_devices,
+)
 
 
 @wp.kernel
@@ -1120,6 +1126,7 @@ def test_collision_filtering(test, device):
 
 
 devices = get_test_devices(mode="basic")
+cuda_devices = get_selected_cuda_test_devices(mode="basic")
 
 
 class TestCollision(unittest.TestCase):
@@ -1129,7 +1136,9 @@ class TestCollision(unittest.TestCase):
 add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_triangle_collision, devices=devices)
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
-add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
+add_function_test(
+    TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=cuda_devices
+)
 add_function_test(
     TestCollision, "test_avbd_particle_ground_penalty_grows", test_avbd_particle_ground_penalty_grows, devices=devices
 )
