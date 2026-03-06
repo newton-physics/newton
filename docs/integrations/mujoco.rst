@@ -33,9 +33,24 @@ Caveats
 Kinematic Links and Fixed Roots
 -------------------------------
 
-Newton only allows ``is_kinematic=True`` on articulation roots. During export,
-:class:`~newton.solvers.SolverMuJoCo` maps those roots according to their joint
-type:
+Newton only allows ``is_kinematic=True`` on articulation roots, so in the
+MuJoCo exporter a "kinematic link" always means a kinematic root body. Any
+descendants of that root can still be dynamic and are exported normally.
+
+At runtime, :class:`~newton.solvers.SolverMuJoCo` keeps kinematic roots
+user-prescribed rather than dynamically integrated:
+
+- When converting MuJoCo state back to Newton, the previous Newton
+  :attr:`newton.State.joint_q` and :attr:`newton.State.joint_qd` values are
+  passed through for kinematic roots instead of being overwritten from MuJoCo's
+  integrated ``qpos`` and ``qvel``.
+- Applied body wrenches and joint forces targeting kinematic bodies are ignored
+  on the MuJoCo side.
+- Kinematic bodies still participate in contacts, so they can act as moving or
+  fixed obstacles for dynamic bodies.
+
+During export, :class:`~newton.solvers.SolverMuJoCo` maps roots according to
+their joint type:
 
 - **Kinematic roots with non-fixed joints** are exported as ordinary MuJoCo
   joints with the same Newton joint type and DOFs. The solver assigns a very
