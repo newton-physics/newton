@@ -1365,7 +1365,9 @@ class Gaussian:
         elif method == "points":
             return self.compute_points_mesh()
 
-        raise ValueError(f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull', 'alphashape'.")
+        raise ValueError(
+            f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull', 'alphashape', 'points'."
+        )
 
     def compute_points_mesh(self) -> "Mesh":
         from ..utils.mesh import create_mesh_box  # noqa: PLC0415

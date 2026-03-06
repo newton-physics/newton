@@ -818,7 +818,11 @@ class ViewerGL(ViewerBase):
         if self._gaussian_mesh is None:
             self._create_gaussian_mesh()
 
+        gaussian_cache_key = (id(gaussian), gaussian.count)
         cache = self._gaussian_cache.get(name)
+        if cache is not None and cache.get("gaussian_cache_key") != gaussian_cache_key:
+            cache = None
+
         if cache is None:
             n = gaussian.count
 
@@ -851,6 +855,7 @@ class ViewerGL(ViewerBase):
                 colors = np.ones((n, 3), dtype=np.float32)
 
             cache = {
+                "gaussian_cache_key": gaussian_cache_key,
                 "local_pos": positions,
                 "vbo": vbo,
                 "colors": colors,

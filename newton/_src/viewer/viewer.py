@@ -78,7 +78,7 @@ class ViewerBase(ABC):
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
         self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
-        self.show_gaussians = True
+        self.show_gaussians = False
         """Whether to show the hydroelastic contact surface wireframe."""
         self.picking_enabled = True  # enable interactive picking via mouse
 
@@ -392,8 +392,8 @@ class ViewerBase(ABC):
         if not self._gaussian_instances:
             return
 
-        body_q_np = state.body_q.numpy()
-        offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
+        body_q_np = None
+        offsets_np = None
 
         for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
             visible = self._should_show_shape(flags, is_static)
@@ -401,11 +401,17 @@ class ViewerBase(ABC):
                 self.log_gaussian(gname, gaussian, hidden=True)
                 continue
             if parent >= 0:
+                if body_q_np is None:
+                    body_q_np = state.body_q.numpy()
+
                 body_xform = wp.transform_expand(body_q_np[parent])
                 world_xform = wp.transform_multiply(body_xform, shape_xform)
             else:
                 world_xform = shape_xform
-            if offsets_np is not None and world_idx >= 0:
+
+            if self.world_offsets is not None and world_idx >= 0:
+                if offsets_np is None:
+                    offsets_np = self.world_offsets.numpy()
                 offset = offsets_np[world_idx]
                 world_xform = wp.transformf(
                     wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
@@ -717,8 +723,9 @@ class ViewerBase(ABC):
                 raise ValueError(f"log_geo requires geo_src for GAUSSIAN (name={name})")
             if not isinstance(geo_src, newton.Gaussian):
                 raise TypeError(f"log_geo expected newton.Gaussian for GAUSSIAN (name={name})")
-            if self.show_gaussians:
-                self.log_gaussian(name, geo_src, hidden=hidden)
+            if not self.show_gaussians:
+                hidden = True
+            self.log_gaussian(name, geo_src, hidden=hidden)
             return
 
         # Heightfield: convert to mesh for rendering
