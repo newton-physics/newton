@@ -862,7 +862,7 @@
 </div>
 <section id="alternative-using-shape-methods-with-as-site-true">
 <h3>Alternative: Using Shape Methods with <code class="docutils literal notranslate"><span class="pre">as_site=True</span></code><a class="headerlink" href="#alternative-using-shape-methods-with-as-site-true" title="Link to this heading">#</a></h3>
-<p>Sites can also be created using shape creation methods (<code class="docutils literal notranslate"><span class="pre">add_shape_sphere</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape_box</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape_capsule</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape_cylinder</span></code>) by passing <code class="docutils literal notranslate"><span class="pre">as_site=True</span></code>. This is particularly useful when programmatically generating shapes or conditionally creating sites:</p>
+<p>Sites can also be created using shape creation methods (<code class="docutils literal notranslate"><span class="pre">add_shape_sphere</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape_box</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape_capsule</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape_cylinder</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape_ellipsoid</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape_cone</span></code>) by passing <code class="docutils literal notranslate"><span class="pre">as_site=True</span></code>. This is particularly useful when programmatically generating shapes or conditionally creating sites:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
 <span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
 
@@ -891,7 +891,7 @@
 <span class="p">)</span>
 </pre></div>
 </div>
-<p>When <code class="docutils literal notranslate"><span class="pre">as_site=True</span></code>, the shape is automatically configured with all site invariants (no collision, zero density, collision_group=0), regardless of any custom configuration passed</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">as_site=True</span></code>, the shape is automatically configured with all site invariants (no collision, zero density, collision_group=0), regardless of any custom configuration passed.</p>
 </section>
 </section>
 <section id="importing-sites">
@@ -954,7 +954,7 @@
 </section>
 <section id="using-sites-with-sensors">
 <h2>Using Sites with Sensors<a class="headerlink" href="#using-sites-with-sensors" title="Link to this heading">#</a></h2>
-<p>Sites are commonly used as reference frames for sensors, particularly the <code class="docutils literal notranslate"><span class="pre">SensorFrameTransform</span></code> which computes relative poses between objects and reference frames.</p>
+<p>Sites are commonly used as reference frames for sensors, particularly <a class="reference internal" href="../api/_generated/newton.sensors.SensorFrameTransform.html#newton.sensors.SensorFrameTransform" title="newton.sensors.SensorFrameTransform"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorFrameTransform</span></code></a> which computes relative poses between objects and reference frames.</p>
 <p>For detailed information on using sites with sensors, see <a class="reference internal" href="sensors.html"><span class="doc">Sensors</span></a>.</p>
 </section>
 <section id="mujoco-interoperability">
@@ -972,15 +972,15 @@
 <span class="n">solver</span> <span class="o">=</span> <span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>Sites are exported with their visual properties (color, size) and can be used with MuJoCo’s native sensors and actuators. To disable site export, pass <code class="docutils literal notranslate"><span class="pre">include_sites=False</span></code> to the <code class="docutils literal notranslate"><span class="pre">convert_to_mjc()</span></code> method if calling it manually.</p>
+<p>Sites are exported with their visual properties (color, size) and can be used with MuJoCo’s native sensors and actuators. To disable site export, pass <code class="docutils literal notranslate"><span class="pre">include_sites=False</span></code> to <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>.</p>
 </section>
 <section id="implementation-details">
 <h2>Implementation Details<a class="headerlink" href="#implementation-details" title="Link to this heading">#</a></h2>
-<p>Sites are internally represented as shapes with the <code class="docutils literal notranslate"><span class="pre">ShapeFlags.SITE</span></code> flag set. This allows them to leverage Newton’s existing shape infrastructure while maintaining distinct behavior:</p>
+<p>Sites are internally represented as shapes with the <a class="reference internal" href="../api/_generated/newton.ShapeFlags.html#newton.ShapeFlags.SITE" title="newton.ShapeFlags.SITE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">SITE</span></code></a> flag set. This allows them to leverage Newton’s existing shape infrastructure while maintaining distinct behavior:</p>
 <ul class="simple">
 <li><p>Sites are filtered out from collision detection pipelines</p></li>
 <li><p>Site density is automatically set to zero during creation</p></li>
-<li><p>Sites can be queried and filtered using the Selection API with shape-frequency operations</p></li>
+<li><p>Sites can be identified at runtime by checking the <a class="reference internal" href="../api/_generated/newton.ShapeFlags.html#newton.ShapeFlags.SITE" title="newton.ShapeFlags.SITE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">SITE</span></code></a> flag on <code class="docutils literal notranslate"><span class="pre">model.shape_flags</span></code></p></li>
 </ul>
 <p>This implementation approach provides maximum flexibility while keeping the codebase maintainable and avoiding duplication.</p>
 </section>
