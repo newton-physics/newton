@@ -231,6 +231,11 @@ class Example:
         self.train_iter += 1
 
     def render(self):
+        if self.viewer.is_paused():
+            self.viewer.begin_frame(self.viewer.time)
+            self.viewer.end_frame()
+            return
+
         # for interactive viewing, we just render the final state at every frame
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             start_frame = self.sim_steps

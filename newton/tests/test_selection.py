@@ -1074,6 +1074,36 @@ class TestSelection(unittest.TestCase):
     def test_link_selection_two_per_view_with_mask(self):
         self.run_test_link_selection(use_mask=True, use_multiple_artics_per_view=True)
 
+    def test_get_attribute_extended_state(self):
+        """Test that get_attribute works for extended state attributes."""
+        builder = newton.ModelBuilder(gravity=-9.81)
+        builder.request_state_attributes("body_qdd", "body_parent_f", "mujoco:qfrc_actuator")
+
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_revolute(
+            -1,
+            link,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()),
+            axis=wp.vec3(0, 1, 0),
+        )
+        builder.add_articulation([joint], label="art")
+        model = builder.finalize()
+        state = model.state()
+
+        view = ArticulationView(model, "art")
+
+        # body_qdd and body_parent_f should be retrievable via get_attribute on state
+        body_qdd = view.get_attribute("body_qdd", state)
+        self.assertEqual(body_qdd.shape[2], 1)  # 1 link
+
+        body_parent_f = view.get_attribute("body_parent_f", state)
+        self.assertEqual(body_parent_f.shape[2], 1)  # 1 link
+
+        qfrc_actuator = view.get_attribute("mujoco.qfrc_actuator", state)
+        self.assertEqual(qfrc_actuator.shape[2], 1)  # 1 revolute DOF
+
 
 class TestSelectionFixedTendons(unittest.TestCase):
     """Tests for fixed tendon support in ArticulationView."""

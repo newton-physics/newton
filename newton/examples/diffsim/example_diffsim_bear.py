@@ -303,6 +303,11 @@ class Example:
         self.train_iter += 1
 
     def render(self):
+        if self.viewer.is_paused():
+            self.viewer.begin_frame(self.viewer.time)
+            self.viewer.end_frame()
+            return
+
         # draw training run
         for i in range(self.sim_steps + 1):
             state = self.states[i * self.sim_substeps]

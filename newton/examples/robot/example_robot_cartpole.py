@@ -75,6 +75,16 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((0.0, 0.0, 0.0))
+
+        # Set camera to view all the cartpoles
+        self.viewer.set_camera(
+            pos=wp.vec3(7.3, -14.0, 2.3),
+            pitch=-5.0,
+            yaw=-225.0,
+        )
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 90.0
 
         self.capture()
 

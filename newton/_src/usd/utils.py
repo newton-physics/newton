@@ -31,6 +31,7 @@ AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
 if TYPE_CHECKING:
+    from ..geometry.types import TetMesh
     from ..sim.builder import ModelBuilder
 
 try:
@@ -1128,6 +1129,200 @@ def get_mesh(
     if return_uv_indices:
         return mesh_out, uv_indices
     return mesh_out
+
+
+# Schema-defined TetMesh attribute names excluded from custom attribute parsing.
+_TETMESH_SCHEMA_ATTRS = frozenset(
+    {
+        "points",
+        "tetVertexIndices",
+        "surfaceFaceVertexIndices",
+        "extent",
+        "orientation",
+        "purpose",
+        "visibility",
+        "xformOpOrder",
+        "proxyPrim",
+    }
+)
+
+
+def get_tetmesh(prim: Usd.Prim) -> TetMesh:
+    """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
+
+    Reads vertex positions from the ``points`` attribute and tetrahedral
+    connectivity from ``tetVertexIndices``. If a physics material is bound
+    to the prim (via ``material:binding:physics``) and contains
+    ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
+    (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+    those values are read and converted to Lame parameters (``k_mu``,
+    ``k_lambda``) and density on the returned TetMesh. Material properties
+    are set to ``None`` if not present.
+
+    Example:
+
+        .. code-block:: python
+
+            from pxr import Usd
+            import newton
+            import newton.usd
+
+            usd_stage = Usd.Stage.Open("tetmesh.usda")
+            tetmesh = newton.usd.get_tetmesh(usd_stage.GetPrimAtPath("/MyTetMesh"))
+
+            # tetmesh.vertices  -- np.ndarray, shape (N, 3)
+            # tetmesh.tet_indices -- np.ndarray, flattened (4 per tet)
+
+    Args:
+        prim: The USD prim to load the tetrahedral mesh from.
+
+    Returns:
+        TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
+    """
+    from ..geometry.types import TetMesh  # noqa: PLC0415
+
+    tet_mesh = UsdGeom.TetMesh(prim)
+
+    points_attr = tet_mesh.GetPointsAttr().Get()
+    if points_attr is None:
+        raise ValueError(f"TetMesh prim '{prim.GetPath()}' has no points attribute.")
+
+    tet_indices_attr = tet_mesh.GetTetVertexIndicesAttr().Get()
+    if tet_indices_attr is None:
+        raise ValueError(f"TetMesh prim '{prim.GetPath()}' has no tetVertexIndices attribute.")
+
+    vertices = np.array(points_attr, dtype=np.float32)
+    tet_indices = np.array(tet_indices_attr, dtype=np.int32).flatten()
+
+    # Try to read physics material properties if bound
+    k_mu = None
+    k_lambda = None
+    density = None
+
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is not None:
+        youngs = _read_physics_attr(material_prim, "youngsModulus")
+        poissons = _read_physics_attr(material_prim, "poissonsRatio")
+        density_val = _read_physics_attr(material_prim, "density")
+
+        if youngs is not None and poissons is not None:
+            E = float(youngs)
+            nu = float(poissons)
+            # Clamp Poisson's ratio to the open interval (-1, 0.5) to avoid
+            # division by zero in the Lame parameter conversion.
+            nu = max(-0.999, min(nu, 0.499))
+            k_mu = E / (2.0 * (1.0 + nu))
+            k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+
+        if density_val is not None:
+            density = float(density_val)
+
+    # Read custom primvars and attributes (per-vertex, per-tet, etc.)
+    # Primvar interpolation is used to determine the attribute frequency
+    # when available, falling back to length-based inference in TetMesh.__init__.
+    from ..sim.model import Model as _Model  # noqa: PLC0415
+
+    # USD interpolation → Newton frequency for TetMesh prims.
+    # "uniform" means one value per geometric element (cell); for a TetMesh
+    # the cells are tetrahedra, so it maps to TETRAHEDRON.
+    _INTERP_TO_FREQ = {
+        "vertex": _Model.AttributeFrequency.PARTICLE,
+        "varying": _Model.AttributeFrequency.PARTICLE,
+        "uniform": _Model.AttributeFrequency.TETRAHEDRON,
+        "constant": _Model.AttributeFrequency.ONCE,
+    }
+
+    custom_attributes: dict[str, np.ndarray | tuple[np.ndarray, _Model.AttributeFrequency]] = {}
+
+    primvars_api = UsdGeom.PrimvarsAPI(prim)
+    for primvar in primvars_api.GetPrimvarsWithValues():
+        name = primvar.GetPrimvarName()
+        if name in ("st", "normals"):
+            continue  # skip well-known primvars handled elsewhere
+        val = primvar.Get()
+        if val is not None:
+            arr = np.array(val)
+            interp = primvar.GetInterpolation()
+            freq = _INTERP_TO_FREQ.get(interp)
+            if freq is not None:
+                custom_attributes[str(name)] = (arr, freq)
+            else:
+                # Unknown interpolation — let TetMesh infer from length
+                custom_attributes[str(name)] = arr
+
+    # Also read non-schema custom attributes (not primvars, not relationships)
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if name in _TETMESH_SCHEMA_ATTRS:
+            continue
+        if name.startswith("primvars:") or name.startswith("xformOp:"):
+            continue
+        if not attr.HasAuthoredValue():
+            continue
+        val = attr.Get()
+        if val is not None:
+            try:
+                arr = np.array(val)
+                if arr.ndim >= 1:
+                    custom_attributes[name] = arr
+            except (TypeError, ValueError):
+                pass  # skip non-array attributes
+
+    return TetMesh(
+        vertices=vertices,
+        tet_indices=tet_indices,
+        k_mu=k_mu,
+        k_lambda=k_lambda,
+        density=density,
+        custom_attributes=custom_attributes if custom_attributes else None,
+    )
+
+
+def _find_physics_material_prim(prim: Usd.Prim):
+    """Find the physics material prim bound to a prim or its ancestors."""
+    p = prim
+    while p and p.IsValid():
+        binding_api = UsdShade.MaterialBindingAPI(p)
+        rel = binding_api.GetDirectBindingRel("physics")
+        if rel and rel.GetTargets():
+            mat_path = rel.GetTargets()[0]
+            mat_prim = prim.GetStage().GetPrimAtPath(mat_path)
+            if mat_prim and mat_prim.IsValid():
+                return mat_prim
+        p = p.GetParent()
+    return None
+
+
+def _read_physics_attr(prim: Usd.Prim, name: str):
+    """Read a physics attribute from a prim, trying known namespaces."""
+    for prefix in ("omniphysics:", "physxDeformableBody:", "physics:"):
+        attr = prim.GetAttribute(f"{prefix}{name}")
+        if attr and attr.HasAuthoredValue():
+            return attr.Get()
+    return None
+
+
+def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
+    """Find all prims with the ``UsdGeom.TetMesh`` schema in a USD stage.
+
+    Example:
+
+        .. code-block:: python
+
+            from pxr import Usd
+            import newton.usd
+
+            stage = Usd.Stage.Open("scene.usda")
+            prims = newton.usd.find_tetmesh_prims(stage)
+            tetmeshes = [newton.usd.get_tetmesh(p) for p in prims]
+
+    Args:
+        stage: The USD stage to search.
+
+    Returns:
+        list[Usd.Prim]: All prims in the stage that have the TetMesh schema.
+    """
+    return [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.TetMesh)]
 
 
 def _resolve_asset_path(

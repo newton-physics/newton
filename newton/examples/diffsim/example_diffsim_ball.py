@@ -183,6 +183,11 @@ class Example:
         assert all(np.diff(self.loss_history[:-1]) < -1e-3)
 
     def render(self):
+        if self.viewer.is_paused():
+            self.viewer.begin_frame(self.viewer.time)
+            self.viewer.end_frame()
+            return
+
         if self.frame > 0 and self.train_iter % 16 != 0:
             return
 
