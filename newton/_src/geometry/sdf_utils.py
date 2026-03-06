@@ -620,6 +620,15 @@ def _compute_sdf_from_shape_impl(
             bg_value=SDF_BACKGROUND_VALUE,
         )
 
+        # DEBUG: verify volume device matches expected device
+        print(
+            f"[SDF alloc] sparse_volume.device={sparse_volume.device} "
+            f"sparse_volume.id=0x{sparse_volume.id:x} "
+            f"scoped_device={wp.get_device()} "
+            f"requested_device={device} "
+            f"tile_points_wp.device={tile_points_wp.device}"
+        )
+
         # populate the sparse volume with the sdf values
         # Only process allocated tiles (num_tiles x 8x8x8)
         num_allocated_tiles = len(tile_points)
@@ -651,6 +660,8 @@ def _compute_sdf_from_shape_impl(
             translation=wp.vec3(min_ext),
             bg_value=SDF_BACKGROUND_VALUE,
         )
+
+        print(f"[SDF alloc] coarse_volume.device={coarse_volume.device} coarse_volume.id=0x{coarse_volume.id:x}")
 
         # Populate the coarse volume with SDF values (single tile)
         if shape_type == GeoType.MESH:
