@@ -30,9 +30,9 @@ Newton organizes simulation data into four primary objects, each containing flat
 * **Model Object** - Static configuration and physical properties that remain constant during simulation
 * **State Object** - Dynamic quantities that evolve during simulation
 * **Control Object** - Control inputs and actuator commands
-* **Contact Object** - Contact-specific properties
+* **Contact Object** (:class:`~newton.Contacts`) - Contact-specific properties
 
-Custom attributes extend these objects with user-defined arrays that follow the same indexing scheme as Newton's built-in attributes.
+Custom attributes extend these objects with user-defined arrays that follow the same indexing scheme as Newton's built-in attributes. The ``CONTACT`` assignment attaches attributes to the :class:`~newton.Contacts` object created during collision detection.
 
 Declaring Custom Attributes
 ----------------------------
@@ -40,12 +40,13 @@ Declaring Custom Attributes
 Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies:
 
 * **name**: Attribute name
-* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``) or a string for custom frequencies
-* **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.)
+* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``, ``ONCE``) or a string for custom frequencies
+* **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.) or ``str`` for string attributes stored as Python lists
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)
-* **default** (optional): Default value for unspecified entities
+* **default** (optional): Default value for unspecified entities. When omitted, a sensible zero-value is derived from the dtype (``0`` for scalars, identity for quaternions, ``False`` for booleans, ``""`` for strings)
 * **namespace** (optional): Hierarchical organization for grouping related attributes
 * **references** (optional): For multi-world merging, specifies how values are transformed (e.g., ``"body"``, ``"shape"``, ``"world"``, or a custom frequency key)
+* **values** (optional): Pre-populated values — ``dict[int, Any]`` for enum frequencies or ``list[Any]`` for custom string frequencies
 
 When **no namespace** is specified, attributes are added directly to their assignment object (e.g., ``model.temperature``). When a **namespace** is provided, Newton creates a namespace container (e.g., ``model.mujoco.damping``).
 
@@ -115,6 +116,30 @@ When **no namespace** is specified, attributes are added directly to their assig
        )
    )
    # → Accessible as: model.articulation_stiffness
+
+   # ONCE frequency attributes - a single global value
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="gravity_scale",
+           frequency=Model.AttributeFrequency.ONCE,
+           dtype=wp.float32,
+           default=1.0,
+           assignment=Model.AttributeAssignment.MODEL
+       )
+   )
+   # → Accessible as: model.gravity_scale (array of length 1)
+
+   # String dtype attributes - stored as Python lists, not Warp arrays
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="body_description",
+           frequency=Model.AttributeFrequency.BODY,
+           dtype=str,
+           default="unnamed",
+           assignment=Model.AttributeAssignment.MODEL
+       )
+   )
+   # → Accessible as: model.body_description (Python list[str])
 
 **Default Value Behavior:**
 
@@ -429,6 +454,32 @@ After importing the USD file, attributes are accessible following the same patte
 
 For more information about USD integration and the schema resolver system, see :doc:`usd_parsing`.
 
+MJCF and URDF Integration
+--------------------------
+
+Custom attributes can also be parsed from MJCF and URDF files. Each :class:`~newton.ModelBuilder.CustomAttribute` has optional fields for controlling how values are extracted from these formats:
+
+* :attr:`~newton.ModelBuilder.CustomAttribute.mjcf_attribute_name` — name of the XML attribute to read (defaults to the attribute ``name``)
+* :attr:`~newton.ModelBuilder.CustomAttribute.mjcf_value_transformer` — callable that converts the XML string value to the target dtype
+* :attr:`~newton.ModelBuilder.CustomAttribute.urdf_attribute_name` — name of the XML attribute to read (defaults to the attribute ``name``)
+* :attr:`~newton.ModelBuilder.CustomAttribute.urdf_value_transformer` — callable that converts the XML string value to the target dtype
+
+These are primarily used by solver integrations (e.g., :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` registers MJCF transformers for MuJoCo-specific attributes like ``condim``, ``priority``, and ``solref``). When no transformer is provided, values are parsed using a generic string-to-Warp converter.
+
+.. code-block:: python
+
+   # Example: register an attribute that reads "damping" from MJCF joint elements
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="custom_damping",
+           frequency=Model.AttributeFrequency.JOINT_DOF,
+           dtype=wp.float32,
+           default=0.0,
+           namespace="myns",
+           mjcf_attribute_name="damping",  # reads <joint damping="..."/>
+       )
+   )
+
 Validation and Constraints
 ---------------------------
 
@@ -531,6 +582,15 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 
    [100 101]
    [2.5 3. ]
+
+For convenience, :meth:`~newton.ModelBuilder.add_custom_values_batch` appends multiple rows in a single call:
+
+.. code-block:: python
+
+   builder.add_custom_values_batch([
+       {"myns:item_id": 100, "myns:item_value": 2.5},
+       {"myns:item_id": 101, "myns:item_value": 3.0},
+   ])
 
 **Validation:** All attributes sharing a custom frequency must have the same count at ``finalize()`` time. This catches synchronization bugs early.
 
