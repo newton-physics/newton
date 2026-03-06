@@ -211,7 +211,6 @@ class Example:
             config=SensorTiledCamera.Config(
                 default_light=True,
                 default_light_shadows=True,
-                colors_per_shape=True,
                 checkerboard_texture=True,
                 backface_culling=True,
             ),
@@ -265,8 +264,10 @@ class Example:
     def render(self):
         if self.show_sensor_output:
             self.render_sensors()
+
         self.viewer.begin_frame(0.0)
-        self.viewer.log_state(self.state)
+        if not self.show_sensor_output:
+            self.viewer.log_state(self.state)
         self.viewer.end_frame()
 
     def render_sensors(self):
