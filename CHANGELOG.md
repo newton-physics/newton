@@ -4,6 +4,8 @@
 
 ### Added
 
+- Interactive example browser in the GL viewer with tree-view navigation and switch/reset support
+
 ### Changed
 
 ### Deprecated

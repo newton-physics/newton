@@ -144,6 +144,7 @@ class SchemaResolverPhysx(SchemaResolver):
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("physxJoint:armature", 0.0),
+            "velocity_limit": SchemaAttribute("physxJoint:maxJointVelocity", None),
             # Per-axis linear limit aliases
             "limit_transX_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
             "limit_transY_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),

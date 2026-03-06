@@ -381,6 +381,8 @@ class Model:
         """Rigid body mass [kg], shape [body_count], float."""
         self.body_inv_mass = None
         """Rigid body inverse mass [1/kg], shape [body_count], float."""
+        self.body_flags = None
+        """Rigid body flags (:class:`~newton.BodyFlags`), shape [body_count], int."""
         self.body_label = []
         """Rigid body labels, shape [body_count], str."""
         self.body_world = None
@@ -685,7 +687,12 @@ class Model:
         self.attribute_frequency["body_inv_inertia"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_mass"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_inv_mass"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_flags"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_f"] = Model.AttributeFrequency.BODY
+        # Extended state attributes — these live on State (not Model) and are only
+        # allocated when explicitly requested via request_state_attributes().
+        self.attribute_frequency["body_qdd"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_parent_f"] = Model.AttributeFrequency.BODY
 
         # attributes per joint
         self.attribute_frequency["joint_type"] = Model.AttributeFrequency.JOINT
@@ -721,6 +728,7 @@ class Model:
         self.attribute_frequency["joint_effort_limit"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_friction"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_velocity_limit"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["mujoco:qfrc_actuator"] = Model.AttributeFrequency.JOINT_DOF
 
         # attributes per shape
         self.attribute_frequency["shape_transform"] = Model.AttributeFrequency.SHAPE

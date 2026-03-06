@@ -43,7 +43,7 @@ def _y_dirs_xy() -> list[wp.vec3]:
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.args = args
 
@@ -116,7 +116,7 @@ class Example:
             builder.add_ground_plane()
 
         builder.color(balance_colors=False)
-        sim_device = wp.get_device(args.device) if args is not None and getattr(args, "device", None) else None
+        sim_device = wp.get_device(args.device) if args.device else None
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, float(getattr(args, "gravity_z", -9.81))))
 

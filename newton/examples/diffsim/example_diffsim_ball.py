@@ -51,7 +51,7 @@ def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha
 
 
 class Example:
-    def __init__(self, viewer, args=None, verbose=False):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 60
         self.frame = 0
@@ -60,7 +60,7 @@ class Example:
         self.sim_substeps = 8
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.verbose = verbose
+        self.verbose = args.verbose
 
         self.train_iter = 0
         self.train_rate = 0.02
@@ -183,6 +183,11 @@ class Example:
         assert all(np.diff(self.loss_history[:-1]) < -1e-3)
 
     def render(self):
+        if self.viewer.is_paused():
+            self.viewer.begin_frame(self.viewer.time)
+            self.viewer.end_frame()
+            return
+
         if self.frame > 0 and self.train_iter % 16 != 0:
             return
 
@@ -261,20 +266,19 @@ class Example:
 
         return x_grad_numeric, x_grad_analytic
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--verbose", action="store_true", help="Print out additional status messages during execution."
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
-    parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
-
-    # Parse arguments and initialize viewer
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    # Create example
-    example = Example(viewer, args=args, verbose=args.verbose)
-
-    # Check gradients
+    example = Example(viewer, args)
     example.check_grad()
-
-    # Run example
     newton.examples.run(example, args)

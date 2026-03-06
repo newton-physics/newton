@@ -123,24 +123,17 @@ def load_mesh_with_sdf(
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-        world_count=1,
-        num_per_world=1,
-        solver="xpbd",
-        test_mode=False,
-    ):
+    def __init__(self, viewer, args):
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
         self.viewer = viewer
-        self.solver_type = solver
-        self.test_mode = test_mode
+        self.solver_type = args.solver
+        self.test_mode = args.test
 
         # XPBD contact correction (0.0 = no correction, 1.0 = full correction)
         self.xpbd_contact_relaxation = 0.8
@@ -152,9 +145,9 @@ class Example:
         self.ground_plane_offset = -0.01
 
         # Grid dimensions for nut/bolt scene (number of assemblies in X and Y)
-        self.num_per_world = num_per_world
-        self.grid_x = int(np.ceil(np.sqrt(num_per_world)))
-        self.grid_y = int(np.ceil(num_per_world / self.grid_x))
+        self.num_per_world = args.num_per_world
+        self.grid_x = int(np.ceil(np.sqrt(self.num_per_world)))
+        self.grid_y = int(np.ceil(self.num_per_world / self.grid_x))
 
         # Maximum number of rigid contacts to allocate (limits memory usage)
         # None = auto-calculate (can be very large), or set explicit limit (e.g., 1_000_000)
@@ -419,29 +412,30 @@ class Example:
                 f"Nut {i}: did not move downward. Initial z={initial_z:.4f}, min z reached={min_z:.4f}"
             )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=20)
+        parser.add_argument(
+            "--solver",
+            type=str,
+            choices=["xpbd", "mujoco"],
+            default="mujoco",
+            help="Solver to use: 'xpbd' or 'mujoco'.",
+        )
+        parser.add_argument(
+            "--num-per-world",
+            type=int,
+            default=1,
+            help="Number of assemblies per world.",
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument(
-        "--world-count",
-        type=int,
-        default=20,
-        help="Total number of simulated worlds.",
-    )
-    parser.add_argument(
-        "--solver",
-        type=str,
-        choices=["xpbd", "mujoco"],
-        default="mujoco",
-        help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
-    )
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(
-        viewer,
-        world_count=args.world_count,
-        solver=args.solver,
-        test_mode=args.test,
-    )
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

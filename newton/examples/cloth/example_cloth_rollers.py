@@ -186,7 +186,7 @@ def cylinder_mesh(radius=9.5, height=120.0, segments=64):
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.sim_time = 0.0
         self.args = args

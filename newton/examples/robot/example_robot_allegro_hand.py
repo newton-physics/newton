@@ -72,7 +72,7 @@ def move_hand(
 
 
 class Example:
-    def __init__(self, viewer, world_count=4):
+    def __init__(self, viewer, args):
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -80,7 +80,7 @@ class Example:
         self.sim_substeps = 8
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         self.viewer = viewer
 
@@ -247,13 +247,17 @@ class Example:
                 indices=np.array([cube_body_idx], dtype=np.int32),
             )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=100)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=100, help="Total number of simulated worlds.")
-
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.world_count)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)
