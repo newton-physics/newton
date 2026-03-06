@@ -29,3 +29,27 @@ Caveats
 **shape_collision_radius is ignored.**
   MuJoCo computes bounding-sphere radii (``geom_rbound``) internally from the
   geometry definition.  Newton's ``shape_collision_radius`` is not forwarded.
+
+Kinematic Links and Fixed Roots
+-------------------------------
+
+Newton only allows ``is_kinematic=True`` on articulation roots. During export,
+:class:`~newton.solvers.SolverMuJoCo` maps those roots according to their joint
+type:
+
+- **Kinematic roots with non-fixed joints** are exported as ordinary MuJoCo
+  joints with the same Newton joint type and DOFs. The solver assigns a very
+  large internal armature to those DOFs so MuJoCo treats them like prescribed,
+  effectively infinite-mass coordinates.
+- **Roots attached to world with a fixed joint** are exported as MuJoCo mocap
+  bodies. This applies to both kinematic and non-kinematic Newton roots
+  attached to world by :class:`~newton.JointType.FIXED`. MuJoCo has no joint
+  coordinates for a fixed root, so Newton drives the pose through
+  ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead.
+- **World-attached shapes that are not part of an articulation** remain
+  ordinary static MuJoCo geometry rather than mocap bodies.
+
+If you edit :attr:`newton.Model.joint_X_p` or :attr:`newton.Model.joint_X_c`
+for a fixed-root articulation after constructing the solver, call
+``solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES)``
+to synchronize the updated fixed-root poses into MuJoCo.

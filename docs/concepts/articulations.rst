@@ -243,13 +243,6 @@ Implementation details differ by coordinate formulation:
 In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
 large internal armature value.
 
-During Newton-to-MuJoCo conversion, :class:`~newton.solvers.SolverMuJoCo` handles kinematic roots in two ways:
-
-- Kinematic roots with non-fixed joints are exported as regular MuJoCo joints and use
-  this armature regularization on their DOFs.
-- Kinematic roots attached to world with a fixed joint are exported as MuJoCo mocap bodies
-  (no MuJoCo joint DOFs), and their poses are synchronized from the Newton joint transforms.
-
 .. _Joint types:
 
 Joint types
