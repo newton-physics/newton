@@ -34,7 +34,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -55,6 +55,13 @@ class Example:
         self.graph = None
         self.model = h1.finalize()
         self.viewer.set_model(self.model)
+
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(4.0, 0.0, 1.2),
+            pitch=0.0,
+            yaw=-180.0,
+        )
 
         # states
         self.state = self.model.state()
@@ -112,7 +119,7 @@ class Example:
         )
 
         # Variables the solver will update
-        self.joint_q = wp.array(self.model.joint_q, shape=(1, self.model.joint_coord_count))
+        self.joint_q = self.model.joint_q.reshape((1, self.model.joint_coord_count))
 
         self.ik_iters = 24
         self.solver = ik.IKSolver(
@@ -177,5 +184,5 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)

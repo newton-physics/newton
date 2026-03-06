@@ -77,6 +77,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_conveyor.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_conveyor.jpg" alt="Conveyor">
+      </a>
     </td>
   </tr>
   <tr>
@@ -87,6 +90,35 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples basic_joints</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples basic_conveyor</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_heightfield.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_heightfield.jpg" alt="Heightfield">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_recording.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_recording.jpg" alt="Recording">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_replay_viewer.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_replay_viewer.jpg" alt="Replay Viewer">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_heightfield</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples recording</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples replay_viewer</code>
     </td>
   </tr>
   <tr>
@@ -177,6 +209,26 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_allegro_hand.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_allegro_hand.jpg" alt="Allegro Hand">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples robot_allegro_hand</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Cable Examples</h3></td>
   </tr>
   <tr>
@@ -219,6 +271,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_ball_joints.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_ball_joints.jpg" alt="Cable Ball Joints">
+      </a>
     </td>
   </tr>
   <tr>
@@ -229,6 +284,35 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples cable_y_junction</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples cable_ball_joints</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_bend_damping.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_bend_damping.jpg" alt="Cable Bend Damping">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_fixed_joints.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_fixed_joints.jpg" alt="Cable Fixed Joints">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_helix.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_helix.jpg" alt="Cable Helix">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_bend_damping</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_fixed_joints</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_helix</code>
     </td>
   </tr>
   <tr>
@@ -274,8 +358,8 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_rollers.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_rolling_cloth.jpg" alt="Cloth Rollers">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_franka.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_franka.jpg" alt="Cloth Franka">
       </a>
     </td>
   </tr>
@@ -287,25 +371,29 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples cloth_twist</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples cloth_rollers</code>
+      <code>python -m newton.examples cloth_franka</code>
     </td>
   </tr>
   <tr>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_rollers.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_rollers.jpg" alt="Cloth Rollers">
+      </a>
+    </td>
+    <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_poker_cards.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_poker_cards_stacking.jpg" alt="Cloth Poker Cards">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_poker_cards.jpg" alt="Cloth Poker Cards">
       </a>
     </td>
     <td align="center" width="33%">
     </td>
-    <td align="center" width="33%">
-    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples cloth_poker_cards</code>
+      <code>python -m newton.examples cloth_rollers</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples cloth_poker_cards</code>
     </td>
     <td align="center" width="33%">
     </td>
@@ -343,24 +431,20 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_franka.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_franka.jpg" alt="Cloth Franka">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_cube_stacking.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_cube_stacking.jpg" alt="IK Cube Stacking">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_cube_stacking.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_cube_stacking.jpg" alt="Stack Cubes">
-      </a>
     </td>
     <td align="center" width="33%">
     </td>
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples cloth_franka</code>
+      <code>python -m newton.examples ik_cube_stacking</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples ik_cube_stacking</code>
     </td>
     <td align="center" width="33%">
     </td>
@@ -381,7 +465,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_twoway_coupling.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_twoway_coupling.jpg" alt="MPM two-way coupling">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_twoway_coupling.jpg" alt="MPM Two-Way Coupling">
       </a>
     </td>
   </tr>
@@ -394,6 +478,30 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples mpm_twoway_coupling</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_grain_rendering.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_grain_rendering.jpg" alt="MPM Grain Rendering">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_multi_material.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_multi_material.jpg" alt="MPM Multi Material">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mpm_grain_rendering</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mpm_multi_material</code>
+    </td>
+    <td align="center" width="33%">
     </td>
   </tr>
   <tr>
@@ -456,6 +564,26 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples selection_articulations</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/selection/example_selection_multiple.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_selection_multiple.jpg" alt="Selection Multiple">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples selection_multiple</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
     </td>
   </tr>
   <tr>
@@ -523,12 +651,12 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
   <tr>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_softbody_gift.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_falling_gift.jpg" alt="Softbody Gift">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_gift.jpg" alt="Softbody Gift">
       </a>
     </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_softbody_dropping_to_cloth.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_softbody_dropping_to_cloth.jpg" alt="Softbody Dropping to Cloth">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_dropping_to_cloth.jpg" alt="Softbody Dropping to Cloth">
       </a>
     </td>
     <td align="center" width="33%">
@@ -545,6 +673,37 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
+    <td colspan="3"><h3>Contacts Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_nut_bolt_hydro.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_nut_bolt_hydro.jpg" alt="Nut Bolt Hydro">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_nut_bolt_sdf.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_nut_bolt_sdf.jpg" alt="Nut Bolt SDF">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_brick_stacking.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_brick_stacking.jpg" alt="Brick Stacking">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples nut_bolt_hydro</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples nut_bolt_sdf</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples brick_stacking</code>
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Softbody Examples</h3></td>
   </tr>
   <tr>
@@ -554,6 +713,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_franka.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_franka.jpg" alt="Softbody Franka">
+      </a>
     </td>
     <td align="center" width="33%">
     </td>
@@ -563,6 +725,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples softbody_hanging</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples softbody_franka</code>
     </td>
     <td align="center" width="33%">
     </td>

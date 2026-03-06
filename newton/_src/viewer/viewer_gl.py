@@ -195,20 +195,19 @@ class ViewerGL(ViewerBase):
             vsync: Enable vertical sync.
             headless: Run in headless mode (no window).
         """
+        # Pre-initialize callback registry; clear_model() (called from
+        # super().__init__()) resets the "side" slot on each model change.
+        self._ui_callbacks = {"side": [], "stats": [], "free": [], "panel": []}
+
         super().__init__()
 
-        # map from path to any object type
-        self.objects = {}
-        self.lines = {}
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
 
-        self._paused = False
-        self._packed_vbo_xforms = None
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
-        # State caching for selection panel
-        self._last_state = None
-        self._last_control = None
+        self._paused = False
 
         # Selection panel state
         self._selection_ui_state = {
@@ -261,15 +260,9 @@ class ViewerGL(ViewerBase):
         # UI visibility toggle
         self.show_ui = True
 
-        # UI callback system - organized by position
-        # positions: "side", "stats", "free"
-        self._ui_callbacks = {"side": [], "stats": [], "free": []}
-
         # Initialize PBO (Pixel Buffer Object) resources used in the `get_frame` method.
         self._pbo = None
         self._wp_pbo = None
-
-        self.set_model(None)
 
     def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
         # For capsules, ignore (radius, half_height) in the geometry hash so varying-length capsules batch together.
@@ -292,7 +285,7 @@ class ViewerGL(ViewerBase):
     def register_ui_callback(
         self,
         callback: Callable[[Any], None],
-        position: Literal["side", "stats", "free"] = "side",
+        position: Literal["side", "stats", "free", "panel"] = "side",
     ):
         """
         Register a UI callback to be rendered during the UI phase.
@@ -303,6 +296,7 @@ class ViewerGL(ViewerBase):
                      "side" - Side callback (default)
                      "stats" - Stats/metrics area
                      "free" - Free-floating UI elements
+                     "panel" - Top-level collapsing headers in left panel
         """
         if not callable(callback):
             raise TypeError("callback must be callable")
@@ -342,6 +336,39 @@ class ViewerGL(ViewerBase):
         """
         # Store for this frame; call this every frame you want it drawn/active
         self._gizmo_log[name] = transform
+
+    @override
+    def clear_model(self):
+        """Reset GL-specific model-dependent state to defaults.
+
+        Called from ``__init__`` (via ``super().__init__`` → ``clear_model``)
+        and whenever the current model is discarded.
+        """
+        # Render object and line caches (path -> GL object)
+        self.objects = {}
+        self.lines = {}
+
+        # Interactive picking and wind force helpers
+        self.picking = None
+        self.wind = None
+
+        # State caching for selection panel
+        self._last_state = None
+        self._last_control = None
+
+        # Packed GPU arrays for batched shape transform computation
+        self._packed_groups = []
+        self._capsule_keys = set()
+        self._packed_write_indices = None
+        self._packed_world_xforms = None
+        self._packed_vbo_xforms = None
+        self._packed_vbo_xforms_host = None
+
+        # Clear example-specific UI callbacks; panel/stats persist
+        self._ui_callbacks["side"] = []
+        self._ui_callbacks["free"] = []
+
+        super().clear_model()
 
     @override
     def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
@@ -392,6 +419,16 @@ class ViewerGL(ViewerBase):
 
         self.picking = Picking(model, world_offsets=self.world_offsets)
         self.wind = Wind(model)
+
+        # Precompile picking/raycast kernels to avoid JIT delay on first pick
+        if model is not None:
+            try:
+                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
+
+                wp.load_module(module=_raycast_module, device=model.device)
+                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+            except Exception:
+                pass
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
@@ -478,8 +515,8 @@ class ViewerGL(ViewerBase):
             yaw: The camera yaw.
         """
         self.camera.pos = pos
-        self.camera.pitch = pitch
-        self.camera.yaw = yaw
+        self.camera.pitch = max(min(pitch, 89.0), -89.0)
+        self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
 
     @override
     def log_mesh(
@@ -884,7 +921,7 @@ class ViewerGL(ViewerBase):
         Args:
             state: The current simulation state.
         """
-        if not self.picking_enabled or not self.picking.is_picking():
+        if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
             # Clear the picking line if not picking
             self.log_lines("picking_line", None, None, None)
             return
@@ -953,11 +990,11 @@ class ViewerGL(ViewerBase):
         Args:
             state: The current simulation state.
         """
-        if self.picking_enabled:
+        if self.picking_enabled and self.picking is not None:
             self.picking._apply_picking_force(state)
 
-        # Apply wind forces
-        self.wind._apply_wind_force(state)
+        if self.wind is not None:
+            self.wind._apply_wind_force(state)
 
     def _update(self):
         """
@@ -971,7 +1008,8 @@ class ViewerGL(ViewerBase):
         self._last_time = now
         self._update_camera(dt)
 
-        self.wind.update(dt)
+        if self.wind is not None:
+            self.wind.update(dt)
 
         # If the window was closed during event processing, skip rendering
         if self.renderer.has_exit():
@@ -1229,7 +1267,7 @@ class ViewerGL(ViewerBase):
         import pyglet
 
         # Handle right-click for picking
-        if button == pyglet.window.mouse.RIGHT and self.picking_enabled:
+        if button == pyglet.window.mouse.RIGHT and self.picking_enabled and self.picking is not None:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
             ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
             if self._last_state is not None:
@@ -1245,7 +1283,8 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
-        self.picking.release()
+        if self.picking is not None:
+            self.picking.release()
 
     def on_mouse_drag(
         self,
@@ -1279,14 +1318,14 @@ class ViewerGL(ViewerBase):
 
             # Map screen-space right drag to a right turn (clockwise),
             # independent of world up-axis convention.
-            self.camera.yaw -= dx
-            self.camera.pitch += dy
+            self.camera.yaw = (self.camera.yaw - dx + 180.0) % 360.0 - 180.0
+            self.camera.pitch = max(min(self.camera.pitch + dy, 89.0), -89.0)
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
             ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
 
-            if self.picking.is_picking():
+            if self.picking is not None and self.picking.is_picking():
                 self.picking.update(ray_start, ray_dir)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
@@ -1568,12 +1607,15 @@ class ViewerGL(ViewerBase):
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
 
+            # Panel callbacks (e.g. example browser) - top-level collapsing headers
+            for callback in self._ui_callbacks["panel"]:
+                callback(self.ui.imgui)
+
             # Model Information section
             if self.model is not None:
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Worlds: {self.model.world_count}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
                     gravity = self.model.gravity.numpy()[0]
@@ -1657,34 +1699,31 @@ class ViewerGL(ViewerBase):
                 changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", self.renderer.sky_lower)
 
             # Wind Effects section
-            imgui.set_next_item_open(False, imgui.Cond_.once)
-            if imgui.collapsing_header("Wind"):
-                imgui.separator()
+            if self.wind is not None:
+                imgui.set_next_item_open(False, imgui.Cond_.once)
+                if imgui.collapsing_header("Wind"):
+                    imgui.separator()
 
-                # Wind amplitude slider
-                changed, amplitude = imgui.slider_float("Wind Amplitude", self.wind.amplitude, -2.0, 2.0, "%.2f")
-                if changed:
-                    self.wind.amplitude = amplitude
+                    changed, amplitude = imgui.slider_float("Wind Amplitude", self.wind.amplitude, -2.0, 2.0, "%.2f")
+                    if changed:
+                        self.wind.amplitude = amplitude
 
-                # Wind period slider
-                changed, period = imgui.slider_float("Wind Period", self.wind.period, 1.0, 30.0, "%.2f")
-                if changed:
-                    self.wind.period = period
+                    changed, period = imgui.slider_float("Wind Period", self.wind.period, 1.0, 30.0, "%.2f")
+                    if changed:
+                        self.wind.period = period
 
-                # Wind frequency slider
-                changed, frequency = imgui.slider_float("Wind Frequency", self.wind.frequency, 0.1, 5.0, "%.2f")
-                if changed:
-                    self.wind.frequency = frequency
+                    changed, frequency = imgui.slider_float("Wind Frequency", self.wind.frequency, 0.1, 5.0, "%.2f")
+                    if changed:
+                        self.wind.frequency = frequency
 
-                # Wind direction sliders
-                direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
-                changed, direction = imgui.slider_float3("Wind Direction", direction, -1.0, 1.0, "%.2f")
-                if changed:
-                    self.wind.direction = direction
+                    direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
+                    changed, direction = imgui.slider_float3("Wind Direction", direction, -1.0, 1.0, "%.2f")
+                    if changed:
+                        self.wind.direction = direction
 
             # Camera Information section
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
-            if imgui.collapsing_header("Camera"):
+            if imgui.collapsing_header("Controls"):
                 imgui.separator()
 
                 pos = self.camera.pos
@@ -1766,6 +1805,7 @@ class ViewerGL(ViewerBase):
             # Model stats
             if self.model is not None:
                 imgui.separator()
+                imgui.text(f"Worlds: {self.model.world_count}")
                 imgui.text(f"Bodies: {self.model.body_count}")
                 imgui.text(f"Shapes: {self.model.shape_count}")
                 imgui.text(f"Joints: {self.model.joint_count}")
@@ -1967,74 +2007,62 @@ class ViewerGL(ViewerBase):
                 source = self._last_state
 
             # Get the attribute values
-            values = view.get_attribute(attribute_name, source).numpy()
+            # get_attribute returns shape (world_count, count_per_world, value_count, *trailing)
+            raw_values = view.get_attribute(attribute_name, source).numpy()
 
             imgui.separator()
             imgui.text(f"Attribute: {attribute_name}")
-            imgui.text(f"Shape: {values.shape}")
-            imgui.text(f"Dtype: {values.dtype}")
+            imgui.text(f"Shape: {raw_values.shape}")
+            imgui.text(f"Dtype: {raw_values.dtype}")
 
-            # Handle batch dimension selection for 2D arrays
-            if len(values.shape) == 2:
-                batch_size = values.shape[0]
+            # Reshape: (world_count, count_per_world, value_count, *trailing) →
+            #          (world_count, count_per_world * value_count * prod(trailing))
+            world_count = raw_values.shape[0]
+            values = raw_values.reshape(world_count, -1)
+
+            # World selector
+            if world_count > 1:
                 imgui.spacing()
-                imgui.text("Batch/World Selection:")
+                imgui.text("World Selection:")
                 imgui.push_item_width(100)
 
-                # Ensure selected batch index is valid
-                state["selected_batch_idx"] = max(0, min(state["selected_batch_idx"], batch_size - 1))
+                state["selected_batch_idx"] = max(0, min(state["selected_batch_idx"], world_count - 1))
 
                 _, state["selected_batch_idx"] = imgui.slider_int(
-                    "##batch", state["selected_batch_idx"], 0, batch_size - 1
+                    "##batch", state["selected_batch_idx"], 0, world_count - 1
                 )
                 imgui.pop_item_width()
                 imgui.same_line()
-                text = f"World {state['selected_batch_idx']} / {batch_size}"
-                imgui.text(text)
+                imgui.text(f"World {state['selected_batch_idx']} / {world_count}")
+
+            batch_idx = state["selected_batch_idx"] if world_count > 1 else 0
+            flat_values = values[batch_idx]
 
             # Display values as sliders in a scrollable region
             imgui.spacing()
             imgui.text("Values:")
 
             # Create a child window for scrollable content
-            if imgui.begin_child("values_scroll", 0, 300, border=True):
-                if len(values.shape) == 1:
-                    # 1D array - show as sliders with names if available
-                    names = self._get_attribute_names(view, attribute_name)
-                    self._render_value_sliders(values, names, attribute_name, state)
-
-                elif len(values.shape) == 2:
-                    # 2D array - show selected batch with joint names
-                    batch_idx = state["selected_batch_idx"]
-                    selected_batch = values[batch_idx]
-                    names = self._get_attribute_names(view, attribute_name)
-                    self._render_value_sliders(selected_batch, names, attribute_name, state)
-
-                else:
-                    # Higher dimensional - just show summary
-                    shape_str = str(values.shape)
-                    imgui.text(f"Multi-dimensional array with shape {shape_str}")
+            child_flags = int(imgui.ChildFlags_.borders)
+            if imgui.begin_child("values_scroll", imgui.ImVec2(0, 300), child_flags):
+                names = self._get_attribute_names(view, attribute_name)
+                self._render_value_sliders(flat_values, names, attribute_name, state)
 
             imgui.end_child()
 
             # Show some statistics for numeric data
-            if values.dtype.kind in "biufc":  # numeric types
+            if flat_values.dtype.kind in "biufc":  # numeric types
                 imgui.spacing()
-
-                # Calculate stats on the selected batch for 2D arrays
-                if len(values.shape) == 2:
-                    batch_idx = state["selected_batch_idx"]
-                    stats_data = values[batch_idx]
+                if world_count > 1:
                     imgui.text(f"Statistics for World {batch_idx}:")
                 else:
-                    stats_data = values
                     imgui.text("Statistics:")
 
-                imgui.text(f"  Min: {np.min(stats_data):.6f}")
-                imgui.text(f"  Max: {np.max(stats_data):.6f}")
-                imgui.text(f"  Mean: {np.mean(stats_data):.6f}")
-                if stats_data.size > 1:
-                    imgui.text(f"  Std: {np.std(stats_data):.6f}")
+                imgui.text(f"  Min: {np.min(flat_values):.6f}")
+                imgui.text(f"  Max: {np.max(flat_values):.6f}")
+                imgui.text(f"  Mean: {np.mean(flat_values):.6f}")
+                if flat_values.size > 1:
+                    imgui.text(f"  Std: {np.std(flat_values):.6f}")
 
         except Exception as e:
             imgui.text(f"Error getting attribute: {e!s}")
@@ -2123,7 +2151,8 @@ class ViewerGL(ViewerBase):
             if i < len(current_sliders):
                 current_sliders[i] = float(val)
 
-        # Render sliders
+        # Render sliders (read-only display)
+        imgui.begin_disabled()
         for i, val in enumerate(values):
             name = names[i] if names and i < len(names) else f"[{i}]"
 
@@ -2155,3 +2184,4 @@ class ViewerGL(ViewerBase):
             else:
                 # For non-numeric values, just show as text
                 imgui.text(f"{name}: {val}")
+        imgui.end_disabled()

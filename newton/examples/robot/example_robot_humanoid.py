@@ -31,14 +31,14 @@ from newton import JointTargetMode
 
 
 class Example:
-    def __init__(self, viewer, world_count=4, args=None):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         self.viewer = viewer
 
@@ -69,7 +69,7 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
+        use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             njmax=100,
@@ -84,7 +84,11 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.contacts()
+        self.use_mujoco_contacts = use_mujoco_contacts
+        if use_mujoco_contacts:
+            self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        else:
+            self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -98,7 +102,8 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        if not self.use_mujoco_contacts:
+            self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -109,6 +114,9 @@ class Example:
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
+
+        if self.use_mujoco_contacts:
+            self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
@@ -141,13 +149,17 @@ class Example:
             lambda q, qd: max(abs(qd)) < threshold,
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=4)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=4, help="Total number of simulated worlds.")
-
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.world_count, args)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

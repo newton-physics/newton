@@ -18,7 +18,8 @@ from .builder import ModelBuilder
 from .collide import CollisionPipeline
 from .contacts import Contacts
 from .control import Control
-from .joints import (
+from .enums import (
+    BodyFlags,
     EqType,
     JointTargetMode,
     JointType,
@@ -27,6 +28,7 @@ from .model import Model
 from .state import State
 
 __all__ = [
+    "BodyFlags",
     "CollisionPipeline",
     "Contacts",
     "Control",
