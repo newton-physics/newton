@@ -96,6 +96,7 @@ class Picking:
                 state.body_f,
                 self.pick_body,
                 self.pick_state,
+                self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
             ],
@@ -241,7 +242,7 @@ class Picking:
             wp.launch(
                 kernel=compute_pick_state_kernel,
                 dim=1,
-                inputs=[state.body_q, body_index, hit_point_world],
+                inputs=[state.body_q, self.model.body_flags, body_index, hit_point_world],
                 outputs=[self.pick_body, self.pick_state],
                 device=self.model.device,
             )

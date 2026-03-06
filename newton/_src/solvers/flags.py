@@ -34,7 +34,7 @@ class SolverNotifyFlags(IntEnum):
     """Indicates joint DOF property updates: joint_target_ke, joint_target_kd, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
-    """Indicates body property updates: body_q, body_qd."""
+    """Indicates body property updates: body_q, body_qd, body_flags."""
 
     BODY_INERTIAL_PROPERTIES = 1 << 3
     """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""

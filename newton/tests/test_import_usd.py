@@ -2217,7 +2217,7 @@ def PhysicsRevoluteJoint "Joint2"
         """Test that JointTargetMode is correctly inferred from USD joint drives."""
         from pxr import Usd
 
-        from newton._src.sim.joints import JointTargetMode  # noqa: PLC0415
+        from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
 
         usd_content = """#usda 1.0
 (
@@ -6272,14 +6272,19 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
 
-        # hide_collision_shapes=True: no VISIBLE flag on any collision shape
+        # hide_collision_shapes=True: hide colliders on bodies that have visuals
+        # but keep colliders visible on bodies with no visual-only geometry.
         builder3 = newton.ModelBuilder()
         result3 = builder3.add_usd(stage, hide_collision_shapes=True)
         path_shape_map3 = result3["path_shape_map"]
 
-        for path in ["/BodyWithVisuals/CollisionBox", "/BodyWithoutVisuals/CollisionSphere"]:
-            flags_hidden = builder3.shape_flags[path_shape_map3[path]]
-            self.assertFalse(flags_hidden & ShapeFlags.VISIBLE)
+        flags_hidden_with_visual = builder3.shape_flags[path_shape_map3["/BodyWithVisuals/CollisionBox"]]
+        self.assertTrue(flags_hidden_with_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_hidden_with_visual & ShapeFlags.VISIBLE)
+
+        flags_fallback_no_visual = builder3.shape_flags[path_shape_map3["/BodyWithoutVisuals/CollisionSphere"]]
+        self.assertTrue(flags_fallback_no_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_fallback_no_visual & ShapeFlags.VISIBLE)
 
         # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
         builder4 = newton.ModelBuilder()
@@ -6290,6 +6295,148 @@ def Xform "BodyWithoutVisuals" (
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+    @staticmethod
+    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
+        """Create a stage with a rigid body containing a collision mesh with PBR material."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        if add_visual_sphere:
+            visual_sphere = UsdGeom.Sphere.Define(stage, "/Body/VisualSphere")
+            visual_sphere.CreateRadiusAttr().Set(0.1)
+
+        collision_mesh = UsdGeom.Mesh.Define(stage, "/Body/CollisionMesh")
+        collision_mesh_prim = collision_mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collision_mesh_prim)
+        collision_mesh.CreatePointsAttr().Set(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ]
+        )
+        collision_mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        collision_mesh.CreateFaceVertexIndicesAttr().Set([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+
+        material = UsdShade.Material.Define(stage, "/Materials/PBR")
+        shader = UsdShade.Shader.Define(stage, "/Materials/PBR/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set(color)
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(collision_mesh_prim).Bind(material)
+
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_inherits_visual_material_properties(self):
+        """Visible fallback collider meshes should carry resolved visual material data."""
+        stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        np.testing.assert_allclose(np.array(mesh.color), np.array([0.2, 0.4, 0.6]), atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(mesh.roughness, 0.35, places=6)
+        self.assertAlmostEqual(mesh.metallic, 0.75, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_texture_does_not_change_body_mass(self):
+        """Render-only UV loading must not perturb collider mass or inertia."""
+        stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)
+
+        base_vertices = np.array(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
+        physics_mesh = newton.Mesh(base_vertices, indices)
+        render_mesh = newton.Mesh(base_vertices * 4.0, indices)
+        render_mesh._uvs = np.zeros((render_mesh.vertices.shape[0], 2), dtype=np.float32)
+
+        def _mock_get_mesh(_prim, *, load_uvs=False, load_normals=False):
+            del load_normals
+            return render_mesh if load_uvs else physics_mesh
+
+        with (
+            mock.patch(
+                "newton._src.utils.import_usd.usd.resolve_material_properties_for_prim",
+                return_value={
+                    "color": None,
+                    "roughness": 0.35,
+                    "metallic": 0.75,
+                    "texture": "dummy.png",
+                },
+            ),
+            mock.patch(
+                "newton._src.utils.import_usd.usd.get_mesh",
+                side_effect=_mock_get_mesh,
+            ),
+        ):
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(stage, hide_collision_shapes=True)
+
+        body_idx = result["path_body_map"]["/Body"]
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+        expected_density = builder.default_shape_cfg.density
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], physics_mesh.mass * expected_density, places=6)
+        self.assertNotAlmostEqual(builder.body_mass[body_idx], render_mesh.mass * expected_density, places=3)
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        self.assertEqual(mesh.texture, "dummy.png")
+        self.assertIsNotNone(mesh.uvs)
+        np.testing.assert_allclose(mesh.vertices, render_mesh.vertices, atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(mesh.mass, physics_mesh.mass, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visualized_collision_mesh_remains_visible_when_body_has_visual_shapes(self):
+        """Mesh colliders with visual material data stay visible even when body visuals exist."""
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.9, 0.1, 0.2), roughness=0.55, metallic=0.25, add_visual_sphere=True
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        path_shape_map = result["path_shape_map"]
+
+        self.assertIn("/Body/VisualSphere", path_shape_map)
+        visual_shape = path_shape_map["/Body/VisualSphere"]
+        self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.COLLIDE_SHAPES)
+
+        collision_shape = path_shape_map["/Body/CollisionMesh"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        np.testing.assert_allclose(np.array(mesh.color), np.array([0.9, 0.1, 0.2]), atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(mesh.roughness, 0.55, places=6)
+        self.assertAlmostEqual(mesh.metallic, 0.25, places=6)
 
 
 class TestImportUsdMimicJoint(unittest.TestCase):

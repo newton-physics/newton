@@ -38,6 +38,7 @@ newton
    :nosignatures:
 
    Axis
+   BodyFlags
    CollisionPipeline
    Contacts
    Control
