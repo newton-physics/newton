@@ -830,6 +830,43 @@ geometry definition.  Newton’s <code class="docutils literal notranslate"><spa
 </dd>
 </dl>
 </section>
+<section id="kinematic-links-and-fixed-roots">
+<h2>Kinematic Links and Fixed Roots<a class="headerlink" href="#kinematic-links-and-fixed-roots" title="Link to this heading">#</a></h2>
+<p>Newton only allows <code class="docutils literal notranslate"><span class="pre">is_kinematic=True</span></code> on articulation roots, so in the
+MuJoCo exporter a “kinematic link” always means a kinematic root body. Any
+descendants of that root can still be dynamic and are exported normally.</p>
+<p>At runtime, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> keeps kinematic roots
+user-prescribed rather than dynamically integrated:</p>
+<ul class="simple">
+<li><p>When converting MuJoCo state back to Newton, the previous Newton
+<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_q" title="newton.State.joint_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.joint_q</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_qd" title="newton.State.joint_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.joint_qd</span></code></a> values are
+passed through for kinematic roots instead of being overwritten from MuJoCo’s
+integrated <code class="docutils literal notranslate"><span class="pre">qpos</span></code> and <code class="docutils literal notranslate"><span class="pre">qvel</span></code>.</p></li>
+<li><p>Applied body wrenches and joint forces targeting kinematic bodies are ignored
+on the MuJoCo side.</p></li>
+<li><p>Kinematic bodies still participate in contacts, so they can act as moving or
+fixed obstacles for dynamic bodies.</p></li>
+</ul>
+<p>During export, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> maps roots according to
+their joint type:</p>
+<ul class="simple">
+<li><p><strong>Kinematic roots with non-fixed joints</strong> are exported as ordinary MuJoCo
+joints with the same Newton joint type and DOFs. The solver assigns a very
+large internal armature to those DOFs so MuJoCo treats them like prescribed,
+effectively infinite-mass coordinates.</p></li>
+<li><p><strong>Roots attached to world with a fixed joint</strong> are exported as MuJoCo mocap
+bodies. This applies to both kinematic and non-kinematic Newton roots
+attached to world by <a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.FIXED" title="newton.JointType.FIXED"><code class="xref py py-class docutils literal notranslate"><span class="pre">FIXED</span></code></a>. MuJoCo has no joint
+coordinates for a fixed root, so Newton drives the pose through
+<code class="docutils literal notranslate"><span class="pre">mjData.mocap_pos</span></code> and <code class="docutils literal notranslate"><span class="pre">mjData.mocap_quat</span></code> instead.</p></li>
+<li><p><strong>World-attached shapes that are not part of an articulation</strong> remain
+ordinary static MuJoCo geometry rather than mocap bodies.</p></li>
+</ul>
+<p>If you edit <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_X_p" title="newton.Model.joint_X_p"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_X_p</span></code></a> or <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_X_c" title="newton.Model.joint_X_c"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_X_c</span></code></a>
+for a fixed-root articulation after constructing the solver, call
+<code class="docutils literal notranslate"><span class="pre">solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES)</span></code>
+to synchronize the updated fixed-root poses into MuJoCo.</p>
+</section>
 </section>
 
 
@@ -856,6 +893,7 @@ geometry definition.  Newton’s <code class="docutils literal notranslate"><spa
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#caveats">Caveats</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#kinematic-links-and-fixed-roots">Kinematic Links and Fixed Roots</a></li>
 </ul>
   </nav></div>
 

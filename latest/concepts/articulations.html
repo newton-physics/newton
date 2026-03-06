@@ -891,6 +891,150 @@ Since <a class="reference internal" href="../api/_generated/newton.ModelBuilder.
 </div>
 <p>This scene can now be simulated by both maximal-coordinate and generalized-coordinate solvers.</p>
 </section>
+<section id="kinematic-links-and-bodies">
+<h2>Kinematic links and bodies<a class="headerlink" href="#kinematic-links-and-bodies" title="Link to this heading">#</a></h2>
+<p>Newton distinguishes three motion modes for rigid bodies:</p>
+<dl class="simple">
+<dt><strong>Static</strong></dt><dd><p>Does not move. Typical examples are world-attached shapes or links attached to world with a fixed joint.</p>
+</dd>
+<dt><strong>Kinematic</strong></dt><dd><p>Moves only from user-prescribed state updates. It can have joint DOFs (free, revolute, etc.), but external forces do not accelerate it.</p>
+</dd>
+<dt><strong>Dynamic</strong></dt><dd><p>Moves from forces, constraints, and contacts during solver integration.</p>
+</dd>
+</dl>
+<p>Kinematic bodies are created through the <code class="docutils literal notranslate"><span class="pre">is_kinematic=True</span></code> flag on <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_link" title="newton.ModelBuilder.add_link"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_link()</span></code></a>
+or <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_body" title="newton.ModelBuilder.add_body"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_body()</span></code></a>. Only root links (joint parent <code class="docutils literal notranslate"><span class="pre">-1</span></code>) may be kinematic.
+Setting a non-root link to kinematic raises a <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ValueError</span></code></a> during articulation construction.</p>
+<section id="common-combinations">
+<h3>Common combinations<a class="headerlink" href="#common-combinations" title="Link to this heading">#</a></h3>
+<p>The following patterns are valid and commonly used:</p>
+<ol class="arabic simple">
+<li><p><strong>Kinematic free-base body</strong>: <code class="docutils literal notranslate"><span class="pre">add_body(is_kinematic=True)</span></code> (free joint root).</p></li>
+<li><p><strong>Kinematic articulated root</strong>: root link is kinematic and attached to world with a non-fixed joint
+(for example revolute), with dynamic descendants.</p></li>
+<li><p><strong>Static fixed-root body</strong>: root link is kinematic and attached to world with a fixed joint.
+This has zero joint DOFs and behaves as static.</p></li>
+</ol>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># 1) Kinematic free-base body (add_body creates free joint + articulation)</span>
+<span class="n">kinematic_free</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">is_kinematic</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+
+<span class="c1"># 2) Kinematic revolute root with a dynamic child</span>
+<span class="n">root</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">is_kinematic</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">child</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">j_root</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">root</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Axis</span><span class="o">.</span><span class="n">Z</span><span class="p">)</span>
+<span class="n">j_child</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=</span><span class="n">root</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">child</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Axis</span><span class="o">.</span><span class="n">Z</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">j_root</span><span class="p">,</span> <span class="n">j_child</span><span class="p">])</span>
+
+<span class="c1"># 3) Static fixed-root body (zero joint DOFs)</span>
+<span class="n">static_root</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">is_kinematic</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">j_static</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_fixed</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">static_root</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">j_static</span><span class="p">])</span>
+</pre></div>
+</div>
+<div class="pst-scrollable-table-container"><table class="table" id="id4">
+<caption><span class="caption-text">Static vs kinematic vs dynamic bodies/links</span><a class="headerlink" href="#id4" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 22.0%" />
+<col style="width: 26.0%" />
+<col style="width: 26.0%" />
+<col style="width: 26.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Property</p></th>
+<th class="head"><p>Static</p></th>
+<th class="head"><p>Kinematic</p></th>
+<th class="head"><p>Dynamic</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Typical definition</p></td>
+<td><p>World-attached shape, or root link fixed to world</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">is_kinematic=True</span></code> on a root link/body with free/revolute/etc. joint</p></td>
+<td><p>Default link/body (no kinematic flag)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Joint DOFs</p></td>
+<td><p>0 for fixed-root links</p></td>
+<td><p>Joint-dependent (free/revolute/D6/etc.)</p></td>
+<td><p>Joint-dependent</p></td>
+</tr>
+<tr class="row-even"><td><p>Position/velocity state</p></td>
+<td><p>Constant (not integrated)</p></td>
+<td><p>User-prescribed <code class="docutils literal notranslate"><span class="pre">q</span></code>/<code class="docutils literal notranslate"><span class="pre">qd</span></code> (or <code class="docutils literal notranslate"><span class="pre">body_q</span></code>/<code class="docutils literal notranslate"><span class="pre">body_qd</span></code> depending on solver coordinates)</p></td>
+<td><p>Integrated by solver from dynamics</p></td>
+</tr>
+<tr class="row-odd"><td><p>Response to applied force/torque</p></td>
+<td><p>No acceleration</p></td>
+<td><p>No acceleration (force-immune for own motion)</p></td>
+<td><p>Accelerates according to dynamics</p></td>
+</tr>
+<tr class="row-even"><td><p>Collision/contact participation</p></td>
+<td><p>Yes (acts as obstacle/support)</p></td>
+<td><p>Yes (can push dynamic bodies while following prescribed motion)</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Mass/inertia</p></td>
+<td><p>Not used for motion when fixed</p></td>
+<td><p>Preserved for body properties and future dynamic switching</p></td>
+<td><p>Fully used by dynamics</p></td>
+</tr>
+<tr class="row-even"><td><p>Mass matrix / constraint role</p></td>
+<td><p>No active DOFs when fixed to world</p></td>
+<td><p>Solver-dependent infinite-mass approximation along kinematic DOFs</p></td>
+<td><p>Standard articulated mass matrix</p></td>
+</tr>
+<tr class="row-odd"><td><p>Typical applications</p></td>
+<td><p>Environment geometry, fixtures</p></td>
+<td><p>Conveyors, robot bases on trajectories, scripted mechanism roots</p></td>
+<td><p>Physically simulated robots and objects</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="velocity-consistency-for-prescribed-motion">
+<h3>Velocity consistency for prescribed motion<a class="headerlink" href="#velocity-consistency-for-prescribed-motion" title="Link to this heading">#</a></h3>
+<p>For prescribed motion, it is up to the user to keep position and velocity updates consistent across time.
+In particular, <code class="docutils literal notranslate"><span class="pre">qd</span></code> should be consistent with the finite-differenced motion implied by <code class="docutils literal notranslate"><span class="pre">q</span></code>.
+For scalar coordinates, this is the familiar <code class="docutils literal notranslate"><span class="pre">q_next</span> <span class="pre">=</span> <span class="pre">q</span> <span class="pre">+</span> <span class="pre">qd</span> <span class="pre">*</span> <span class="pre">dt</span></code> relation; quaternion-based coordinates
+(for example FREE/BALL) require manifold-consistent quaternion integration instead of direct addition.</p>
+<p>When writing kinematic state values:</p>
+<ul class="simple">
+<li><p>For generalized-coordinate workflows, write <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_q" title="newton.State.joint_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.joint_q</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_qd" title="newton.State.joint_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.joint_qd</span></code></a>,
+then call <a class="reference internal" href="../api/_generated/newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.eval_fk()</span></code></a> so maximal coordinates (for collisions and body-space consumers) are current.</p></li>
+<li><p>For maximal-coordinate workflows, write <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.body_q</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.body_qd</span></code></a> directly.</p></li>
+</ul>
+</section>
+<section id="rigid-body-solver-behavior">
+<h3>Rigid-body solver behavior<a class="headerlink" href="#rigid-body-solver-behavior" title="Link to this heading">#</a></h3>
+<p>The rigid-body solvers (<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>, <a class="reference internal" href="../api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>) support the same user-facing
+kinematic authoring model:</p>
+<ul class="simple">
+<li><p>Kinematic links keep their declared joint type (free/revolute/etc.).</p></li>
+<li><p>A kinematic root attached to world by a fixed joint remains fixed (zero DOFs).</p></li>
+<li><p>Kinematic links participate in collisions/contacts and can impart motion to dynamic bodies.</p></li>
+<li><p>Applied forces do not drive kinematic motion; motion is user-prescribed.</p></li>
+</ul>
+<p>Implementation details differ by coordinate formulation:</p>
+<ul class="simple">
+<li><p>Generalized-coordinate solvers (<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>) treat kinematic motion through prescribed joint state.</p></li>
+<li><p>Maximal-coordinate solvers (<a class="reference internal" href="../api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>) use prescribed body transforms/twists.</p></li>
+<li><p>Contact handling is not identical across all four solvers. <a class="reference internal" href="../api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>, and <a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>
+treat kinematic bodies like infinite-mass colliders for contact response, while
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> currently preserves prescribed state but
+does not zero inverse mass/inertia inside its contact solver. Contacts against
+kinematic bodies can therefore be softer under SemiImplicit.</p></li>
+</ul>
+<p>In <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>, kinematic DOFs are regularized with a
+large internal armature value.</p>
+</section>
+</section>
 <section id="joint-types">
 <span id="id2"></span><h2>Joint types<a class="headerlink" href="#joint-types" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1158,8 +1302,8 @@ The indexing of the linear and angular degrees of freedom for a joint at a given
 relative transform from the parent and child body to the respective anchor frames of the joint in the parent and child body:</p>
 <a class="reference internal image-reference" href="../_images/joint_transforms.png"><img alt="../_images/joint_transforms.png" class="align-center" src="../_images/joint_transforms.png" style="width: 400px;" />
 </a>
-<div class="pst-scrollable-table-container"><table class="table" id="id4">
-<caption><span class="caption-text">Variable names in the kernels from <code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.core.articulation</span></code></span><a class="headerlink" href="#id4" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id5">
+<caption><span class="caption-text">Variable names in the kernels from <code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.core.articulation</span></code></span><a class="headerlink" href="#id5" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 10.0%" />
 <col style="width: 90.0%" />
@@ -1194,7 +1338,7 @@ Given the parent body’s world transform <span class="math notranslate nohighli
 \[x_{wc} = x_{wp} \cdot x_{pj} \cdot x_{j} \cdot x_{cj}^{-1}.\]</div>
 <dl class="py function">
 <dt class="sig sig-object py">
-<span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">eval_fk</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_qd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/articulation.py#L414"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">eval_fk</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_qd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_flag_filter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">BodyFlags.ALL</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/articulation.py#L421"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
 <dd><p>Evaluates the model’s forward kinematics given the joint coordinates and updates the state’s body information (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qd</span></code></a>).</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -1206,6 +1350,9 @@ Given the parent body’s world transform <span class="math notranslate nohighli
 <li><p><strong>mask</strong> (<em>wp.array</em><em>(</em><em>dtype=bool</em><em>) </em><em>| </em><em>None</em>) – The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool</p></li>
 <li><p><strong>indices</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>) </em><em>| </em><em>None</em>) – Integer indices of articulations to update. If None, updates all articulations.
 Cannot be used together with mask parameter.</p></li>
+<li><p><strong>body_flag_filter</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Body flag filter controlling which bodies are written to in <code class="docutils literal notranslate"><span class="pre">state.body_q</span></code> and
+<code class="docutils literal notranslate"><span class="pre">state.body_qd</span></code>. Default updates both dynamic and kinematic bodies. Bodies that do not
+match the filter retain their existing values; they are not zeroed or invalidated.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1213,7 +1360,7 @@ Cannot be used together with mask parameter.</p></li>
 
 <dl class="py function">
 <dt class="sig sig-object py">
-<span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">eval_ik</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_qd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/articulation.py#L754"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">eval_ik</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_qd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_flag_filter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">BodyFlags.ALL</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/articulation.py#L771"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
 <dd><p>Evaluates the model’s inverse kinematics given the state’s body information (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qd</span></code></a>) and updates the generalized joint coordinates <cite>joint_q</cite> and <cite>joint_qd</cite>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -1224,6 +1371,9 @@ Cannot be used together with mask parameter.</p></li>
 <li><p><strong>joint_qd</strong> (<em>wp.array</em><em>(</em><em>dtype=float</em><em>)</em>) – Generalized joint velocity coordinates, shape [joint_dof_count], float</p></li>
 <li><p><strong>mask</strong> (<em>wp.array</em><em>(</em><em>dtype=bool</em><em>) </em><em>| </em><em>None</em>) – Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).</p></li>
 <li><p><strong>indices</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>) </em><em>| </em><em>None</em>) – Integer indices of articulations to update. If None, updates all articulations.</p></li>
+<li><p><strong>body_flag_filter</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Body flag filter controlling which joints are written based on each joint’s child
+body flag. Default updates joints for both dynamic and kinematic child bodies. Entries that
+do not match the filter retain their existing values in <code class="docutils literal notranslate"><span class="pre">joint_q</span></code> and <code class="docutils literal notranslate"><span class="pre">joint_qd</span></code>.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1278,6 +1428,12 @@ Generalized-coordinate solvers (<a class="reference internal" href="../api/_gene
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generalized-and-maximal-coordinates">Generalized and maximal coordinates</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#kinematic-links-and-bodies">Kinematic links and bodies</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#common-combinations">Common combinations</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#velocity-consistency-for-prescribed-motion">Velocity consistency for prescribed motion</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rigid-body-solver-behavior">Rigid-body solver behavior</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#joint-types">Joint types</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#definition-of-joint-q">Definition of <code class="docutils literal notranslate"><span class="pre">joint_q</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#definition-of-joint-qd">Definition of <code class="docutils literal notranslate"><span class="pre">joint_qd</span></code></a></li>
