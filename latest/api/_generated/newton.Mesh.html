@@ -1190,8 +1190,9 @@ if the mesh is closed (two-manifold).</p>
 <code class="docutils literal notranslate"><span class="pre">(inner,</span> <span class="pre">outer)</span></code>. Uses <code class="docutils literal notranslate"><span class="pre">(-0.1,</span> <span class="pre">0.1)</span></code> when not provided.</p></li>
 <li><p><strong>target_voxel_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Target sparse-grid voxel size [m]. If provided,
 takes precedence over <code class="docutils literal notranslate"><span class="pre">max_resolution</span></code>.</p></li>
-<li><p><strong>max_resolution</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum sparse-grid dimension [voxel] when
-<code class="docutils literal notranslate"><span class="pre">target_voxel_size</span></code> is not provided.</p></li>
+<li><p><strong>max_resolution</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum sparse-grid dimension [voxel] along the longest
+AABB axis, used when <code class="docutils literal notranslate"><span class="pre">target_voxel_size</span></code> is not provided. Must be
+divisible by 8.</p></li>
 <li><p><strong>margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Extra AABB padding [m] added before discretization. Uses
 <code class="docutils literal notranslate"><span class="pre">0.05</span></code> when not provided.</p></li>
 <li><p><strong>shape_margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Shape margin offset [m] to subtract from SDF values.
