@@ -38,6 +38,7 @@ newton
    :nosignatures:
 
    Axis
+   BodyFlags
    CollisionPipeline
    Contacts
    Control
@@ -53,6 +54,7 @@ newton
    SDF
    ShapeFlags
    State
+   TetMesh
 
 .. rubric:: Functions
 

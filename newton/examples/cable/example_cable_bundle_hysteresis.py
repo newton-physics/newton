@@ -24,8 +24,6 @@
 #
 ###########################################################################
 
-import argparse
-
 import numpy as np
 import warp as wp
 
@@ -434,28 +432,29 @@ class Example:
         """Test cable bundle hysteresis simulation for stability and correctness (called after simulation)."""
         pass
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument("--segments", type=int, default=40, help="Number of cable segments")
+        parser.add_argument("--no-dahl", action="store_true", help="Disable Dahl friction (purely elastic)")
+        parser.add_argument("--eps-max", type=float, default=2.0, help="Maximum plastic strain [rad]")
+        parser.add_argument("--tau", type=float, default=0.1, help="Memory decay length [rad]")
+        return parser
+
 
 if __name__ == "__main__":
-    # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
-
-    # Parse example-specific arguments for Dahl friction experimentation
-    parser = argparse.ArgumentParser(description="Cable bundle hysteresis with Dahl friction")
-    parser.add_argument("--segments", type=int, default=40, help="Number of cable segments")
-    parser.add_argument("--no-dahl", action="store_true", help="Disable Dahl friction (purely elastic)")
-    parser.add_argument("--eps-max", type=float, default=2.0, help="Maximum plastic strain [rad]")
-    parser.add_argument("--tau", type=float, default=0.1, help="Memory decay length [rad]")
-    cli, _ = parser.parse_known_args()
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
 
     # Create example and run
     example = Example(
         viewer,
         args,
         num_cables=7,
-        segments=cli.segments,
-        with_dahl=not cli.no_dahl and cli.eps_max > 0.0 and cli.tau > 0.0,
-        eps_max=cli.eps_max,
-        tau=cli.tau,
+        segments=args.segments,
+        with_dahl=not args.no_dahl and args.eps_max > 0.0 and args.tau > 0.0,
+        eps_max=args.eps_max,
+        tau=args.tau,
     )
 
     newton.examples.run(example, args)

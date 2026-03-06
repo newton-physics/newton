@@ -21,7 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -60,6 +60,12 @@ from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
+from .enums import (
+    BodyFlags,
+    EqType,
+    JointTargetMode,
+    JointType,
+)
 from .graph_coloring import (
     ColoringAlgorithm,
     color_graph,
@@ -67,16 +73,13 @@ from .graph_coloring import (
     combine_independent_particle_coloring,
     construct_particle_graph,
 )
-from .joints import (
-    EqType,
-    JointTargetMode,
-    JointType,
-)
 from .model import Model
 
 if TYPE_CHECKING:
     from newton_actuators import Actuator
     from pxr import Usd
+
+    from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
 else:
@@ -768,6 +771,18 @@ class ModelBuilder:
         self.default_edge_kd = 0.0
         """Default edge-bending damping."""
 
+        self.default_tet_k_mu = 1.0e3
+        """Default first Lame parameter [Pa] for tetrahedral elements."""
+
+        self.default_tet_k_lambda = 1.0e3
+        """Default second Lame parameter [Pa] for tetrahedral elements."""
+
+        self.default_tet_k_damp = 0.0
+        """Default damping stiffness for tetrahedral elements."""
+
+        self.default_tet_density = 1.0
+        """Default density [kg/m^3] for tetrahedral soft bodies."""
+
         self.default_body_armature = 0.0
         """Default body armature value used when body armature is not provided."""
         # endregion
@@ -891,6 +906,7 @@ class ModelBuilder:
         self.body_qd = []
         self.body_label = []
         self.body_lock_inertia = []
+        self.body_flags = []  # body flags (e.g. BodyFlags.KINEMATIC)
         self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_world = []  # world index for each body
         self.body_color_groups: list[nparray] = []
@@ -1813,6 +1829,9 @@ class ModelBuilder:
                 )
             child_to_parent[child] = parent
 
+        # Validate that only root bodies (parent == -1) can be kinematic
+        self._validate_kinematic_articulation_joints(joints)
+
         # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
         self.articulation_start.append(sorted_joints[0])
@@ -2100,11 +2119,17 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
             load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-            hide_collision_shapes: If True, collision shapes are hidden. Default is False.
+            hide_collision_shapes: If True, collision shapes on bodies that already
+                have visual-only geometry are hidden. Collision shapes on bodies
+                without visual-only geometry remain visible as a rendering fallback.
+                Mesh colliders with authored PBR material data (texture,
+                roughness, or metallic) also remain visible so collision-only
+                render meshes are not lost.
+                Default is False.
             force_show_colliders: If True, collision shapes get the VISIBLE flag
                 regardless of whether visual shapes exist on the same body. Note that
-                ``hide_collision_shapes=True`` still takes precedence and will suppress
-                the VISIBLE flag even when this option is set. Default is False.
+                ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
+                colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -2791,6 +2816,7 @@ class ModelBuilder:
             "body_inv_mass",
             "body_com",
             "body_lock_inertia",
+            "body_flags",
             "body_qd",
             "joint_type",
             "joint_enabled",
@@ -3045,8 +3071,9 @@ class ModelBuilder:
         inertia: Mat33 | None = None,
         mass: float = 0.0,
         label: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
+        is_kinematic: bool = False,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a link (rigid body) to the model within an articulation.
 
@@ -3063,16 +3090,15 @@ class ModelBuilder:
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             label: Label of the body (optional).
-            custom_attributes: Dictionary of custom attribute names to values.
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
+            is_kinematic: If True, the body is kinematic and does not respond to forces.
+                Only root bodies (bodies whose joint parent is ``-1``) may be kinematic.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             The index of the body in the model.
-
-        Note:
-            If the mass is zero then the body is treated as kinematic with no dynamics.
 
         """
 
@@ -3099,6 +3125,7 @@ class ModelBuilder:
         self.body_mass.append(mass)
         self.body_com.append(com)
         self.body_lock_inertia.append(lock_inertia)
+        self.body_flags.append(int(BodyFlags.KINEMATIC) if is_kinematic else int(BodyFlags.DYNAMIC))
 
         if mass > 0.0:
             self.body_inv_mass.append(1.0 / mass)
@@ -3134,8 +3161,9 @@ class ModelBuilder:
         inertia: Mat33 | None = None,
         mass: float = 0.0,
         label: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
+        is_kinematic: bool = False,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
 
@@ -3157,16 +3185,14 @@ class ModelBuilder:
             mass: Mass of the body.
             label: Label of the body. When provided, the auto-created free joint and articulation
                 are assigned labels ``{label}_free_joint`` and ``{label}_articulation`` respectively.
-            custom_attributes: Dictionary of custom attribute names to values.
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
+            is_kinematic: If True, the body is kinematic and does not respond to forces.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             The index of the body in the model.
-
-        Note:
-            If the mass is zero then the body is treated as kinematic with no dynamics.
 
         """
         # Create the link
@@ -3179,6 +3205,7 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             lock_inertia=lock_inertia,
+            is_kinematic=is_kinematic,
         )
 
         # Add a free joint to make it float
@@ -4310,6 +4337,7 @@ class ModelBuilder:
                 "inv_inertia": self.body_inv_inertia[i],
                 "com": wp.vec3(*self.body_com[i]),
                 "lock_inertia": self.body_lock_inertia[i],
+                "flags": self.body_flags[i],
                 "label": body_lbl,
                 "original_id": i,
             }
@@ -4544,6 +4572,7 @@ class ModelBuilder:
         self.body_inertia.clear()
         self.body_com.clear()
         self.body_lock_inertia.clear()
+        self.body_flags.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_world.clear()  # Clear body groups
@@ -4564,6 +4593,7 @@ class ModelBuilder:
             self.body_inertia.append(inertia)
             self.body_com.append(body["com"])
             self.body_lock_inertia.append(body["lock_inertia"])
+            self.body_flags.append(body["flags"])
             if body["inv_mass"] is None:
                 # recompute inverse mass and inertia
                 if m > 0.0:
@@ -5765,6 +5795,22 @@ class ModelBuilder:
                 shape_tf = wp.transform(*self.shape_transform[shape])
                 self.shape_transform[shape] = shape_tf * tf
                 remeshed_shapes.add(shape)
+
+        # Hide approximated primitives on bodies that have other visible shapes.
+        # Primitives (box, sphere) can't carry visual materials, so they should
+        # not be visible when the body already has dedicated visual geometry.
+        visible_count_per_body = Counter(
+            self.shape_body[i] for i in range(len(self.shape_body)) if self.shape_flags[i] & ShapeFlags.VISIBLE
+        )
+        for shape in remeshed_shapes:
+            if self.shape_type[shape] in (GeoType.MESH, GeoType.CONVEX_MESH):
+                continue
+            if not (self.shape_flags[shape] & ShapeFlags.VISIBLE):
+                continue
+            body = self.shape_body[shape]
+            if visible_count_per_body.get(body, 0) > 1:
+                self.shape_flags[shape] &= ~ShapeFlags.VISIBLE
+                visible_count_per_body[body] -= 1
 
         return remeshed_shapes
 
@@ -7436,12 +7482,13 @@ class ModelBuilder:
         rot: Quat,
         scale: float,
         vel: Vec3,
-        vertices: list[Vec3],
-        indices: list[int],
-        density: float,
-        k_mu: float,
-        k_lambda: float,
-        k_damp: float,
+        mesh: TetMesh | None = None,
+        vertices: list[Vec3] | None = None,
+        indices: list[int] | None = None,
+        density: float | None = None,
+        k_mu: float | nparray | None = None,
+        k_lambda: float | nparray | None = None,
+        k_damp: float | nparray | None = None,
         tri_ke: float = 0.0,
         tri_ka: float = 0.0,
         tri_kd: float = 0.0,
@@ -7452,18 +7499,33 @@ class ModelBuilder:
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
     ) -> None:
-        """Helper to create a tetrahedral model from an input tetrahedral mesh
+        """Helper to create a tetrahedral model from an input tetrahedral mesh.
+
+        Can be called with either a :class:`~newton.TetMesh` object or raw
+        ``vertices``/``indices`` arrays. When both are provided, explicit
+        parameters override the values from the TetMesh.
 
         Args:
-            pos: The position of the solid in world space
-            rot: The orientation of the solid in world space
-            vel: The velocity of the solid in world space
-            vertices: A list of vertex positions, array of 3D points
-            indices: A list of tetrahedron indices, 4 entries per-element, flattened array
-            density: The density per-area of the mesh
-            k_mu: The first elastic Lame parameter
-            k_lambda: The second elastic Lame parameter
-            k_damp: The damping stiffness
+            pos: The position of the solid in world space.
+            rot: The orientation of the solid in world space.
+            scale: Uniform scale applied to vertex positions.
+            vel: The velocity of the solid in world space.
+            mesh: A :class:`~newton.TetMesh` object. When provided, its
+                vertices, indices, material arrays, density, and pre-computed
+                surface triangles are used directly.
+            vertices: A list of vertex positions, array of 3D points.
+                Required if ``mesh`` is not provided.
+            indices: A list of tetrahedron indices, 4 entries per-element,
+                flattened array. Required if ``mesh`` is not provided.
+            density: The density [kg/m^3] of the mesh. Overrides ``mesh.density``
+                if both are provided.
+            k_mu: The first elastic Lame parameter [Pa]. Scalar or per-element
+                array. Overrides ``mesh.k_mu`` if both are provided.
+            k_lambda: The second elastic Lame parameter [Pa]. Scalar or
+                per-element array. Overrides ``mesh.k_lambda`` if both are
+                provided.
+            k_damp: The damping stiffness. Scalar or per-element array.
+                Overrides ``mesh.k_damp`` if both are provided.
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
@@ -7473,35 +7535,88 @@ class ModelBuilder:
                 generated surface mesh. These edges improve collision robustness for VBD solver. Defaults to True.
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
-            particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
 
         Note:
+            **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
+            attribute > builder default (:attr:`default_tet_density`,
+            :attr:`default_tet_k_mu`, :attr:`default_tet_k_lambda`,
+            :attr:`default_tet_k_damp`).
+
             The generated surface triangles and optional edges are for collision purposes.
             Their stiffness and damping values default to zero so they do not introduce additional
             elastic forces. Set the stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
+        from ..geometry.types import TetMesh  # noqa: PLC0415
+
+        # Resolve parameters: explicit args > mesh attributes > error
+        if mesh is not None:
+            if not isinstance(mesh, TetMesh):
+                raise TypeError(f"mesh must be a TetMesh, got {type(mesh).__name__}")
+            if vertices is None:
+                vertices = mesh.vertices
+            if indices is None:
+                indices = mesh.tet_indices
+            if density is None:
+                density = mesh.density
+            if k_mu is None:
+                k_mu = mesh.k_mu
+            if k_lambda is None:
+                k_lambda = mesh.k_lambda
+            if k_damp is None:
+                k_damp = mesh.k_damp
+
+        if vertices is None or indices is None:
+            raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
+        if density is None:
+            density = self.default_tet_density
+        if k_mu is None:
+            k_mu = self.default_tet_k_mu
+        if k_lambda is None:
+            k_lambda = self.default_tet_k_lambda
+        if k_damp is None:
+            k_damp = self.default_tet_k_damp
+
         num_tets = int(len(indices) / 4)
+        k_mu_arr = np.broadcast_to(np.asarray(k_mu, dtype=np.float32).flatten(), num_tets)
+        k_lambda_arr = np.broadcast_to(np.asarray(k_lambda, dtype=np.float32).flatten(), num_tets)
+        k_damp_arr = np.broadcast_to(np.asarray(k_damp, dtype=np.float32).flatten(), num_tets)
+
+        # Extract custom attributes grouped by frequency, validating against builder registry
+        particle_custom: dict[str, np.ndarray] = {}
+        tet_custom: dict[str, np.ndarray] = {}
+        tri_custom: dict[str, np.ndarray] = {}
+        if mesh is not None and mesh.custom_attributes:
+            for attr_name, (arr, freq) in mesh.custom_attributes.items():
+                registered = self.custom_attributes.get(attr_name)
+                if registered is None:
+                    raise ValueError(
+                        f"TetMesh custom attribute '{attr_name}' is not registered in ModelBuilder. "
+                        f"Register it first via add_custom_attribute()."
+                    )
+                if registered.frequency != freq:
+                    raise ValueError(
+                        f"Frequency mismatch for custom attribute '{attr_name}': TetMesh has "
+                        f"{Model.AttributeFrequency(freq).name} but ModelBuilder expects "
+                        f"{registered.frequency.name}."
+                    )
+                if freq == Model.AttributeFrequency.PARTICLE:
+                    particle_custom[attr_name] = arr
+                elif freq == Model.AttributeFrequency.TETRAHEDRON:
+                    tet_custom[attr_name] = arr
+                elif freq == Model.AttributeFrequency.TRIANGLE:
+                    tri_custom[attr_name] = arr
 
         start_vertex = len(self.particle_q)
 
-        # dict of open faces
-        faces = {}
-
-        def add_face(i, j, k):
-            key = tuple(sorted((i, j, k)))
-
-            if key not in faces:
-                faces[key] = (i, j, k)
-            else:
-                del faces[key]
-
         pos = wp.vec3(pos[0], pos[1], pos[2])
         # add particles
-        for v in vertices:
+        for vi, v in enumerate(vertices):
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
 
-            self.add_particle(p, vel, 0.0, particle_radius)
+            p_custom = {k: arr[vi] for k, arr in particle_custom.items()} if particle_custom else None
+            self.add_particle(p, vel, 0.0, particle_radius, custom_attributes=p_custom)
 
         # add tetrahedra
         for t in range(num_tets):
@@ -7510,7 +7625,17 @@ class ModelBuilder:
             v2 = start_vertex + indices[t * 4 + 2]
             v3 = start_vertex + indices[t * 4 + 3]
 
-            volume = self.add_tetrahedron(v0, v1, v2, v3, k_mu, k_lambda, k_damp)
+            t_custom = {k: arr[t] for k, arr in tet_custom.items()} if tet_custom else None
+            volume = self.add_tetrahedron(
+                v0,
+                v1,
+                v2,
+                v3,
+                float(k_mu_arr[t]),
+                float(k_lambda_arr[t]),
+                float(k_damp_arr[t]),
+                custom_attributes=t_custom,
+            )
 
             # distribute volume fraction to particles
             if volume > 0.0:
@@ -7519,16 +7644,29 @@ class ModelBuilder:
                 self.particle_mass[v2] += density * volume / 4.0
                 self.particle_mass[v3] += density * volume / 4.0
 
-                # build open faces
-                add_face(v0, v2, v1)
-                add_face(v1, v2, v3)
-                add_face(v0, v1, v3)
-                add_face(v0, v3, v2)
+        # Compute surface triangles — reuse pre-computed result from TetMesh
+        # only when the caller did not override the indices.
+        if mesh is not None and indices is mesh.tet_indices and len(mesh.surface_tri_indices) > 0:
+            surface_tri_indices = mesh.surface_tri_indices
+        else:
+            surface_tri_indices = TetMesh.compute_surface_triangles(indices)
 
         # add surface triangles
         start_tri = len(self.tri_indices)
-        for _k, v in faces.items():
-            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        surf = surface_tri_indices.reshape(-1, 3)
+        for ti, tri in enumerate(surf):
+            tr_custom = {k: arr[ti] for k, arr in tri_custom.items()} if tri_custom else None
+            self.add_triangle(
+                start_vertex + int(tri[0]),
+                start_vertex + int(tri[1]),
+                start_vertex + int(tri[2]),
+                tri_ke,
+                tri_ka,
+                tri_kd,
+                tri_drag,
+                tri_lift,
+                custom_attributes=tr_custom,
+            )
         end_tri = len(self.tri_indices)
 
         if add_surface_mesh_edges:
@@ -7615,6 +7753,23 @@ class ModelBuilder:
                 UserWarning,
                 stacklevel=3,
             )
+
+    def _validate_kinematic_joint_attachment(self, child: int, parent: int) -> None:
+        """Validate that kinematic bodies only attach to the world."""
+        if parent == -1 or not (int(self.body_flags[child]) & int(BodyFlags.KINEMATIC)):
+            return
+
+        child_label = self.body_label[child]
+        parent_label = self.body_label[parent]
+        raise ValueError(
+            f"Body {child} ('{child_label}') is kinematic but is attached to parent body {parent} "
+            f"('{parent_label}'). Only root bodies (whose joint parent is the world) can be kinematic."
+        )
+
+    def _validate_kinematic_articulation_joints(self, joint_indices: Iterable[int]) -> None:
+        """Validate that all kinematic joints in an articulation are rooted at the world."""
+        for joint_idx in joint_indices:
+            self._validate_kinematic_joint_attachment(self.joint_child[joint_idx], self.joint_parent[joint_idx])
 
     def _find_articulation_for_body(self, body_id: int) -> int | None:
         """
@@ -7797,6 +7952,7 @@ class ModelBuilder:
             parent_articulation = self._check_sequential_composition(parent_body=parent_body)
 
             if parent_articulation is not None:
+                self._validate_kinematic_articulation_joints(joint_indices)
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     self.joint_articulation[joint_idx] = parent_articulation
@@ -8267,6 +8423,22 @@ class ModelBuilder:
         """
         body_count = self.body_count
         joint_count = self.joint_count
+
+        # Validate per-body flags: each body must be either dynamic or
+        # kinematic. Filter masks such as BodyFlags.ALL are not valid stored
+        # body states.
+        if len(self.body_flags) != body_count:
+            raise ValueError(f"Invalid body_flags length: expected {body_count} entries, got {len(self.body_flags)}.")
+        if body_count > 0:
+            body_flags = np.array(self.body_flags, dtype=np.int32)
+            valid_mask = (body_flags == int(BodyFlags.DYNAMIC)) | (body_flags == int(BodyFlags.KINEMATIC))
+            if not np.all(valid_mask):
+                idx = int(np.where(~valid_mask)[0][0])
+                body_label = self.body_label[idx] if idx < len(self.body_label) else f"body_{idx}"
+                raise ValueError(
+                    f"Invalid body flag for body {idx} ('{body_label}'): got {int(body_flags[idx])}, "
+                    f"but expected exactly one of BodyFlags.DYNAMIC or BodyFlags.KINEMATIC."
+                )
 
         # Validate shape_body references: must be in [-1, body_count-1]
         if self.shape_count > 0:
@@ -9336,6 +9508,7 @@ class ModelBuilder:
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_label = self.body_label
+            m.body_flags = wp.array(self.body_flags, dtype=wp.int32)
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors

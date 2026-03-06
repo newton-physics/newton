@@ -34,7 +34,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         self.viewer = viewer
 
         # self.colors and materials per instance
@@ -216,5 +216,5 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)

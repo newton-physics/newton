@@ -32,14 +32,14 @@ from newton import JointTargetMode
 
 
 class Example:
-    def __init__(self, viewer, world_count=4, args=None):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         self.viewer = viewer
 
@@ -163,13 +163,17 @@ class Example:
             < 0.015,  # Relaxed from 0.005 - G1 has higher residual velocities with collision pipeline
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=4)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=4, help="Total number of simulated worlds.")
-
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.world_count, args)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

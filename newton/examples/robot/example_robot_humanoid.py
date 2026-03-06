@@ -31,14 +31,14 @@ from newton import JointTargetMode
 
 
 class Example:
-    def __init__(self, viewer, world_count=4, args=None):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         self.viewer = viewer
 
@@ -69,7 +69,7 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
+        use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             njmax=100,
@@ -149,13 +149,17 @@ class Example:
             lambda q, qd: max(abs(qd)) < threshold,
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=4)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=4, help="Total number of simulated worlds.")
-
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.world_count, args)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)
