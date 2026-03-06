@@ -6359,6 +6359,61 @@ def Xform "BodyWithoutVisuals" (
         self.assertAlmostEqual(mesh.metallic, 0.75, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_texture_does_not_change_body_mass(self):
+        """Render-only UV loading must not perturb collider mass or inertia."""
+        stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)
+
+        base_vertices = np.array(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
+        physics_mesh = newton.Mesh(base_vertices, indices)
+        render_mesh = newton.Mesh(base_vertices * 4.0, indices)
+        render_mesh._uvs = np.zeros((render_mesh.vertices.shape[0], 2), dtype=np.float32)
+
+        def _mock_get_mesh(_prim, *, load_uvs=False, load_normals=False):
+            del load_normals
+            return render_mesh if load_uvs else physics_mesh
+
+        with (
+            mock.patch(
+                "newton._src.utils.import_usd.usd.resolve_material_properties_for_prim",
+                return_value={
+                    "color": None,
+                    "roughness": 0.35,
+                    "metallic": 0.75,
+                    "texture": "dummy.png",
+                },
+            ),
+            mock.patch(
+                "newton._src.utils.import_usd.usd.get_mesh",
+                side_effect=_mock_get_mesh,
+            ),
+        ):
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(stage, hide_collision_shapes=True)
+
+        body_idx = result["path_body_map"]["/Body"]
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+        expected_density = builder.default_shape_cfg.density
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], physics_mesh.mass * expected_density, places=6)
+        self.assertNotAlmostEqual(builder.body_mass[body_idx], render_mesh.mass * expected_density, places=3)
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        self.assertEqual(mesh.texture, "dummy.png")
+        self.assertIsNotNone(mesh.uvs)
+        np.testing.assert_allclose(mesh.vertices, render_mesh.vertices, atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(mesh.mass, physics_mesh.mass, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visualized_collision_mesh_remains_visible_when_body_has_visual_shapes(self):
         """Mesh colliders with visual material data stay visible even when body visuals exist."""
         stage = self._create_stage_with_pbr_collision_mesh(

@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import copy
 import datetime
 import itertools
 import os
@@ -344,7 +343,7 @@ def parse_usd(
     # cache for resolved material properties (keyed by prim path)
     material_props_cache: dict[str, dict[str, Any]] = {}
     # cache for mesh data loaded from USD prims
-    mesh_cache: dict[tuple[str, bool], Mesh] = {}
+    mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -395,11 +394,30 @@ def parse_usd(
         return mesh
 
     def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
-        """Load mesh and apply resolved visual material properties."""
+        """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
         texture = material_props.get("texture")
-        # Only load UVs if a texture is authored to avoid expensive faceVarying expansion.
-        mesh = copy.copy(_get_mesh_cached(prim, load_uvs=(texture is not None)))
+        physics_mesh = _get_mesh_cached(prim)
+        if texture is not None:
+            render_mesh = _get_mesh_cached(prim, load_uvs=True)
+            # Texture UV expansion is render-only. Preserve the collision mesh's
+            # mass/inertia so visibility changes do not perturb simulation.
+            mesh = Mesh(
+                render_mesh.vertices,
+                render_mesh.indices,
+                normals=render_mesh.normals,
+                uvs=render_mesh.uvs,
+                compute_inertia=False,
+                is_solid=physics_mesh.is_solid,
+                maxhullvert=physics_mesh.maxhullvert,
+                sdf=physics_mesh.sdf,
+            )
+            mesh.mass = physics_mesh.mass
+            mesh.com = physics_mesh.com
+            mesh.inertia = physics_mesh.inertia
+            mesh.has_inertia = physics_mesh.has_inertia
+        else:
+            mesh = physics_mesh.copy(recompute_inertia=False)
         if texture:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
