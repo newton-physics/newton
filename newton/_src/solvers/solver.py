@@ -212,9 +212,9 @@ class SolverBase:
     def _init_kinematic_state(self):
         """Allocate and populate effective inverse mass/inertia arrays."""
         model = self.model
+        self.body_inv_mass_effective = wp.empty_like(model.body_inv_mass)
+        self.body_inv_inertia_effective = wp.empty_like(model.body_inv_inertia)
         if model.body_count:
-            self.body_inv_mass_effective = wp.empty_like(model.body_inv_mass)
-            self.body_inv_inertia_effective = wp.empty_like(model.body_inv_inertia)
             self._refresh_kinematic_state()
 
     def _refresh_kinematic_state(self):
