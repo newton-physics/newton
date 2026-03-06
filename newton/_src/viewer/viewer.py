@@ -102,6 +102,9 @@ class ViewerBase(ABC):
         self.world_offsets = None
         self.max_worlds = None
 
+        # Picking
+        self.picking_enabled = True
+
         # Display options
         self.show_joints = False
         self.show_com = False
