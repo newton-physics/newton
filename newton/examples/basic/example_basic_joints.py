@@ -121,6 +121,7 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             limit_lower=-0.3,
             limit_upper=0.3,
+            limit_kd=1.0e3,  # vbd only
             label="prismatic_a_b",
         )
         # Create articulation from joints
@@ -172,15 +173,22 @@ class Example:
         builder.joint_q[-4:] = wp.quat_rpy(0.5, 0.6, 0.7)
 
         # finalize model
+        builder.color()
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+        if solver_type == "vbd":
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=5,
+            )
+        else:
+            self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.contacts = self.model.contacts()
@@ -283,7 +291,16 @@ class Example:
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--solver",
+        type=str,
+        choices=["xpbd", "vbd"],
+        default="xpbd",
+        help="Solver backend to use.",
+    )
+    viewer, args = newton.examples.init(parser)
+    viewer._paused = True
 
     # Create viewer and run
     example = Example(viewer, args)

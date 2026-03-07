@@ -174,7 +174,7 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint constraints
         rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/REVOLUTE/PRISMATIC)
         rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/REVOLUTE/PRISMATIC)
-        rigid_joint_linear_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
+        rigid_joint_linear_kd: float = 1.0e-2,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable angular joint constraints
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
@@ -1307,6 +1307,9 @@ class SolverVBD(SolverBase):
         update_rigid_history = self.update_rigid_history
         self.update_rigid_history = True
 
+        if control is None:
+            control = self.model.control(clone_variables=False)
+
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid_history)
         self._initialize_particles(state_in, state_out, dt)
 
@@ -1469,7 +1472,7 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
-            # Forward integrate rigid bodies
+            # Forward integrate rigid bodies (also snapshots body_q_prev before integration)
             wp.launch(
                 kernel=forward_step_rigid_bodies,
                 inputs=[
@@ -1486,6 +1489,7 @@ class SolverVBD(SolverBase):
                 ],
                 outputs=[
                     self.body_inertia_q,
+                    self.body_q_prev,
                 ],
                 dim=model.body_count,
                 device=self.device,

@@ -1803,9 +1803,10 @@ def evaluate_joint_force_hessian(
                 # Build projector P_lin = I - sum(outer(a_i_w, a_i_w)) for free linear axes
                 q_wp_rot = wp.transform_get_rotation(X_wp)
                 P_lin = wp.identity(3, float)
-                if lin_count > 0:
-                    a0_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 0]))
-                    P_lin = P_lin - wp.outer(a0_w, a0_w)
+
+                # lin_count >= 1 guaranteed by the outer branch
+                a0_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 0]))
+                P_lin = P_lin - wp.outer(a0_w, a0_w)
                 if lin_count > 1:
                     a1_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[qd_start + 1]))
                     P_lin = P_lin - wp.outer(a1_w, a1_w)
@@ -2097,9 +2098,11 @@ def forward_step_rigid_bodies(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_inertia_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
 ):
     """
     Forward integration step for rigid bodies in the AVBD/VBD solver.
+    Also snapshots the current pose into ``body_q_prev`` before integration.
 
     Args:
         dt: Time step [s].
@@ -2113,11 +2116,13 @@ def forward_step_rigid_bodies(
         body_q: Body transforms (input: start-of-step pose, output: integrated pose).
         body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
         body_inertia_q: Inertial target body transforms for the AVBD solve (output).
+        body_q_prev: Previous body transforms (output). Snapshotted from ``body_q`` before integration.
     """
     tid = wp.tid()
 
-    # Read current transform
+    # Read current transform and snapshot as previous pose before integration
     q_current = body_q[tid]
+    body_q_prev[tid] = q_current
 
     # Early exit for kinematic bodies (inv_mass == 0)
     inv_m = body_inv_mass[tid]
@@ -3767,8 +3772,7 @@ def update_body_velocity(
         dt: Time step.
         body_q: Current body transforms (world).
         body_com: Center of mass offsets (local frame).
-        body_q_prev: Previous body transforms (world). This is also refreshed to the current
-            pose at the end of the kernel to serve as the "previous pose" for the next step.
+        body_q_prev: Previous body transforms (world), snapshotted at the start of the step.
         body_qd: Output body velocities (spatial vectors, world frame).
     """
     tid = wp.tid()
@@ -3794,9 +3798,6 @@ def update_body_velocity(
     omega = quat_velocity(q, q_prev, dt)
 
     body_qd[tid] = wp.spatial_vector(v, omega)
-
-    # Refresh previous pose for the next step (including kinematics).
-    body_q_prev[tid] = pose
 
 
 @wp.kernel
