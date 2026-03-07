@@ -68,6 +68,20 @@ def _parallel_download(items, download_fn, description, max_jobs):
     print(f"Downloaded {description}")
 
 
+def _get_isolated_warp_cache_dir(default_cache_dir, version, worker_index):
+    """Return a per-worker Warp cache directory without extra deps."""
+
+    if not default_cache_dir:
+        return os.path.join(tempfile.gettempdir(), "warp", f"{version}-{worker_index:03d}")
+
+    normalized_dir = os.path.normpath(default_cache_dir)
+    cache_root = normalized_dir
+    if os.path.basename(normalized_dir) == version:
+        cache_root = os.path.dirname(normalized_dir)
+
+    return os.path.join(cache_root, f"{version}-{worker_index:03d}")
+
+
 def main(argv=None):
     """
     unittest-parallel command-line script main entry point
@@ -306,6 +320,7 @@ def main(argv=None):
                         mp_context=multiprocessing.get_context(method="spawn"),
                         initializer=initialize_test_process,
                         initargs=(manager.Lock(), shared_index, args, temp_dir),
+                        max_tasks_per_child=1 if args.disable_process_pooling else None,
                     ) as executor:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
                         results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
@@ -642,24 +657,27 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
     with _coverage(args, temp_dir):
         import warp as wp  # noqa: PLC0415
 
-        if args.no_shared_cache:
-            from warp.thirdparty import appdirs  # noqa: PLC0415
+        warp_cache_root = os.environ.get("WARP_CACHE_ROOT")
 
-            if "WARP_CACHE_ROOT" in os.environ:
-                cache_root_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), f"{wp.config.version}-{worker_index:03d}")
+        if args.no_shared_cache:
+            if warp_cache_root is not None:
+                cache_root_dir = os.path.join(warp_cache_root, f"{wp.config.version}-{worker_index:03d}")
             else:
-                cache_root_dir = appdirs.user_cache_dir(
-                    appname="warp", appauthor="NVIDIA", version=f"{wp.config.version}-{worker_index:03d}"
+                cache_root_dir = _get_isolated_warp_cache_dir(
+                    default_cache_dir=wp.config.kernel_cache_dir,
+                    version=wp.config.version,
+                    worker_index=worker_index,
                 )
 
+            os.makedirs(cache_root_dir, exist_ok=True)
             wp.config.kernel_cache_dir = cache_root_dir
 
             if not args.no_cache_clear:
                 wp.clear_lto_cache()
                 wp.clear_kernel_cache()
-        elif "WARP_CACHE_ROOT" in os.environ:
+        elif warp_cache_root is not None:
             # Using a shared cache for all test processes
-            wp.config.kernel_cache_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), wp.config.version)
+            wp.config.kernel_cache_dir = os.path.join(warp_cache_root, wp.config.version)
 
 
 if __name__ == "__main__":  # pragma: no cover
