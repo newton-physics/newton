@@ -31,6 +31,12 @@ import unittest
 from contextlib import contextmanager
 from io import StringIO
 
+# Work around a known OpenUSD thread-safety crash in
+# UsdPhysics.LoadUsdPhysicsFromRange for collider-dense assets. OpenUSD reads
+# this once when pxr initializes, so set it before test modules import pxr and
+# preserve any caller-provided override.
+os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
+
 from newton.tests.unittest_utils import (  # NVIDIA modification
     ParallelJunitTestResult,
     write_junit_results,
@@ -213,13 +219,18 @@ def main(argv=None):
     assets_to_download = [
         "anybotics_anymal_c",
         "anybotics_anymal_d",
+        "apptronik_apollo",
+        "booster_t1",
         "franka_emika_panda",
         "manipulation_objects/cup",  # Used in robot.example_robot_panda_hydro
         "manipulation_objects/pad",  # Used in robot.example_robot_panda_hydro
+        "robotiq_2f85_v4",
+        "shadow_hand",
         "unitree_go2",
         "unitree_g1",
         "unitree_h1",
         "style3d",
+        "universal_robots_ur5e",
         "universal_robots_ur10",
         "wonik_allegro",
     ]
@@ -231,16 +242,23 @@ def main(argv=None):
         args.maxjobs,
     )
 
-    # Pre-download mujoco_menagerie folders used by test_robot_composer
+    # Pre-download only the menagerie folders exercised by non-skipped
+    # menagerie tests and test_robot_composer. Placeholder USD stub classes
+    # without usd_asset_folder now skip before any menagerie download occurs.
     from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
     menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
     menagerie_folders = [
-        "universal_robots_ur5e",
         "apptronik_apollo",
+        "booster_t1",
         "leap_hand",
-        "wonik_allegro",
         "robotiq_2f85",
+        "robotiq_2f85_v4",
+        "shadow_hand",
+        "unitree_g1",
+        "unitree_h1",
+        "universal_robots_ur5e",
+        "wonik_allegro",
     ]
     # Passing args.maxjobs to respect CLI cap for parallelism.
     _parallel_download(

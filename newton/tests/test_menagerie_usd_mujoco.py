@@ -952,10 +952,10 @@ class TestMenagerieUSD(TestMenagerieBase):
     @classmethod
     def setUpClass(cls):
         """Download MJCF and USD assets once for all tests in this class."""
-        super().setUpClass()
-
         if not cls.usd_asset_folder:
-            return
+            raise unittest.SkipTest("usd_asset_folder not defined")
+
+        super().setUpClass()
 
         try:
             asset_root = newton.utils.download_asset(cls.usd_asset_folder)
@@ -1394,7 +1394,8 @@ class TestMenagerieUSD_UR5e(TestMenagerieUSD):
 # Part C: Menagerie Robot USD Test Stubs
 # =============================================================================
 # One class per menagerie robot. These use the default TestMenagerieUSD
-# configuration; without a usd_asset_folder they are auto-skipped.
+# configuration; without a usd_asset_folder they are skipped in setUpClass
+# before downloading menagerie assets.
 
 
 # -----------------------------------------------------------------------------
