@@ -106,8 +106,8 @@ class SensorTiledCamera:
     RenderOrder = RenderOrder
     ClearData = ClearData
 
-    BLACK_CLEAR_DATA = ClearData()
-    DEFAULT_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
+    DEFAULT_CLEAR_DATA = ClearData()
+    GRAY_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
     @dataclass
     class Config:
