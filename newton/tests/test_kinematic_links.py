@@ -182,7 +182,7 @@ KINEMATIC_TEST_WRENCH = np.array([20.0, -15.0, 10.0, 0.5, -0.4, 0.3], dtype=np.f
 
 
 def _uses_maximal_coordinates(solver) -> bool:
-    return isinstance(solver, newton.solvers.SolverXPBD | newton.solvers.SolverSemiImplicit)
+    return isinstance(solver, newton.solvers.SolverXPBD | newton.solvers.SolverSemiImplicit | newton.solvers.SolverVBD)
 
 
 def _create_contacts(model: newton.Model, solver):
@@ -233,6 +233,7 @@ def _build_free_root_scene(device):
     )
     builder.add_shape_sphere(probe_body, radius=0.1)
 
+    builder.color()
     model = builder.finalize(device=device)
     kinematic_joint = _find_joint_for_child(model, kinematic_body)
     return model, kinematic_body, probe_body, kinematic_joint
@@ -277,6 +278,7 @@ def _build_revolute_root_pendulum_scene(device):
     )
     builder.add_shape_sphere(probe_body, radius=0.1)
 
+    builder.color()
     model = builder.finalize(device=device)
     return model, root, pendulum, probe_body, root_joint
 
@@ -302,6 +304,7 @@ def _build_fixed_root_scene(device):
     )
     builder.add_shape_sphere(probe_body, radius=0.12)
 
+    builder.color()
     model = builder.finalize(device=device)
     probe_joint = _find_joint_for_child(model, probe_body)
     return model, static_body, probe_body, probe_joint
@@ -563,6 +566,7 @@ def test_kinematic_runtime_toggle(
         label="toggle_body",
     )
     builder.add_shape_sphere(body, radius=0.1)
+    builder.color()
     model = builder.finalize(device=device)
     solver = solver_fn(model)
     contacts = _create_contacts(model, solver)
@@ -629,6 +633,7 @@ solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    "vbd": lambda model: newton.solvers.SolverVBD(model),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
@@ -644,13 +649,14 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-        add_function_test(
-            TestKinematicLinksCanonical,
-            f"test_kinematic_revolute_root_pendulum_prescribed_motion_{solver_name}",
-            test_kinematic_revolute_root_pendulum_prescribed_motion,
-            devices=[device],
-            solver_fn=solver_fn,
-        )
+        if solver_name != "vbd":  # VBD does not support revolute joints.
+            add_function_test(
+                TestKinematicLinksCanonical,
+                f"test_kinematic_revolute_root_pendulum_prescribed_motion_{solver_name}",
+                test_kinematic_revolute_root_pendulum_prescribed_motion,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
         add_function_test(
             TestKinematicLinksCanonical,
             f"test_kinematic_fixed_root_static_force_immune_{solver_name}",
