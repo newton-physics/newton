@@ -242,16 +242,22 @@ def main(argv=None):
         args.maxjobs,
     )
 
-    # Pre-download mujoco_menagerie folders used by test_robot_composer
+    # Pre-download mujoco_menagerie folders used by enabled menagerie tests
+    # and test_robot_composer to avoid per-class sparse clones during the run.
     from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
     menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
     menagerie_folders = [
-        "universal_robots_ur5e",
         "apptronik_apollo",
+        "booster_t1",
         "leap_hand",
-        "wonik_allegro",
         "robotiq_2f85",
+        "robotiq_2f85_v4",
+        "shadow_hand",
+        "unitree_g1",
+        "unitree_h1",
+        "universal_robots_ur5e",
+        "wonik_allegro",
     ]
     # Passing args.maxjobs to respect CLI cap for parallelism.
     _parallel_download(
