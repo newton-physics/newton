@@ -242,8 +242,9 @@ def main(argv=None):
         args.maxjobs,
     )
 
-    # Pre-download mujoco_menagerie folders used by enabled menagerie tests
-    # and test_robot_composer to avoid per-class sparse clones during the run.
+    # Pre-download only the menagerie folders exercised by non-skipped
+    # menagerie tests and test_robot_composer. Placeholder USD stub classes
+    # without usd_asset_folder now skip before any menagerie download occurs.
     from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
     menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
