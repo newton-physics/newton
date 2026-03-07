@@ -213,13 +213,18 @@ def main(argv=None):
     assets_to_download = [
         "anybotics_anymal_c",
         "anybotics_anymal_d",
+        "apptronik_apollo",
+        "booster_t1",
         "franka_emika_panda",
         "manipulation_objects/cup",  # Used in robot.example_robot_panda_hydro
         "manipulation_objects/pad",  # Used in robot.example_robot_panda_hydro
+        "robotiq_2f85_v4",
+        "shadow_hand",
         "unitree_go2",
         "unitree_g1",
         "unitree_h1",
         "style3d",
+        "universal_robots_ur5e",
         "universal_robots_ur10",
         "wonik_allegro",
     ]
