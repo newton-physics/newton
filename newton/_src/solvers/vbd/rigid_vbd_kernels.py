@@ -2102,7 +2102,9 @@ def forward_step_rigid_bodies(
 ):
     """
     Forward integration step for rigid bodies in the AVBD/VBD solver.
-    Also snapshots the current pose into ``body_q_prev`` before integration.
+
+    Snapshots ``body_q_prev`` for dynamic bodies only. Kinematic bodies keep
+    the previous step's pose so contact friction sees correct velocity.
 
     Args:
         dt: Time step [s].
@@ -2116,19 +2118,21 @@ def forward_step_rigid_bodies(
         body_q: Body transforms (input: start-of-step pose, output: integrated pose).
         body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
         body_inertia_q: Inertial target body transforms for the AVBD solve (output).
-        body_q_prev: Previous body transforms (output). Snapshotted from ``body_q`` before integration.
+        body_q_prev: Previous body transforms (output, dynamic bodies only).
     """
     tid = wp.tid()
 
-    # Read current transform and snapshot as previous pose before integration
     q_current = body_q[tid]
-    body_q_prev[tid] = q_current
 
-    # Early exit for kinematic bodies (inv_mass == 0)
+    # Early exit for kinematic bodies (inv_mass == 0).
+    # Do not snapshot body_q_prev here: kinematic bodies need body_q_prev from previous step.
     inv_m = body_inv_mass[tid]
     if inv_m == 0.0:
         body_inertia_q[tid] = q_current
         return
+
+    # Snapshot current pose as previous before integration (dynamic bodies only).
+    body_q_prev[tid] = q_current
 
     # Read body state (only for dynamic bodies)
     qd_current = body_qd[tid]
@@ -3772,7 +3776,7 @@ def update_body_velocity(
         dt: Time step.
         body_q: Current body transforms (world).
         body_com: Center of mass offsets (local frame).
-        body_q_prev: Previous body transforms (world), snapshotted at the start of the step.
+        body_q_prev: Previous body transforms (input/output, advanced to current pose for next step).
         body_qd: Output body velocities (spatial vectors, world frame).
     """
     tid = wp.tid()
@@ -3798,6 +3802,9 @@ def update_body_velocity(
     omega = quat_velocity(q, q_prev, dt)
 
     body_qd[tid] = wp.spatial_vector(v, omega)
+
+    # Advance body_q_prev for next step (for kinematic bodies this is the only write).
+    body_q_prev[tid] = pose
 
 
 @wp.kernel
@@ -3844,9 +3851,6 @@ def update_cable_dahl_state(
     """
     j = wp.tid()
 
-    if not joint_enabled[j]:
-        return
-
     # Only update cable joints
     if joint_type[j] != JointType.CABLE:
         return
@@ -3876,6 +3880,14 @@ def update_cable_dahl_state(
 
     # Compute final curvature vector at end of timestep
     kappa_final = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+
+    if not joint_enabled[j]:
+        # Refresh Dahl state to current configuration with zero preload so that
+        # re-enabling the joint does not see a stale kappa delta.
+        joint_kappa_prev[j] = kappa_final
+        joint_sigma_prev[j] = wp.vec3(0.0)
+        joint_dkappa_prev[j] = wp.vec3(0.0)
+        return
 
     # Read stored Dahl state (component-wise vectors)
     kappa_old = joint_kappa_prev[j]  # stored curvature

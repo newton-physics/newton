@@ -828,7 +828,8 @@ def test_avbd_particle_ground_penalty_grows(test, device):
     test.assertGreater(soft_count, 0)
 
     dt = 1.0 / 60.0
-    vbd._initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history=True)
+    control = model.control()
+    vbd._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid_history=True)
     wp.synchronize_device(device)
 
     k_before = float(vbd.body_particle_contact_penalty_k.numpy()[0])

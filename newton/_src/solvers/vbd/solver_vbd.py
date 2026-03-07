@@ -1457,6 +1457,7 @@ class SolverVBD(SolverBase):
                         state_in.body_q,
                         model.body_com,
                         model.joint_type,
+                        model.joint_enabled,
                         model.joint_parent,
                         model.joint_child,
                         model.joint_X_p,
@@ -1472,7 +1473,7 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
-            # Forward integrate rigid bodies (also snapshots body_q_prev before integration)
+            # Forward integrate rigid bodies (snapshots body_q_prev for dynamic bodies only)
             wp.launch(
                 kernel=forward_step_rigid_bodies,
                 inputs=[
@@ -2276,9 +2277,8 @@ class SolverVBD(SolverBase):
                 dt,
                 state_out.body_q,
                 model.body_com,
-                self.body_q_prev,  # input/output
             ],
-            outputs=[state_out.body_qd],
+            outputs=[self.body_q_prev, state_out.body_qd],
             dim=model.body_count,
             device=self.device,
         )
