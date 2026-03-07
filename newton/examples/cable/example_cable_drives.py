@@ -198,7 +198,7 @@ class Example:
                     JointDofConfig(
                         axis=(1, 0, 0),
                         target_ke=5000.0,
-                        target_kd=200.0,
+                        target_kd=0.04,
                     )
                 ],
                 "ang_axes": [],
@@ -214,11 +214,11 @@ class Example:
                     JointDofConfig(
                         axis=(1, 0, 0),
                         target_ke=5000.0,
-                        target_kd=200.0,
+                        target_kd=0.04,
                         limit_lower=-0.05,
                         limit_upper=0.05,
                         limit_ke=1.0e5,
-                        limit_kd=1.0e2,
+                        limit_kd=1.0e-3,
                     )
                 ],
                 "ang_axes": [],
@@ -235,7 +235,7 @@ class Example:
                     JointDofConfig(
                         axis=(0, 1, 0),
                         target_ke=2000.0,
-                        target_kd=100.0,
+                        target_kd=0.05,
                     )
                 ],
             },
@@ -251,11 +251,11 @@ class Example:
                     JointDofConfig(
                         axis=(0, 1, 0),
                         target_ke=2000.0,
-                        target_kd=100.0,
+                        target_kd=0.05,
                         limit_lower=-0.3,
                         limit_upper=0.3,
                         limit_ke=1.0e5,
-                        limit_kd=1.0e1,
+                        limit_kd=1.0e-4,
                     )
                 ],
             },
@@ -314,11 +314,11 @@ class Example:
                     child_xform=child_xform,
                     axis=(0.0, 1.0, 0.0),
                     target_ke=2000.0,
-                    target_kd=100.0,
+                    target_kd=0.05,
                     limit_lower=-lb if spec["has_limit"] else None,
                     limit_upper=lb if spec["has_limit"] else None,
                     limit_ke=1.0e5 if spec["has_limit"] else 0.0,
-                    limit_kd=1.0e1 if spec["has_limit"] else 0.0,
+                    limit_kd=1.0e-4 if spec["has_limit"] else 0.0,
                     label=f"j_{spec['label']}",
                 )
             elif jtype == "prismatic":
@@ -330,11 +330,11 @@ class Example:
                     child_xform=child_xform,
                     axis=(1.0, 0.0, 0.0),
                     target_ke=5000.0,
-                    target_kd=200.0,
+                    target_kd=0.04,
                     limit_lower=-lb if spec["has_limit"] else None,
                     limit_upper=lb if spec["has_limit"] else None,
                     limit_ke=1.0e5 if spec["has_limit"] else 0.0,
-                    limit_kd=1.0e2 if spec["has_limit"] else 0.0,
+                    limit_kd=1.0e-3 if spec["has_limit"] else 0.0,
                     label=f"j_{spec['label']}",
                 )
             else:

@@ -121,7 +121,6 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             limit_lower=-0.3,
             limit_upper=0.3,
-            limit_kd=1.0e3,  # vbd only
             label="prismatic_a_b",
         )
         # Create articulation from joints
@@ -180,7 +179,7 @@ class Example:
         if solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(
                 self.model,
-                iterations=5,
+                iterations=2,
             )
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)

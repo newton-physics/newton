@@ -834,7 +834,7 @@ def test_avbd_particle_ground_penalty_grows(test, device):
 
     k_before = float(vbd.body_particle_contact_penalty_k.numpy()[0])
 
-    vbd._solve_rigid_body_iteration(state_in, state_out, contacts, dt)
+    vbd._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
     wp.synchronize_device(device)
 
     k_after = float(vbd.body_particle_contact_penalty_k.numpy()[0])

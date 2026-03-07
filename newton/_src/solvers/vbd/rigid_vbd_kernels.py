@@ -1183,7 +1183,9 @@ def resolve_drive_limit_mode(
 ):
     mode = _DRIVE_LIMIT_MODE_NONE
     err_pos = float(0.0)
+    drive_target = target_pos
     if has_limits:
+        drive_target = wp.clamp(target_pos, lim_lower, lim_upper)
         if q < lim_lower:
             mode = _DRIVE_LIMIT_MODE_LIMIT_LOWER
             err_pos = q - lim_lower
@@ -1192,7 +1194,7 @@ def resolve_drive_limit_mode(
             err_pos = q - lim_upper
     if mode == _DRIVE_LIMIT_MODE_NONE and has_drive:
         mode = _DRIVE_LIMIT_MODE_DRIVE
-        err_pos = q - target_pos
+        err_pos = q - drive_target
     return mode, err_pos
 
 
@@ -1305,6 +1307,10 @@ def evaluate_joint_force_hessian(
     Damping:
         ``joint_penalty_kd`` stores a dimensionless Rayleigh-style coefficient used to build a
         physical damping term proportional to stiffness (e.g. D = kd * K).
+
+        Drive/limit damping (``joint_target_kd``, ``joint_limit_kd``) uses the same Rayleigh-style
+        convention: D = kd * ke, where kd is dimensionless. This matches VBD's internal penalty
+        framework and ensures consistent damping ratios under AVBD adaptive stiffness.
 
     Joint drives and limits (REVOLUTE/PRISMATIC/D6):
         Drive and limit parameters are indexed by DOF (``joint_qd_start[j]``), matching the model
@@ -1621,12 +1627,14 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                f_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
-                H_scalar = lim_ke + lim_kd * inv_dt
+                lim_d = lim_kd * lim_ke
+                f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
+                H_scalar = lim_ke + lim_d * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
+                drive_d = drive_kd * drive_ke
                 vel_err = dtheta_dt - target_vel
-                f_scalar = drive_ke * err_pos + drive_kd * vel_err
-                H_scalar = drive_ke + drive_kd * inv_dt
+                f_scalar = drive_ke * err_pos + drive_d * vel_err
+                H_scalar = drive_ke + drive_d * inv_dt
 
             if H_scalar > 0.0:
                 tau_drive, Haa_drive = apply_angular_drive_limit_torque(a, J_world, is_parent_body, f_scalar, H_scalar)
@@ -1737,12 +1745,14 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                f_scalar = lim_ke * err_pos + lim_kd * dd_dt
-                H_scalar = lim_ke + lim_kd * inv_dt
+                lim_d = lim_kd * lim_ke
+                f_scalar = lim_ke * err_pos + lim_d * dd_dt
+                H_scalar = lim_ke + lim_d * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
+                drive_d = drive_kd * drive_ke
                 vel_err = dd_dt - target_vel
-                f_scalar = drive_ke * err_pos + drive_kd * vel_err
-                H_scalar = drive_ke + drive_kd * inv_dt
+                f_scalar = drive_ke * err_pos + drive_d * vel_err
+                H_scalar = drive_ke + drive_d * inv_dt
 
             if H_scalar > 0.0:
                 # Moment arm from body COM to attachment point
@@ -1950,12 +1960,14 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            f_scalar = lim_ke * err_pos + lim_kd * dd_dt
-                            H_scalar = lim_ke + lim_kd * inv_dt
+                            lim_d = lim_kd * lim_ke
+                            f_scalar = lim_ke * err_pos + lim_d * dd_dt
+                            H_scalar = lim_ke + lim_d * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
+                            drive_d = drive_kd * drive_ke
                             vel_err = dd_dt - target_vel
-                            f_scalar = drive_ke * err_pos + drive_kd * vel_err
-                            H_scalar = drive_ke + drive_kd * inv_dt
+                            f_scalar = drive_ke * err_pos + drive_d * vel_err
+                            H_scalar = drive_ke + drive_d * inv_dt
 
                         if H_scalar > 0.0:
                             force_drive, torque_drive, Hll_drive, Hal_drive, Haa_drive = apply_linear_drive_limit_force(
@@ -2013,12 +2025,14 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            f_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
-                            H_scalar = lim_ke + lim_kd * inv_dt
+                            lim_d = lim_kd * lim_ke
+                            f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
+                            H_scalar = lim_ke + lim_d * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
+                            drive_d = drive_kd * drive_ke
                             vel_err = dtheta_dt - target_vel
-                            f_scalar = drive_ke * err_pos + drive_kd * vel_err
-                            H_scalar = drive_ke + drive_kd * inv_dt
+                            f_scalar = drive_ke * err_pos + drive_d * vel_err
+                            H_scalar = drive_ke + drive_d * inv_dt
 
                         if H_scalar > 0.0:
                             tau_drive, Haa_drive = apply_angular_drive_limit_torque(

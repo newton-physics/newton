@@ -1667,7 +1667,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     target_angle = 0.4  # rad
     drive_ke = 2000.0
-    drive_kd = 100.0
+    drive_kd = 0.05
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -1791,7 +1791,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     target_angle = 1.5  # rad -- beyond limits
     ang_limit = 0.3
     drive_ke = 2000.0
-    drive_kd = 100.0
+    drive_kd = 0.05
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -1807,7 +1807,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
         limit_lower=-ang_limit,
         limit_upper=ang_limit,
         limit_ke=1.0e5,
-        limit_kd=1.0e1,
+        limit_kd=1.0e-4,
     )
     builder.add_articulation([*rod_joints, j_revolute])
 
@@ -2055,7 +2055,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     target_displacement = 0.1  # m
     drive_ke = 5000.0
-    drive_kd = 200.0
+    drive_kd = 0.04
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -2179,7 +2179,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     target_displacement = 0.5  # m -- beyond limits
     lin_limit = 0.05
     drive_ke = 5000.0
-    drive_kd = 200.0
+    drive_kd = 0.04
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -2195,7 +2195,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
         limit_lower=-lin_limit,
         limit_upper=lin_limit,
         limit_ke=1.0e5,
-        limit_kd=1.0e2,
+        limit_kd=1.0e-3,
     )
     builder.add_articulation([*rod_joints, j_prismatic])
 
@@ -2724,9 +2724,9 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     target_displacement = 0.1  # m
     target_angle = 0.4  # rad
     lin_drive_ke = 5000.0
-    lin_drive_kd = 200.0
+    lin_drive_kd = 0.04
     ang_drive_ke = 2000.0
-    ang_drive_kd = 100.0
+    ang_drive_kd = 0.05
 
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
@@ -2880,22 +2880,22 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
             JointDofConfig(
                 axis=(1, 0, 0),
                 target_ke=5000.0,
-                target_kd=200.0,
+                target_kd=0.04,
                 limit_lower=-lin_limit,
                 limit_upper=lin_limit,
                 limit_ke=1.0e5,
-                limit_kd=1.0e2,
+                limit_kd=1.0e-3,
             )
         ],
         angular_axes=[
             JointDofConfig(
                 axis=(0, 1, 0),
                 target_ke=2000.0,
-                target_kd=100.0,
+                target_kd=0.05,
                 limit_lower=-ang_limit,
                 limit_upper=ang_limit,
                 limit_ke=1.0e5,
-                limit_kd=1.0e1,
+                limit_kd=1.0e-4,
             )
         ],
     )
