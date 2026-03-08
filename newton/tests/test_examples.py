@@ -283,63 +283,14 @@ add_example_test(
 
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_fixed_joints",
+    name="cable.example_cable_joints",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
 )
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_ball_joints",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_revolute_joints",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_prismatic_joints",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_revolute_drives",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_prismatic_drives",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_d6_joints",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_d6_drives",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_joint_force",
+    name="cable.example_cable_drives",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},

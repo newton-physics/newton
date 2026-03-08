@@ -174,7 +174,7 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint constraints
         rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/REVOLUTE/PRISMATIC)
         rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/REVOLUTE/PRISMATIC)
-        rigid_joint_linear_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
+        rigid_joint_linear_kd: float = 1.0e-2,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable angular joint constraints
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
@@ -594,16 +594,20 @@ class SolverVBD(SolverBase):
           - ``JointType.CABLE``: 2 scalars (stretch/linear, bend/angular)
           - ``JointType.BALL``: 1 scalar (isotropic linear anchor-coincidence)
           - ``JointType.FIXED``: 2 scalars (isotropic linear anchor-coincidence + isotropic angular)
-          - ``JointType.REVOLUTE``: 2 scalars (isotropic linear + 2-DOF perpendicular angular)
-          - ``JointType.PRISMATIC``: 2 scalars (2-DOF perpendicular linear + isotropic angular)
+          - ``JointType.REVOLUTE``: 3 scalars (isotropic linear + 2-DOF perpendicular angular + angular drive/limit)
+          - ``JointType.PRISMATIC``: 3 scalars (2-DOF perpendicular linear + isotropic angular + linear drive/limit)
+          - ``JointType.D6``: 2 + lin_count + ang_count scalars (projected linear + projected angular + per-DOF drive/limit)
           - ``JointType.FREE``: 0 scalars (not a constraint)
 
         Ordering (must match kernel indexing via ``joint_constraint_start``):
           - ``JointType.CABLE``: [stretch (linear), bend (angular)]
           - ``JointType.BALL``: [linear]
           - ``JointType.FIXED``: [linear, angular]
-          - ``JointType.REVOLUTE``: [linear, angular]
-          - ``JointType.PRISMATIC``: [linear, angular]
+          - ``JointType.REVOLUTE``: [linear, angular, ang_drive_limit]
+          - ``JointType.PRISMATIC``: [linear, angular, lin_drive_limit]
+          - ``JointType.D6``: [linear, angular, lin_dl_0, ..., ang_dl_0, ...]
+
+        Drive and limit for each free DOF share one AVBD slot (mutually exclusive at runtime).
 
         Any other joint type will raise ``NotImplementedError``.
         """
@@ -611,6 +615,8 @@ class SolverVBD(SolverBase):
         with wp.ScopedDevice("cpu"):
             jt_cpu = self.model.joint_type.to("cpu")
             jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
+            jdof_dim_cpu = self.model.joint_dof_dim.to("cpu")
+            jdof_dim = jdof_dim_cpu.numpy() if hasattr(jdof_dim_cpu, "numpy") else np.asarray(jdof_dim_cpu, dtype=int)
 
             dim_np = np.zeros((n_j,), dtype=np.int32)
             for j in range(n_j):
@@ -621,11 +627,11 @@ class SolverVBD(SolverBase):
                 elif jt[j] == JointType.FIXED:
                     dim_np[j] = 2
                 elif jt[j] == JointType.REVOLUTE:
-                    dim_np[j] = 2  # [linear (isotropic), angular (2-DOF perpendicular)]
+                    dim_np[j] = 3  # [linear, angular, ang_drive_limit]
                 elif jt[j] == JointType.PRISMATIC:
-                    dim_np[j] = 2  # [linear (2-DOF perpendicular), angular (isotropic)]
+                    dim_np[j] = 3  # [linear, angular, lin_drive_limit]
                 elif jt[j] == JointType.D6:
-                    dim_np[j] = 2  # [linear, angular] -- always 2 slots like FIXED
+                    dim_np[j] = 2 + int(jdof_dim[j, 0]) + int(jdof_dim[j, 1])  # [linear, angular, per-DOF drive/limit]
                 else:
                     if jt[j] != JointType.FREE:
                         raise NotImplementedError(
@@ -662,9 +668,12 @@ class SolverVBD(SolverBase):
           - ``JointType.CABLE`` (2 scalars: stretch + bend)
           - ``JointType.BALL`` (1 scalar: isotropic linear anchor-coincidence)
           - ``JointType.FIXED`` (2 scalars: isotropic linear + isotropic angular)
-          - ``JointType.REVOLUTE`` (2 scalars: isotropic linear + 2-DOF perpendicular angular)
-          - ``JointType.PRISMATIC`` (2 scalars: 2-DOF perpendicular linear + isotropic angular)
-          - ``JointType.D6`` (2 scalars: projected linear + projected angular)
+          - ``JointType.REVOLUTE`` (3 scalars: isotropic linear + 2-DOF perpendicular angular + angular drive/limit)
+          - ``JointType.PRISMATIC`` (3 scalars: 2-DOF perpendicular linear + isotropic angular + linear drive/limit)
+          - ``JointType.D6`` (2 + lin_count + ang_count scalars: projected linear + projected angular + per-DOF drive/limit)
+
+        Drive/limit slots use AVBD with per-mode clamping in the primal (``wp.min(avbd_ke, model_ke)``).
+        Drive and limit share one slot per free DOF (mutually exclusive at runtime).
 
         ``JointType.FREE`` joints (created by :meth:`ModelBuilder.add_body`) are not constraints and are ignored.
         """
@@ -707,6 +716,8 @@ class SolverVBD(SolverBase):
             jdofs_cpu = self.model.joint_qd_start.to("cpu")
             jtarget_ke_cpu = self.model.joint_target_ke.to("cpu")
             jtarget_kd_cpu = self.model.joint_target_kd.to("cpu")
+            jlimit_ke_cpu = self.model.joint_limit_ke.to("cpu")
+            jdof_dim_cpu = self.model.joint_dof_dim.to("cpu")
             jc_start_cpu = self.joint_constraint_start.to("cpu")
 
             jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
@@ -720,6 +731,10 @@ class SolverVBD(SolverBase):
             jtarget_kd = (
                 jtarget_kd_cpu.numpy() if hasattr(jtarget_kd_cpu, "numpy") else np.asarray(jtarget_kd_cpu, dtype=float)
             )
+            jlimit_ke = (
+                jlimit_ke_cpu.numpy() if hasattr(jlimit_ke_cpu, "numpy") else np.asarray(jlimit_ke_cpu, dtype=float)
+            )
+            jdof_dim = jdof_dim_cpu.numpy() if hasattr(jdof_dim_cpu, "numpy") else np.asarray(jdof_dim_cpu, dtype=int)
 
             n_j = self.model.joint_count
             for j in range(n_j):
@@ -776,7 +791,7 @@ class SolverVBD(SolverBase):
                     joint_k0_np[c0 + 1] = k_ang_floor
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
                 elif jt[j] == JointType.REVOLUTE:
-                    # REVOLUTE joints: isotropic linear + 2-DOF perpendicular angular
+                    # REVOLUTE joints: isotropic linear + 2-DOF perpendicular angular + angular drive/limit
                     c0 = int(jc_start[j])
 
                     joint_k_max_np[c0 + 0] = self.rigid_joint_linear_ke
@@ -790,8 +805,19 @@ class SolverVBD(SolverBase):
                     joint_k_min_np[c0 + 1] = k_ang_floor
                     joint_k0_np[c0 + 1] = k_ang_floor
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+
+                    # Drive/limit slot for free angular DOF (slot c0 + 2).
+                    # Drive and limit share one AVBD slot (mutually exclusive at runtime).
+                    # Per-mode clamping in the primal prevents branch-switch overshoot.
+                    dof0 = int(jdofs[j])
+                    dl_k_max = max(float(jtarget_ke[dof0]), float(jlimit_ke[dof0]))
+                    dl_seed = min(bend_k, dl_k_max)  # angular DOF -> bend_k seed
+                    joint_k_max_np[c0 + 2] = dl_k_max
+                    joint_k_min_np[c0 + 2] = dl_seed
+                    joint_k0_np[c0 + 2] = dl_seed
+                    joint_kd_np[c0 + 2] = 0.0  # damping is non-adaptive, read from model in primal
                 elif jt[j] == JointType.PRISMATIC:
-                    # PRISMATIC joints: 2-DOF perpendicular linear + isotropic angular
+                    # PRISMATIC joints: 2-DOF perpendicular linear + isotropic angular + linear drive/limit
                     c0 = int(jc_start[j])
 
                     joint_k_max_np[c0 + 0] = self.rigid_joint_linear_ke
@@ -805,9 +831,21 @@ class SolverVBD(SolverBase):
                     joint_k_min_np[c0 + 1] = k_ang_floor
                     joint_k0_np[c0 + 1] = k_ang_floor
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+
+                    # Drive/limit slot for free linear DOF (slot c0 + 2).
+                    dof0 = int(jdofs[j])
+                    dl_k_max = max(float(jtarget_ke[dof0]), float(jlimit_ke[dof0]))
+                    dl_seed = min(stretch_k, dl_k_max)  # linear DOF -> stretch_k seed
+                    joint_k_max_np[c0 + 2] = dl_k_max
+                    joint_k_min_np[c0 + 2] = dl_seed
+                    joint_k0_np[c0 + 2] = dl_seed
+                    joint_kd_np[c0 + 2] = 0.0
                 elif jt[j] == JointType.D6:
-                    # D6 joints: projected linear + projected angular (same layout as FIXED)
+                    # D6 joints: projected linear + projected angular + per-DOF drive/limit
                     c0 = int(jc_start[j])
+                    dof0 = int(jdofs[j])
+                    lc = int(jdof_dim[j, 0])  # free linear DOF count
+                    ac = int(jdof_dim[j, 1])  # free angular DOF count
 
                     joint_k_max_np[c0 + 0] = self.rigid_joint_linear_ke
                     k_lin_floor = min(stretch_k, self.rigid_joint_linear_ke)
@@ -820,6 +858,28 @@ class SolverVBD(SolverBase):
                     joint_k_min_np[c0 + 1] = k_ang_floor
                     joint_k0_np[c0 + 1] = k_ang_floor
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+
+                    # Per free linear DOF drive/limit slots
+                    for li in range(lc):
+                        dof_idx = dof0 + li
+                        slot = c0 + 2 + li
+                        dl_k_max = max(float(jtarget_ke[dof_idx]), float(jlimit_ke[dof_idx]))
+                        dl_seed = min(stretch_k, dl_k_max)
+                        joint_k_max_np[slot] = dl_k_max
+                        joint_k_min_np[slot] = dl_seed
+                        joint_k0_np[slot] = dl_seed
+                        joint_kd_np[slot] = 0.0
+
+                    # Per free angular DOF drive/limit slots
+                    for ai in range(ac):
+                        dof_idx = dof0 + lc + ai
+                        slot = c0 + 2 + lc + ai
+                        dl_k_max = max(float(jtarget_ke[dof_idx]), float(jlimit_ke[dof_idx]))
+                        dl_seed = min(bend_k, dl_k_max)
+                        joint_k_max_np[slot] = dl_k_max
+                        joint_k_min_np[slot] = dl_seed
+                        joint_k0_np[slot] = dl_seed
+                        joint_kd_np[slot] = 0.0
                 else:
                     # Layout builder already validated supported types; nothing to do for FREE.
                     pass
@@ -1247,6 +1307,9 @@ class SolverVBD(SolverBase):
         update_rigid_history = self.update_rigid_history
         self.update_rigid_history = True
 
+        if control is None:
+            control = self.model.control(clone_variables=False)
+
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid_history)
         self._initialize_particles(state_in, state_out, dt)
 
@@ -1394,6 +1457,7 @@ class SolverVBD(SolverBase):
                         state_in.body_q,
                         model.body_com,
                         model.joint_type,
+                        model.joint_enabled,
                         model.joint_parent,
                         model.joint_child,
                         model.joint_X_p,
@@ -1409,7 +1473,7 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
-            # Forward integrate rigid bodies
+            # Forward integrate rigid bodies (snapshots body_q_prev for dynamic bodies only)
             wp.launch(
                 kernel=forward_step_rigid_bodies,
                 inputs=[
@@ -1426,6 +1490,7 @@ class SolverVBD(SolverBase):
                 ],
                 outputs=[
                     self.body_inertia_q,
+                    self.body_q_prev,
                 ],
                 dim=model.body_count,
                 device=self.device,
@@ -1500,6 +1565,7 @@ class SolverVBD(SolverBase):
                     kernel=compute_cable_dahl_parameters,
                     inputs=[
                         model.joint_type,
+                        model.joint_enabled,
                         model.joint_parent,
                         model.joint_child,
                         model.joint_X_p,
@@ -1929,6 +1995,7 @@ class SolverVBD(SolverBase):
                     model.body_com,
                     self.rigid_adjacency,
                     model.joint_type,
+                    model.joint_enabled,
                     model.joint_parent,
                     model.joint_child,
                     model.joint_X_p,
@@ -2023,27 +2090,35 @@ class SolverVBD(SolverBase):
                 )
 
         # Update joint penalties at new positions
-        wp.launch(
-            kernel=update_duals_joint,
-            dim=model.joint_count,
-            inputs=[
-                model.joint_type,
-                model.joint_parent,
-                model.joint_child,
-                model.joint_X_p,
-                model.joint_X_c,
-                model.joint_axis,
-                model.joint_qd_start,
-                self.joint_constraint_start,
-                self.joint_penalty_k_max,
-                state_out.body_q,
-                model.body_q,
-                self.avbd_beta,
-                self.joint_penalty_k,  # input/output
-                model.joint_dof_dim,
-            ],
-            device=self.device,
-        )
+        if model.joint_count > 0:
+            wp.launch(
+                kernel=update_duals_joint,
+                dim=model.joint_count,
+                inputs=[
+                    model.joint_type,
+                    model.joint_enabled,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_axis,
+                    model.joint_qd_start,
+                    self.joint_constraint_start,
+                    self.joint_penalty_k_max,
+                    state_out.body_q,
+                    model.body_q,
+                    self.avbd_beta,
+                    self.joint_penalty_k,  # input/output
+                    model.joint_dof_dim,
+                    # Drive/limit parameters for adaptive drive/limit penalty growth
+                    model.joint_target_ke,
+                    control.joint_target_pos,
+                    model.joint_limit_lower,
+                    model.joint_limit_upper,
+                    model.joint_limit_ke,
+                ],
+                device=self.device,
+            )
 
     def collect_rigid_contact_forces(
         self, state: State, contacts: Contacts | None, dt: float
@@ -2202,9 +2277,8 @@ class SolverVBD(SolverBase):
                 dt,
                 state_out.body_q,
                 model.body_com,
-                self.body_q_prev,  # input/output
             ],
-            outputs=[state_out.body_qd],
+            outputs=[self.body_q_prev, state_out.body_qd],
             dim=model.body_count,
             device=self.device,
         )
@@ -2215,6 +2289,7 @@ class SolverVBD(SolverBase):
                 kernel=update_cable_dahl_state,
                 inputs=[
                     model.joint_type,
+                    model.joint_enabled,
                     model.joint_parent,
                     model.joint_child,
                     model.joint_X_p,
