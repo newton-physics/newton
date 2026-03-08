@@ -22,7 +22,7 @@ from newton.solvers import SolverImplicitMPM
 
 
 class Example:
-    def __init__(self, viewer, options):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 60.0
         self.frame_dt = 1.0 / self.fps
@@ -39,12 +39,12 @@ class Example:
         # Register MPM custom attributes before adding particles
         SolverImplicitMPM.register_custom_attributes(builder)
 
-        Example.emit_particles(builder, options)
+        Example.emit_particles(builder, args)
         builder.add_ground_plane()
         self.model = builder.finalize()
 
         mpm_options = SolverImplicitMPM.Config()
-        mpm_options.voxel_size = options.voxel_size
+        mpm_options.voxel_size = args.voxel_size
 
         # Initialize MPM solver
         self.solver = SolverImplicitMPM(self.model, mpm_options)
@@ -54,8 +54,8 @@ class Example:
 
         # Setup grain rendering
 
-        self.grains = self.solver.sample_render_grains(self.state_0, options.points_per_particle)
-        grain_radius = options.voxel_size / (3 * options.points_per_particle)
+        self.grains = self.solver.sample_render_grains(self.state_0, args.points_per_particle)
+        grain_radius = args.voxel_size / (3 * args.points_per_particle)
         self.grain_radii = wp.full(self.grains.size, value=grain_radius, dtype=float, device=self.model.device)
         self.grain_colors = wp.full(
             self.grains.size, value=wp.vec3(0.7, 0.6, 0.4), dtype=wp.vec3, device=self.model.device
@@ -137,15 +137,17 @@ class Example:
             radius_mean=radius,
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
+        parser.add_argument("--points-per-particle", "-ppp", type=float, default=8)
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
+    parser = Example.create_parser()
 
-    parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
-    parser.add_argument("--points-per-particle", "-ppp", type=float, default=8)
-
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
     # Create example and run

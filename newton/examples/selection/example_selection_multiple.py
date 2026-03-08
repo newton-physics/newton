@@ -94,7 +94,7 @@ def random_forces_kernel(
 
 
 class Example:
-    def __init__(self, viewer, world_count=16):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -102,7 +102,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         # load articulation
         arti = newton.ModelBuilder()
@@ -160,10 +160,10 @@ class Example:
             self.default_dof_velocities = wp.to_torch(self.ants.get_dof_velocities(self.model)).clone()
 
             # create disjoint subsets to alternate resets
-            all_indices = torch.arange(world_count, dtype=torch.int32)
-            self.mask_0 = torch.zeros(world_count, dtype=bool)
+            all_indices = torch.arange(self.world_count, dtype=torch.int32)
+            self.mask_0 = torch.zeros(self.world_count, dtype=bool)
             self.mask_0[all_indices[::2]] = True
-            self.mask_1 = torch.zeros(world_count, dtype=bool)
+            self.mask_1 = torch.zeros(self.world_count, dtype=bool)
             self.mask_1[all_indices[1::2]] = True
         else:
             # default ant root states
@@ -182,9 +182,9 @@ class Example:
             self.default_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
             # create disjoint subsets to alternate resets
-            self.mask_0 = wp.empty(world_count, dtype=bool)
-            self.mask_1 = wp.empty(world_count, dtype=bool)
-            wp.launch(init_masks, dim=world_count, inputs=[self.mask_0, self.mask_1])
+            self.mask_0 = wp.empty(self.world_count, dtype=bool)
+            self.mask_1 = wp.empty(self.world_count, dtype=bool)
+            wp.launch(init_masks, dim=self.world_count, inputs=[self.mask_0, self.mask_1])
 
         self.viewer.set_model(self.model)
 
@@ -285,10 +285,15 @@ class Example:
             lambda q, qd: q[2] > 0.01,
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.set_defaults(world_count=16)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=16, help="Total number of simulated worlds.")
+    parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
 
@@ -297,6 +302,6 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, world_count=args.world_count)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

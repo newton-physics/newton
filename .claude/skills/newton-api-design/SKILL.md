@@ -60,6 +60,18 @@ class Model:
         STATE = 1
 ```
 
+When an `IntEnum` includes a `NONE` member, define it first at `0`:
+
+```python
+class GeoType(IntEnum):
+    NONE = 0
+    PLANE = 1
+    HFIELD = 2
+```
+
+This keeps the sentinel value stable and leaves room to append future real
+members at the end instead of inserting them before a trailing `NONE`.
+
 Dataclass field docstrings go on the line immediately below the field:
 
 ```python
@@ -94,7 +106,8 @@ When reviewing new API, verify:
 
 - [ ] Parameters use project vocabulary (`xform`, `cfg`, `body`, `label`)
 - [ ] Defaults are `None`, not constructed objects
-- [ ] Nested enums use `IntEnum` with int values
+- [ ] Nested enumerations use `IntEnum` with int values
+- [ ] Enumerations with `NONE` define `NONE = 0` first
 - [ ] Dataclass fields have docstrings on the line below
 - [ ] Array docs include shape, dtype, and units
 - [ ] Builder methods include `as_site`, `label`, `custom_attributes`

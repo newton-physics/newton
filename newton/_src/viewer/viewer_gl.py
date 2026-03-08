@@ -195,20 +195,19 @@ class ViewerGL(ViewerBase):
             vsync: Enable vertical sync.
             headless: Run in headless mode (no window).
         """
+        # Pre-initialize callback registry; clear_model() (called from
+        # super().__init__()) resets the "side" slot on each model change.
+        self._ui_callbacks = {"side": [], "stats": [], "free": [], "panel": []}
+
         super().__init__()
 
-        # map from path to any object type
-        self.objects = {}
-        self.lines = {}
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
 
-        self._paused = False
-        self._packed_vbo_xforms = None
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
-        # State caching for selection panel
-        self._last_state = None
-        self._last_control = None
+        self._paused = False
 
         # Selection panel state
         self._selection_ui_state = {
@@ -261,15 +260,9 @@ class ViewerGL(ViewerBase):
         # UI visibility toggle
         self.show_ui = True
 
-        # UI callback system - organized by position
-        # positions: "side", "stats", "free"
-        self._ui_callbacks = {"side": [], "stats": [], "free": []}
-
         # Initialize PBO (Pixel Buffer Object) resources used in the `get_frame` method.
         self._pbo = None
         self._wp_pbo = None
-
-        self.set_model(None)
 
     def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
         # For capsules, ignore (radius, half_height) in the geometry hash so varying-length capsules batch together.
@@ -292,7 +285,7 @@ class ViewerGL(ViewerBase):
     def register_ui_callback(
         self,
         callback: Callable[[Any], None],
-        position: Literal["side", "stats", "free"] = "side",
+        position: Literal["side", "stats", "free", "panel"] = "side",
     ):
         """
         Register a UI callback to be rendered during the UI phase.
@@ -303,6 +296,7 @@ class ViewerGL(ViewerBase):
                      "side" - Side callback (default)
                      "stats" - Stats/metrics area
                      "free" - Free-floating UI elements
+                     "panel" - Top-level collapsing headers in left panel
         """
         if not callable(callback):
             raise TypeError("callback must be callable")
@@ -342,6 +336,39 @@ class ViewerGL(ViewerBase):
         """
         # Store for this frame; call this every frame you want it drawn/active
         self._gizmo_log[name] = transform
+
+    @override
+    def clear_model(self):
+        """Reset GL-specific model-dependent state to defaults.
+
+        Called from ``__init__`` (via ``super().__init__`` → ``clear_model``)
+        and whenever the current model is discarded.
+        """
+        # Render object and line caches (path -> GL object)
+        self.objects = {}
+        self.lines = {}
+
+        # Interactive picking and wind force helpers
+        self.picking = None
+        self.wind = None
+
+        # State caching for selection panel
+        self._last_state = None
+        self._last_control = None
+
+        # Packed GPU arrays for batched shape transform computation
+        self._packed_groups = []
+        self._capsule_keys = set()
+        self._packed_write_indices = None
+        self._packed_world_xforms = None
+        self._packed_vbo_xforms = None
+        self._packed_vbo_xforms_host = None
+
+        # Clear example-specific UI callbacks; panel/stats persist
+        self._ui_callbacks["side"] = []
+        self._ui_callbacks["free"] = []
+
+        super().clear_model()
 
     @override
     def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
@@ -894,7 +921,7 @@ class ViewerGL(ViewerBase):
         Args:
             state: The current simulation state.
         """
-        if not self.picking_enabled or not self.picking.is_picking():
+        if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
             # Clear the picking line if not picking
             self.log_lines("picking_line", None, None, None)
             return
@@ -963,11 +990,11 @@ class ViewerGL(ViewerBase):
         Args:
             state: The current simulation state.
         """
-        if self.picking_enabled:
+        if self.picking_enabled and self.picking is not None:
             self.picking._apply_picking_force(state)
 
-        # Apply wind forces
-        self.wind._apply_wind_force(state)
+        if self.wind is not None:
+            self.wind._apply_wind_force(state)
 
     def _update(self):
         """
@@ -981,7 +1008,8 @@ class ViewerGL(ViewerBase):
         self._last_time = now
         self._update_camera(dt)
 
-        self.wind.update(dt)
+        if self.wind is not None:
+            self.wind.update(dt)
 
         # If the window was closed during event processing, skip rendering
         if self.renderer.has_exit():
@@ -1239,7 +1267,7 @@ class ViewerGL(ViewerBase):
         import pyglet
 
         # Handle right-click for picking
-        if button == pyglet.window.mouse.RIGHT and self.picking_enabled:
+        if button == pyglet.window.mouse.RIGHT and self.picking_enabled and self.picking is not None:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
             ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
             if self._last_state is not None:
@@ -1255,7 +1283,8 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
-        self.picking.release()
+        if self.picking is not None:
+            self.picking.release()
 
     def on_mouse_drag(
         self,
@@ -1296,7 +1325,7 @@ class ViewerGL(ViewerBase):
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
             ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
 
-            if self.picking.is_picking():
+            if self.picking is not None and self.picking.is_picking():
                 self.picking.update(ray_start, ray_dir)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
@@ -1578,12 +1607,15 @@ class ViewerGL(ViewerBase):
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
 
+            # Panel callbacks (e.g. example browser) - top-level collapsing headers
+            for callback in self._ui_callbacks["panel"]:
+                callback(self.ui.imgui)
+
             # Model Information section
             if self.model is not None:
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Worlds: {self.model.world_count}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
                     gravity = self.model.gravity.numpy()[0]
@@ -1667,34 +1699,31 @@ class ViewerGL(ViewerBase):
                 changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", self.renderer.sky_lower)
 
             # Wind Effects section
-            imgui.set_next_item_open(False, imgui.Cond_.once)
-            if imgui.collapsing_header("Wind"):
-                imgui.separator()
+            if self.wind is not None:
+                imgui.set_next_item_open(False, imgui.Cond_.once)
+                if imgui.collapsing_header("Wind"):
+                    imgui.separator()
 
-                # Wind amplitude slider
-                changed, amplitude = imgui.slider_float("Wind Amplitude", self.wind.amplitude, -2.0, 2.0, "%.2f")
-                if changed:
-                    self.wind.amplitude = amplitude
+                    changed, amplitude = imgui.slider_float("Wind Amplitude", self.wind.amplitude, -2.0, 2.0, "%.2f")
+                    if changed:
+                        self.wind.amplitude = amplitude
 
-                # Wind period slider
-                changed, period = imgui.slider_float("Wind Period", self.wind.period, 1.0, 30.0, "%.2f")
-                if changed:
-                    self.wind.period = period
+                    changed, period = imgui.slider_float("Wind Period", self.wind.period, 1.0, 30.0, "%.2f")
+                    if changed:
+                        self.wind.period = period
 
-                # Wind frequency slider
-                changed, frequency = imgui.slider_float("Wind Frequency", self.wind.frequency, 0.1, 5.0, "%.2f")
-                if changed:
-                    self.wind.frequency = frequency
+                    changed, frequency = imgui.slider_float("Wind Frequency", self.wind.frequency, 0.1, 5.0, "%.2f")
+                    if changed:
+                        self.wind.frequency = frequency
 
-                # Wind direction sliders
-                direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
-                changed, direction = imgui.slider_float3("Wind Direction", direction, -1.0, 1.0, "%.2f")
-                if changed:
-                    self.wind.direction = direction
+                    direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
+                    changed, direction = imgui.slider_float3("Wind Direction", direction, -1.0, 1.0, "%.2f")
+                    if changed:
+                        self.wind.direction = direction
 
             # Camera Information section
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
-            if imgui.collapsing_header("Camera"):
+            if imgui.collapsing_header("Controls"):
                 imgui.separator()
 
                 pos = self.camera.pos
@@ -1776,6 +1805,7 @@ class ViewerGL(ViewerBase):
             # Model stats
             if self.model is not None:
                 imgui.separator()
+                imgui.text(f"Worlds: {self.model.world_count}")
                 imgui.text(f"Bodies: {self.model.body_count}")
                 imgui.text(f"Shapes: {self.model.shape_count}")
                 imgui.text(f"Joints: {self.model.joint_count}")

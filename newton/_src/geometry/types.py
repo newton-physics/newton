@@ -55,28 +55,31 @@ class GeoType(enum.IntEnum):
     that can be used for collision, rendering, or simulation.
     """
 
-    PLANE = 0
+    NONE = 0
+    """No geometry (placeholder)."""
+
+    PLANE = 1
     """Plane."""
 
-    HFIELD = 1
+    HFIELD = 2
     """Height field (terrain)."""
 
-    SPHERE = 2
+    SPHERE = 3
     """Sphere."""
 
-    CAPSULE = 3
+    CAPSULE = 4
     """Capsule (cylinder with hemispherical ends)."""
 
-    ELLIPSOID = 4
+    ELLIPSOID = 5
     """Ellipsoid."""
 
-    CYLINDER = 5
+    CYLINDER = 6
     """Cylinder."""
 
-    BOX = 6
+    BOX = 7
     """Axis-aligned box."""
 
-    MESH = 7
+    MESH = 8
     """Triangle mesh."""
 
     CONE = 9
@@ -84,9 +87,6 @@ class GeoType(enum.IntEnum):
 
     CONVEX_MESH = 10
     """Convex hull."""
-
-    NONE = 11
-    """No geometry (placeholder)."""
 
 
 class Mesh:
@@ -682,8 +682,9 @@ class Mesh:
                 ``(inner, outer)``. Uses ``(-0.1, 0.1)`` when not provided.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided,
                 takes precedence over ``max_resolution``.
-            max_resolution: Maximum sparse-grid dimension [voxel] when
-                ``target_voxel_size`` is not provided.
+            max_resolution: Maximum sparse-grid dimension [voxel] along the longest
+                AABB axis, used when ``target_voxel_size`` is not provided. Must be
+                divisible by 8.
             margin: Extra AABB padding [m] added before discretization. Uses
                 ``0.05`` when not provided.
             shape_margin: Shape margin offset [m] to subtract from SDF values.
