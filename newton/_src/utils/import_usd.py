@@ -673,7 +673,10 @@ def parse_usd(
 
         if add_body_to_builder:
             return add_body(
-                prim, origin, path, body_armature,
+                prim,
+                origin,
+                path,
+                body_armature,
                 articulation_root_xform=articulation_root_xform,
                 is_kinematic=is_kinematic,
             )
