@@ -1133,9 +1133,7 @@ class TestCollision(unittest.TestCase):
 add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_triangle_collision, devices=devices)
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
-add_function_test(
-    TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices
-)
+add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
 add_function_test(
     TestCollision, "test_avbd_particle_ground_penalty_grows", test_avbd_particle_ground_penalty_grows, devices=devices
 )
