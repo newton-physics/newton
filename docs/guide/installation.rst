@@ -23,8 +23,8 @@ Minimum Requirements
      - 3.10
      - 3.11+ recommended
    * - OS
-     - Linux (x86-64, aarch64) or Windows (x86-64)
-     -
+     - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
+     - macOS has no GPU acceleration; see :ref:`cpu-limitations` below
    * - NVIDIA GPU
      - Compute capability 5.0+ (Maxwell)
      - Any GeForce GTX 9xx or newer
@@ -83,6 +83,22 @@ X11 development libraries to build ``imgui_bundle`` from source:
 
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+
+.. _cpu-limitations:
+
+CPU-Only Limitations
+^^^^^^^^^^^^^^^^^^^^
+
+Newton can run on CPU (including macOS), but the following features require an
+NVIDIA GPU and are unavailable in CPU-only mode:
+
+- **SDF collision** — signed-distance-field computation (:func:`compute_sdf_from_shape`) requires CUDA
+  (``wp.Volume`` is GPU-only).
+- **Mesh-mesh contacts** — SDF-based mesh-mesh collision is silently skipped on CPU.
+- **Hydroelastic contacts** — depends on the SDF system.
+- **Tiled camera sensor** — GPU-accelerated raytraced rendering.
+- **Implicit MPM solver** — designed for GPU execution with CUDA graph support.
+- **Tile-based VBD solve** — uses GPU tile API; gracefully disabled on CPU.
 
 Extra Dependencies
 ------------------
