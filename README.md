@@ -17,8 +17,8 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 ## Requirements
 
 - **Python** 3.10+
-- **OS:** Linux (x86-64, aarch64) or Windows (x86-64)
-- **GPU:** NVIDIA GPU (Maxwell or newer), driver 545 or newer (CUDA 12). No local CUDA Toolkit installation required.
+- **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
+- **GPU:** NVIDIA GPU (Maxwell or newer), driver 545 or newer (CUDA 12). No local CUDA Toolkit installation required. macOS runs on CPU.
 
 For detailed system requirements and tested configurations, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
 
