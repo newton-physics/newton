@@ -1153,7 +1153,7 @@ class SolverVBD(SolverBase):
         control: Control,
         contacts: Contacts | None,
         dt: float,
-    ):
+    ) -> None:
         """Execute one simulation timestep using VBD (particles) and AVBD (rigid bodies).
 
         The solver follows a 3-phase structure:
