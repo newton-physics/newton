@@ -15,7 +15,7 @@ Newton's collision system is also compatible with MuJoCo-imported models via MJW
 Collision Pipeline
 ------------------
 
-Newton's collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See :ref:`Collision Pipeline Details` for details.
+Newton's collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See :ref:`Collision Pipeline Details` for more information.
 
 Basic usage:
 
@@ -580,7 +580,7 @@ After broad phase identifies candidate pairs, the narrow phase generates contact
 
 **MPR (Minkowski Portal Refinement)**
 
-The primary algorithm for convex shape pairs. Uses support mapping functions to find the closest points between shapes via Minkowski difference sampling. Works with all convex primitives (sphere, box, capsule, cylinder, cone, ellipsoid) and convex meshes.
+MPR is the primary algorithm for convex shape pairs. It uses support mapping functions to find the closest points between shapes via Minkowski difference sampling, and works with all convex primitives (sphere, box, capsule, cylinder, cone, ellipsoid) and convex meshes.
 
 **Multi-contact Generation**
 
@@ -595,24 +595,24 @@ Mesh collisions use different strategies depending on the pair type:
 
 **Mesh vs Primitive (e.g., Sphere, Box)**
 
-Uses BVH (Bounding Volume Hierarchy) queries to find nearby triangles, then generates contacts between primitive vertices and triangle surfaces, plus triangle vertices against the primitive.
+The pipeline uses BVH (Bounding Volume Hierarchy) queries to find nearby triangles, then generates contacts between primitive vertices and triangle surfaces, plus triangle vertices against the primitive.
 
 **Mesh vs Plane**
 
-Projects mesh vertices onto the plane and generates contacts for vertices below the plane surface.
+The pipeline projects mesh vertices onto the plane and generates contacts for vertices below the plane surface.
 
 **Mesh vs Mesh**
 
-Two approaches available:
+Two approaches are available:
 
-1. **BVH-based** (default when no SDF configured): Iterates mesh vertices against the other mesh's BVH. 
-   Performance scales with triangle count - can be very slow for complex meshes.
+1. **BVH-based** (default when no SDF configured): Iterates mesh vertices against the other mesh's BVH.
+   Performance scales with triangle count and can be very slow for complex meshes.
 
 2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
 .. warning::
-   If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
+   If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries,
    which are **significantly slower**. For production use with complex meshes, precompute and
    attach SDF data on meshes:
 
@@ -662,10 +662,10 @@ For hydroelastic and SDF-based contacts, use :class:`~newton.geometry.Hydroelast
    * - Parameter
      - Description
    * - ``normal_matching``
-     - Rotates selected contact normals so their weighted sum aligns with the aggregate force direction 
-       from all unreduced contacts. Preserves net force direction after reduction. Default: True.
+     - When True, rotates selected contact normals so their weighted sum aligns with the aggregate force
+       direction from all unreduced contacts. Preserves net force direction after reduction. Default: True.
    * - ``anchor_contact``
-     - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
+     - When True, adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
        Default: False.
    * - ``margin_contact_area``
      - Lower bound on contact area. Hydroelastic stiffness is ``area * k_eff``, but contacts 

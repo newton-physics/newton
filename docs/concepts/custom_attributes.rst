@@ -146,14 +146,14 @@ When entities don't explicitly specify custom attribute values, the default valu
    # After finalization, access attributes
    model = builder.finalize()
    temps = model.temperature.numpy()
-   arctic_stiff = model.articulation_stiffness.numpy()
+   articulation_stiffness = model.articulation_stiffness.numpy()
    
    print(f"Body 1: {temps[body1]}")  # 20.0 (default)
    print(f"Body 2: {temps[body2]}")  # 37.5 (authored)
    # Articulation indices reflect all articulations in the model
    # (including any implicit ones from add_body)
-   print(f"Articulations: {len(arctic_stiff)}")
-   print(f"Last articulation stiffness: {arctic_stiff[-1]}")  # 200.0
+   print(f"Articulations: {len(articulation_stiffness)}")
+   print(f"Last articulation stiffness: {articulation_stiffness[-1]}")  # 200.0
 
 .. testoutput::
 
@@ -584,7 +584,7 @@ When :meth:`~newton.ModelBuilder.add_usd` runs:
 Callback inputs:
 
 * ``usd_prim_filter(prim, context)`` and ``usd_entry_expander(prim, context)`` receive
-  the same context shape.
+  a context with the same structure.
 * ``context`` is a small dictionary:
   
   - ``prim``: current USD prim (same object as the ``prim`` argument)

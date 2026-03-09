@@ -47,11 +47,60 @@ Available Sensors
 
 Newton currently provides five sensor types:
 
-* :class:`~newton.sensors.SensorContact` -- Detects and reports contact information between bodies (TODO: document)
+* :class:`~newton.sensors.SensorContact` -- Detects and reports contact forces between bodies or shapes
 * :class:`~newton.sensors.SensorFrameTransform` -- Computes relative transforms between reference frames
 * :class:`~newton.sensors.SensorIMU` -- Measures linear acceleration and angular velocity at site frames
-* :class:`~newton.sensors.SensorRaycast` -- Performs ray casting for distance measurements and collision detection (TODO: document)
+* :class:`~newton.sensors.SensorRaycast` -- Depth camera simulation via ray casting; outputs distance to scene geometry
 * :class:`~newton.sensors.SensorTiledCamera` -- Raytraced rendering across multiple worlds
+
+.. _sensorcontact:
+
+SensorContact
+-------------
+
+:class:`~newton.sensors.SensorContact` measures contact forces between a set of *sensing* bodies or shapes and, optionally, a set of *counterpart* bodies or shapes. Outputs are stored in:
+
+- :attr:`~newton.sensors.SensorContact.net_force`: net contact force [N] per (sensing object, counterpart) in world frame
+- :attr:`~newton.sensors.SensorContact.sensing_obj_transforms`: world-frame transforms of each sensing object
+
+If no counterparts are specified, the sensor reports the total contact force for each sensing object (one column). With counterparts, you get a force matrix; use ``include_total=True`` to add a total column.
+
+Basic Usage
+~~~~~~~~~~
+
+``SensorContact`` requires exactly one of ``sensing_obj_bodies`` or ``sensing_obj_shapes`` to define the sensing objects. Optionally specify ``counterpart_bodies`` or ``counterpart_shapes`` to measure force per counterpart. It requires contact forces via the :doc:`extended attribute <extended_attributes>` :attr:`Contacts.force <newton.Contacts.force>`.
+
+By default, the sensor requests the ``force`` attribute from the model during construction. Create the sensor before creating a :class:`~newton.Contacts` object and pass :meth:`model.get_requested_contact_attributes() <newton.Model.get_requested_contact_attributes>` when constructing Contacts so that ``force`` is allocated. Call :meth:`~newton.sensors.SensorContact.update` with both ``state`` and ``contacts`` after collision (e.g. after a solver step and a call to ``solver.update_contacts``).
+
+.. testcode:: sensors-contact-basic
+
+   from newton.sensors import SensorContact
+   import newton
+
+   builder = newton.ModelBuilder()
+   body_a = builder.add_body(mass=1.0, label="a")
+   builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+   body_b = builder.add_body(mass=1.0, label="b")
+   builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
+   model = builder.finalize()
+
+   sensor = SensorContact(model, sensing_obj_bodies=["a", "b"])
+   state = model.state()
+   contacts = newton.Contacts(
+       64, 0, device=model.device,
+       requested_attributes=model.get_requested_contact_attributes(),
+   )
+   sensor.update(state, contacts)
+   forces = sensor.net_force.numpy()   # shape (n_sensing_objs, n_counterparts)
+   xforms = sensor.sensing_obj_transforms.numpy()
+
+State / Contacts Requirements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``SensorContact`` depends on contact forces computed by the collision/solver and stored in ``contacts.force``:
+
+- **Allocate**: create ``SensorContact`` before :class:`~newton.Contacts` (or call :meth:`newton.Model.request_contact_attributes` with ``"force"`` yourself), then construct Contacts with ``requested_attributes=model.get_requested_contact_attributes()``.
+- **Populate**: run collision and a solver step, then call ``solver.update_contacts(contacts, state)`` (or equivalent) so that ``contacts.force`` is filled before ``sensor.update(state, contacts)``.
 
 SensorFrameTransform
 --------------------
@@ -140,7 +189,7 @@ The sensor supports measuring multiple objects, optionally with different refere
    ref_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
    ref_site = builder.add_site(ref_body, label="ref_site")
 
-   # Multiple objects, multiple references (must match in count) for sensor 2
+   # Sensor2: multiple objects with one reference per object (counts must match)
    ref1 = builder.add_site(body1, label="ref1")
    ref2 = builder.add_site(body2, label="ref2")
    ref3 = builder.add_site(body3, label="ref3")
@@ -195,7 +244,7 @@ For best performance, create the sensor once during initialization and reuse it 
 SensorIMU
 ---------
 
-:class:`~newton.sensors.SensorIMU` measures inertial quantities at one or more sites; each site defines the IMU frame. Outputs are stored in two arrays:
+:class:`~newton.sensors.SensorIMU` measures inertial quantities at one or more sites; each site defines an IMU frame. Outputs are stored in two arrays:
 
 - :attr:`~newton.sensors.SensorIMU.accelerometer`: linear acceleration (specific force)
 - :attr:`~newton.sensors.SensorIMU.gyroscope`: angular velocity
@@ -232,8 +281,57 @@ State / Solver Requirements
 
 ``SensorIMU`` depends on body accelerations computed by the solver and stored in ``state.body_qdd``:
 
-- Allocate: ensure ``body_qdd`` is allocated on the State (typically by constructing ``SensorIMU`` before calling :meth:`Model.state() <newton.Model.state>`).
-- Populate: use a solver that actually fills ``state.body_qdd`` (for example, :class:`~newton.solvers.SolverMuJoCo` computes body accelerations).
+- **Allocate**: ensure ``body_qdd`` is allocated on the State (typically by constructing ``SensorIMU`` before calling :meth:`Model.state() <newton.Model.state>`).
+- **Populate**: use a solver that actually fills ``state.body_qdd`` (for example, :class:`~newton.solvers.SolverMuJoCo` computes body accelerations).
+
+.. _sensorraycast:
+
+SensorRaycast
+-------------
+
+:class:`~newton.sensors.SensorRaycast` simulates a depth camera by casting rays from a virtual camera through each pixel and recording the distance to the closest intersection with scene geometry (rigid-body shapes and, optionally, particles). Outputs are stored in:
+
+- :attr:`~newton.sensors.SensorRaycast.depth_image`: per-pixel depth [m], shape ``(height, width)``; positive values are distance to the closest surface, ``-1.0`` indicates no hit
+
+The camera uses a right-handed frame: ``camera_direction`` (forward), ``camera_up``, and ``camera_right`` (cross of forward and up). Configure vertical field of view (``fov_radians``), resolution (``width``, ``height``), and ``max_distance`` (rays beyond this distance report no hit).
+
+Basic Usage
+~~~~~~~~~~
+
+``SensorRaycast`` is constructed with the model and camera parameters (position, direction, up, vertical FOV, width, height). Call :meth:`~newton.sensors.SensorRaycast.update` with the current ``state`` so body poses are used for shape raycasting. For articulated models, run :func:`newton.eval_fk` before ``update`` so that body poses (``state.body_q``) are current. Optionally pass ``include_particles=True`` to also intersect rays with particles in ``state`` (requires the model to define particle geometry).
+
+.. testcode:: sensors-raycast-basic
+
+   import math
+   import warp as wp
+   from newton.sensors import SensorRaycast
+   import newton
+
+   builder = newton.ModelBuilder()
+   body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()))
+   builder.add_shape_sphere(body, radius=0.5)
+   model = builder.finalize()
+   state = model.state()
+
+   newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+   sensor = SensorRaycast(
+       model,
+       camera_position=(0.0, 0.0, 0.0),
+       camera_direction=(0.0, 0.0, 1.0),
+       camera_up=(0.0, 1.0, 0.0),
+       fov_radians=math.pi / 4,
+       width=64,
+       height=48,
+       max_distance=10.0,
+   )
+   sensor.update(state)
+   depth = sensor.depth_image.numpy()   # shape (48, 64); positive = distance, -1.0 = no hit
+
+State / Solver Requirements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``SensorRaycast`` only needs body poses in ``state.body_q`` for shape raycasting; no extended State or Contacts attributes are required. Ensure body poses are up to date (e.g. call :func:`newton.eval_fk` for generalized-coordinate models before ``sensor.update(state)``). For ``include_particles=True``, the state must have ``particle_q`` and the model must have valid ``particle_radius`` (and ``particle_max_radius``).
 
 See Also
 --------

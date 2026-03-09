@@ -6,34 +6,30 @@
 Worlds
 ======
 
-Newton enables multiple independent simulations, referred to *worlds*, within a single :class:`~newton.Model` object.
-Each *world*, thus provides an index-based grouping of all primary simulation entities such as particles, bodies, shapes, joints, articulations and equality constraints.
+Newton enables multiple independent simulations, referred to as *worlds*, within a single :class:`~newton.Model` object. Each *world* provides an index-based grouping of all primary simulation entities such as particles, bodies, shapes, joints, articulations and equality constraints.
 
 
 Overview
 --------
 
 GPU-accelerated operations in Newton often involve parallelizing over an entire set of model entities, e.g. bodies, shapes or joints, without needing to consider which specific world they belong to.
-However, some operations such as those part of Collision Detection (CD), can exploit world-based grouping to effectively filter-out potential collisions between shapes that belong to different worlds.
-Moreover, world-based grouping can also facilitate partitioning of thread grids according to both world indices and the number of entities per world.
-Such operations facilitate support for simulating multiple, and potentially heterogeneous, worlds defined within a :class:`~newton.Model` instance.
-Lastly, world-based grouping also enables selectively operating on only the entities that belong to a specific world, i.e. masking, as well as partitioning of the :class:`~newton.Model` and :class:`~newton.State` data.
+Some operations, such as Collision Detection (CD), can exploit world-based grouping to filter out potential collisions between shapes belonging to different worlds.
+Moreover, world-based grouping can facilitate the partitioning of thread grids, according to world indices and the number of entities per world.
+Such operations support the simulation of multiple, and potentially heterogeneous, worlds defined within a :class:`~newton.Model` instance.
+Lastly, world-based grouping enables selective operation on only the entities that belong to a specific world, i.e., masking, as well as partitioning of the :class:`~newton.Model` and :class:`~newton.State` data.
 
 .. note::
-   Support for fully heterogeneous simulations is still under active development and quite experimental.
-   At present time, although the :class:`~newton.ModelBuilder` and :class:`~newton.Model` objects support instantiating worlds with different disparate entities, not all solvers are able to simulate them.
-   Moreover, the selection API still operates under the assumption of model homogeneity, but this is expected to also support heterogeneous simulations in the near future.
+   Support for fully heterogeneous simulations is still under active development and is currently experimental.
+   At the present time, although :class:`~newton.ModelBuilder` and :class:`~newton.Model` objects support instantiating worlds with different entities, not all solvers are able to simulate them.
+   Moreover, the selection API still operates under the assumption of model homogeneity. The selection API is expected to support heterogeneous simulations in future versions.
 
 .. _World assignment:
 
 World Assignment
 ----------------
 
-World assignment occurs when entities are added to an instance of :class:`~newton.ModelBuilder`, using one of the entity-specific methods such as :meth:`~newton.ModelBuilder.add_body`,
-:meth:`~newton.ModelBuilder.add_joint`, :meth:`~newton.ModelBuilder.add_shape` etc, and this can either be global (world index ``-1``) or specific to a particular world (world index ``0, 1, 2, ...``).
-When entities are added before the first call to :meth:`~newton.ModelBuilder.begin_world`, or the last call to :meth:`~newton.ModelBuilder.end_world`, they are assigned to the global world (index ``-1``).
-Conversely, entities can be assigned to specific worlds when added between calls to :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.end_world`.
-Each entity added between these calls is assigned the current world index. The following example illustrates how to create two different worlds within a single model:
+World assignment happens when entities are added to a :class:`~newton.ModelBuilder` instance. Entities  may be added using methods such as :meth:`~newton.ModelBuilder.add_body`, :meth:`~newton.ModelBuilder.add_joint` and :meth:`~newton.ModelBuilder.add_shape`. Each entity addition can be either global (world index ``-1``) or specific to a particular world (world indices ``0, 1, 2, ...``).
+When entities are added before the first call to :meth:`~newton.ModelBuilder.begin_world`, or after the complementary call to :meth:`~newton.ModelBuilder.end_world`, they are assigned to the global world (index ``-1``). Entities added in-between calls to :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.end_world` are assigned the current world index. The following example illustrates how to create two different worlds within a single model:
 
 .. code-block::
 
@@ -59,6 +55,8 @@ Each entity added between these calls is assigned the current world index. The f
    joint11 = builder.add_joint_revolute(parent=body10, child=body11, ...)
    shape10 = builder.add_shape_box(body=body10, ...)
    shape11 = builder.add_shape_box(body=body11, ...)
+   joints = [joint11]
+   builder.add_articulation(joints)
    builder.end_world()
 
    # Global entity at back (world -1)
@@ -67,7 +65,8 @@ Each entity added between these calls is assigned the current world index. The f
    # Finalize model
    model = builder.finalize()
 
-In this example, we are creating a model with two worlds (world ``0`` and world ``1``) containing different bodies, shapes and joints, as well as the global ground plane entity (with world index ``-1``).
+
+In this example, we are creating a model with two worlds (world ``0`` and world ``1``) containing different bodies, shapes and joints.  The example ends with the additional creation of a global ground plane entity (with world index ``-1``).
 
 
 .. _World grouping:
@@ -111,16 +110,15 @@ These arrays include:
 - Articulations: :attr:`~newton.Model.articulation_world_start`
 - Equality Constraints: :attr:`~newton.Model.equality_constraint_world_start`
 
-To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
+Joint entities can vary in the number of DOFs, coordinates, and constraints. To handle this, the model also provides arrays that store the per-world starting indices for each of these specific dimensions:
 - Joint DOFs: :attr:`~newton.Model.joint_dof_world_start`
 - Joint Coordinates: :attr:`~newton.Model.joint_coord_world_start`
 - Joint Constraints: :attr:`~newton.Model.joint_constraint_world_start`
 
-All :attr:`~newton.Model.world_*_start` arrays adopt a special format that facilitates accounting of the total number of entities in each world as well as the global world (index ``-1``) at the front and back of each per-entity array such as :attr:`~newton.Model.body_world`.
-Specifically, each :attr:`~newton.Model.world_*_start` array contains ``world_count + 2`` entries, with the first ``world_count`` entries corresponding to starting indices of each ``world >= 0`` world,
-the second last entry corresponds to the starting index of the global entities at the back (world index ``-1``), and the last entry corresponding to total number of entities or dimensions in the model.
+All :attr:`~newton.Model.world_*_start` arrays use a special format. This format makes it easy to keep track of how many entities belong to each world, as well as how many belong to the global world (index ``-1``).
+Specifically, each :attr:`~newton.Model.world_*_start` array contains ``world_count + 2`` entries.  The first ``world_count`` entries correspond to the starting indices of each ``world >= 0`` world. The second last entry corresponds to the starting index of the global entities (world index ``-1``). The last entry corresponds to the total number of entities or dimensions in the model.
 
-With this format, we can easily compute the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
+With this format, we can easily obtain the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
 as well as the total number of global entities by summing the first entry with the difference of the last two.
 
 For the previous example, we can compute the per-world shape counts as follows:
@@ -150,7 +148,7 @@ For the previous example, we can compute the per-world shape counts as follows:
 World-Entity GPU Thread Partitioning
 ------------------------------------
 
-Another important use of world grouping is to facilitate partitioning of GPU thread grids according to both world indices and the number of entities per world, i.e. into 2D world-entity grids.
+A key advantage of world grouping is that it enables efficient partitioning of GPU thread grids by both world index and per-world entity counts, allowing for the use of 2D world-entity thread grids.
 
 For example:
 
@@ -187,17 +185,14 @@ For example:
    # Launch kernel with 2D grid: (world_count, max_num_entities)
    wp.launch(2d_world_body_example_kernel, dim=(model.world_count, max(num_bodies_per_world)), ...)
 
-This kernel thread partitioning allows each thread to uniquely identify both the world it is operating on (via ``world_id``) and the relative entity index w.r.t that world (via ``entity_id``).
-The world-relative ``entity_id`` index is useful in certain operations such as accessing the body-specific column of constraint Jacobian matrices in maximal-coordinate formulations, which are stored in contiguous blocks per world.
-This relative index can then be mapped to the global entity index within the model by adding the corresponding starting index from the :attr:`~newton.Model.world_*_start` arrays.
+This kernel thread partitioning allows each thread to uniquely identify both the world it is operating on (via ``world_id``) and the relative entity index w.r.t. that world (via ``entity_id``).
+The world-relative ``entity_id`` index is useful in certain operations. For example, it is used when accessing the body-specific column of constraint Jacobian matrices in maximal-coordinate formulations. These matrices are stored in contiguous blocks per world. This relative index can then be mapped to the global entity index within the model by adding the corresponding starting index from the :attr:`~newton.Model.world_*_start` arrays.
 
 Note that in the simpler case of a homogeneous model consisting of identical worlds, the ``max(num_bodies_per_world)`` reduces to a constant value, and this effectively becomes a *batched* operation.
-For the more general heterogeneous case, the kernel needs to account for the varying number of entities per world, and an important pattern arises w.r.t 2D thread indexing and memory allocations that applies to all per-entity and per-world arrays.
+For the more general heterogeneous case, the kernel needs to account for the varying number of entities per world, and an important pattern arises w.r.t. 2D thread indexing and memory allocations that applies to all per-entity and per-world arrays.
 
-Essentially, the sum ``sum(num_bodies_per_world)`` will always equal the total number of bodies in the model ``model.num_bodies`` corresponding memory allocated for per-body arrays (i.e. when multiplied by the size of the relevant ``dtype``),
-and the maximum ``max(num_bodies_per_world)`` will determine the second dimension of the 2D thread grid used to launch the kernel.
-However, since different worlds may have different number of bodies, some threads in the 2D grid will be inactive for worlds with fewer bodies than the maximum.
-Therefore, kernels need to check whether the relative entity index is within bounds for the current world before performing any operations, as shown in the example above.
+Essentially, the sum ``sum(num_bodies_per_world)`` will always equal the total number of bodies in the model, ``model.num_bodies``. This sum corresponds to the total memory allocated for per-body arrays (i.e. when multiplied by the size of the relevant ``dtype``). The maximum, ``max(num_bodies_per_world)``, determines the second dimension of the 2D thread grid used to launch the kernel.
+However, since different worlds may have different numbers of bodies, some threads in the 2D grid will be inactive for worlds with fewer bodies than the maximum. Kernels therefore need to check whether the relative entity index is within bounds for the current world before performing any operations, as shown in the example above.
 
 This pattern of computing ``sum_of_num_*`` and ``max_of_num_*`` thus provides a consistent way to handle memory allocations and thread grid dimensions for heterogeneous multi-world simulations in Newton.
 

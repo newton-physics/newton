@@ -11,8 +11,8 @@ Newton provides USD (Universal Scene Description) ingestion and schema resolver 
 Understanding USD and UsdPhysics
 --------------------------------
 
-USD (Universal Scene Description) is Pixar's open-source framework for interchange of 3D computer graphics data. It provides an ecosystem for describing 3D scenes with hierarchical composition, animation, and metadata. 
-UsdPhysics is the standard USD schema for physics simulation, defining for instance:
+USD (Universal Scene Description) is Pixar's open-source framework for the interchange of 3D computer graphics data. It provides an ecosystem for describing 3D scenes with hierarchical composition, animation, and metadata. 
+UsdPhysics is the standard USD schema for physics simulation and defines, for instance:
 
 * Rigid bodies (``UsdPhysics.RigidBodyAPI``)
 * Collision shapes (``UsdPhysics.CollisionAPI``)
@@ -32,9 +32,9 @@ Newton's USD Import System
 Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeline that:
 
 * Parses standard UsdPhysics schema for basic rigid body simulation setup
-* Resolves common solver attributes that are conceptually similar between different solvers through configurable schema resolvers
+* Resolves common solver attributes that are conceptually similar across solvers, using configurable schema resolvers
 * Handles priority-based attribute resolution when multiple solvers define conflicting values for conceptually similar properties
-* Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
+* Collects solver-specific attributes, preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
 Mass and Inertia Precedence
@@ -301,7 +301,7 @@ The collected attributes are returned in the result dictionary and can be access
 4. Custom Attribute Framework
 -----------------------------
 
-USD assets can define custom attributes that become part of the model/state/control attributes, see :ref:`custom_attributes` for more information.
+USD assets can define custom attributes that become part of the model/state/control attributes. See :ref:`custom_attributes` for more information.
 Besides the programmatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
 
 **Overview:**
