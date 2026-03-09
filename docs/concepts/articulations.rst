@@ -313,7 +313,7 @@ Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The :attr:`newton.Model.joint_q` array stores the generalized joint positions for all joints in the model.
-The positional dofs for each joint can be queried as follows:
+For scalar-coordinate joints (for example this D6 joint), the positional coordinates can be queried as follows:
 
 .. testsetup:: articulation-joint-layout
 
@@ -346,11 +346,11 @@ The positional dofs for each joint can be queried as follows:
 .. testcode:: articulation-joint-layout
 
     q_start = joint_q_start[joint_id]
-    q_end = joint_q_start[joint_id + 1]
-    # now the positional dofs can be queried as follows:
-    q0 = joint_q[q_start]
-    q1 = joint_q[q_start + 1]
-    assert q_end - q_start == 2
+    coord_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
+    # now the positional coordinates can be queried as follows:
+    q = joint_q[q_start : q_start + coord_count]
+    q0 = q[0]
+    q1 = q[1]
 
 Definition of ``joint_qd``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -363,14 +363,15 @@ The velocity dofs for each joint can be queried as follows:
 .. testcode:: articulation-joint-layout
 
     qd_start = joint_qd_start[joint_id]
-    qd_end = joint_qd_start[joint_id + 1]
+    dof_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
     # now the velocity dofs can be queried as follows:
-    qd0 = joint_qd[qd_start]
-    qd1 = joint_qd[qd_start + 1]
+    qd = joint_qd[qd_start : qd_start + dof_count]
+    qd0 = qd[0]
+    qd1 = qd[1]
     # the generalized joint forces can be queried as follows:
-    f0 = joint_f[qd_start]
-    f1 = joint_f[qd_start + 1]
-    assert qd_end - qd_start == 2
+    f = joint_f[qd_start : qd_start + dof_count]
+    f0 = f[0]
+    f1 = f[1]
 
 
 
@@ -404,12 +405,10 @@ The indexing of the linear and angular degrees of freedom for a joint at a given
     # the joint limit of this angular dof
     first_ang_limit = joint_limit_lower[axis_start + num_linear_dofs]
 
-    assert num_linear_dofs == 1
-    assert num_angular_dofs == 1
+    assert (num_linear_dofs, num_angular_dofs) == (1, 1)
     assert np.allclose(first_lin_axis, [1.0, 0.0, 0.0])
     assert np.allclose(first_ang_axis, [0.0, 0.0, 1.0])
-    assert np.isclose(first_lin_limit, -0.5)
-    assert np.isclose(first_ang_limit, -1.0)
+    assert np.allclose([first_lin_limit, first_ang_limit], [-0.5, -1.0])
 
 
 Common articulation workflows
@@ -424,9 +423,10 @@ joint coordinates (which may include quaternion coordinates for free/ball joints
 A robust pattern is:
 
 1. Loop over joints.
-2. Use ``Model.joint_qd_start`` to find each joint's DoF span.
-3. Use ``Model.joint_q_start`` to find where that joint starts in ``State.joint_q``.
-4. Center only scalar coordinates (for example, revolute/prismatic axes) and skip quaternion joints.
+2. Use ``Model.joint_qd_start`` to find the first DoF index for each joint.
+3. Use ``Model.joint_dof_dim`` to get the number of linear and angular DoFs for that joint.
+4. Use ``Model.joint_q_start`` to find where that joint starts in ``State.joint_q``.
+5. Center only scalar coordinates (for example, revolute/prismatic axes) and skip quaternion joints.
 
 .. testsetup:: articulation-center-joint-q
 
@@ -462,6 +462,7 @@ A robust pattern is:
     def center_joint_q_from_limits(
         joint_q_start: wp.array(dtype=wp.int32),
         joint_qd_start: wp.array(dtype=wp.int32),
+        joint_dof_dim: wp.array2d(dtype=wp.int32),
         joint_type: wp.array(dtype=wp.int32),
         joint_limit_lower: wp.array(dtype=float),
         joint_limit_upper: wp.array(dtype=float),
@@ -469,9 +470,9 @@ A robust pattern is:
     ):
         joint_id = wp.tid()
 
-        # DoF span for this joint in qd-order arrays (limits/axes/forces)
+        # First DoF index for this joint in qd-order arrays (limits/axes/forces)
         qd_begin = joint_qd_start[joint_id]
-        qd_end = joint_qd_start[joint_id + 1]
+        dof_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
 
         # Start index for this joint in generalized coordinates q
         q_begin = joint_q_start[joint_id]
@@ -479,14 +480,14 @@ A robust pattern is:
         # Skip free/ball joints because their q entries include quaternion coordinates.
         jt = joint_type[joint_id]
         if (
-            jt == int(newton.JointType.FREE)
-            or jt == int(newton.JointType.BALL)
-            or jt == int(newton.JointType.DISTANCE)
+            jt == newton.JointType.FREE
+            or jt == newton.JointType.BALL
+            or jt == newton.JointType.DISTANCE
         ):
             return
 
-        # For scalar joints, q coordinates align with this joint's DoF count.
-        for local_dof in range(qd_end - qd_begin):
+        # For scalar joints, q coordinates align with this joint's total DoF count.
+        for local_dof in range(dof_count):
             qd_idx = qd_begin + local_dof
             q_idx = q_begin + local_dof
 
@@ -503,6 +504,7 @@ A robust pattern is:
         inputs=[
             model.joint_q_start,
             model.joint_qd_start,
+            model.joint_dof_dim,
             model.joint_type,
             model.joint_limit_lower,
             model.joint_limit_upper,
