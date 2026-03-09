@@ -111,6 +111,8 @@ Since :meth:`~newton.ModelBuilder.add_body` automatically adds a free joint, the
 
 This scene can now be simulated by both maximal-coordinate and generalized-coordinate solvers.
 
+.. _Kinematic links:
+
 Kinematic links and bodies
 --------------------------
 
