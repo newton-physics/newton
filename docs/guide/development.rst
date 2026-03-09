@@ -73,7 +73,10 @@ Pass ``--help`` to either run method below to see all available flags.
             # run tests
             python -m newton.tests
             
-Most tests run when the ``dev`` extras are installed. The tests using PyTorch to run inference on an RL policy are skipped if the ``torch`` dependency is not installed. In order to run these tests, include the ``torch-cu12`` or ``torch-cu13`` extras following your CUDA version:
+Most tests run when the ``dev`` extras are installed. The tests using PyTorch
+to run inference on an RL policy are skipped if the ``torch`` dependency is
+not installed. In order to run these tests, include the ``torch-cu12`` or
+``torch-cu13`` extras following your CUDA version:
 
 .. tab-set::
     :sync-group: env
@@ -204,9 +207,6 @@ False positives are managed as follows:
 - **Identifier allowlist:** Specific identifiers, such as variable or constant names, can be declared in ``[tool.typos.default.extend-identifiers]`` (e.g., ``PNGs``).
 
 When typos reports a word that is valid within the Newton codebase, you can add it to the appropriate section in ``pyproject.toml`` to suppress future warnings. After updating, re-run typos (or pre-commit) to confirm that the word is ignored. Use these options to keep the codebase clean while ensuring needed flexibility for accepted project-specific words and identifiers.
-
-
-
 
 
 License headers
@@ -516,6 +516,9 @@ Examples are discovered automatically: any file matching
 The short name used on the command line is the filename without the ``example_`` prefix and
 ``.py`` extension (e.g. ``basic_pendulum``).
 
+New examples must also be registered in the examples ``README.md`` with a ``uv`` command
+and a 320x320 jpg screenshot.
+
 .. tab-set::
     :sync-group: env
 
@@ -566,22 +569,18 @@ The full set of benchmarks is intended to be run on a machine with a CUDA-capabl
 
 To get started, install airspeed velocity from PyPI:
 
-.. tab-set::
-    :sync-group: env
+.. code-block:: console
 
-    .. tab-item:: uv
-        :sync: uv
+    python -m pip install asv
 
-        .. code-block:: console
+.. tip::
 
-            uv pip install asv
+    With ``uv``, airspeed velocity can be run without installing it into the
+    project environment by using ``uvx``:
 
-    .. tab-item:: venv
-        :sync: venv
+    .. code-block:: console
 
-        .. code-block:: console
-
-            python -m pip install asv
+        uvx --with virtualenv asv run --launch-method spawn ...
 
 If airspeed velocity has not been previously run on the machine, it will need to be initialized with:
 
