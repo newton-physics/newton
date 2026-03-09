@@ -834,9 +834,8 @@ This can be done by running <code class="docutils literal notranslate"><span cla
 <section id="running-the-tests">
 <h2>Running the tests<a class="headerlink" href="#running-the-tests" title="Link to this heading">#</a></h2>
 <p>The Newton test suite supports both <code class="docutils literal notranslate"><span class="pre">uv</span></code> and standard <code class="docutils literal notranslate"><span class="pre">venv</span></code> workflows,
-and by default runs in up to eight parallel processes. On some systems, the
-tests must be run in a serial manner with <code class="docutils literal notranslate"><span class="pre">--serial-fallback</span></code> due to an
-outstanding bug.</p>
+and by default runs in up to eight parallel processes. The tests can be run
+in a serial manner with <code class="docutils literal notranslate"><span class="pre">--serial-fallback</span></code>.</p>
 <p>Pass <code class="docutils literal notranslate"><span class="pre">--help</span></code> to either run method below to see all available flags.</p>
 <div class="sd-tab-set docutils">
 <input checked="checked" id="sd-tab-item-0" name="sd-tab-set-0" type="radio">
@@ -858,7 +857,10 @@ venv</label><div class="sd-tab-content docutils">
 </div>
 </div>
 </div>
-<p>Most tests run when the <code class="docutils literal notranslate"><span class="pre">dev</span></code> extras are installed. The tests that run examples that use PyTorch to inference an RL policy are skipped if the <code class="docutils literal notranslate"><span class="pre">torch</span></code> dependency is not installed. In order to run these tests, include the <code class="docutils literal notranslate"><span class="pre">torch-cu12</span></code> extras:</p>
+<p>Most tests run when the <code class="docutils literal notranslate"><span class="pre">dev</span></code> extras are installed. The tests using PyTorch
+to run inference on an RL policy are skipped if the <code class="docutils literal notranslate"><span class="pre">torch</span></code> dependency is
+not installed. In order to run these tests, include the <code class="docutils literal notranslate"><span class="pre">torch-cu12</span></code> or
+<code class="docutils literal notranslate"><span class="pre">torch-cu13</span></code> extras following your CUDA version:</p>
 <div class="sd-tab-set docutils">
 <input checked="checked" id="sd-tab-item-2" name="sd-tab-set-1" type="radio">
 <label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-2">
@@ -962,7 +964,7 @@ venv</label><div class="sd-tab-content docutils">
 </section>
 <section id="typos">
 <h2>Typos<a class="headerlink" href="#typos" title="Link to this heading">#</a></h2>
-<p>To proactively catch spelling mistakes, Newton uses the <a class="reference external" href="https://github.com/crate-ci/typos">typos</a> tool. Typos scans source files for common misspellings and is integrated into our pre-commit hooks, so spelling errors in both code and documentation are flagged when you run or install pre-commit (see above). You can also run <code class="docutils literal notranslate"><span class="pre">typos</span></code> manually if needed. Refer to the <a class="reference external" href="https://github.com/crate-ci/typos">typos documentation</a> for more details on usage and configuration options.</p>
+<p>To proactively catch spelling mistakes, Newton uses the <a class="reference external" href="https://github.com/crate-ci/typos">typos</a> tool. Typos scans source files for common misspellings and is integrated into our pre-commit hooks, so spelling errors in both code and documentation are flagged when you run or install pre-commit (see above). You can also run <code class="docutils literal notranslate"><span class="pre">typos</span></code> manually if needed. Refer to the <a class="reference external" href="https://github.com/crate-ci/typos?tab=readme-ov-file#documentation">typos documentation</a> for more details on usage and configuration options.</p>
 <section id="dealing-with-false-positives">
 <h3>Dealing with false positives<a class="headerlink" href="#dealing-with-false-positives" title="Link to this heading">#</a></h3>
 <p>Typos may occasionally flag legitimate project-specific terminology, domain terms, or variable names as misspellings (false positives). To handle these, the Newton codebase configures typos in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> at the repository root.</p>
@@ -974,6 +976,20 @@ venv</label><div class="sd-tab-content docutils">
 </ul>
 <p>When typos reports a word that is valid within the Newton codebase, you can add it to the appropriate section in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> to suppress future warnings. After updating, re-run typos (or pre-commit) to confirm that the word is ignored. Use these options to keep the codebase clean while ensuring needed flexibility for accepted project-specific words and identifiers.</p>
 </section>
+</section>
+<section id="license-headers">
+<h2>License headers<a class="headerlink" href="#license-headers" title="Link to this heading">#</a></h2>
+<p>Every source file in the repository must carry an <a class="reference external" href="https://spdx.dev/">SPDX</a> license header.
+A CI check (<code class="docutils literal notranslate"><span class="pre">pr_license_check.yml</span></code>) enforces this on every pull request using
+<a class="reference external" href="https://github.com/apache/skywalking-eyes">Apache SkyWalking Eyes</a>.</p>
+<p>The required headers depend on the file type:</p>
+<ul class="simple">
+<li><p><strong>Python files</strong> (<code class="docutils literal notranslate"><span class="pre">.py</span></code>) — Apache-2.0. See <code class="docutils literal notranslate"><span class="pre">.licenserc.yaml</span></code> for the exact template.</p></li>
+<li><p><strong>Documentation files</strong> (<code class="docutils literal notranslate"><span class="pre">.rst</span></code>) — CC-BY-4.0. See <code class="docutils literal notranslate"><span class="pre">.licenserc-docs.yaml</span></code> for the exact template.</p></li>
+<li><p><strong>Jupyter notebooks</strong> (<code class="docutils literal notranslate"><span class="pre">.ipynb</span></code>) — CC-BY-4.0. Copy the header from an existing notebook.</p></li>
+</ul>
+<p>When adding a new file, copy the header from an existing file of the same type. If the
+license check fails on your PR, add the appropriate header to the top of each flagged file.</p>
 </section>
 <section id="using-a-local-warp-installation-with-uv">
 <h2>Using a local Warp installation with uv<a class="headerlink" href="#using-a-local-warp-installation-with-uv" title="Link to this heading">#</a></h2>
@@ -988,7 +1004,7 @@ venv</label><div class="sd-tab-content docutils">
 e.g. when running <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">newton.examples</span> <span class="pre">basic_pendulum</span></code>.</p>
 </section>
 <section id="building-the-documentation">
-<h2>Building the documentation<a class="headerlink" href="#building-the-documentation" title="Link to this heading">#</a></h2>
+<span id="id2"></span><h2>Building the documentation<a class="headerlink" href="#building-the-documentation" title="Link to this heading">#</a></h2>
 <p>To build the documentation locally, ensure you have the documentation dependencies installed.</p>
 <div class="sd-tab-set docutils">
 <input checked="checked" id="sd-tab-item-12" name="sd-tab-set-6" type="radio">
@@ -1042,8 +1058,21 @@ venv</label><div class="sd-tab-content docutils">
 </div>
 </div>
 <p>Then open <a class="reference external" href="http://localhost:8000">http://localhost:8000</a> in your browser. You can specify a custom port with <code class="docutils literal notranslate"><span class="pre">--port</span></code>:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-16" name="sd-tab-set-8" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-16">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run docs/serve.py --port 8080</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-17" name="sd-tab-set-8" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-17">
+venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python docs/serve.py --port 8080</span>
 </pre></div>
+</div>
+</div>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -1057,12 +1086,6 @@ specific CORS headers and MIME types that <code class="docutils literal notransl
 <h2>Documentation Versioning<a class="headerlink" href="#documentation-versioning" title="Link to this heading">#</a></h2>
 <p>Newton’s documentation is versioned and hosted on GitHub Pages. Multiple versions
 are available simultaneously, with a version switcher dropdown in the navigation bar.</p>
-<p><strong>Published documentation URLs:</strong></p>
-<ul class="simple">
-<li><p><strong>Latest stable release</strong>: <a class="reference external" href="https://newton-physics.github.io/newton/stable/">https://newton-physics.github.io/newton/stable/</a></p></li>
-<li><p><strong>Development (main branch)</strong>: <a class="reference external" href="https://newton-physics.github.io/newton/latest/">https://newton-physics.github.io/newton/latest/</a></p></li>
-<li><p><strong>Specific versions</strong>: <a class="reference external" href="https://newton-physics.github.io/newton/1.0.0/">https://newton-physics.github.io/newton/1.0.0/</a> (etc.)</p></li>
-</ul>
 <section id="how-it-works">
 <h3>How It Works<a class="headerlink" href="#how-it-works" title="Link to this heading">#</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code> branch contains versioned documentation in subdirectories:</p>
@@ -1106,20 +1129,53 @@ docs with Sphinx, and deploy to the corresponding directory on <code class="docu
 <code class="docutils literal notranslate"><span class="pre">switcher.json</span></code> after each version using <code class="docutils literal notranslate"><span class="pre">scripts/ci/update_docs_switcher.py</span></code>.</p>
 </section>
 </section>
+<section id="api-documentation">
+<h2>API documentation<a class="headerlink" href="#api-documentation" title="Link to this heading">#</a></h2>
+<p>Newton’s API reference is auto-generated from the <code class="docutils literal notranslate"><span class="pre">__all__</span></code> lists of its public modules.
+The script <code class="docutils literal notranslate"><span class="pre">docs/generate_api.py</span></code> produces reStructuredText files under <code class="docutils literal notranslate"><span class="pre">docs/api/</span></code> (git-ignored)
+that Sphinx processes via <code class="docutils literal notranslate"><span class="pre">autosummary</span></code> to create individual pages for every public symbol.</p>
+<p>Whenever you add, remove, or rename a public symbol in one of the public modules
+(<code class="docutils literal notranslate"><span class="pre">newton</span></code>, <code class="docutils literal notranslate"><span class="pre">newton.geometry</span></code>, <code class="docutils literal notranslate"><span class="pre">newton.solvers</span></code>, <code class="docutils literal notranslate"><span class="pre">newton.sensors</span></code>, etc.),
+regenerate the API pages:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-18" name="sd-tab-set-9" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-18">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run python docs/generate_api.py</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-19" name="sd-tab-set-9" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-19">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python docs/generate_api.py</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>After running the script, rebuild the documentation to verify the result (see
+<a class="reference internal" href="#building-the-documentation"><span class="std std-ref">Building the documentation</span></a> above).</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Only symbols listed in a module’s <code class="docutils literal notranslate"><span class="pre">__all__</span></code> (or, as a fallback, its public
+attributes) are included. If a new class or function in <code class="docutils literal notranslate"><span class="pre">newton/_src/</span></code> should
+be visible to users, re-export it through the appropriate public module first.</p>
+</div>
+</section>
 <section id="testing-documentation-code-snippets">
 <h2>Testing documentation code snippets<a class="headerlink" href="#testing-documentation-code-snippets" title="Link to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">doctest</span></code> Sphinx builder is used to ensure that code snippets in the documentation remain up-to-date.</p>
 <p>The doctests can be run with:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-16" name="sd-tab-set-8" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-16">
+<input checked="checked" id="sd-tab-item-20" name="sd-tab-set-10" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-20">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run --extra docs --extra sim sphinx-build -j auto -W -b doctest docs docs/_build/doctest</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-17" name="sd-tab-set-8" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-17">
+<input id="sd-tab-item-21" name="sd-tab-set-10" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-21">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m sphinx -j auto -W -b doctest docs docs/_build/doctest</span>
 </pre></div>
@@ -1128,6 +1184,23 @@ venv</label><div class="sd-tab-content docutils">
 </div>
 <p>For more information, see the <a class="reference external" href="https://www.sphinx-doc.org/en/master/usage/extensions/doctest.html">sphinx.ext.doctest</a>
 documentation.</p>
+</section>
+<section id="changelog">
+<h2>Changelog<a class="headerlink" href="#changelog" title="Link to this heading">#</a></h2>
+<p>Newton maintains a <code class="docutils literal notranslate"><span class="pre">CHANGELOG.md</span></code> at the repository root.</p>
+<p>When a pull request modifies user-facing behavior, add an entry under the
+<code class="docutils literal notranslate"><span class="pre">[Unreleased]</span></code> section in the appropriate category:</p>
+<ul class="simple">
+<li><p><strong>Added</strong> — new features</p></li>
+<li><p><strong>Changed</strong> — changes to existing functionality (include migration guidance)</p></li>
+<li><p><strong>Deprecated</strong> — features that will be removed (include migration guidance,
+e.g. “Deprecate <code class="docutils literal notranslate"><span class="pre">Model.geo_meshes</span></code> in favor of <code class="docutils literal notranslate"><span class="pre">Model.shapes</span></code>”)</p></li>
+<li><p><strong>Removed</strong> — removed features (include migration guidance)</p></li>
+<li><p><strong>Fixed</strong> — bug fixes</p></li>
+</ul>
+<p>Use imperative present tense (“Add X”, not “Added X”) and keep entries concise.
+Internal implementation details (refactors, CI tweaks) that do not affect users
+should <strong>not</strong> be listed.</p>
 </section>
 <section id="style-guide">
 <h2>Style Guide<a class="headerlink" href="#style-guide" title="Link to this heading">#</a></h2>
@@ -1139,6 +1212,77 @@ documentation.</p>
 <li><p>Use kebab-case instead of snake_case for command line arguments, e.g. <code class="docutils literal notranslate"><span class="pre">--use-cuda-graph</span></code> instead of <code class="docutils literal notranslate"><span class="pre">--use_cuda_graph</span></code>.</p></li>
 </ul>
 </section>
+<section id="writing-examples">
+<h2>Writing examples<a class="headerlink" href="#writing-examples" title="Link to this heading">#</a></h2>
+<p>Examples live in <code class="docutils literal notranslate"><span class="pre">newton/examples/&lt;category&gt;/example_&lt;category&gt;_&lt;name&gt;.py</span></code> (e.g.
+<code class="docutils literal notranslate"><span class="pre">newton/examples/basic/example_basic_pendulum.py</span></code>). Each file defines an <code class="docutils literal notranslate"><span class="pre">Example</span></code>
+class with the following interface:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">Example</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">viewer</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Build the model, create solver/state/control, and set up the viewer.&quot;&quot;&quot;</span>
+        <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Advance the simulation by one frame (typically with substeps).&quot;&quot;&quot;</span>
+        <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">render</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Update the viewer with the current state.&quot;&quot;&quot;</span>
+        <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">test_final</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Validate the final simulation state. Required for CI.&quot;&quot;&quot;</span>
+        <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">test_post_step</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Optional per-step validation, called after every step() in test mode.&quot;&quot;&quot;</span>
+        <span class="o">...</span>
+</pre></div>
+</div>
+<p>Every example <strong>must</strong> implement <code class="docutils literal notranslate"><span class="pre">test_final()</span></code> (or <code class="docutils literal notranslate"><span class="pre">test_post_step()</span></code>, or both).
+The test harness runs examples with <code class="docutils literal notranslate"><span class="pre">--viewer</span> <span class="pre">null</span> <span class="pre">--test</span></code> and calls these methods to
+verify simulation correctness. An example that implements neither will raise
+<code class="docutils literal notranslate"><span class="pre">NotImplementedError</span></code> in CI.</p>
+<section id="discovery-and-registration">
+<h3>Discovery and registration<a class="headerlink" href="#discovery-and-registration" title="Link to this heading">#</a></h3>
+<p>Examples are discovered automatically: any file matching
+<code class="docutils literal notranslate"><span class="pre">newton/examples/&lt;category&gt;/example_*.py</span></code> is picked up by <code class="docutils literal notranslate"><span class="pre">newton.examples.get_examples()</span></code>.
+The short name used on the command line is the filename without the <code class="docutils literal notranslate"><span class="pre">example_</span></code> prefix and
+<code class="docutils literal notranslate"><span class="pre">.py</span></code> extension (e.g. <code class="docutils literal notranslate"><span class="pre">basic_pendulum</span></code>).</p>
+<p>New examples must also be registered in the examples <code class="docutils literal notranslate"><span class="pre">README.md</span></code> with a
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">newton.examples</span> <span class="pre">&lt;example_name&gt;</span></code> command and a 320x320 jpg screenshot.</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-22" name="sd-tab-set-11" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-22">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>list<span class="w"> </span>all<span class="w"> </span>available<span class="w"> </span>examples
+<span class="go">uv run -m newton.examples</span>
+
+<span class="gp"># </span>run<span class="w"> </span>an<span class="w"> </span>example<span class="w"> </span>by<span class="w"> </span>short<span class="w"> </span>name
+<span class="go">uv run -m newton.examples basic_pendulum</span>
+
+<span class="gp"># </span>run<span class="w"> </span><span class="k">in</span><span class="w"> </span>headless<span class="w"> </span><span class="nb">test</span><span class="w"> </span>mode<span class="w"> </span><span class="o">(</span>used<span class="w"> </span>by<span class="w"> </span>CI<span class="o">)</span>
+<span class="go">uv run -m newton.examples basic_pendulum --viewer null --test</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-23" name="sd-tab-set-11" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-23">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>list<span class="w"> </span>all<span class="w"> </span>available<span class="w"> </span>examples
+<span class="go">python -m newton.examples</span>
+
+<span class="gp"># </span>run<span class="w"> </span>an<span class="w"> </span>example<span class="w"> </span>by<span class="w"> </span>short<span class="w"> </span>name
+<span class="go">python -m newton.examples basic_pendulum</span>
+
+<span class="gp"># </span>run<span class="w"> </span><span class="k">in</span><span class="w"> </span>headless<span class="w"> </span><span class="nb">test</span><span class="w"> </span>mode<span class="w"> </span><span class="o">(</span>used<span class="w"> </span>by<span class="w"> </span>CI<span class="o">)</span>
+<span class="go">python -m newton.examples basic_pendulum --viewer null --test</span>
+</pre></div>
+</div>
+</div>
+</div>
+</section>
+</section>
 <section id="roadmap-and-future-work">
 <h2>Roadmap and Future Work<a class="headerlink" href="#roadmap-and-future-work" title="Link to this heading">#</a></h2>
 <p>(Placeholder for future roadmap and planned features)</p>
@@ -1147,15 +1291,23 @@ documentation.</p>
 <li><p>More comprehensive sensor models</p></li>
 <li><p>Expanded robotics examples</p></li>
 </ul>
-<p>See the <a class="reference external" href="https://github.com/newton-physics/newton/discussions">GitHub Discussions</a> for ongoing feature planning.</p>
+<p>See the <a class="reference external" href="https://github.com/newton-physics/newton/discussions">GitHub Discussions</a> and <a class="reference external" href="https://github.com/orgs/newton-physics/projects/1">GitHub Roadmap</a> for ongoing feature planning.</p>
 </section>
 <section id="benchmarking-with-airspeed-velocity">
 <h2>Benchmarking with airspeed velocity<a class="headerlink" href="#benchmarking-with-airspeed-velocity" title="Link to this heading">#</a></h2>
 <p>The Newton repository contains a benchmarking suite implemented using the <a class="reference external" href="https://asv.readthedocs.io/en/latest/">airspeed velocity</a> framework.
-The full set of benchmarks are intended to be run on a machine with a CUDA-capable GPU.</p>
+The full set of benchmarks is intended to be run on a machine with a CUDA-capable GPU.</p>
 <p>To get started, install airspeed velocity from PyPI:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install asv</span>
 </pre></div>
+</div>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">uv</span></code>, airspeed velocity can be run without installing it into the
+project environment by using <code class="docutils literal notranslate"><span class="pre">uvx</span></code>:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uvx --with virtualenv asv run --launch-method spawn ...</span>
+</pre></div>
+</div>
 </div>
 <p>If airspeed velocity has not been previously run on the machine, it will need to be initialized with:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv machine --yes</span>
@@ -1163,15 +1315,15 @@ The full set of benchmarks are intended to be run on a machine with a CUDA-capab
 </div>
 <p>To run the benchmarks, run the following command from the root of the repository:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-18" name="sd-tab-set-9" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-18">
+<input checked="checked" id="sd-tab-item-24" name="sd-tab-set-12" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-24">
 Unix</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^!</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-19" name="sd-tab-set-9" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-19">
+<input id="sd-tab-item-25" name="sd-tab-set-12" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-25">
 Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^!</span>
 </pre></div>
@@ -1186,22 +1338,98 @@ Windows</label><div class="sd-tab-content docutils">
 benchmark code from the <code class="docutils literal notranslate"><span class="pre">asv/benchmarks</span></code> directory against the code state of the <code class="docutils literal notranslate"><span class="pre">main</span></code> branch. Note that
 the benchmark definitions themselves are not checked out from different branches—only the code being
 benchmarked is.</p>
+<p>Benchmarks can also be run against a range of commits using the <code class="docutils literal notranslate"><span class="pre">commit1...commit2</span></code> syntax.
+This is useful for comparing performance across several recent changes:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-26" name="sd-tab-set-13" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-26">
+Unix</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn HEAD~4..HEAD</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-27" name="sd-tab-set-13" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-27">
+Windows</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn HEAD~4..HEAD</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>Commit hashes can be used instead of relative references:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-28" name="sd-tab-set-14" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-28">
+Unix</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn abc1234..def5678</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-29" name="sd-tab-set-14" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-29">
+Windows</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn abc1234..def5678</span>
+</pre></div>
+</div>
+</div>
+</div>
+<section id="running-benchmarks-standalone">
+<h3>Running benchmarks standalone<a class="headerlink" href="#running-benchmarks-standalone" title="Link to this heading">#</a></h3>
+<p>Benchmark files can also be run directly as Python scripts, without the airspeed velocity
+harness. This is useful for quick iteration during development since it skips the
+environment setup that airspeed velocity performs. Each benchmark file under
+<code class="docutils literal notranslate"><span class="pre">asv/benchmarks/</span></code> supports a <code class="docutils literal notranslate"><span class="pre">--bench</span></code> flag to select specific benchmark classes:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-30" name="sd-tab-set-15" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-30">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-31" name="sd-tab-set-15" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-31">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>When <code class="docutils literal notranslate"><span class="pre">--bench</span></code> is omitted, all benchmarks in the file are run. The <code class="docutils literal notranslate"><span class="pre">--bench</span></code> flag can
+be repeated to select multiple benchmarks:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-32" name="sd-tab-set-16" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-32">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro --bench FastG1</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-33" name="sd-tab-set-16" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-33">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro --bench FastG1</span>
+</pre></div>
+</div>
+</div>
+</div>
+</section>
 <section id="tips-for-writing-benchmarks">
 <h3>Tips for writing benchmarks<a class="headerlink" href="#tips-for-writing-benchmarks" title="Link to this heading">#</a></h3>
 <p>Rather than running the entire benchmark suite, use the <code class="docutils literal notranslate"><span class="pre">--bench</span> <span class="pre">BENCH,</span> <span class="pre">-b</span> <span class="pre">BENCH</span></code> flag to filter the benchmarks
 to just the ones under development:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-20" name="sd-tab-set-10" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-20">
+<input checked="checked" id="sd-tab-item-34" name="sd-tab-set-17" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-34">
 Unix</label><div class="sd-tab-content docutils">
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^! --bench example_anymal.PretrainedSimulate</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^! --bench FastG1</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-21" name="sd-tab-set-10" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-21">
+<input id="sd-tab-item-35" name="sd-tab-set-17" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-35">
 Windows</label><div class="sd-tab-content docutils">
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^! --bench example_anymal.PretrainedSimulate</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^! --bench FastG1</span>
 </pre></div>
 </div>
 </div>
@@ -1211,15 +1439,15 @@ starting from an empty kernel cache.
 These benchmarks have names ending with <code class="docutils literal notranslate"><span class="pre">time_load</span></code>. It is sometimes convenient to exclude these benchmarks
 from running by using the following command:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-22" name="sd-tab-set-11" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-22">
+<input checked="checked" id="sd-tab-item-36" name="sd-tab-set-18" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-36">
 Unix</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^! -b &#39;^(?!.*time_load$).*&#39;</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-23" name="sd-tab-set-11" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-23">
+<input id="sd-tab-item-37" name="sd-tab-set-18" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-37">
 Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^! -b &quot;^^(?!.*time_load$).*&quot;</span>
 </pre></div>
@@ -1279,6 +1507,7 @@ to the other benchmarks.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dealing-with-false-positives">Dealing with false positives</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#license-headers">License headers</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#using-a-local-warp-installation-with-uv">Using a local Warp installation with uv</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-the-documentation">Building the documentation</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#serving-the-documentation-locally">Serving the documentation locally</a></li>
@@ -1290,10 +1519,17 @@ to the other benchmarks.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-operations">Manual Operations</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#api-documentation">API documentation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-documentation-code-snippets">Testing documentation code snippets</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changelog">Changelog</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#style-guide">Style Guide</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#writing-examples">Writing examples</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#discovery-and-registration">Discovery and registration</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#roadmap-and-future-work">Roadmap and Future Work</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking-with-airspeed-velocity">Benchmarking with airspeed velocity</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-benchmarks-standalone">Running benchmarks standalone</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tips-for-writing-benchmarks">Tips for writing benchmarks</a></li>
 </ul>
 </li>
