@@ -50,6 +50,20 @@ class SolverSemiImplicit(SolverBase):
 
     See: https://en.wikipedia.org/wiki/Semi-implicit_Euler_method
 
+    Joint limitations:
+        - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
+          CABLE joints are not supported.
+        - :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
+          :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
+          are supported.
+        - Joint limits and targets are not enforced for BALL joints.
+        - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
+          :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
+          and :attr:`~newton.Model.joint_target_mode` are not supported.
+        - Equality and mimic constraints are not supported.
+
+        See :ref:`Joint feature support` for the full comparison across solvers.
+
     Example
     -------
 
