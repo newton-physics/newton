@@ -131,7 +131,7 @@ class Model:
             Args:
                 name: The name of the namespace
             """
-            self._name = name
+            self._name: str = name
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
@@ -146,9 +146,9 @@ class Model:
         Args:
             device: Device on which the Model's data will be allocated.
         """
-        self.requires_grad = False
+        self.requires_grad: bool = False
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
-        self.world_count = 0
+        self.world_count: int = 0
         """Number of worlds added to the ModelBuilder."""
 
         self.particle_q: wp.array(dtype=wp.vec3) | None = None
@@ -161,19 +161,19 @@ class Model:
         """Particle inverse mass [1/kg], shape [particle_count], float."""
         self.particle_radius: wp.array(dtype=wp.float32) | None = None
         """Particle radius [m], shape [particle_count], float."""
-        self.particle_max_radius = 0.0
+        self.particle_max_radius: float = 0.0
         """Maximum particle radius [m] (useful for HashGrid construction)."""
-        self.particle_ke = 1.0e3
+        self.particle_ke: float = 1.0e3
         """Particle normal contact stiffness [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
-        self.particle_kd = 1.0e2
+        self.particle_kd: float = 1.0e2
         """Particle normal contact damping [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
-        self.particle_kf = 1.0e2
+        self.particle_kf: float = 1.0e2
         """Particle friction force stiffness [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
-        self.particle_mu = 0.5
+        self.particle_mu: float = 0.5
         """Particle friction coefficient [dimensionless]."""
-        self.particle_cohesion = 0.0
+        self.particle_cohesion: float = 0.0
         """Particle cohesion strength [m]."""
-        self.particle_adhesion = 0.0
+        self.particle_adhesion: float = 0.0
         """Particle adhesion strength [m]."""
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
@@ -186,15 +186,19 @@ class Model:
         self.particle_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first particle per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the particles belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global particles (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total particle count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the particles belonging to that world. The second-last element (accessible
+        via index ``-2``) stores the start index of the global particles (i.e. with
+        world index ``-1``) added to the end of the model, and the last element
+        stores the total particle count.
 
-        The number of particles in a given world `w` can be computed as:
-            `num_particles_in_world = particle_world_start[w + 1] - particle_world_start[w]`.
+        The number of particles in a given world ``w`` can be computed as::
 
-        The total number of global particles can be computed as:
-            `num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]`.
+            num_particles_in_world = particle_world_start[w + 1] - particle_world_start[w]
+
+        The total number of global particles can be computed as::
+
+            num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]
         """
 
         self.shape_label: list[str] = []
@@ -257,22 +261,26 @@ class Model:
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs: wp.array(dtype=wp.vec2i) | None = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
-        self.shape_contact_pair_count = 0
+        self.shape_contact_pair_count: int = 0
         """Number of shape contact pairs."""
         self.shape_world: wp.array(dtype=wp.int32) | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first shape per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the shapes belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global shapes (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total shape count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the shapes belonging to that world. The second-last element (accessible via
+        index ``-2``) stores the start index of the global shapes (i.e. with world
+        index ``-1``) added to the end of the model, and the last element stores the
+        total shape count.
 
-        The number of shapes in a given world `w` can be computed as:
-            `num_shapes_in_world = shape_world_start[w + 1] - shape_world_start[w]`.
+        The number of shapes in a given world ``w`` can be computed as::
 
-        The total number of global shapes can be computed as:
-            `num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]`.
+            num_shapes_in_world = shape_world_start[w + 1] - shape_world_start[w]
+
+        The total number of global shapes can be computed as::
+
+            num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]
         """
 
         # Heightfield collision data
@@ -394,15 +402,19 @@ class Model:
         self.body_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first body per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the bodies belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global bodies (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total body count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the bodies belonging to that world. The second-last element (accessible via
+        index ``-2``) stores the start index of the global bodies (i.e. with world
+        index ``-1``) added to the end of the model, and the last element stores the
+        total body count.
 
-        The number of bodies in a given world `w` can be computed as:
-            `num_bodies_in_world = body_world_start[w + 1] - body_world_start[w]`.
+        The number of bodies in a given world ``w`` can be computed as::
 
-        The total number of global bodies can be computed as:
-            `num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]`.
+            num_bodies_in_world = body_world_start[w + 1] - body_world_start[w]
+
+        The total number of global bodies can be computed as::
+
+            num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]
         """
 
         self.joint_q: wp.array(dtype=wp.float32) | None = None
@@ -474,54 +486,70 @@ class Model:
         self.joint_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first joint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the joints belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global joints (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total joint count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the joints belonging to that world. The second-last element (accessible via
+        index ``-2``) stores the start index of the global joints (i.e. with world
+        index ``-1``) added to the end of the model, and the last element stores the
+        total joint count.
 
-        The number of joints in a given world `w` can be computed as:
-            `num_joints_in_world = joint_world_start[w + 1] - joint_world_start[w]`.
+        The number of joints in a given world ``w`` can be computed as::
 
-        The total number of global joints can be computed as:
-            `num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]`.
+            num_joints_in_world = joint_world_start[w + 1] - joint_world_start[w]
+
+        The total number of global joints can be computed as::
+
+            num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]
         """
         self.joint_dof_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first joint degree of freedom per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the joint DOFs belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global joint DOFs (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total joint DOF count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the joint DOFs belonging to that world. The second-last element (accessible
+        via index ``-2``) stores the start index of the global joint DOFs (i.e. with
+        world index ``-1``) added to the end of the model, and the last element
+        stores the total joint DOF count.
 
-        The number of joint DOFs in a given world `w` can be computed as:
-            `num_joint_dofs_in_world = joint_dof_world_start[w + 1] - joint_dof_world_start[w]`.
+        The number of joint DOFs in a given world ``w`` can be computed as::
 
-        The total number of global joint DOFs can be computed as:
-            `num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]`.
+            num_joint_dofs_in_world = joint_dof_world_start[w + 1] - joint_dof_world_start[w]
+
+        The total number of global joint DOFs can be computed as::
+
+            num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]
         """
         self.joint_coord_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first joint coordinate per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the joint coordinates belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global joint coordinates (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total joint coordinate count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the joint coordinates belonging to that world. The second-last element
+        (accessible via index ``-2``) stores the start index of the global joint
+        coordinates (i.e. with world index ``-1``) added to the end of the model,
+        and the last element stores the total joint coordinate count.
 
-        The number of joint coordinates in a given world `w` can be computed as:
-            `num_joint_coords_in_world = joint_coord_world_start[w + 1] - joint_coord_world_start[w]`.
+        The number of joint coordinates in a given world ``w`` can be computed as::
 
-        The total number of global joint coordinates can be computed as:
-            `num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]`.
+            num_joint_coords_in_world = joint_coord_world_start[w + 1] - joint_coord_world_start[w]
+
+        The total number of global joint coordinates can be computed as::
+
+            num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]
         """
         self.joint_constraint_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first joint constraint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the joint constraints belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global joint constraints (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total joint constraint count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the joint constraints belonging to that world. The second-last element
+        (accessible via index ``-2``) stores the start index of the global joint
+        constraints (i.e. with world index ``-1``) added to the end of the model,
+        and the last element stores the total joint constraint count.
 
-        The number of joint constraints in a given world `w` can be computed as:
-            `num_joint_constraints_in_world = joint_constraint_world_start[w + 1] - joint_constraint_world_start[w]`.
+        The number of joint constraints in a given world ``w`` can be computed as::
 
-        The total number of global joint constraints can be computed as:
-            `num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]`.
+            num_joint_constraints_in_world = joint_constraint_world_start[w + 1] - joint_constraint_world_start[w]
+
+        The total number of global joint constraints can be computed as::
+
+            num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]
         """
 
         self.articulation_start: wp.array(dtype=wp.int32) | None = None
@@ -533,38 +561,42 @@ class Model:
         self.articulation_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first articulation per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the articulations belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global articulations (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total articulation count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the articulations belonging to that world. The second-last element
+        (accessible via index ``-2``) stores the start index of the global
+        articulations (i.e. with world index ``-1``) added to the end of the model,
+        and the last element stores the total articulation count.
 
-        The number of articulations in a given world `w` can be computed as:
-            `num_articulations_in_world = articulation_world_start[w + 1] - articulation_world_start[w]`.
+        The number of articulations in a given world ``w`` can be computed as::
 
-        The total number of global articulations can be computed as:
-            `num_global_articulations = articulation_world_start[-1] - articulation_world_start[-2] + articulation_world_start[0]`.
+            num_articulations_in_world = articulation_world_start[w + 1] - articulation_world_start[w]
+
+        The total number of global articulations can be computed as::
+
+            num_global_articulations = articulation_world_start[-1] - articulation_world_start[-2] + articulation_world_start[0]
         """
-        self.max_joints_per_articulation = 0
+        self.max_joints_per_articulation: int = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
-        self.max_dofs_per_articulation = 0
+        self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
-        self.soft_contact_ke = 1.0e3
+        self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
-        self.soft_contact_kd = 10.0
+        self.soft_contact_kd: float = 10.0
         """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`).
         Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
         but multiplied by ke as a relative damping factor by VBD."""
-        self.soft_contact_kf = 1.0e3
+        self.soft_contact_kf: float = 1.0e3
         """Stiffness of friction force in soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
-        self.soft_contact_mu = 0.5
+        self.soft_contact_mu: float = 0.5
         """Friction coefficient of soft contacts [dimensionless]."""
-        self.soft_contact_restitution = 0.0
+        self.soft_contact_restitution: float = 0.0
         """Restitution coefficient of soft contacts [dimensionless] (used by :class:`SolverXPBD`)."""
 
-        self.rigid_contact_max = 0
+        self.rigid_contact_max: int = 0
         """Number of potential contact points between rigid bodies."""
 
-        self.up_axis = 2
+        self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array(dtype=wp.vec3) | None = None
         """Gravity vector [m/s²], shape [1], dtype vec3."""
@@ -596,15 +628,19 @@ class Model:
         self.equality_constraint_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first equality constraint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the equality constraints belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global equality constraints (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total equality constraint count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the equality constraints belonging to that world. The second-last element
+        (accessible via index ``-2``) stores the start index of the global equality
+        constraints (i.e. with world index ``-1``) added to the end of the model,
+        and the last element stores the total equality constraint count.
 
-        The number of equality constraints in a given world `w` can be computed as:
-            `num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]`.
+        The number of equality constraints in a given world ``w`` can be computed as::
 
-        The total number of global equality constraints can be computed as:
-            `num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]`.
+            num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]
+
+        The total number of global equality constraints can be computed as::
+
+            num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]
         """
 
         self.constraint_mimic_joint0: wp.array(dtype=wp.int32) | None = None
@@ -622,35 +658,35 @@ class Model:
         self.constraint_mimic_world: wp.array(dtype=wp.int32) | None = None
         """World index for each constraint, shape [constraint_mimic_count], int."""
 
-        self.particle_count = 0
+        self.particle_count: int = 0
         """Total number of particles in the system."""
-        self.body_count = 0
+        self.body_count: int = 0
         """Total number of bodies in the system."""
-        self.shape_count = 0
+        self.shape_count: int = 0
         """Total number of shapes in the system."""
-        self.joint_count = 0
+        self.joint_count: int = 0
         """Total number of joints in the system."""
-        self.tri_count = 0
+        self.tri_count: int = 0
         """Total number of triangles in the system."""
-        self.tet_count = 0
+        self.tet_count: int = 0
         """Total number of tetrahedra in the system."""
-        self.edge_count = 0
+        self.edge_count: int = 0
         """Total number of edges in the system."""
-        self.spring_count = 0
+        self.spring_count: int = 0
         """Total number of springs in the system."""
-        self.muscle_count = 0
+        self.muscle_count: int = 0
         """Total number of muscles in the system."""
-        self.articulation_count = 0
+        self.articulation_count: int = 0
         """Total number of articulations in the system."""
-        self.joint_dof_count = 0
+        self.joint_dof_count: int = 0
         """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
-        self.joint_coord_count = 0
+        self.joint_coord_count: int = 0
         """Total number of position degrees of freedom of all joints."""
-        self.joint_constraint_count = 0
+        self.joint_constraint_count: int = 0
         """Total number of joint constraints of all joints."""
-        self.equality_constraint_count = 0
+        self.equality_constraint_count: int = 0
         """Total number of equality constraints in the system."""
-        self.constraint_mimic_count = 0
+        self.constraint_mimic_count: int = 0
         """Total number of mimic constraints in the system."""
 
         # indices of particles sharing the same color
@@ -664,7 +700,7 @@ class Model:
         self.body_colors: wp.array(dtype=int) | None = None
         """Color assignment for every rigid body."""
 
-        self.device = wp.get_device(device)
+        self.device: wp.Device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
