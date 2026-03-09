@@ -219,8 +219,8 @@ Rigid-body solver behavior
 
 The rigid-body solvers (:class:`~newton.solvers.SolverMuJoCo`,
 :class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverXPBD`,
-:class:`~newton.solvers.SolverSemiImplicit`) support the same user-facing
-kinematic authoring model:
+:class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverVBD`)
+support the same user-facing kinematic authoring model:
 
 - Kinematic links keep their declared joint type (free/revolute/etc.).
 - A kinematic root attached to world by a fixed joint remains fixed (zero DOFs).
@@ -232,16 +232,19 @@ Implementation details differ by coordinate formulation:
 - Generalized-coordinate solvers (:class:`~newton.solvers.SolverMuJoCo`,
   :class:`~newton.solvers.SolverFeatherstone`) treat kinematic motion through prescribed joint state.
 - Maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`,
-  :class:`~newton.solvers.SolverSemiImplicit`) use prescribed body transforms/twists.
-- Contact handling is not identical across all four solvers. :class:`~newton.solvers.SolverXPBD`,
-  :class:`~newton.solvers.SolverMuJoCo`, and :class:`~newton.solvers.SolverFeatherstone`
-  treat kinematic bodies like infinite-mass colliders for contact response, while
+  :class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverVBD`)
+  use prescribed body transforms/twists.
+- Contact handling of kinematic bodies is not identical across the solvers. :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverMuJoCo`, and
+  :class:`~newton.solvers.SolverFeatherstone` treat kinematic bodies like
+  infinite-mass colliders for contact response, while
   :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
   does not zero inverse mass/inertia inside its contact solver. Contacts against
   kinematic bodies can therefore be softer under SemiImplicit.
 
 In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
-large internal armature value.
+large internal armature value; see :ref:`Kinematic Links and Fixed Roots
+<mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
 
@@ -338,36 +341,41 @@ The velocity dofs for each joint can be queried as follows:
     f1 = Control.joint_f[qd_start + 1]
     ...
 
-Common articulation workflows
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-ArticulationView: selection interface for RL and batched control
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-:class:`newton.selection.ArticulationView` is the high-level interface for selecting a subset
-of articulations and accessing their joints/links/DoFs with stable tensor shapes. This is
-especially useful in RL pipelines where the same observation/action logic is applied to many
-parallel environments.
+Axis-related quantities
+^^^^^^^^^^^^^^^^^^^^^^^
 
-Construct a view by matching articulation keys with a pattern and optional filters:
+Axis-related quantities include the definition of the joint axis in :attr:`newton.Model.joint_axis` and other properties
+defined via :class:`newton.ModelBuilder.JointDofConfig`. The joint targets in :attr:`newton.Control.joint_target` are also
+stored in the same per-axis order.
+
+The :attr:`newton.Model.joint_dof_dim` array can be used to query the number of linear and angular dofs.
+All axis-related quantities are stored in consecutive order for every joint. First, the linear dofs are stored, followed by the angular dofs.
+The indexing of the linear and angular degrees of freedom for a joint at a given ``joint_index`` is as follows:
 
 .. code-block:: python
 
-    import newton
+    num_linear_dofs = Model.joint_dof_dim[joint_index, 0]
+    num_angular_dofs = Model.joint_dof_dim[joint_index, 1]
+    # the joint axes for each joint start at this index:
+    axis_start = Model.joint_qd_start[joint_id]
+    # the first linear 3D axis
+    first_lin_axis = Model.joint_axis[axis_start]
+    # the joint target for this linear dof
+    first_lin_target = Control.joint_target[axis_start]
+    # the joint limit of this linear dof
+    first_lin_limit = Model.joint_limit_lower[axis_start]
+    # the first angular 3D axis is therefore
+    first_ang_axis = Model.joint_axis[axis_start + num_linear_dofs]
+    # the joint target for this angular dof
+    first_ang_target = Control.joint_target[axis_start + num_linear_dofs]
+    # the joint limit of this angular dof
+    first_ang_limit = Model.joint_limit_lower[axis_start + num_linear_dofs]
 
-    # select all articulations whose key starts with "robot"
-    view = newton.selection.ArticulationView(model, pattern="robot*")
 
-    # select only scalar-joint articulations (exclude quaternion-root joint types)
-    scalar_view = newton.selection.ArticulationView(
-        model,
-        pattern="robot*",
-        include_joint_types=[newton.JointType.PRISMATIC, newton.JointType.REVOLUTE],
-        exclude_joint_types=[newton.JointType.FREE, newton.JointType.BALL],
-    )
-
-Use views to read/write batched state slices (joint positions/velocities, root transforms,
-link transforms) without manual index bookkeeping.
+Common articulation workflows
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Center ``joint_q`` at joint limits with Warp kernels
 """"""""""""""""""""""""""""""""""""""""""""""""""""
@@ -443,6 +451,34 @@ A robust pattern is:
     # Recompute transforms after editing generalized coordinates
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
+ArticulationView: selection interface for RL and batched control
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+:class:`newton.selection.ArticulationView` is the high-level interface for selecting a subset
+of articulations and accessing their joints/links/DoFs with stable tensor shapes. This is
+especially useful in RL pipelines where the same observation/action logic is applied to many
+parallel environments.
+
+Construct a view by matching articulation keys with a pattern and optional filters:
+
+.. code-block:: python
+
+    import newton
+
+    # select all articulations whose key starts with "robot"
+    view = newton.selection.ArticulationView(model, pattern="robot*")
+
+    # select only scalar-joint articulations (exclude quaternion-root joint types)
+    scalar_view = newton.selection.ArticulationView(
+        model,
+        pattern="robot*",
+        include_joint_types=[newton.JointType.PRISMATIC, newton.JointType.REVOLUTE],
+        exclude_joint_types=[newton.JointType.FREE, newton.JointType.BALL],
+    )
+
+Use views to read/write batched state slices (joint positions/velocities, root transforms,
+link transforms) without manual index bookkeeping.
+
 Move articulations in world space
 """""""""""""""""""""""""""""""""
 
@@ -486,36 +522,6 @@ Use ``ArticulationView`` to inspect and modify selected articulations
     # if model attributes are edited through the view, notify the solver afterwards
     # solver.notify_model_changed()
 
-Axis-related quantities
-^^^^^^^^^^^^^^^^^^^^^^^
-
-Axis-related quantities include the definition of the joint axis in :attr:`newton.Model.joint_axis` and other properties
-defined via :class:`newton.ModelBuilder.JointDofConfig`. The joint targets in :attr:`newton.Control.joint_target` are also
-stored in the same per-axis order.
-
-The :attr:`newton.Model.joint_dof_dim` array can be used to query the number of linear and angular dofs.
-All axis-related quantities are stored in consecutive order for every joint. First, the linear dofs are stored, followed by the angular dofs.
-The indexing of the linear and angular degrees of freedom for a joint at a given ``joint_index`` is as follows:
-
-.. code-block:: python
-
-    num_linear_dofs = Model.joint_dof_dim[joint_index, 0]
-    num_angular_dofs = Model.joint_dof_dim[joint_index, 1]
-    # the joint axes for each joint start at this index:
-    axis_start = Model.joint_qd_start[joint_id]
-    # the first linear 3D axis
-    first_lin_axis = Model.joint_axis[axis_start]
-    # the joint target for this linear dof
-    first_lin_target = Control.joint_target[axis_start]
-    # the joint limit of this linear dof
-    first_lin_limit = Model.joint_limit_lower[axis_start]
-    # the first angular 3D axis is therefore
-    first_ang_axis = Model.joint_axis[axis_start + num_linear_dofs]
-    # the joint target for this angular dof
-    first_ang_target = Control.joint_target[axis_start + num_linear_dofs]
-    # the joint limit of this angular dof
-    first_ang_limit = Model.joint_limit_lower[axis_start + num_linear_dofs]
-
 
 .. _FK-IK:
 
@@ -551,7 +557,6 @@ Given the parent body's world transform :math:`x_{wp}` and the joint transform :
 
 .. math::
    x_{wc} = x_{wp} \cdot x_{pj} \cdot x_{j} \cdot x_{cj}^{-1}.
-
 
 
 .. autofunction:: newton.eval_fk
