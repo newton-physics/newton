@@ -262,7 +262,7 @@ class Example:
             normal_image=self.tiled_camera_sensor_normal_image,
             shape_index_image=self.tiled_camera_sensor_shape_index_image,
             albedo_image=self.tiled_camera_sensor_albedo_image,
-            clear_data=SensorTiledCamera.GRAY_CLEAR_DATA
+            clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
         )
         self.update_texture()
 
