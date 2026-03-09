@@ -34,12 +34,14 @@ from ..core.types import (
     Axis,
     AxisType,
     Devicelike,
+    Mat22,
     Mat33,
     Quat,
     Sequence,
     Transform,
     Vec3,
     Vec4,
+    Vec6,
     axis_to_vec3,
     flag_to_int,
     nparray,
@@ -891,7 +893,9 @@ class ModelBuilder:
         """Shape collision filter pairs accumulated for :attr:`Model.shape_collision_filter_pairs`."""
 
         self._requested_contact_attributes: set[str] = set()
+        """Optional contact attributes requested via :meth:`request_contact_attributes`."""
         self._requested_state_attributes: set[str] = set()
+        """Optional state attributes requested via :meth:`request_state_attributes`."""
 
         # springs
         self.spring_indices: list[int] = []
@@ -908,8 +912,8 @@ class ModelBuilder:
         # triangles
         self.tri_indices: list[tuple[int, int, int]] = []
         """Triangle connectivity accumulated for :attr:`Model.tri_indices`."""
-        self.tri_poses: list[Any] = []
-        """Triangle rest-pose matrices accumulated for :attr:`Model.tri_poses`."""
+        self.tri_poses: list[Mat22] = []
+        """Triangle rest-pose 2x2 matrices accumulated for :attr:`Model.tri_poses`."""
         self.tri_activations: list[float] = []
         """Triangle activations accumulated for :attr:`Model.tri_activations`."""
         self.tri_materials: list[tuple[float, float, float, float, float]] = []
@@ -928,10 +932,10 @@ class ModelBuilder:
         """Bending stiffness/damping rows accumulated for :attr:`Model.edge_bending_properties`."""
 
         # tetrahedra
-        self.tet_indices: list[tuple[int, int, int, int] | list[int]] = []
+        self.tet_indices: list[tuple[int, int, int, int]] = []
         """Tetrahedral connectivity accumulated for :attr:`Model.tet_indices`."""
-        self.tet_poses: list[Any] = []
-        """Tetrahedral rest-pose matrices accumulated for :attr:`Model.tet_poses`."""
+        self.tet_poses: list[Mat33] = []
+        """Tetrahedral rest-pose 3x3 matrices accumulated for :attr:`Model.tet_poses`."""
         self.tet_activations: list[float] = []
         """Tetrahedral activations accumulated for :attr:`Model.tet_activations`."""
         self.tet_materials: list[tuple[float, float, float]] = []
@@ -952,17 +956,17 @@ class ModelBuilder:
         # rigid bodies
         self.body_mass: list[float] = []
         """Body masses [kg] accumulated for :attr:`Model.body_mass`."""
-        self.body_inertia: list[Any] = []
+        self.body_inertia: list[Mat33] = []
         """Body inertia tensors accumulated for :attr:`Model.body_inertia`."""
         self.body_inv_mass: list[float] = []
         """Inverse body masses accumulated for :attr:`Model.body_inv_mass`."""
-        self.body_inv_inertia: list[Any] = []
+        self.body_inv_inertia: list[Mat33] = []
         """Inverse body inertia tensors accumulated for :attr:`Model.body_inv_inertia`."""
         self.body_com: list[Vec3] = []
         """Body centers of mass [m] accumulated for :attr:`Model.body_com`."""
         self.body_q: list[Transform] = []
         """Body poses accumulated for :attr:`Model.body_q`."""
-        self.body_qd: list[Any] = []
+        self.body_qd: list[Vec6] = []
         """Body spatial velocities accumulated for :attr:`Model.body_qd`."""
         self.body_label: list[str] = []
         """Body labels accumulated for :attr:`Model.body_label`."""
@@ -1073,7 +1077,9 @@ class ModelBuilder:
         """World index assigned to subsequently added entities; ``-1`` means global."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
+        """Up axis used when expanding scalar gravity into per-world gravity vectors."""
         self.gravity: float = gravity
+        """Gravity acceleration [m/s^2] applied along :attr:`up_axis` for newly added worlds."""
 
         self.world_gravity: list[Vec3] = []
         """Per-world gravity vectors retained until :meth:`finalize <ModelBuilder.finalize>` populates
@@ -1105,7 +1111,7 @@ class ModelBuilder:
         """Second joint indices accumulated for :attr:`Model.equality_constraint_joint2`."""
         self.equality_constraint_polycoef: list[list[float]] = []
         """Polynomial coefficient rows accumulated for :attr:`Model.equality_constraint_polycoef`."""
-        self.equality_constraint_label: list[Any] = []
+        self.equality_constraint_label: list[str] = []
         """Equality constraint labels accumulated for :attr:`Model.equality_constraint_label`."""
         self.equality_constraint_enabled: list[bool] = []
         """Equality constraint enabled flags accumulated for :attr:`Model.equality_constraint_enabled`."""
@@ -1150,14 +1156,18 @@ class ModelBuilder:
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
+        """Registered custom attributes to materialize during :meth:`finalize <ModelBuilder.finalize>`."""
         # Registered custom frequencies (must be registered before adding attributes with that frequency)
         self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
+        """Registered custom string frequencies keyed by ``namespace:name`` or bare name."""
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
+        """Running counts for custom string frequencies used to size custom attribute arrays."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
         self.actuator_entries: dict[tuple[type, tuple], ActuatorEntry] = {}
+        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by class and scalar parameters."""
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
