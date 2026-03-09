@@ -304,11 +304,12 @@ class SensorContact:
             c_shapes = [self.ObjectType.TOTAL]
             c_bodies = []
 
-        contact_pairs = (
-            set(map(tuple, model.shape_contact_pairs.list()))
-            if getattr(model, "shape_contact_pairs", None) is not None
-            else None
-        )
+        if model.shape_contact_pairs is None:
+            contact_pairs = None
+        else:
+            # pack into larger int to avoid Python object overhead
+            pairs = model.shape_contact_pairs.numpy().astype(np.int64)
+            contact_pairs = set((pairs[:, 0] << 32) | pairs[:, 1])
 
         TOTAL = self.ObjectType.TOTAL
         wc = model.world_count
@@ -422,7 +423,7 @@ class SensorContact:
         counterpart_bodies: "list[int | SensorContact.ObjectType]",
         counterpart_shapes: "list[int | SensorContact.ObjectType]",
         body_shapes: dict[int, list[int]],
-        shape_contact_pairs: set[tuple[int, int]] | None = None,
+        shape_contact_pairs: set[int] | None = None,
     ):
         """Given bodies and shapes for sensing objects and counterparts, build the
         shape_pair -> reading index mapping"""
@@ -467,7 +468,7 @@ class SensorContact:
                         if pair[0] != pair[1]
                     }
                     if shape_contact_pairs is not None:
-                        sp_flips = {sp: f for sp, f in sp_flips.items() if sp in shape_contact_pairs}
+                        sp_flips = {sp: f for sp, f in sp_flips.items() if (sp[0] << 32) | sp[1] in shape_contact_pairs}
 
                 for sp, flip in sp_flips.items():
                     sp_to_reading[sp].append((sensing_obj_idx, reading_idx, flip))
