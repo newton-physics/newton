@@ -721,7 +721,12 @@ def scan_with_total(
         total: Single-element output array that will contain the sum of all counts.
     """
     wp.utils.array_scan(counts, prefix_sums, inclusive=False)
-    wp.launch(get_total_kernel, dim=[1], inputs=[counts, prefix_sums, num_elements, counts.shape[0], total])
+    wp.launch(
+        get_total_kernel,
+        dim=[1],
+        inputs=[counts, prefix_sums, num_elements, counts.shape[0], total],
+        device=counts.device,
+    )
 
 
 __all__ = ["compute_shape_radius", "load_mesh", "visualize_meshes"]

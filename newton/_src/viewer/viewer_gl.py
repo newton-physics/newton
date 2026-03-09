@@ -16,8 +16,10 @@
 from __future__ import annotations
 
 import ctypes
+import re
 import time
 from collections.abc import Callable
+from importlib import metadata
 from typing import Any, Literal
 
 import numpy as np
@@ -34,6 +36,23 @@ from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind
+
+
+def _parse_version_tuple(version: str) -> tuple[int, ...]:
+    parts = re.findall(r"\d+", version)
+    return tuple(int(part) for part in parts[:3])
+
+
+def _imgui_uses_imvec4_color_edit3() -> bool:
+    """Return True when installed imgui_bundle expects ImVec4 in color_edit3."""
+    try:
+        version = metadata.version("imgui_bundle")
+    except metadata.PackageNotFoundError:
+        return False
+    return _parse_version_tuple(version) >= (1, 92, 6)
+
+
+_IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
 
 
 @wp.kernel
@@ -1691,12 +1710,23 @@ class ViewerGL(ViewerBase):
                 # Wireframe mode
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
+                def _edit_color3(
+                    label: str, color: tuple[float, float, float]
+                ) -> tuple[bool, tuple[float, float, float]]:
+                    """Normalize color_edit3 input/output across imgui_bundle versions."""
+                    if _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3:
+                        changed, updated_color = imgui.color_edit3(label, imgui.ImVec4(*color, 1.0))
+                        return changed, (updated_color.x, updated_color.y, updated_color.z)
+
+                    changed, updated_color = imgui.color_edit3(label, color)
+                    return changed, (updated_color[0], updated_color[1], updated_color[2])
+
                 # Light color
-                changed, self.renderer._light_color = imgui.color_edit3("Light Color", self.renderer._light_color)
+                changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
                 # Sky color
-                changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", self.renderer.sky_upper)
+                changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
                 # Ground color
-                changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", self.renderer.sky_lower)
+                changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
             # Wind Effects section
             if self.wind is not None:

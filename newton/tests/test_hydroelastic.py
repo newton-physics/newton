@@ -109,6 +109,7 @@ def build_stacked_cubes_scene(
             max_resolution=32,
             narrow_band_range=(-narrow_band, narrow_band),
             margin=contact_gap,
+            device=device,
         )
 
     builder = newton.ModelBuilder()

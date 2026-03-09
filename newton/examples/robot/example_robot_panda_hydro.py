@@ -531,6 +531,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
         parser.set_defaults(num_frames=720)
         parser.set_defaults(world_count=1)
         parser.add_argument(

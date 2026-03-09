@@ -431,37 +431,59 @@ def create_parser():
         help="Whether to run the example in test mode.",
     )
     parser.add_argument(
+        "--quiet",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Suppress Warp compilation messages.",
+    )
+
+    return parser
+
+
+def add_broad_phase_arg(parser):
+    """Add ``--broad-phase`` argument to *parser*."""
+    parser.add_argument(
         "--broad-phase",
         type=str,
         default="explicit",
         choices=["nxn", "sap", "explicit"],
         help="Broad phase for collision detection.",
     )
+    return parser
+
+
+def add_mujoco_contacts_arg(parser):
+    """Add ``--use-mujoco-contacts`` argument to *parser*."""
+    import argparse  # noqa: PLC0415  — needed for BooleanOptionalAction
+
     parser.add_argument(
         "--use-mujoco-contacts",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use MuJoCo's native contact solver instead of Newton contacts (default: use Newton contacts).",
     )
-    parser.add_argument(
-        "--max-worlds",
-        type=int,
-        default=None,
-        help="Maximum number of worlds to render (for performance with many environments).",
-    )
-    parser.add_argument(
-        "--quiet",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Suppress Warp compilation messages.",
-    )
+    return parser
+
+
+def add_world_count_arg(parser):
+    """Add ``--world-count`` argument to *parser*."""
     parser.add_argument(
         "--world-count",
         type=int,
         default=1,
         help="Number of simulation worlds.",
     )
+    return parser
 
+
+def add_max_worlds_arg(parser):
+    """Add ``--max-worlds`` argument to *parser*."""
+    parser.add_argument(
+        "--max-worlds",
+        type=int,
+        default=None,
+        help="Maximum number of worlds to render (for performance with many environments).",
+    )
     return parser
 
 
@@ -584,4 +606,16 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_parser", "default_args", "get_examples", "init", "run", "test_body_state", "test_particle_state"]
+__all__ = [
+    "add_broad_phase_arg",
+    "add_max_worlds_arg",
+    "add_mujoco_contacts_arg",
+    "add_world_count_arg",
+    "create_parser",
+    "default_args",
+    "get_examples",
+    "init",
+    "run",
+    "test_body_state",
+    "test_particle_state",
+]
