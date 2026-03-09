@@ -130,11 +130,6 @@ include = ["/newton", "/newton/licenses"]
 [[tool.uv.index]]
 url = "https://pypi.org/simple"
 
-[[tool.uv.index]]
-name = "nvidia"
-url = "https://pypi.nvidia.com/"
-explicit = true
-
 [tool.uv]
 conflicts = [
     [
@@ -144,7 +139,6 @@ conflicts = [
 ]
 
 [tool.uv.sources]
-warp-lang = { index = "nvidia" }
 torch = [
     { index = "pytorch-cu128", extra = "torch-cu12" },
     { index = "pytorch-cu130", extra = "torch-cu13" },
