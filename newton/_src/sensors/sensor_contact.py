@@ -139,7 +139,7 @@ def _bucket_indices_by_world(
     """Partition world-contiguous indices into per-world buckets.
 
     Args:
-        indices: Global indices in world-contiguous order.
+        indices: Flat indices (any order; sorted internally if needed).
         world_start: Start index per world, length ``world_count + 2``.
             Layout: ``[start_w0, start_w1, ..., start_w(N-1), start_global_tail, total]``.
             Front-global indices are those in ``[0, start_w0)``.
@@ -150,12 +150,16 @@ def _bucket_indices_by_world(
         contains indices belonging to world ``w`` and ``global_indices`` contains
         indices belonging to global bodies or shapes (world -1).
     """
-    # TODO: Add a contiguousness check + sort for indices that aren't already world-ordered
     buckets: list[list[int]] = [[] for _ in range(world_count)]
     global_indices: list[int] = []
 
     w = 0
+    prev = -1
     for idx in indices:
+        if idx < prev:
+            # indices turn out to be unsorted; sort them first
+            return _bucket_indices_by_world(sorted(indices), world_start, world_count)
+        prev = idx
         if idx < world_start[0] or idx >= world_start[world_count]:
             global_indices.append(idx)
         else:
@@ -214,7 +218,7 @@ class SensorContact:
         """Individual body."""
 
     shape: tuple[int, int]
-    """Dimensions of the force matrix ``(n_sensing_objs, max_readings_per_world)``."""
+    """Dimensions of the force matrix ``(n_sensing_objs, max_readings)``."""
 
     reading_indices: list[list[list[int]]]
     """Active counterpart indices per sensing object, per world."""
@@ -226,7 +230,7 @@ class SensorContact:
     """Index and type of each counterpart, per world. Columns of the force matrix."""
 
     net_force: wp.array2d(dtype=wp.vec3)
-    """Net contact forces [N], shape ``(n_sensing_objs, n_counterparts)``, dtype :class:`vec3`.
+    """Net contact forces [N], shape ``(n_sensing_objs, max_readings)``, dtype :class:`vec3`.
     Entry ``[i, j]`` is the force on sensing object ``i`` from counterpart ``j``, in world frame."""
 
     sensing_obj_transforms: wp.array(dtype=wp.transform)
@@ -308,7 +312,9 @@ class SensorContact:
             contact_pairs = None
         else:
             # pack into larger int to avoid Python object overhead
-            pairs = model.shape_contact_pairs.numpy().astype(np.int64)
+            pairs = model.shape_contact_pairs.numpy()
+            assert pairs.dtype == np.int32
+            pairs = pairs.astype(np.int64)
             contact_pairs = set((pairs[:, 0] << 32) | pairs[:, 1])
 
         TOTAL = self.ObjectType.TOTAL
