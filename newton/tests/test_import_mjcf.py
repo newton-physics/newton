@@ -2218,6 +2218,176 @@ class TestImportMjcfGeometry(unittest.TestCase):
         )
         self.assertAlmostEqual(builder.body_mass[body_idx], 5.0, places=5)
 
+    # ------------------------------------------------------------------
+    # Mesh fitting (type="box|sphere|capsule" mesh="...")
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_box_stl(path, hx=1.0, hy=0.5, hz=2.0):
+        """Write a binary STL box with given half-extents centred at origin."""
+        # 12 triangles for an axis-aligned box
+        tris = []
+        for sign in (-1, 1):
+            for axis in range(3):
+                v = [[-hx, -hy, -hz], [-hx, -hy, -hz], [-hx, -hy, -hz], [-hx, -hy, -hz]]
+                # Build a face perpendicular to *axis* at *sign* distance.
+                u, w = (axis + 1) % 3, (axis + 2) % 3
+                for i, (su, sw) in enumerate([(1, 1), (-1, 1), (-1, -1), (1, -1)]):
+                    v[i] = [0.0, 0.0, 0.0]
+                    v[i][axis] = sign * [hx, hy, hz][axis]
+                    v[i][u] = su * [hx, hy, hz][u]
+                    v[i][w] = sw * [hx, hy, hz][w]
+                if sign > 0:
+                    tris.append((v[0], v[1], v[2]))
+                    tris.append((v[0], v[2], v[3]))
+                else:
+                    tris.append((v[0], v[2], v[1]))
+                    tris.append((v[0], v[3], v[2]))
+        with open(path, "wb") as f:
+            f.write(b"\0" * 80)
+            f.write(struct.pack("<I", len(tris)))
+            for tri in tris:
+                f.write(struct.pack("<fff", 0, 0, 0))
+                for v in tri:
+                    f.write(struct.pack("<fff", *v))
+                f.write(struct.pack("<H", 0))
+
+    def test_fit_box_to_mesh_aabb(self):
+        """type='box' mesh='...' with fitaabb='true' produces a box matching the mesh AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            # shape_scale stores (hx, hy, hz)
+            s = builder.shape_scale[0]
+            np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
+
+    def test_fit_sphere_to_mesh_aabb(self):
+        """type='sphere' mesh='...' with fitaabb='true' uses max half-extent as radius."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="sphere" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.SPHERE)
+            # Sphere radius = max(1.0, 0.5, 2.0) = 2.0
+            s = builder.shape_scale[0]
+            self.assertAlmostEqual(s[0], 2.0, places=4)
+
+    def test_fit_capsule_to_mesh_aabb(self):
+        """type='capsule' mesh='...' with fitaabb='true' fits capsule to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="capsule" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.CAPSULE)
+            s = builder.shape_scale[0]
+            # radius = max(1.0, 0.5) = 1.0, half_height = 2.0 - 1.0 = 1.0
+            self.assertAlmostEqual(s[0], 1.0, places=4)
+            self.assertAlmostEqual(s[1], 1.0, places=4)
+
+    def test_fit_box_to_mesh_inertia(self):
+        """type='box' mesh='...' with fitaabb='false' (default) uses equivalent inertia box."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            # A unit cube: all half-extents equal → inertia box should be symmetric
+            self._write_box_stl(stl_path, hx=1.0, hy=1.0, hz=1.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            s = builder.shape_scale[0]
+            # For a unit cube the equivalent inertia box should be ~(1, 1, 1)
+            np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 1.0, 1.0], atol=0.05)
+
+    def test_fit_with_fitscale(self):
+        """fitscale attribute scales the fitted primitive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box" fitscale="2.0"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            s = builder.shape_scale[0]
+            np.testing.assert_allclose([s[0], s[1], s[2]], [2.0, 1.0, 4.0], atol=1e-4)
+
+    def test_mesh_without_explicit_type_stays_mesh(self):
+        """A geom with mesh= but no type= should still be treated as a mesh shape."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=1.0, hz=1.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.MESH)
+
 
 class TestImportMjcfSolverParams(unittest.TestCase):
     def test_solimplimit_parsing(self):

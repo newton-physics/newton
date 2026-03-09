@@ -125,6 +125,63 @@ def compute_aabb(vertices: nparray) -> tuple[Vec3, Vec3]:
     return min_coords, max_coords
 
 
+def compute_equivalent_inertia_box(
+    vertices: nparray,
+    indices: nparray,
+    is_solid: bool = True,
+) -> tuple[wp.vec3, wp.vec3]:
+    """Compute the equivalent inertia box of a triangular mesh.
+
+    The equivalent inertia box is the box whose inertia tensor matches that of
+    the mesh.  Unlike a bounding box it does **not** necessarily enclose the
+    geometry — it characterises the mass distribution.
+
+    The half-sizes are derived from the principal inertia eigenvalues
+    (*I₀*, *I₁*, *I₂*) and volume *V* of the mesh:
+
+    .. math::
+
+        h_i = \\tfrac{1}{2}\\sqrt{\\frac{6\\,(I_j + I_k - I_i)}{V}}
+
+    where *(i, j, k)* is a cyclic permutation of *(0, 1, 2)*.
+
+    Args:
+        vertices: Vertex positions, shape ``(N, 3)``.
+        indices: Triangle indices (flattened or ``(M, 3)``).
+        is_solid: If ``True`` treat the mesh as solid; otherwise as a thin
+            shell (see :func:`compute_inertia_mesh`).
+
+    Returns:
+        Tuple of ``(center, half_extents)`` where *center* is the center of
+        mass and *half_extents* are the box half-sizes along the principal axes
+        sorted in ascending order.
+    """
+    _mass, com, inertia_tensor, volume = compute_inertia_mesh(
+        density=1.0,
+        vertices=vertices.tolist() if isinstance(vertices, np.ndarray) else vertices,
+        indices=np.asarray(indices).flatten().tolist(),
+        is_solid=is_solid,
+    )
+
+    if volume <= 0.0:
+        return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)
+
+    inertia = np.array(inertia_tensor).reshape(3, 3)
+    eigvals, _eigvecs = np.linalg.eigh(inertia)
+
+    # Sort eigenvalues in ascending order.
+    eigvals = np.sort(eigvals)
+
+    # Derive equivalent box half-sizes from principal inertia eigenvalues.
+    half_extents = np.zeros(3)
+    for i in range(3):
+        j, k = (i + 1) % 3, (i + 2) % 3
+        arg = 6.0 * (eigvals[j] + eigvals[k] - eigvals[i]) / volume
+        half_extents[i] = 0.5 * np.sqrt(max(arg, 0.0))
+
+    return wp.vec3(*np.array(com)), wp.vec3(*half_extents)
+
+
 def compute_pca_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
     """Compute the oriented bounding box of a set of vertices.
 
