@@ -807,19 +807,101 @@
 installing from source or using <code class="docutils literal notranslate"><span class="pre">uv</span></code>, see the <a class="reference internal" href="development.html"><span class="doc">Development</span></a> guide.</p>
 <section id="system-requirements">
 <h2>System Requirements<a class="headerlink" href="#system-requirements" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p>Python 3.10 or higher</p></li>
-<li><p>Windows or Linux on x86-64 architecture (Linux aarch64 is supported but not as thoroughly tested)</p></li>
-<li><p>NVIDIA GPU with compute capability &gt;= 5.0 (Maxwell) and driver 545 or newer (see note below)</p></li>
-</ul>
-<p>A local installation of the <a class="reference external" href="https://developer.nvidia.com/cuda-downloads">CUDA Toolkit</a> is not required for Newton.</p>
-<dl class="simple">
-<dt><strong>Note:</strong></dt><dd><ul class="simple">
-<li><p>NVIDIA GPU driver 545+ is required for Warp kernel compilation <em>during</em> CUDA graph capture. Some examples using graph capture may fail with older drivers.</p></li>
-<li><p>Unless otherwise specified, Newton’s system requirements are identical to NVIDIA’s <a class="reference external" href="https://developer.nvidia.com/warp">Warp</a> requirements.</p></li>
-</ul>
-</dd>
-</dl>
+<section id="minimum-requirements">
+<h3>Minimum Requirements<a class="headerlink" href="#minimum-requirements" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 30.0%" />
+<col style="width: 45.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Requirement</p></th>
+<th class="head"><p>Minimum</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Python</p></td>
+<td><p>3.10</p></td>
+<td><p>3.11+ recommended</p></td>
+</tr>
+<tr class="row-odd"><td><p>OS</p></td>
+<td><p>Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)</p></td>
+<td><p>macOS has no GPU acceleration; see <a class="reference internal" href="#cpu-limitations"><span class="std std-ref">CPU-Only Limitations</span></a> below</p></td>
+</tr>
+<tr class="row-even"><td><p>NVIDIA GPU</p></td>
+<td><p>Compute capability 5.0+ (Maxwell)</p></td>
+<td><p>Any GeForce GTX 9xx or newer</p></td>
+</tr>
+<tr class="row-odd"><td><p>NVIDIA Driver</p></td>
+<td><p>545 or newer (CUDA 12)</p></td>
+<td><p>550 or newer (CUDA 12.4) recommended for best performance</p></td>
+</tr>
+<tr class="row-even"><td><p>CUDA</p></td>
+<td><p>12, 13</p></td>
+<td><p>No local CUDA Toolkit required; <a class="reference external" href="https://github.com/NVIDIA/warp">Warp</a> bundles its own runtime</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="cuda-compatibility">
+<h3>CUDA Compatibility<a class="headerlink" href="#cuda-compatibility" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 75.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>CUDA Version</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>12.3+</p></td>
+<td><p>Required for reliable CUDA graph capture</p></td>
+</tr>
+<tr class="row-odd"><td><p>12.4+</p></td>
+<td><p>Recommended for best performance</p></td>
+</tr>
+<tr class="row-even"><td><p>13</p></td>
+<td><p>Supported</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="tested-configurations">
+<h3>Tested Configurations<a class="headerlink" href="#tested-configurations" title="Link to this heading">#</a></h3>
+<p>Newton releases are tested on the following configurations:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 75.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Configuration</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>OS</p></td>
+<td><p>Ubuntu 22.04/24.04 (x86-64 + ARM64), Windows, macOS (CPU only)</p></td>
+</tr>
+<tr class="row-odd"><td><p>GPU</p></td>
+<td><p>NVIDIA Ada Lovelace, Blackwell</p></td>
+</tr>
+<tr class="row-even"><td><p>Python</p></td>
+<td><p>3.10, 3.12, 3.14 (import-only)</p></td>
+</tr>
+<tr class="row-odd"><td><p>CUDA</p></td>
+<td><p>12, 13</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
 <section id="platform-specific-requirements">
 <h3>Platform-Specific Requirements<a class="headerlink" href="#platform-specific-requirements" title="Link to this heading">#</a></h3>
 <p><strong>Linux aarch64 (ARM64)</strong></p>
@@ -829,6 +911,20 @@ X11 development libraries to build <code class="docutils literal notranslate"><s
 <span class="go">sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev</span>
 </pre></div>
 </div>
+</section>
+<section id="cpu-only-limitations">
+<span id="cpu-limitations"></span><h3>CPU-Only Limitations<a class="headerlink" href="#cpu-only-limitations" title="Link to this heading">#</a></h3>
+<p>Newton can run on CPU (including macOS), but the following features require an
+NVIDIA GPU and are unavailable in CPU-only mode:</p>
+<ul class="simple">
+<li><p><strong>SDF collision</strong> — signed-distance-field computation (<code class="xref py py-func docutils literal notranslate"><span class="pre">compute_sdf_from_shape()</span></code>) requires CUDA
+(<code class="docutils literal notranslate"><span class="pre">wp.Volume</span></code> is GPU-only).</p></li>
+<li><p><strong>Mesh-mesh contacts</strong> — SDF-based mesh-mesh collision is silently skipped on CPU.</p></li>
+<li><p><strong>Hydroelastic contacts</strong> — depends on the SDF system.</p></li>
+<li><p><strong>Tiled camera sensor</strong> — GPU-accelerated raytraced rendering.</p></li>
+<li><p><strong>Implicit MPM solver</strong> — designed for GPU execution with CUDA graph support.</p></li>
+<li><p><strong>Tile-based VBD solve</strong> — uses GPU tile API; gracefully disabled on CPU.</p></li>
+</ul>
 </section>
 </section>
 <section id="installing-newton">
@@ -1064,7 +1160,11 @@ to the same compatibility guarantees as stable releases.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#system-requirements">System Requirements</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minimum-requirements">Minimum Requirements</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda-compatibility">CUDA Compatibility</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tested-configurations">Tested Configurations</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#platform-specific-requirements">Platform-Specific Requirements</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cpu-only-limitations">CPU-Only Limitations</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installing-newton">Installing Newton</a><ul class="visible nav section-nav flex-column">
