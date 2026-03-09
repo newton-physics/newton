@@ -622,6 +622,7 @@ def parse_usd(
         label: str,
         armature: float,
         articulation_root_xform: wp.transform | None = None,
+        is_kinematic: bool = False,
     ) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
         # Extract custom attributes for this body
@@ -633,6 +634,7 @@ def parse_usd(
             xform=xform,
             label=label,
             armature=armature,
+            is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
         path_body_map[label] = b
@@ -667,14 +669,24 @@ def parse_usd(
             (prim, physics_scene_prim), "newton:armature", builder.default_body_armature
         )
 
+        is_kinematic = rigid_body_desc.kinematicBody
+
         if add_body_to_builder:
-            return add_body(prim, origin, path, body_armature, articulation_root_xform=articulation_root_xform)
+            return add_body(
+                prim,
+                origin,
+                path,
+                body_armature,
+                articulation_root_xform=articulation_root_xform,
+                is_kinematic=is_kinematic,
+            )
         else:
             result = {
                 "prim": prim,
                 "xform": origin,
                 "label": path,
                 "armature": body_armature,
+                "is_kinematic": is_kinematic,
             }
             if articulation_root_xform is not None:
                 result["articulation_root_xform"] = articulation_root_xform

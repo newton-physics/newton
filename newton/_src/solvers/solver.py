@@ -241,7 +241,7 @@ class SolverBase:
         state_out: State,
         dt: float,
         angular_damping: float = 0.0,
-    ):
+    ) -> None:
         """
         Integrate the rigid bodies of the model.
 
@@ -282,7 +282,7 @@ class SolverBase:
         state_in: State,
         state_out: State,
         dt: float,
-    ):
+    ) -> None:
         """
         Integrate the particles of the model.
 
@@ -313,7 +313,7 @@ class SolverBase:
 
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
-    ) -> State | None:
+    ) -> None:
         """
         Simulate the model for a given time step using the given control input.
 
@@ -328,7 +328,7 @@ class SolverBase:
         """
         raise NotImplementedError()
 
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
