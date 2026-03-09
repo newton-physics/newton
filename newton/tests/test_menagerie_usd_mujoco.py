@@ -207,7 +207,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
     def test_import_apptronik_apollo(self):
         builder, model = self._load_robot("apptronik_apollo")
         self.assertEqual(builder.body_count, 36)
-        self.assertEqual(builder.joint_count, 35)
+        self.assertEqual(builder.joint_count, 36)
         self.assertEqual(builder.shape_count, 87)
         self._assert_no_nan(model, "apptronik_apollo")
 
