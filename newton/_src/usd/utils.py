@@ -1136,7 +1136,7 @@ def get_mesh(
         color=material_props.get("color"),
         texture=material_props.get("texture"),
         metallic=material_props.get("metallic"),
-        roughness=material_props.get("roughness")
+        roughness=material_props.get("roughness"),
     )
     if return_uv_indices:
         return mesh_out, uv_indices
