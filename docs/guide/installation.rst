@@ -54,7 +54,7 @@ CUDA Compatibility
 Tested Configurations
 ^^^^^^^^^^^^^^^^^^^^^
 
-Newton is continuously tested in the following configurations:
+Newton releases are tested on the following configurations:
 
 .. list-table::
    :widths: 25 75
