@@ -9180,6 +9180,7 @@ class ModelBuilder:
                             target_voxel_size=sdf_target_voxel_size,
                             max_resolution=effective_max_resolution,
                             bake_scale=bake_scale,
+                            device=device,
                         )
 
                 if cache_key is not None:
