@@ -30,16 +30,13 @@ Minimum Requirements
      - Any GeForce GTX 9xx or newer
    * - NVIDIA Driver
      - 545 or newer (CUDA 12)
-     - 550 or newer (CUDA 12.4) recommended
-   * - CUDA Toolkit
-     - Not required
-     - `Warp <https://github.com/NVIDIA/warp>`__ bundles its own CUDA runtime
+     - 550 or newer (CUDA 12.4) recommended for best performance
+   * - CUDA
+     - 12, 13
+     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime
 
 CUDA Compatibility
 ^^^^^^^^^^^^^^^^^^
-
-Newton supports both CUDA 12 and CUDA 13. Warp bundles its own CUDA runtime, so no
-local CUDA Toolkit installation is needed.
 
 .. list-table::
    :widths: 25 75
@@ -65,10 +62,8 @@ Newton is continuously tested in the following configurations:
 
    * - Component
      - Configuration
-   * - OS (CPU tests)
-     - Ubuntu 22.04/24.04 (x86-64 + ARM64), Windows, macOS
-   * - OS (GPU tests)
-     - Ubuntu 22.04/24.04 (x86-64), Windows
+   * - OS
+     - Ubuntu 22.04/24.04 (x86-64 + ARM64), Windows, macOS (CPU only)
    * - GPU
      - NVIDIA Ada Lovelace, Blackwell
    * - Python
@@ -76,18 +71,8 @@ Newton is continuously tested in the following configurations:
    * - CUDA
      - 12, 13
 
-.. note::
-
-   Unless otherwise specified, Newton's system requirements are identical to
-   NVIDIA's `Warp <https://nvidia.github.io/warp/>`__ requirements.
-
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**macOS**
-
-macOS is supported for CPU-only simulation workflows. GPU acceleration is not available on
-macOS since Warp requires an NVIDIA GPU with CUDA support.
 
 **Linux aarch64 (ARM64)**
 
