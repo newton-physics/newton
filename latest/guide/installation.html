@@ -1129,6 +1129,38 @@ Windows (PowerShell)</label><div class="sd-tab-content docutils">
 </div>
 </section>
 </section>
+<section id="versioning">
+<h2>Versioning<a class="headerlink" href="#versioning" title="Link to this heading">#</a></h2>
+<p>Newton currently uses the following versioning scheme. This may evolve
+depending on the needs of the project and its users.</p>
+<p>Newton uses a <strong>major.minor.micro</strong> versioning scheme, similar to
+<a class="reference external" href="https://devguide.python.org/developer-workflow/development-cycle/#devcycle">Python itself</a>:</p>
+<ul class="simple">
+<li><p>New <strong>major</strong> versions are reserved for major reworks of Newton causing
+disruptive incompatibility (or reaching the 1.0 milestone).</p></li>
+<li><p>New <strong>minor</strong> versions are feature releases with a new set of features.
+May contain deprecations, breaking changes, and removals.</p></li>
+<li><p>New <strong>micro</strong> versions are bug-fix releases. In principle, there are no
+new features. The first release of a new minor version always includes
+the micro version (e.g., <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code>), though informal references may
+shorten it (e.g., “Newton 1.1”).</p></li>
+</ul>
+<section id="prerelease-versions">
+<h3>Prerelease Versions<a class="headerlink" href="#prerelease-versions" title="Link to this heading">#</a></h3>
+<p>In addition to stable releases, Newton uses the following prerelease
+version formats:</p>
+<ul class="simple">
+<li><p><strong>Development builds</strong> (<code class="docutils literal notranslate"><span class="pre">major.minor.micro.dev0</span></code>): The version string
+used in the source code on the main branch between stable releases
+(e.g., <code class="docutils literal notranslate"><span class="pre">1.1.0.dev0</span></code>).</p></li>
+<li><p><strong>Release candidates</strong> (<code class="docutils literal notranslate"><span class="pre">major.minor.microrcN</span></code>): Pre-release versions
+for QA testing before a stable release, starting with <code class="docutils literal notranslate"><span class="pre">rc1</span></code> and
+incrementing (e.g., <code class="docutils literal notranslate"><span class="pre">1.1.0rc1</span></code>). Usually not published to PyPI.</p></li>
+</ul>
+<p>Prerelease versions should be considered unstable and are not subject
+to the same compatibility guarantees as stable releases.</p>
+</section>
+</section>
 <section id="next-steps">
 <h2>Next Steps<a class="headerlink" href="#next-steps" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -1179,6 +1211,10 @@ Windows (PowerShell)</label><div class="sd-tab-content docutils">
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#method-2-using-a-virtual-environment-setup-by-uv">Method 2: Using a Virtual Environment Setup by uv</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#method-3-manual-setup-using-pip-in-a-virtual-environment">Method 3: Manual Setup Using Pip in a Virtual Environment</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#versioning">Versioning</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prerelease-versions">Prerelease Versions</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next Steps</a></li>
