@@ -201,7 +201,13 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 
    world_count: 2
 
-**replicate**: creates ``N`` copies of a builder, each as its own world, with optional spatial offsets:
+**replicate**: creates ``N`` copies of a builder, each as its own world, with optional spatial offsets.
+
+.. tip::
+   Using physical ``spacing`` to separate replicated worlds moves bodies away from the origin,
+   which can reduce numerical stability. For visual separation, prefer using viewer-level world
+   offsets (e.g. ``viewer.set_world_offsets()``) while keeping ``spacing=(0, 0, 0)`` so that all
+   worlds remain at the origin in the physics simulation.
 
 .. testcode::
 
@@ -235,7 +241,12 @@ Per-World Gravity
 
 Each world can have its own gravity vector, which is useful for simulating different environments
 (e.g., Earth gravity in one world, lunar gravity in another).
-Per-world gravity is set via :meth:`~newton.Model.set_gravity`:
+Per-world gravity can be configured at build time via the ``gravity`` argument of :meth:`~newton.ModelBuilder.begin_world`,
+or modified at runtime via :meth:`~newton.Model.set_gravity`:
+
+.. note::
+   Global entities (world index ``-1``) use the gravity of world ``0``.
+   Keep this in mind when mixing global and world-specific entities with different gravity vectors.
 
 .. testcode::
 
