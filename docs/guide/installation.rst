@@ -21,7 +21,7 @@ Minimum Requirements
      - Notes
    * - Python
      - 3.10
-     - 3.11+ recommended; some dependencies lack 3.10 wheels
+     - 3.11+ recommended
    * - OS
      - Linux (x86-64, aarch64) or Windows (x86-64)
      -
