@@ -1422,7 +1422,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
-                default=wp.vec2(-1.0, 1.0),
+                default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="ctrlrange",
                 usd_attribute_name="*",
@@ -1449,7 +1449,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
-                default=wp.vec2(-1.0, 1.0),
+                default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="forcerange",
                 usd_attribute_name="*",
@@ -3590,6 +3590,10 @@ class SolverMuJoCo(SolverBase):
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
+
+        See ``docs/integrations/mujoco.rst`` for user-facing documentation of
+        all conversions performed here.  Keep that file in sync when changing
+        this method.
 
         Solver options (e.g., ``impratio``) follow this resolution priority:
 
