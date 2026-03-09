@@ -151,7 +151,9 @@ For format-specific details, see:
   absent.
 - **URDF**: :meth:`~newton.ModelBuilder.add_urdf` — uses ``<inertial>``
   directly when present; falls back to collision geometry with default density
-  otherwise.  Visual shapes never contribute mass.
+  otherwise.  By default visual shapes do not contribute mass; however,
+  ``parse_visuals_as_colliders=True`` promotes visual geometry into the
+  collider set, making it mass-contributing at ``default_shape_density``.
 
 
 .. _Validation and correction at finalize:
@@ -195,6 +197,10 @@ behavior:
 Checks performed
 ^^^^^^^^^^^^^^^^
 
+The detailed (``validate_inertia_detailed=True``) and fast (default) validation
+paths apply the same conceptual checks, but the detailed path emits per-body
+warnings.  Work is underway to unify the two implementations.
+
 The following checks are applied in order:
 
 1. **Negative mass** — set to zero.
@@ -221,8 +227,8 @@ Shape inertia reference
 -----------------------
 
 The table below summarizes the mass formula for each shape type when density
-is positive.  For the full inertia tensor expressions, see the source in
-:mod:`newton.geometry` (``compute_inertia_*`` functions).
+is positive.  For the full inertia tensor expressions, see
+:func:`~newton.geometry.compute_inertia_shape`.
 
 .. list-table::
    :header-rows: 1
