@@ -824,6 +824,20 @@
 </dl>
 <p>For rigid bodies, the AVBD algorithm uses <strong>soft constraints</strong> with adaptive penalty parameters
 for joints and contacts. Hard constraints are not currently enforced.</p>
+<dl>
+<dt>Joint limitations:</dt><dd><ul class="simple">
+<li><p>Supported joint types: BALL, FIXED, FREE, CABLE.
+PRISMATIC, REVOLUTE, DISTANCE, and D6 joints are not supported.</p></li>
+<li><p><a class="reference internal" href="newton.Model.html#newton.Model.joint_target_ke" title="newton.Model.joint_target_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_ke</span></code></a>/<a class="reference internal" href="newton.Model.html#newton.Model.joint_target_kd" title="newton.Model.joint_target_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_kd</span></code></a> are used for CABLE
+joints only (as stretch/bend stiffness and damping).</p></li>
+<li><p>Other joint properties (<a class="reference internal" href="newton.Model.html#newton.Model.joint_enabled" title="newton.Model.joint_enabled"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_enabled</span></code></a>, <a class="reference internal" href="newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a>,
+<a class="reference internal" href="newton.Model.html#newton.Model.joint_friction" title="newton.Model.joint_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_friction</span></code></a>, <a class="reference internal" href="newton.Model.html#newton.Model.joint_limit_ke" title="newton.Model.joint_limit_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_ke</span></code></a>/<a class="reference internal" href="newton.Model.html#newton.Model.joint_limit_kd" title="newton.Model.joint_limit_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_kd</span></code></a>,
+<a class="reference internal" href="newton.Model.html#newton.Model.joint_target_mode" title="newton.Model.joint_target_mode"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_mode</span></code></a>, <a class="reference internal" href="newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_f</span></code></a>) are not supported.</p></li>
+<li><p>Equality and mimic constraints are not supported.</p></li>
+</ul>
+<p>See <a class="reference internal" href="../newton_solvers.html#joint-feature-support"><span class="std std-ref">Joint Feature Support</span></a> for the full comparison across solvers.</p>
+</dd>
+</dl>
 <p class="rubric">References</p>
 <ul class="simple">
 <li><p>Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.

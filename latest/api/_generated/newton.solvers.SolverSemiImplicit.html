@@ -820,6 +820,22 @@ may be used to advance the simulation state forward in time.</p>
 preserves energy, however it not unconditionally stable, and requires a time-step
 small enough to support the required stiffness and damping forces.</p>
 <p>See: <a class="reference external" href="https://en.wikipedia.org/wiki/Semi-implicit_Euler_method">https://en.wikipedia.org/wiki/Semi-implicit_Euler_method</a></p>
+<dl>
+<dt>Joint limitations:</dt><dd><ul class="simple">
+<li><p>Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
+CABLE joints are not supported.</p></li>
+<li><p><a class="reference internal" href="newton.Model.html#newton.Model.joint_enabled" title="newton.Model.joint_enabled"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_enabled</span></code></a>, <a class="reference internal" href="newton.Model.html#newton.Model.joint_limit_ke" title="newton.Model.joint_limit_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_ke</span></code></a>/<a class="reference internal" href="newton.Model.html#newton.Model.joint_limit_kd" title="newton.Model.joint_limit_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_kd</span></code></a>,
+<a class="reference internal" href="newton.Model.html#newton.Model.joint_target_ke" title="newton.Model.joint_target_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_ke</span></code></a>/<a class="reference internal" href="newton.Model.html#newton.Model.joint_target_kd" title="newton.Model.joint_target_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_kd</span></code></a>, and <a class="reference internal" href="newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_f</span></code></a>
+are supported.</p></li>
+<li><p>Joint limits and targets are not enforced for BALL joints.</p></li>
+<li><p><a class="reference internal" href="newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a>, <a class="reference internal" href="newton.Model.html#newton.Model.joint_friction" title="newton.Model.joint_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_friction</span></code></a>,
+<a class="reference internal" href="newton.Model.html#newton.Model.joint_effort_limit" title="newton.Model.joint_effort_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_effort_limit</span></code></a>, <a class="reference internal" href="newton.Model.html#newton.Model.joint_velocity_limit" title="newton.Model.joint_velocity_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_velocity_limit</span></code></a>,
+and <a class="reference internal" href="newton.Model.html#newton.Model.joint_target_mode" title="newton.Model.joint_target_mode"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_mode</span></code></a> are not supported.</p></li>
+<li><p>Equality and mimic constraints are not supported.</p></li>
+</ul>
+<p>See <a class="reference internal" href="../newton_solvers.html#joint-feature-support"><span class="std std-ref">Joint Feature Support</span></a> for the full comparison across solvers.</p>
+</dd>
+</dl>
 <p class="rubric">Example</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverSemiImplicit</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 
