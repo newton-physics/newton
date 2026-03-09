@@ -207,7 +207,7 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
     if isinstance(axis, list | tuple | np.ndarray):
         return wp.vec3(*axis)
     elif wp.types.type_is_vector(type(axis)):
-        return wp.vec3(*axis)
+        return axis
     else:
         return Axis.from_any(axis).to_vec3()
 

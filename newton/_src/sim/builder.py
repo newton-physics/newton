@@ -2613,7 +2613,7 @@ class ModelBuilder:
 
         # Initialize this world's gravity
         if gravity is not None:
-            self.world_gravity.append(self._vec3_tuple(gravity))
+            self.world_gravity.append(gravity)
         else:
             up_vector = self.up_vector
             self.world_gravity.append(
@@ -2740,16 +2740,17 @@ class ModelBuilder:
         self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
-        xform_tf = self._coerce_transform(xform) if xform is not None else None
+        if xform is not None:
+            xform = wp.transform(*xform)
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
         transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
 
         # dispatches two transform multiplies to the native implementation
-        def transform_mul(a: wp.transform, b: Transform) -> wp.transform:
+        def transform_mul(a: wp.transform, b: wp.transform) -> wp.transform:
             out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-            transform_mul_cfunc(a, self._coerce_transform(b), ctypes.byref(out))
+            transform_mul_cfunc(a, b, ctypes.byref(out))
             return out
 
         start_particle_idx = self.particle_count
@@ -2769,11 +2770,11 @@ class ModelBuilder:
 
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
-            if xform_tf is not None:
-                pos_offset = np.asarray(xform_tf.p, dtype=np.float32)
+            if xform is not None:
+                pos_offset = xform.p
             else:
                 pos_offset = np.zeros(3)
-            self.particle_q.extend(tuple(p) for p in (np.asarray(builder.particle_q) + pos_offset).tolist())
+            self.particle_q.extend((np.array(builder.particle_q) + pos_offset).tolist())
             # other particle attributes are added below
 
         if builder.spring_count:
@@ -2800,14 +2801,14 @@ class ModelBuilder:
             if b > -1:
                 new_b = b + start_body_idx
                 self.shape_body.append(new_b)
-                self.shape_transform.append(self._coerce_transform(builder.shape_transform[s]))
+                self.shape_transform.append(builder.shape_transform[s])
             else:
                 self.shape_body.append(-1)
                 # apply offset transform to root bodies
-                if xform_tf is not None:
-                    self.shape_transform.append(transform_mul(xform_tf, builder.shape_transform[s]))
+                if xform is not None:
+                    self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
                 else:
-                    self.shape_transform.append(self._coerce_transform(builder.shape_transform[s]))
+                    self.shape_transform.append(builder.shape_transform[s])
 
         for b, shapes in builder.body_shapes.items():
             if b == -1:
@@ -2818,18 +2819,18 @@ class ModelBuilder:
         if builder.joint_count:
             start_q = len(self.joint_q)
             start_X_p = len(self.joint_X_p)
-            self.joint_X_p.extend(self._coerce_transform(joint_x_p) for joint_x_p in builder.joint_X_p)
+            self.joint_X_p.extend(builder.joint_X_p)
             self.joint_q.extend(builder.joint_q)
-            if xform_tf is not None:
+            if xform is not None:
                 for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
                         qi = builder.joint_q_start[i]
                         xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
-                        tf = transform_mul(xform_tf, xform_prev)
+                        tf = transform_mul(xform, xform_prev)
                         qi += start_q
                         self.joint_q[qi : qi + 7] = tf
                     elif builder.joint_parent[i] == -1:
-                        self.joint_X_p[start_X_p + i] = transform_mul(xform_tf, builder.joint_X_p[i])
+                        self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
             self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
@@ -2856,11 +2857,11 @@ class ModelBuilder:
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
             self.joint_cts_start.extend([c + self.joint_constraint_count for c in builder.joint_cts_start])
 
-        if xform_tf is not None:
+        if xform is not None:
             for i in range(builder.body_count):
-                self.body_q.append(transform_mul(xform_tf, builder.body_q[i]))
+                self.body_q.append(transform_mul(xform, builder.body_q[i]))
         else:
-            self.body_q.extend(self._coerce_transform(body_q) for body_q in builder.body_q)
+            self.body_q.extend(builder.body_q)
 
         # Copy collision groups without modification
         self.shape_collision_group.extend(builder.shape_collision_group)
@@ -2914,13 +2915,9 @@ class ModelBuilder:
             self.equality_constraint_body2.extend(
                 [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body2]
             )
-            self.equality_constraint_anchor.extend(
-                self._coerce_vec3(anchor) for anchor in builder.equality_constraint_anchor
-            )
+            self.equality_constraint_anchor.extend(builder.equality_constraint_anchor)
             self.equality_constraint_torquescale.extend(builder.equality_constraint_torquescale)
-            self.equality_constraint_relpose.extend(
-                self._coerce_transform(relpose) for relpose in builder.equality_constraint_relpose
-            )
+            self.equality_constraint_relpose.extend(builder.equality_constraint_relpose)
             self.equality_constraint_joint1.extend(
                 [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint1]
             )
@@ -3222,22 +3219,6 @@ class ModelBuilder:
 
         return wp.mat33(*value)
 
-    @staticmethod
-    def _coerce_vec3(value: Vec3) -> wp.vec3:
-        """Coerce a user-facing 3D vector into a ``wp.vec3``."""
-        return axis_to_vec3(value)
-
-    @staticmethod
-    def _vec3_tuple(value: Vec3) -> tuple[float, float, float]:
-        """Coerce a user-facing 3D vector into a plain Python tuple."""
-        vec = axis_to_vec3(value)
-        return (float(vec[0]), float(vec[1]), float(vec[2]))
-
-    @staticmethod
-    def _coerce_transform(value: Transform) -> wp.transform:
-        """Coerce a user-facing transform into a ``wp.transform``."""
-        return wp.transform(*value)
-
     def add_link(
         self,
         xform: Transform | None = None,
@@ -3280,11 +3261,11 @@ class ModelBuilder:
         if xform is None:
             xform = wp.transform()
         else:
-            xform = self._coerce_transform(xform)
+            xform = wp.transform(*xform)
         if com is None:
             com = wp.vec3()
         else:
-            com = self._coerce_vec3(com)
+            com = axis_to_vec3(com)
         if inertia is None:
             inertia = wp.mat33()
         else:
@@ -3442,11 +3423,11 @@ class ModelBuilder:
         if parent_xform is None:
             parent_xform = wp.transform()
         else:
-            parent_xform = self._coerce_transform(parent_xform)
+            parent_xform = wp.transform(*parent_xform)
         if child_xform is None:
             child_xform = wp.transform()
         else:
-            child_xform = self._coerce_transform(child_xform)
+            child_xform = wp.transform(*child_xform)
 
         # Validate that parent and child bodies belong to the current world
         if parent != -1:  # -1 means world/ground
@@ -3923,7 +3904,7 @@ class ModelBuilder:
         )
         q_start = self.joint_q_start[joint_id]
         # set the positional dofs to the child body's transform
-        self.joint_q[q_start : q_start + 7] = list(self._coerce_transform(self.body_q[child]))
+        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
         return joint_id
 
     def add_joint_distance(
@@ -4154,11 +4135,11 @@ class ModelBuilder:
         if anchor is None:
             anchor_vec = wp.vec3()
         else:
-            anchor_vec = self._coerce_vec3(anchor)
+            anchor_vec = axis_to_vec3(anchor)
         if relpose is None:
             relpose_tf = wp.transform_identity()
         else:
-            relpose_tf = self._coerce_transform(relpose)
+            relpose_tf = wp.transform(*relpose)
 
         self.equality_constraint_type.append(constraint_type)
         self.equality_constraint_body1.append(body1)
@@ -4513,13 +4494,13 @@ class ModelBuilder:
             inertia_i = self._coerce_mat33(self.body_inertia[i])
             body_data[i] = {
                 "shapes": self.body_shapes[i],
-                "q": self._coerce_transform(self.body_q[i]),
+                "q": self.body_q[i],
                 "qd": self.body_qd[i],
                 "mass": self.body_mass[i],
                 "inertia": inertia_i,
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
-                "com": self._coerce_vec3(self.body_com[i]),
+                "com": axis_to_vec3(self.body_com[i]),
                 "lock_inertia": self.body_lock_inertia[i],
                 "flags": self.body_flags[i],
                 "label": body_lbl,
@@ -4557,8 +4538,8 @@ class ModelBuilder:
                 "qd_start": qd_start,
                 "cts_start": cts_start,
                 "label": joint_lbl,
-                "parent_xform": wp.transform_expand(self._coerce_transform(self.joint_X_p[i])),
-                "child_xform": wp.transform_expand(self._coerce_transform(self.joint_X_c[i])),
+                "parent_xform": wp.transform_expand(self.joint_X_p[i]),
+                "child_xform": wp.transform_expand(self.joint_X_c[i]),
                 "enabled": self.joint_enabled[i],
                 "axes": [],
                 "axis_dim": self.joint_dof_dim[i],
@@ -4570,7 +4551,7 @@ class ModelBuilder:
             for j in range(qd_start, qd_start + num_lin_axes + num_ang_axes):
                 data["axes"].append(
                     {
-                        "axis": self._coerce_vec3(self.joint_axis[j]),
+                        "axis": self.joint_axis[j],
                         "actuator_mode": self.joint_target_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
@@ -4672,7 +4653,7 @@ class ModelBuilder:
                 body_merged_parent[child_body] = last_dynamic_body
                 body_merged_transform[child_body] = incoming_xform
                 for shape in self.body_shapes[child_id]:
-                    shape_tf = self._coerce_transform(self.shape_transform[shape])
+                    shape_tf = self.shape_transform[shape]
                     self.shape_transform[shape] = incoming_xform * shape_tf
                     if verbose:
                         print(
@@ -4770,13 +4751,13 @@ class ModelBuilder:
             new_id = len(self.body_label)
             body_remap[body["original_id"]] = new_id
             self.body_label.append(body["label"])
-            self.body_q.append(self._coerce_transform(body["q"]))
+            self.body_q.append(body["q"])
             self.body_qd.append(body["qd"])
             m = body["mass"]
             inertia = body["inertia"]
             self.body_mass.append(m)
             self.body_inertia.append(inertia)
-            self.body_com.append(self._coerce_vec3(body["com"]))
+            self.body_com.append(body["com"])
             self.body_lock_inertia.append(body["lock_inertia"])
             self.body_flags.append(body["flags"])
             if body["inv_mass"] is None:
@@ -4860,8 +4841,8 @@ class ModelBuilder:
             self.joint_cts.extend(joint["cts"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
-            self.joint_X_p.append(self._coerce_transform(joint["parent_xform"]))
-            self.joint_X_c.append(self._coerce_transform(joint["child_xform"]))
+            self.joint_X_p.append(joint["parent_xform"])
+            self.joint_X_c.append(joint["child_xform"])
             self.joint_dof_dim.append(joint["axis_dim"])
             # Rebuild joint world - use original world if it exists
             if original_ and joint["original_id"] < len(original_):
@@ -4875,7 +4856,7 @@ class ModelBuilder:
             else:
                 self.joint_articulation.append(-1)
             for axis in joint["axes"]:
-                self.joint_axis.append(self._coerce_vec3(axis["axis"]))
+                self.joint_axis.append(axis["axis"])
                 self.joint_target_mode.append(axis["actuator_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
@@ -4915,16 +4896,16 @@ class ModelBuilder:
             if body1_was_merged:
                 merge_xform = body_merged_transform[old_body1]
                 if constraint_type == EqType.CONNECT:
-                    anchor = self._coerce_vec3(self.equality_constraint_anchor[i])
+                    anchor = axis_to_vec3(self.equality_constraint_anchor[i])
                     self.equality_constraint_anchor[i] = wp.transform_point(merge_xform, anchor)
                 if constraint_type == EqType.WELD:
-                    relpose = self._coerce_transform(self.equality_constraint_relpose[i])
+                    relpose = self.equality_constraint_relpose[i]
                     self.equality_constraint_relpose[i] = merge_xform * relpose
 
             if body2_was_merged and constraint_type == EqType.WELD:
                 merge_xform = body_merged_transform[old_body2]
-                anchor = self._coerce_vec3(self.equality_constraint_anchor[i])
-                relpose = self._coerce_transform(self.equality_constraint_relpose[i])
+                anchor = axis_to_vec3(self.equality_constraint_anchor[i])
+                relpose = self.equality_constraint_relpose[i]
                 self.equality_constraint_anchor[i] = wp.transform_point(merge_xform, anchor)
                 self.equality_constraint_relpose[i] = relpose * wp.transform_inverse(merge_xform)
 
@@ -5057,7 +5038,7 @@ class ModelBuilder:
         if xform is None:
             xform = wp.transform()
         else:
-            xform = self._coerce_transform(xform)
+            xform = wp.transform(*xform)
         if cfg is None:
             cfg = self.default_shape_cfg
         cfg.validate(shape_type=type)
@@ -5125,7 +5106,7 @@ class ModelBuilder:
             )  # Falling back to mesh/primitive collisions for plane and hfield shapes
         self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
-        self.shape_scale.append(self._vec3_tuple(scale))
+        self.shape_scale.append((scale[0], scale[1], scale[2]))
         self.shape_source.append(src)
         self.shape_margin.append(cfg.margin)
         self.shape_is_solid.append(cfg.is_solid)
@@ -5809,7 +5790,7 @@ class ModelBuilder:
                     continue
 
                 body = self.shape_body[shape]
-                xform = self._coerce_transform(self.shape_transform[shape])
+                xform = self.shape_transform[shape]
                 cfg = ModelBuilder.ShapeConfig(
                     density=0.0,  # do not add extra mass / inertia
                     margin=self.shape_margin[shape],
@@ -5824,7 +5805,7 @@ class ModelBuilder:
                     cfg=cfg,
                     mesh=self.shape_source[shape],
                     label=f"{self.shape_label[shape]}_visual",
-                    scale=self._vec3_tuple(self.shape_scale[shape]),
+                    scale=self.shape_scale[shape],
                 )
 
                 # disable visibility of the original shape
@@ -5846,7 +5827,7 @@ class ModelBuilder:
 
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
-                    scale = self._vec3_tuple(self.shape_scale[shape])
+                    scale = self.shape_scale[shape]
                     hash_m = hash(mesh)
                     if hash_m in decompositions:
                         decomposition = decompositions[hash_m]
@@ -5882,7 +5863,7 @@ class ModelBuilder:
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                     if len(decomposition) > 1:
                         body = self.shape_body[shape]
-                        xform = self._coerce_transform(self.shape_transform[shape])
+                        xform = self.shape_transform[shape]
                         cfg = ModelBuilder.ShapeConfig(
                             density=0.0,  # do not add extra mass / inertia
                             ke=self.shape_material_ke[shape],
@@ -5955,13 +5936,13 @@ class ModelBuilder:
                 if shape in remeshed_shapes:
                     continue
                 mesh: Mesh = self.shape_source[shape]
-                scale = self._vec3_tuple(self.shape_scale[shape])
+                scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
                 tf, scale = compute_inertia_obb(vertices)
                 self.shape_type[shape] = GeoType.BOX
                 self.shape_source[shape] = None
-                self.shape_scale[shape] = self._vec3_tuple(scale)
-                shape_tf = self._coerce_transform(self.shape_transform[shape])
+                self.shape_scale[shape] = scale
+                shape_tf = self.shape_transform[shape]
                 self.shape_transform[shape] = shape_tf * tf
                 remeshed_shapes.add(shape)
         elif method == "bounding_sphere":
@@ -5969,15 +5950,16 @@ class ModelBuilder:
                 if shape in remeshed_shapes:
                     continue
                 mesh: Mesh = self.shape_source[shape]
-                scale = self._vec3_tuple(self.shape_scale[shape])
-                vertices = mesh.vertices * np.array([*scale])
-                center = np.mean(vertices, axis=0)
-                radius = np.max(np.linalg.norm(vertices - center, axis=1))
+                scale = self.shape_scale[shape]
+                scale_array = np.asarray(scale, dtype=np.float32)
+                vertices = np.asarray(mesh.vertices, dtype=np.float32) * scale_array
+                center = np.mean(vertices, axis=0, dtype=np.float32)
+                radius = float(np.max(np.linalg.norm(vertices - center, axis=1).astype(np.float32, copy=False)))
                 self.shape_type[shape] = GeoType.SPHERE
                 self.shape_source[shape] = None
-                self.shape_scale[shape] = (float(radius), 0.0, 0.0)
+                self.shape_scale[shape] = (radius, 0.0, 0.0)
                 tf = wp.transform(center, wp.quat_identity())
-                shape_tf = self._coerce_transform(self.shape_transform[shape])
+                shape_tf = self.shape_transform[shape]
                 self.shape_transform[shape] = shape_tf * tf
                 remeshed_shapes.add(shape)
 
@@ -6597,8 +6579,8 @@ class ModelBuilder:
         Returns:
             The index of the particle in the system.
         """
-        self.particle_q.append(self._vec3_tuple(pos))
-        self.particle_qd.append(self._vec3_tuple(vel))
+        self.particle_q.append(pos)
+        self.particle_qd.append(vel)
         self.particle_mass.append(mass)
         if radius is None:
             radius = self.default_particle_radius
@@ -6643,8 +6625,8 @@ class ModelBuilder:
         particle_start = self.particle_count
         particle_count = len(pos)
 
-        self.particle_q.extend(self._vec3_tuple(p) for p in pos)
-        self.particle_qd.extend(self._vec3_tuple(v) for v in vel)
+        self.particle_q.extend(pos)
+        self.particle_qd.extend(vel)
         self.particle_mass.extend(mass)
         if radius is None:
             radius = [self.default_particle_radius] * particle_count
@@ -6754,9 +6736,9 @@ class ModelBuilder:
         tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
 
         # compute basis for 2D rest pose
-        p = self._coerce_vec3(self.particle_q[i])
-        q = self._coerce_vec3(self.particle_q[j])
-        r = self._coerce_vec3(self.particle_q[k])
+        p = self.particle_q[i]
+        q = self.particle_q[j]
+        r = self.particle_q[k]
 
         qp = q - p
         rp = r - p
@@ -7014,13 +6996,13 @@ class ModelBuilder:
         edge_kd = edge_kd if edge_kd is not None else self.default_edge_kd
 
         # compute rest angle
-        x3 = self._coerce_vec3(self.particle_q[k])
-        x4 = self._coerce_vec3(self.particle_q[l])
+        x3 = self.particle_q[k]
+        x4 = self.particle_q[l]
         if rest is None:
             rest = 0.0
             if i != -1 and j != -1:
-                x1 = self._coerce_vec3(self.particle_q[i])
-                x2 = self._coerce_vec3(self.particle_q[j])
+                x1 = self.particle_q[i]
+                x2 = self.particle_q[j]
 
                 n1 = wp.normalize(wp.cross(x3 - x1, x4 - x1))
                 n2 = wp.normalize(wp.cross(x4 - x2, x3 - x2))
@@ -7878,12 +7860,10 @@ class ModelBuilder:
         if new_mass == 0.0:  # no mass
             return
 
-        current_com = self._coerce_vec3(self.body_com[i])
-        p = self._coerce_vec3(p)
-        new_com = (current_com * self.body_mass[i] + p * m) / new_mass
+        new_com = (self.body_com[i] * self.body_mass[i] + p * m) / new_mass
 
         # shift inertia to new COM
-        com_offset = new_com - current_com
+        com_offset = new_com - self.body_com[i]
         shape_offset = new_com - p
 
         new_inertia = transform_inertia(
@@ -9427,7 +9407,7 @@ class ModelBuilder:
                 shape_type = self.shape_type[i]
                 shape_src = self.shape_source[i]
                 shape_flags = self.shape_flags[i]
-                shape_scale = self._vec3_tuple(self.shape_scale[i])
+                shape_scale = self.shape_scale[i]
                 shape_margin = self.shape_margin[i]
                 shape_gap = self.shape_gap[i]
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
