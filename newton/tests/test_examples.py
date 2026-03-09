@@ -188,11 +188,7 @@ def add_example_test(
 
         # Check expected stderr patterns on CPU and filter before printing
         stderr = result.stderr
-        is_cpu = wp.get_device(device).is_cpu
-        expected_patterns = list(expected_stderr_cpu or []) if is_cpu else []
-        if is_cpu:
-            # Warp logs a CUDA driver probe failure when no GPU is visible
-            expected_patterns.append(r"Warp CUDA error 100: no CUDA-capable device is detected")
+        expected_patterns = list(expected_stderr_cpu or []) if wp.get_device(device).is_cpu else []
         for pattern in expected_patterns:
             test.assertRegex(stderr, pattern, f"Expected stderr pattern not found: {pattern}")
 
@@ -258,7 +254,10 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 150},
-    expected_stderr_cpu=["mesh-mesh contacts will be skipped"],
+    expected_stderr_cpu=[
+        "mesh-mesh contacts will be skipped",
+        "Warp CUDA error 100: no CUDA-capable device is detected",
+    ],
 )
 
 
@@ -405,7 +404,10 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
-    expected_stderr_cpu=["mesh-mesh contacts will be skipped"],
+    expected_stderr_cpu=[
+        "mesh-mesh contacts will be skipped",
+        "Warp CUDA error 100: no CUDA-capable device is detected",
+    ],
 )
 add_example_test(
     TestRobotExamples,
