@@ -63,6 +63,7 @@ asv/html
 MUJOCO_LOG.TXT
 imgui.ini
 newton/tests/outputs/
+reports/upstream-sync/
 
 # Viser recordings
 docs/_static/recordings/
