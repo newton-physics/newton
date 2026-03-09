@@ -517,8 +517,8 @@ Examples are discovered automatically: any file matching
 The short name used on the command line is the filename without the ``example_`` prefix and
 ``.py`` extension (e.g. ``basic_pendulum``).
 
-New examples must also be registered in the examples ``README.md`` with a ``uv`` command
-and a 320x320 jpg screenshot.
+New examples must also be registered in the examples ``README.md`` with a                                                        
+``python -m newton.examples <example_name>`` command and a 320x320 jpg screenshot.  
 
 .. tab-set::
     :sync-group: env
