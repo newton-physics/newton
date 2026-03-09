@@ -807,7 +807,81 @@
 <p>Please refer to <a class="reference external" href="https://github.com/newton-physics/governance/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> for how to best contribute to Newton and relevant legal information (CLA).</p>
 <section id="installation">
 <h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h2>
-<p>To install Newton, see the <a class="reference internal" href="installation.html"><span class="doc">Installation</span></a> guide.</p>
+<p>For regular end-user installation, see the <a class="reference internal" href="installation.html"><span class="doc">Installation</span></a> guide.</p>
+<p>To install Newton from source for development or contribution, first clone the
+repository:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">git clone https://github.com/newton-physics/newton.git</span>
+<span class="go">cd newton</span>
+</pre></div>
+</div>
+<section id="method-1-using-uv-recommended">
+<h3>Method 1: Using uv (Recommended)<a class="headerlink" href="#method-1-using-uv-recommended" title="Link to this heading">#</a></h3>
+<p>Install <a class="reference external" href="https://docs.astral.sh/uv/">uv</a> if you don’t have it already:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-0" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-0">
+macOS / Linux</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">curl -LsSf https://astral.sh/uv/install.sh | sh</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-1" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-1">
+Windows</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">powershell -ExecutionPolicy ByPass -c &quot;irm https://astral.sh/uv/install.ps1 | iex&quot;</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>Then create a local project environment with the <code class="docutils literal notranslate"><span class="pre">dev</span></code> dependency extras:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv sync --extra dev</span>
+</pre></div>
+</div>
+<p>After syncing, the <code class="docutils literal notranslate"><span class="pre">dev</span></code> extras are available to all <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span></code> commands
+without needing to pass <code class="docutils literal notranslate"><span class="pre">--extra</span> <span class="pre">dev</span></code> each time. For example, to list all
+available examples:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run -m newton.examples</span>
+</pre></div>
+</div>
+<p>See the <a class="reference internal" href="installation.html#extra-dependencies"><span class="std std-ref">Extra Dependencies</span></a> section of the installation guide for a
+description of all available extras.</p>
+</section>
+<section id="method-2-using-pip-in-a-virtual-environment">
+<h3>Method 2: Using pip in a Virtual Environment<a class="headerlink" href="#method-2-using-pip-in-a-virtual-environment" title="Link to this heading">#</a></h3>
+<p>To manually manage a virtual environment, create and activate one first:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-2" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="linux" for="sd-tab-item-2">
+macOS / Linux</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
+<span class="go">source .venv/bin/activate</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-3" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows" for="sd-tab-item-3">
+Windows (console)</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
+<span class="go">.venv\Scripts\activate.bat</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-4" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" data-sync-group="os" data-sync-id="windows-ps" for="sd-tab-item-4">
+Windows (PowerShell)</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m venv .venv</span>
+<span class="go">.venv\Scripts\Activate.ps1</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>Then locally install Newton in editable mode with its development dependencies:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pip install -e &quot;.[dev]&quot; --extra-index-url https://pypi.nvidia.com/</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">--extra-index-url</span></code> flag points pip to the NVIDIA package index, which is
+required to find <code class="docutils literal notranslate"><span class="pre">warp-lang</span></code> versions newer than those available on PyPI.</p>
+</section>
 </section>
 <section id="python-dependency-management">
 <h2>Python Dependency Management<a class="headerlink" href="#python-dependency-management" title="Link to this heading">#</a></h2>
@@ -838,19 +912,19 @@ and by default runs in up to eight parallel processes. The tests can be run
 in a serial manner with <code class="docutils literal notranslate"><span class="pre">--serial-fallback</span></code>.</p>
 <p>Pass <code class="docutils literal notranslate"><span class="pre">--help</span></code> to either run method below to see all available flags.</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-0" name="sd-tab-set-0" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-0">
+<input checked="checked" id="sd-tab-item-5" name="sd-tab-set-2" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-5">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>install<span class="w"> </span>development<span class="w"> </span>extras<span class="w"> </span>and<span class="w"> </span>run<span class="w"> </span>tests
 <span class="go">uv run --extra dev -m newton.tests</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-1" name="sd-tab-set-0" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-1">
+<input id="sd-tab-item-6" name="sd-tab-set-2" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-6">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>install<span class="w"> </span>dev<span class="w"> </span>extras<span class="w"> </span><span class="o">(</span>including<span class="w"> </span>testing<span class="w"> </span><span class="p">&amp;</span><span class="w"> </span>coverage<span class="w"> </span>deps<span class="o">)</span>
-<span class="go">python -m pip install -e .[dev]</span>
+<span class="go">python -m pip install -e &quot;.[dev]&quot;</span>
 <span class="gp"># </span>run<span class="w"> </span>tests
 <span class="go">python -m newton.tests</span>
 </pre></div>
@@ -860,21 +934,21 @@ venv</label><div class="sd-tab-content docutils">
 <p>Most tests run when the <code class="docutils literal notranslate"><span class="pre">dev</span></code> extras are installed. The tests using PyTorch
 to run inference on an RL policy are skipped if the <code class="docutils literal notranslate"><span class="pre">torch</span></code> dependency is
 not installed. In order to run these tests, include the <code class="docutils literal notranslate"><span class="pre">torch-cu12</span></code> or
-<code class="docutils literal notranslate"><span class="pre">torch-cu13</span></code> extras following your CUDA version:</p>
+<code class="docutils literal notranslate"><span class="pre">torch-cu13</span></code> extras matching your NVIDIA driver’s CUDA support:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-2" name="sd-tab-set-1" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-2">
+<input checked="checked" id="sd-tab-item-7" name="sd-tab-set-3" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-7">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>install<span class="w"> </span>development<span class="w"> </span>extras<span class="w"> </span>and<span class="w"> </span>run<span class="w"> </span>tests
 <span class="go">uv run --extra dev --extra torch-cu12 -m newton.tests</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-3" name="sd-tab-set-1" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-3">
+<input id="sd-tab-item-8" name="sd-tab-set-3" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-8">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>install<span class="w"> </span>both<span class="w"> </span>dev<span class="w"> </span>and<span class="w"> </span>torch-cu12<span class="w"> </span>extras<span class="w"> </span><span class="o">(</span>need<span class="w"> </span>to<span class="w"> </span>pull<span class="w"> </span>from<span class="w"> </span>PyTorch<span class="w"> </span>CUDA<span class="w"> </span><span class="m">12</span>.8<span class="w"> </span>wheel<span class="w"> </span>index<span class="o">)</span>
-<span class="go">python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e .[dev,torch-cu12]</span>
+<span class="go">python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e &quot;.[dev,torch-cu12]&quot;</span>
 <span class="gp"># </span>run<span class="w"> </span>tests
 <span class="go">python -m newton.tests</span>
 </pre></div>
@@ -883,16 +957,16 @@ venv</label><div class="sd-tab-content docutils">
 </div>
 <p>Specific Newton examples can be tested in isolation via the <code class="docutils literal notranslate"><span class="pre">-k</span></code> argument:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-4" name="sd-tab-set-2" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-4">
+<input checked="checked" id="sd-tab-item-9" name="sd-tab-set-4" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-9">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span><span class="nb">test</span><span class="w"> </span>the<span class="w"> </span>basic_shapes<span class="w"> </span>example
 <span class="go">uv run --extra dev -m newton.tests.test_examples -k test_basic.example_basic_shapes</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-5" name="sd-tab-set-2" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-5">
+<input id="sd-tab-item-10" name="sd-tab-set-4" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-10">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span><span class="nb">test</span><span class="w"> </span>the<span class="w"> </span>basic_shapes<span class="w"> </span>example
 <span class="go">python -m newton.tests.test_examples -k test_basic.example_basic_shapes</span>
@@ -902,16 +976,16 @@ venv</label><div class="sd-tab-content docutils">
 </div>
 <p>To generate a coverage report:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-6" name="sd-tab-set-3" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-6">
+<input checked="checked" id="sd-tab-item-11" name="sd-tab-set-5" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-11">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>append<span class="w"> </span>the<span class="w"> </span>coverage<span class="w"> </span>flags:
 <span class="go">uv run --extra dev -m newton.tests --coverage --coverage-html htmlcov</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-7" name="sd-tab-set-3" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-7">
+<input id="sd-tab-item-12" name="sd-tab-set-5" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-12">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>append<span class="w"> </span>the<span class="w"> </span>coverage<span class="w"> </span>flags<span class="w"> </span>and<span class="w"> </span>make<span class="w"> </span>sure<span class="w"> </span><span class="sb">`</span>coverage<span class="o">[</span>toml<span class="o">]</span><span class="sb">`</span><span class="w"> </span>is<span class="w"> </span>installed<span class="w"> </span><span class="o">(</span>it<span class="w"> </span>comes<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="sb">`</span><span class="o">[</span>dev<span class="o">]</span><span class="sb">`</span><span class="o">)</span>
 <span class="go">python -m newton.tests --coverage --coverage-html htmlcov</span>
@@ -927,15 +1001,15 @@ venv</label><div class="sd-tab-content docutils">
 <a class="reference external" href="https://pre-commit.com/">pre-commit</a> can be used to ensure that local code complies with Newton’s checks.
 From the top of the repository, run:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-8" name="sd-tab-set-4" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-8">
+<input checked="checked" id="sd-tab-item-13" name="sd-tab-set-6" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-13">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uvx pre-commit run -a</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-9" name="sd-tab-set-4" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-9">
+<input id="sd-tab-item-14" name="sd-tab-set-6" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-14">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install pre-commit</span>
 <span class="go">pre-commit run -a</span>
@@ -945,15 +1019,15 @@ venv</label><div class="sd-tab-content docutils">
 </div>
 <p>To automatically run pre-commit hooks with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">commit</span></code>:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-10" name="sd-tab-set-5" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-10">
+<input checked="checked" id="sd-tab-item-15" name="sd-tab-set-7" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-15">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uvx pre-commit install</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-11" name="sd-tab-set-5" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-11">
+<input id="sd-tab-item-16" name="sd-tab-set-7" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-16">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pre-commit install</span>
 </pre></div>
@@ -1007,18 +1081,18 @@ e.g. when running <code class="docutils literal notranslate"><span class="pre">p
 <span id="id2"></span><h2>Building the documentation<a class="headerlink" href="#building-the-documentation" title="Link to this heading">#</a></h2>
 <p>To build the documentation locally, ensure you have the documentation dependencies installed.</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-12" name="sd-tab-set-6" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-12">
+<input checked="checked" id="sd-tab-item-17" name="sd-tab-set-8" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-17">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">rm -rf docs/_build</span>
 <span class="go">uv run --extra docs --extra sim sphinx-build -j auto -W -b html docs docs/_build/html</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-13" name="sd-tab-set-6" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-13">
+<input id="sd-tab-item-18" name="sd-tab-set-8" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-18">
 venv</label><div class="sd-tab-content docutils">
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install -e .[docs]</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install -e &quot;.[docs]&quot;</span>
 <span class="go">cd path/to/newton/docs &amp;&amp; make html</span>
 </pre></div>
 </div>
@@ -1042,15 +1116,15 @@ pandoc to be installed separately:</p>
 This is particularly useful for testing interactive features like the Viser 3D visualizations
 in the tutorial notebooks, which require proper MIME types for WebAssembly and JavaScript modules.</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-14" name="sd-tab-set-7" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-14">
+<input checked="checked" id="sd-tab-item-19" name="sd-tab-set-9" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-19">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run docs/serve.py</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-15" name="sd-tab-set-7" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-15">
+<input id="sd-tab-item-20" name="sd-tab-set-9" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-20">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python docs/serve.py</span>
 </pre></div>
@@ -1059,15 +1133,15 @@ venv</label><div class="sd-tab-content docutils">
 </div>
 <p>Then open <a class="reference external" href="http://localhost:8000">http://localhost:8000</a> in your browser. You can specify a custom port with <code class="docutils literal notranslate"><span class="pre">--port</span></code>:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-16" name="sd-tab-set-8" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-16">
+<input checked="checked" id="sd-tab-item-21" name="sd-tab-set-10" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-21">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run docs/serve.py --port 8080</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-17" name="sd-tab-set-8" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-17">
+<input id="sd-tab-item-22" name="sd-tab-set-10" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-22">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python docs/serve.py --port 8080</span>
 </pre></div>
@@ -1138,15 +1212,15 @@ that Sphinx processes via <code class="docutils literal notranslate"><span class
 (<code class="docutils literal notranslate"><span class="pre">newton</span></code>, <code class="docutils literal notranslate"><span class="pre">newton.geometry</span></code>, <code class="docutils literal notranslate"><span class="pre">newton.solvers</span></code>, <code class="docutils literal notranslate"><span class="pre">newton.sensors</span></code>, etc.),
 regenerate the API pages:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-18" name="sd-tab-set-9" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-18">
+<input checked="checked" id="sd-tab-item-23" name="sd-tab-set-11" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-23">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run python docs/generate_api.py</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-19" name="sd-tab-set-9" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-19">
+<input id="sd-tab-item-24" name="sd-tab-set-11" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-24">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python docs/generate_api.py</span>
 </pre></div>
@@ -1167,15 +1241,15 @@ be visible to users, re-export it through the appropriate public module first.</
 <p>The <code class="docutils literal notranslate"><span class="pre">doctest</span></code> Sphinx builder is used to ensure that code snippets in the documentation remain up-to-date.</p>
 <p>The doctests can be run with:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-20" name="sd-tab-set-10" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-20">
+<input checked="checked" id="sd-tab-item-25" name="sd-tab-set-12" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-25">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run --extra docs --extra sim sphinx-build -j auto -W -b doctest docs docs/_build/doctest</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-21" name="sd-tab-set-10" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-21">
+<input id="sd-tab-item-26" name="sd-tab-set-12" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-26">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m sphinx -j auto -W -b doctest docs docs/_build/doctest</span>
 </pre></div>
@@ -1252,8 +1326,8 @@ The short name used on the command line is the filename without the <code class=
 <p>New examples must also be registered in the examples <code class="docutils literal notranslate"><span class="pre">README.md</span></code> with a
 <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">newton.examples</span> <span class="pre">&lt;example_name&gt;</span></code> command and a 320x320 jpg screenshot.</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-22" name="sd-tab-set-11" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-22">
+<input checked="checked" id="sd-tab-item-27" name="sd-tab-set-13" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-27">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>list<span class="w"> </span>all<span class="w"> </span>available<span class="w"> </span>examples
 <span class="go">uv run -m newton.examples</span>
@@ -1266,8 +1340,8 @@ uv</label><div class="sd-tab-content docutils">
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-23" name="sd-tab-set-11" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-23">
+<input id="sd-tab-item-28" name="sd-tab-set-13" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-28">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>list<span class="w"> </span>all<span class="w"> </span>available<span class="w"> </span>examples
 <span class="go">python -m newton.examples</span>
@@ -1315,15 +1389,15 @@ project environment by using <code class="docutils literal notranslate"><span cl
 </div>
 <p>To run the benchmarks, run the following command from the root of the repository:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-24" name="sd-tab-set-12" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-24">
+<input checked="checked" id="sd-tab-item-29" name="sd-tab-set-14" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-29">
 Unix</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^!</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-25" name="sd-tab-set-12" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-25">
+<input id="sd-tab-item-30" name="sd-tab-set-14" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-30">
 Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^!</span>
 </pre></div>
@@ -1341,15 +1415,15 @@ benchmarked is.</p>
 <p>Benchmarks can also be run against a range of commits using the <code class="docutils literal notranslate"><span class="pre">commit1...commit2</span></code> syntax.
 This is useful for comparing performance across several recent changes:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-26" name="sd-tab-set-13" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-26">
+<input checked="checked" id="sd-tab-item-31" name="sd-tab-set-15" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-31">
 Unix</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn HEAD~4..HEAD</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-27" name="sd-tab-set-13" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-27">
+<input id="sd-tab-item-32" name="sd-tab-set-15" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-32">
 Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn HEAD~4..HEAD</span>
 </pre></div>
@@ -1358,15 +1432,15 @@ Windows</label><div class="sd-tab-content docutils">
 </div>
 <p>Commit hashes can be used instead of relative references:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-28" name="sd-tab-set-14" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-28">
+<input checked="checked" id="sd-tab-item-33" name="sd-tab-set-16" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-33">
 Unix</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn abc1234..def5678</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-29" name="sd-tab-set-14" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-29">
+<input id="sd-tab-item-34" name="sd-tab-set-16" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-34">
 Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn abc1234..def5678</span>
 </pre></div>
@@ -1380,15 +1454,15 @@ harness. This is useful for quick iteration during development since it skips th
 environment setup that airspeed velocity performs. Each benchmark file under
 <code class="docutils literal notranslate"><span class="pre">asv/benchmarks/</span></code> supports a <code class="docutils literal notranslate"><span class="pre">--bench</span></code> flag to select specific benchmark classes:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-30" name="sd-tab-set-15" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-30">
+<input checked="checked" id="sd-tab-item-35" name="sd-tab-set-17" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-35">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-31" name="sd-tab-set-15" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-31">
+<input id="sd-tab-item-36" name="sd-tab-set-17" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-36">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro</span>
 </pre></div>
@@ -1398,15 +1472,15 @@ venv</label><div class="sd-tab-content docutils">
 <p>When <code class="docutils literal notranslate"><span class="pre">--bench</span></code> is omitted, all benchmarks in the file are run. The <code class="docutils literal notranslate"><span class="pre">--bench</span></code> flag can
 be repeated to select multiple benchmarks:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-32" name="sd-tab-set-16" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-32">
+<input checked="checked" id="sd-tab-item-37" name="sd-tab-set-18" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-37">
 uv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro --bench FastG1</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-33" name="sd-tab-set-16" type="radio">
-<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-33">
+<input id="sd-tab-item-38" name="sd-tab-set-18" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-38">
 venv</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro --bench FastG1</span>
 </pre></div>
@@ -1419,15 +1493,15 @@ venv</label><div class="sd-tab-content docutils">
 <p>Rather than running the entire benchmark suite, use the <code class="docutils literal notranslate"><span class="pre">--bench</span> <span class="pre">BENCH,</span> <span class="pre">-b</span> <span class="pre">BENCH</span></code> flag to filter the benchmarks
 to just the ones under development:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-34" name="sd-tab-set-17" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-34">
+<input checked="checked" id="sd-tab-item-39" name="sd-tab-set-19" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-39">
 Unix</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^! --bench FastG1</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-35" name="sd-tab-set-17" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-35">
+<input id="sd-tab-item-40" name="sd-tab-set-19" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-40">
 Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^! --bench FastG1</span>
 </pre></div>
@@ -1439,15 +1513,15 @@ starting from an empty kernel cache.
 These benchmarks have names ending with <code class="docutils literal notranslate"><span class="pre">time_load</span></code>. It is sometimes convenient to exclude these benchmarks
 from running by using the following command:</p>
 <div class="sd-tab-set docutils">
-<input checked="checked" id="sd-tab-item-36" name="sd-tab-set-18" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-36">
+<input checked="checked" id="sd-tab-item-41" name="sd-tab-set-20" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-41">
 Unix</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^! -b &#39;^(?!.*time_load$).*&#39;</span>
 </pre></div>
 </div>
 </div>
-<input id="sd-tab-item-37" name="sd-tab-set-18" type="radio">
-<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-37">
+<input id="sd-tab-item-42" name="sd-tab-set-20" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-42">
 Windows</label><div class="sd-tab-content docutils">
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^! -b &quot;^^(?!.*time_load$).*&quot;</span>
 </pre></div>
@@ -1496,7 +1570,11 @@ to the other benchmarks.</p>
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#method-1-using-uv-recommended">Method 1: Using uv (Recommended)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#method-2-using-pip-in-a-virtual-environment">Method 2: Using pip in a Virtual Environment</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#python-dependency-management">Python Dependency Management</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#uv-lockfile-management">uv lockfile management</a></li>
 </ul>
