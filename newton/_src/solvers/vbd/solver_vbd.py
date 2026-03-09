@@ -107,6 +107,17 @@ class SolverVBD(SolverBase):
     For rigid bodies, the AVBD algorithm uses **soft constraints** with adaptive penalty parameters
     for joints and contacts. Hard constraints are not currently enforced.
 
+    Joint limitations:
+        - Supported joint types: BALL, FIXED, FREE, CABLE.
+          PRISMATIC, REVOLUTE, DISTANCE, and D6 joints are not supported.
+        - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are used for CABLE
+          joints only (as stretch/bend stiffness and damping).
+        - Other joint properties (:attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_armature`,
+          :attr:`~newton.Model.joint_friction`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
+          :attr:`~newton.Model.joint_target_mode`, :attr:`~newton.Control.joint_f`) are not supported.
+        - Equality and mimic constraints are not supported.
+
+        See :ref:`Joint feature support` for the full comparison across solvers.
 
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.

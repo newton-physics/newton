@@ -1247,7 +1247,7 @@ def test_brick_pyramid_stability(test, device):
 
     # Create unit cube mesh (will be scaled non-uniformly)
     cube_mesh = create_box_mesh((0.5, 0.5, 0.5))
-    cube_mesh.build_sdf(max_resolution=32)
+    cube_mesh.build_sdf(max_resolution=32, device=device)
 
     # Configure shape with SDF enabled
     mesh_cfg = newton.ModelBuilder.ShapeConfig()
