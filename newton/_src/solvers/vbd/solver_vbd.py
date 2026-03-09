@@ -109,14 +109,21 @@ class SolverVBD(SolverBase):
     for joints and contacts. Hard constraints are not currently enforced.
 
     Joint limitations:
-        - Supported joint types: BALL, FIXED, FREE, CABLE.
-          PRISMATIC, REVOLUTE, DISTANCE, and D6 joints are not supported.
-        - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are used for CABLE
-          joints only (as stretch/bend stiffness and damping).
-        - Other joint properties (:attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_armature`,
-          :attr:`~newton.Model.joint_friction`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
-          :attr:`~newton.Model.joint_target_mode`, :attr:`~newton.Control.joint_f`) are not supported.
-        - Equality and mimic constraints are not supported.
+        - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
+          DISTANCE joints are not supported.
+        - :attr:`~newton.Model.joint_enabled` is supported for all joint types.
+        - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
+          for REVOLUTE, PRISMATIC, D6 (as drives), and CABLE (as stretch/bend stiffness and damping).
+          VBD interprets ``kd`` as a dimensionless Rayleigh coefficient (``D = kd * ke``).
+        - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
+          :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
+          for REVOLUTE, PRISMATIC, and D6 joints. The default ``limit_kd`` in
+          :class:`~newton.ModelBuilder.JointDofConfig` is ``1e1``, which under VBD's Rayleigh
+          convention (``D = kd * ke``) can produce excessive damping. When using joint limits
+          with VBD, explicitly set ``limit_kd`` to a small value.
+        - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
+        - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
+          :attr:`~newton.Model.joint_target_mode`, equality constraints, mimic constraints.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 

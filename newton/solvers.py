@@ -144,13 +144,13 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
    * - REVOLUTE
      - |yes|
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
    * - BALL
      - |yes|
      - |yes|
@@ -180,7 +180,7 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
    * - CABLE
      - |no|
      - |no|
@@ -208,7 +208,7 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
      - |yes|
      - |yes|
      - |no|
-     - |no|
+     - |yes|
    * - :attr:`~newton.Model.joint_armature`
      - |yes|
      - |no|
@@ -226,13 +226,13 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
      - |yes| :sup:`2`
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
    * - :attr:`~newton.Model.joint_limit_ke` / :attr:`~newton.Model.joint_limit_kd`
      - |yes|
      - |yes| :sup:`2`
      - |no|
      - |yes|
-     - |no|
+     - |yes|
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
      - |no|
@@ -266,7 +266,7 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
      - |yes| :sup:`2`
      - |yes|
      - |yes|
-     - 🟨 :sup:`4`
+     - |yes| :sup:`4`
    * - :attr:`~newton.Model.joint_target_mode`
      - |no|
      - |no|
@@ -278,7 +278,7 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
 
 **Constraints**
 
@@ -307,7 +307,7 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
      - |no|
 
 | :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
-| :sup:`4` Used for CABLE joints only (as stretch/bend stiffness and damping).
+| :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as dimensionless Rayleigh damping coefficients (``D = kd * ke``), not absolute units.
 
 .. |yes| unicode:: U+2705
 .. |no| unicode:: U+274C
