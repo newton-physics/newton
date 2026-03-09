@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -144,7 +144,7 @@ class Model:
         Initialize a Model object.
 
         Args:
-            device (wp.Device, optional): Device on which the Model's data will be allocated.
+            device: Device on which the Model's data will be allocated.
         """
         self.requires_grad = False
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
@@ -765,11 +765,11 @@ class Model:
         The returned state is initialized with the initial configuration from the model description.
 
         Args:
-            requires_grad (bool, optional): Whether the state variables should have `requires_grad` enabled.
+            requires_grad: Whether the state variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
 
         Returns:
-            State: The state object
+            The state object.
         """
 
         requested = self.get_requested_state_attributes()
@@ -818,12 +818,12 @@ class Model:
         The returned control object is initialized with the control inputs from the model description.
 
         Args:
-            requires_grad (bool, optional): Whether the control variables should have `requires_grad` enabled.
+            requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
-            clone_variables (bool): If True, clone the control input arrays; if False, use references.
+            clone_variables: If True, clone the control input arrays; if False, use references.
 
         Returns:
-            Control: The initialized control object.
+            The initialized control object.
         """
         c = Control()
         if requires_grad is None:
@@ -918,7 +918,7 @@ class Model:
             it defaults to ``builder.rigid_gap`` [m]. To adjust contact gaps [m], set them before calling
             :meth:`ModelBuilder.finalize`.
         Returns:
-            Contacts: The contact object containing collision information.
+            The contact object containing collision information.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
@@ -939,10 +939,10 @@ class Model:
         pipeline.
 
         Args:
-            state (State): The current simulation state.
-            contacts (Contacts | None): The contacts buffer to populate (will be cleared first). If None, a new
+            state: The current simulation state.
+            contacts: The contacts buffer to populate (will be cleared first). If None, a new
                 contacts buffer is allocated via :meth:`contacts`.
-            collision_pipeline (CollisionPipeline | None): Optional collision pipeline override.
+            collision_pipeline: Optional collision pipeline override.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
@@ -982,7 +982,7 @@ class Model:
         Get the set of requested contact attribute names.
 
         Returns:
-            set[str]: The set of requested contact attributes.
+            The set of requested contact attributes.
         """
         return self._requested_contact_attributes
 
@@ -1044,7 +1044,7 @@ class Model:
     def add_attribute(
         self,
         name: str,
-        attrib: wp.array | list,
+        attrib: wp.array | list[Any],
         frequency: Model.AttributeFrequency | str,
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
@@ -1053,14 +1053,14 @@ class Model:
         Add a custom attribute to the model.
 
         Args:
-            name (str): Name of the attribute.
-            attrib (wp.array | list): The array to add as an attribute. Can be a wp.array for
+            name: Name of the attribute.
+            attrib: The array to add as an attribute. Can be a wp.array for
                 numeric types or a list for string attributes.
-            frequency (Model.AttributeFrequency | str): The frequency of the attribute.
+            frequency: The frequency of the attribute.
                 Can be a Model.AttributeFrequency enum value or a string for custom frequencies.
-            assignment (Model.AttributeAssignment, optional): The assignment category using Model.AttributeAssignment enum.
+            assignment: The assignment category using Model.AttributeAssignment enum.
                 Determines which object will hold the attribute.
-            namespace (str, optional): Namespace for the attribute.
+            namespace: Namespace for the attribute.
                 If None, attribute is added directly to the assignment object (e.g., model.attr_name).
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
 
@@ -1098,10 +1098,10 @@ class Model:
         Get the frequency of an attribute.
 
         Args:
-            name (str): Name of the attribute.
+            name: Name of the attribute.
 
         Returns:
-            Model.AttributeFrequency | str: The frequency of the attribute.
+            The frequency of the attribute.
                 Either a Model.AttributeFrequency enum value or a string for custom frequencies.
 
         Raises:
@@ -1117,10 +1117,10 @@ class Model:
         Get the count for a custom frequency.
 
         Args:
-            frequency (str): The custom frequency (e.g., ``"mujoco:pair"``).
+            frequency: The custom frequency (e.g., ``"mujoco:pair"``).
 
         Returns:
-            int: The count of elements with this frequency.
+            The count of elements with this frequency.
 
         Raises:
             KeyError: If the frequency is not known.
@@ -1136,7 +1136,7 @@ class Model:
         See :ref:`extended_state_attributes` for details.
 
         Returns:
-            list[str]: The list of requested state attributes.
+            The list of requested state attributes.
         """
         attributes = []
 
