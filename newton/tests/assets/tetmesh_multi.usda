@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "Root" ()
+{
+    def TetMesh "TetA" ()
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+    }
+
+    def TetMesh "TetB" ()
+    {
+        point3f[] points = [(2, 0, 0), (3, 0, 0), (2, 1, 0), (2, 0, 1), (3, 1, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3), (1, 2, 3, 4)]
+    }
+
+    def Mesh "NotATetMesh" ()
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }
+}

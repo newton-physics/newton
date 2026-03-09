@@ -78,6 +78,7 @@ class CollisionSetup:
         self.shape_type_b = shape_type_b
         self.sdf_max_resolution_a = sdf_max_resolution_a
         self.sdf_max_resolution_b = sdf_max_resolution_b
+        self._device = device
 
         self.builder = newton.ModelBuilder(gravity=0.0)
         # Set contact margin to match previous test expectations
@@ -141,7 +142,7 @@ class CollisionSetup:
                 compute_inertia=False,
             )
             if sdf_max_resolution is not None:
-                mesh.build_sdf(max_resolution=sdf_max_resolution)
+                mesh.build_sdf(max_resolution=sdf_max_resolution, device=self._device)
             self.builder.add_shape_mesh(body, mesh=mesh, label=type_to_str(shape_type))
         elif shape_type == GeoType.CONVEX_MESH:
             # Use a sphere mesh as it's already convex

@@ -40,6 +40,7 @@ from ._src.geometry import (
     Mesh,
     ParticleFlags,
     ShapeFlags,
+    TetMesh,
 )
 
 __all__ += [
@@ -49,12 +50,14 @@ __all__ += [
     "Mesh",
     "ParticleFlags",
     "ShapeFlags",
+    "TetMesh",
 ]
 
 # ==================================================================================
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
+    BodyFlags,
     CollisionPipeline,
     Contacts,
     Control,
@@ -71,6 +74,7 @@ from ._src.sim import (  # noqa: E402
 )
 
 __all__ += [
+    "BodyFlags",
     "CollisionPipeline",
     "Contacts",
     "Control",

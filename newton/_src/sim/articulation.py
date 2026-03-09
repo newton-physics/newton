@@ -18,7 +18,7 @@ from __future__ import annotations
 import warp as wp
 
 from ..math import quat_decompose, transform_twist
-from .joints import JointType
+from .enums import BodyFlags, JointType
 from .model import Model
 from .state import State
 
@@ -194,6 +194,8 @@ def eval_single_articulation_fk(
     joint_axis: wp.array(dtype=wp.vec3),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
+    body_flags: wp.array(dtype=wp.int32),
+    body_flag_filter: int,
     # outputs
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -338,8 +340,9 @@ def eval_single_articulation_fk(
 
         v_wc = v_wpj + wp.spatial_vector(linear_vel, angular_vel)
 
-        body_q[child] = X_wc
-        body_qd[child] = v_wc
+        if (body_flags[child] & body_flag_filter) != 0:
+            body_q[child] = X_wc
+            body_qd[child] = v_wc
 
 
 @wp.kernel
@@ -363,6 +366,8 @@ def eval_articulation_fk(
     joint_axis: wp.array(dtype=wp.vec3),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
+    body_flags: wp.array(dtype=wp.int32),
+    body_flag_filter: int,
     # outputs
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -405,6 +410,8 @@ def eval_articulation_fk(
         joint_axis,
         joint_dof_dim,
         body_com,
+        body_flags,
+        body_flag_filter,
         # outputs
         body_q,
         body_qd,
@@ -418,6 +425,7 @@ def eval_fk(
     state: State | Model | object,
     mask: wp.array(dtype=bool) | None = None,
     indices: wp.array(dtype=int) | None = None,
+    body_flag_filter: int = BodyFlags.ALL,
 ):
     """
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
@@ -430,6 +438,9 @@ def eval_fk(
         mask: The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
         indices: Integer indices of articulations to update. If None, updates all articulations.
             Cannot be used together with mask parameter.
+        body_flag_filter: Body flag filter controlling which bodies are written to in ``state.body_q`` and
+            ``state.body_qd``. Default updates both dynamic and kinematic bodies. Bodies that do not
+            match the filter retain their existing values; they are not zeroed or invalidated.
     """
     # Validate inputs
     if mask is not None and indices is not None:
@@ -462,6 +473,8 @@ def eval_fk(
             model.joint_axis,
             model.joint_dof_dim,
             model.body_com,
+            model.body_flags,
+            body_flag_filter,
         ],
         outputs=[
             state.body_q,
@@ -553,6 +566,8 @@ def eval_articulation_ik(
     joint_dof_dim: wp.array(dtype=int, ndim=2),
     joint_q_start: wp.array(dtype=int),
     joint_qd_start: wp.array(dtype=int),
+    body_flags: wp.array(dtype=wp.int32),
+    body_flag_filter: int,
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
 ):
@@ -584,6 +599,8 @@ def eval_articulation_ik(
 
     parent = joint_parent[joint_idx]
     child = joint_child[joint_idx]
+    if (body_flags[child] & body_flag_filter) == 0:
+        return
 
     X_pj = joint_X_p[joint_idx]
     X_cj = joint_X_c[joint_idx]
@@ -758,6 +775,7 @@ def eval_ik(
     joint_qd: wp.array(dtype=float),
     mask: wp.array(dtype=bool) | None = None,
     indices: wp.array(dtype=int) | None = None,
+    body_flag_filter: int = BodyFlags.ALL,
 ):
     """
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
@@ -769,6 +787,9 @@ def eval_ik(
         joint_qd: Generalized joint velocity coordinates, shape [joint_dof_count], float
         mask: Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).
         indices: Integer indices of articulations to update. If None, updates all articulations.
+        body_flag_filter: Body flag filter controlling which joints are written based on each joint's child
+            body flag. Default updates joints for both dynamic and kinematic child bodies. Entries that
+            do not match the filter retain their existing values in ``joint_q`` and ``joint_qd``.
 
     Note:
         The mask and indices parameters are mutually exclusive. If both are provided, a ValueError is raised.
@@ -804,6 +825,8 @@ def eval_ik(
             model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
+            model.body_flags,
+            body_flag_filter,
         ],
         outputs=[joint_q, joint_qd],
         device=model.device,

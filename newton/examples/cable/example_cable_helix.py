@@ -81,7 +81,7 @@ class Example:
         edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=float(twisting_angle))
         return points, edge_q
 
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
@@ -168,6 +168,15 @@ class Example:
 
         self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
+
+        # Set camera to view all the cables
+        self.viewer.set_camera(
+            pos=wp.vec3(10.0, -1.8, 2.0),
+            pitch=0.0,
+            yaw=-180.0,
+        )
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 70.0
 
         # Optional capture for CUDA
         self.capture()

@@ -77,8 +77,8 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_heightfield.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_heightfield.jpg" alt="Heightfield">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_conveyor.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_conveyor.jpg" alt="Conveyor">
       </a>
     </td>
   </tr>
@@ -90,10 +90,15 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples basic_joints</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples basic_heightfield</code>
+      <code>python -m newton.examples basic_conveyor</code>
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_heightfield.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_heightfield.jpg" alt="Heightfield">
+      </a>
+    </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_recording.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_recording.jpg" alt="Recording">
@@ -104,17 +109,16 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_replay_viewer.jpg" alt="Replay Viewer">
       </a>
     </td>
-    <td align="center" width="33%">
-    </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_heightfield</code>
+    </td>
     <td align="center" width="33%">
       <code>python -m newton.examples recording</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples replay_viewer</code>
-    </td>
-    <td align="center" width="33%">
     </td>
   </tr>
   <tr>
@@ -683,6 +687,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_brick_stacking.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_brick_stacking.jpg" alt="Brick Stacking">
+      </a>
     </td>
   </tr>
   <tr>
@@ -693,6 +700,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples nut_bolt_sdf</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples brick_stacking</code>
     </td>
   </tr>
   <tr>
@@ -705,6 +713,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_franka.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_franka.jpg" alt="Softbody Franka">
+      </a>
     </td>
     <td align="center" width="33%">
     </td>
@@ -714,6 +725,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples softbody_hanging</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples softbody_franka</code>
     </td>
     <td align="center" width="33%">
     </td>

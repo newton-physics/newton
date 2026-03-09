@@ -25,7 +25,7 @@ from newton.solvers import style3d
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
