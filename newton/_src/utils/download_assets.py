@@ -297,8 +297,9 @@ def download_git_folder(
             f"latest: {latest_commit[:7]}). Refreshing..."
         )
 
-    # 3. Download into a process/thread-unique temp directory, then rename
+    # Download into a process/thread-unique temp directory, then rename
     temp_dir = _temp_cache_path(cache_folder)
+    stale_dir = None
     try:
         # Clean up any stale temp dir from a previous crash
         if temp_dir.exists():
@@ -328,6 +329,8 @@ def download_git_folder(
 
         # Move stale cache out of the way (if any), then rename temp into place
         stale_dir = Path(f"{cache_folder}_stale_p{os.getpid()}_t{threading.get_ident()}")
+        if stale_dir.exists():
+            _safe_rmtree(stale_dir)
         if cache_folder.exists():
             try:
                 os.rename(cache_folder, stale_dir)
@@ -339,12 +342,8 @@ def download_git_folder(
         if stale_dir.exists():
             _safe_rmtree(stale_dir)
 
-        if cache_folder.exists():
-            print(f"Successfully downloaded folder to: {cache_folder / folder_path}")
-            return cache_folder / folder_path
-
-        # Should not happen, but handle gracefully
-        raise RuntimeError(f"Failed to place cache folder at {cache_folder}")
+        print(f"Successfully downloaded folder to: {cache_folder / folder_path}")
+        return cache_folder / folder_path
 
     except GitCommandError as e:
         raise RuntimeError(f"Git operation failed: {e}") from e
@@ -353,9 +352,14 @@ def download_git_folder(
     except Exception as e:
         raise RuntimeError(f"Failed to download git folder: {e}") from e
     finally:
-        # Always clean up temp dir
-        if temp_dir.exists():
-            _safe_rmtree(temp_dir)
+        # Clean up temp and stale dirs; catch errors to avoid masking the
+        # original exception if we're unwinding from a failure.
+        for d in (temp_dir, stale_dir):
+            try:
+                if d is not None and d.exists():
+                    _safe_rmtree(d)
+            except OSError:
+                pass
 
 
 def clear_git_cache(cache_dir: str | None = None) -> None:

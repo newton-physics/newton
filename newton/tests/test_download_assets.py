@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import concurrent.futures
+import errno
 import os
 import shutil
 import tempfile
@@ -21,6 +22,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     import git
@@ -167,6 +169,52 @@ class TestSafeRename(unittest.TestCase):
         self.assertEqual(Path(dst, "existing.txt").read_text(encoding="utf-8"), "keep")
         # Source still exists (caller is responsible for cleanup)
         self.assertTrue(os.path.exists(src))
+
+    def test_rename_retries_on_transient_error(self):
+        """Transient OSError succeeds on retry."""
+        src = os.path.join(self.base, "src_dir")
+        dst = os.path.join(self.base, "dst_dir")
+        os.makedirs(src)
+
+        real_rename = os.rename
+        call_count = 0
+
+        def flaky_rename(s, d):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError(errno.EACCES, "transient lock")
+            return real_rename(s, d)
+
+        with mock.patch("os.rename", side_effect=flaky_rename):
+            _safe_rename(src, dst, attempts=3, delay=0)
+
+        self.assertTrue(os.path.isdir(dst))
+        self.assertEqual(call_count, 2)
+
+    def test_rename_raises_after_exhausting_retries(self):
+        """Raises OSError when all retry attempts are exhausted."""
+        src = os.path.join(self.base, "src_dir")
+        dst = os.path.join(self.base, "dst_dir")
+        os.makedirs(src)
+
+        with mock.patch("os.rename", side_effect=OSError(errno.EACCES, "persistent lock")):
+            with self.assertRaises(OSError):
+                _safe_rename(src, dst, attempts=3, delay=0)
+
+    def test_rename_enotempty_returns_silently(self):
+        """ENOTEMPTY is treated the same as FileExistsError."""
+        src = os.path.join(self.base, "src_dir")
+        dst = os.path.join(self.base, "dst_dir")
+        os.makedirs(src)
+        os.makedirs(dst)
+
+        with mock.patch("os.rename", side_effect=OSError(errno.ENOTEMPTY, "not empty")):
+            _safe_rename(src, dst)
+
+        # Both dirs still exist — caller cleans up src
+        self.assertTrue(os.path.isdir(src))
+        self.assertTrue(os.path.isdir(dst))
 
 
 class TestTempCachePath(unittest.TestCase):
