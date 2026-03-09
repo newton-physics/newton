@@ -219,7 +219,8 @@ A CI check (``pr_license_check.yml``) enforces this on every pull request using
 The required headers depend on the file type:
 
 - **Python files** (``.py``) — Apache-2.0. See ``.licenserc.yaml`` for the exact template.
-- **Documentation files** (``.rst``) and **Jupyter notebooks** (``.ipynb``) — CC-BY-4.0. See ``.licenserc-docs.yaml`` for the exact template.
+- **Documentation files** (``.rst``) — CC-BY-4.0. See ``.licenserc-docs.yaml`` for the exact template.
+- **Jupyter notebooks** (``.ipynb``) — CC-BY-4.0. Copy the header from an existing notebook.
 
 When adding a new file, copy the header from an existing file of the same type. If the
 license check fails on your PR, add the appropriate header to the top of each flagged file.
@@ -627,14 +628,14 @@ This is useful for comparing performance across several recent changes:
 
         .. code-block:: console
 
-            asv run --launch-method spawn HEAD~4...HEAD
+            asv run --launch-method spawn HEAD~4..HEAD
 
     .. tab-item:: Windows
         :sync: windows
 
         .. code-block:: console
 
-            asv run --launch-method spawn HEAD~4...HEAD
+            asv run --launch-method spawn HEAD~4..HEAD
 
 Commit hashes can be used instead of relative references:
 
@@ -646,14 +647,14 @@ Commit hashes can be used instead of relative references:
 
         .. code-block:: console
 
-            asv run --launch-method spawn abc1234...def5678
+            asv run --launch-method spawn abc1234..def5678
 
     .. tab-item:: Windows
         :sync: windows
 
         .. code-block:: console
 
-            asv run --launch-method spawn abc1234...def5678
+            asv run --launch-method spawn abc1234..def5678
 
 Running benchmarks standalone
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
