@@ -300,10 +300,6 @@ class ViewerBase(ABC):
 
     def _auto_compute_world_offsets(self):
         """Automatically compute world offsets based on model extents."""
-        # If only one world or no worlds, no offsets needed
-        if self._get_render_world_count() <= 1:
-            return
-
         max_extents = self._get_world_extents()
         if max_extents is None:
             return
