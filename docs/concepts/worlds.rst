@@ -74,6 +74,97 @@ The following example creates two different worlds within a single model:
 In this example, we create a model with two worlds (world ``0`` and world ``1``) containing different bodies, shapes and joints, as well as two global entities (the ground plane at the front and a static box at the back, both with world index ``-1``).
 
 
+.. _World grouping:
+
+World Grouping
+--------------
+
+The :class:`~newton.ModelBuilder` maintains internal lists that track the world assignment of each entity added to it.
+When :meth:`~newton.ModelBuilder.finalize` is called, the :class:`~newton.Model` object generated will contain arrays that store the world indices for each entity type.
+
+Specifically, the entity types that currently support world grouping include:
+
+- Particles: :attr:`~newton.Model.particle_world`
+- Bodies: :attr:`~newton.Model.body_world`
+- Shapes: :attr:`~newton.Model.shape_world`
+- Joints: :attr:`~newton.Model.joint_world`
+- Articulations: :attr:`~newton.Model.articulation_world`
+- Equality Constraints: :attr:`~newton.Model.equality_constraint_world`
+
+The corresponding world grouping arrays for the example above are:
+
+.. testcode::
+
+   print("Body worlds:", model.body_world.numpy().tolist())
+   print("Shape worlds:", model.shape_world.numpy().tolist())
+   print("Joint worlds:", model.joint_world.numpy().tolist())
+
+.. testoutput::
+
+   Body worlds: [0, 0, 1, 1]
+   Shape worlds: [-1, 0, 0, 1, 1, -1]
+   Joint worlds: [0, 0, 1, 1]
+
+
+.. _World starts:
+
+World Start Indices & Dimensions
+--------------------------------
+
+In addition to the world grouping arrays, the :class:`~newton.Model` object will also contain Warp arrays that store the per-world starting indices for each entity type.
+
+These arrays include:
+
+- Particles: :attr:`~newton.Model.particle_world_start`
+- Bodies: :attr:`~newton.Model.body_world_start`
+- Shapes: :attr:`~newton.Model.shape_world_start`
+- Joints: :attr:`~newton.Model.joint_world_start`
+- Articulations: :attr:`~newton.Model.articulation_world_start`
+- Equality Constraints: :attr:`~newton.Model.equality_constraint_world_start`
+
+To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
+
+- Joint DOFs: :attr:`~newton.Model.joint_dof_world_start`
+- Joint Coordinates: :attr:`~newton.Model.joint_coord_world_start`
+- Joint Constraints: :attr:`~newton.Model.joint_constraint_world_start`
+
+All ``*_world_start`` arrays adopt a special format that facilitates accounting of the total number of entities in each world as well as the global world (index ``-1``) at the front and back of each per-entity array such as :attr:`~newton.Model.body_world`.
+Specifically, each ``*_world_start`` array contains ``world_count + 2`` entries, with the first ``world_count`` entries corresponding to starting indices of each ``world >= 0`` world,
+the second-to-last entry corresponding to the starting index of the global entities at the back (world index ``-1``), and the last entry corresponding to total number of entities or dimensions in the model.
+
+With this format, we can easily compute the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
+as well as the total number of global entities by summing the first entry with the difference of the last two.
+
+Continuing the same example, we can compute the per-world shape counts as follows:
+
+.. testcode::
+
+   print("world_count:", model.world_count)
+
+   # Shape start indices per world
+   # Entries: [start_world_0, start_world_1, start_global_back, total_shapes]
+   shape_start = model.shape_world_start.numpy()
+   print("Shape starts:", shape_start.tolist())
+
+   # Compute per-world shape counts
+   world_shape_counts = [
+       int(shape_start[i + 1] - shape_start[i])
+       for i in range(model.world_count)
+   ]
+   # Global shapes: those at the front (before start_world_0) plus at the back
+   global_shape_count = int(shape_start[0]) + int(shape_start[-1] - shape_start[-2])
+
+   print("Shape counts per world:", world_shape_counts)
+   print("Global shape count:", global_shape_count)
+
+.. testoutput::
+
+   world_count: 2
+   Shape starts: [1, 3, 5, 6]
+   Shape counts per world: [2, 2]
+   Global shape count: 2
+
+
 .. _Convenience methods:
 
 Convenience Methods: ``add_world`` and ``replicate``
@@ -135,97 +226,6 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 
    world_count: 4
    body_count: 8
-
-
-.. _World grouping:
-
-World Grouping
---------------
-
-The :class:`~newton.ModelBuilder` maintains internal lists that track the world assignment of each entity added to it.
-When :meth:`~newton.ModelBuilder.finalize` is called, the :class:`~newton.Model` object generated will contain arrays that store the world indices for each entity type.
-
-Specifically, the entity types that currently support world grouping include:
-
-- Particles: :attr:`~newton.Model.particle_world`
-- Bodies: :attr:`~newton.Model.body_world`
-- Shapes: :attr:`~newton.Model.shape_world`
-- Joints: :attr:`~newton.Model.joint_world`
-- Articulations: :attr:`~newton.Model.articulation_world`
-- Equality Constraints: :attr:`~newton.Model.equality_constraint_world`
-
-For the first example above, the corresponding world grouping arrays are:
-
-.. testcode::
-
-   print("Body worlds:", model.body_world.numpy().tolist())
-   print("Shape worlds:", model.shape_world.numpy().tolist())
-   print("Joint worlds:", model.joint_world.numpy().tolist())
-
-.. testoutput::
-
-   Body worlds: [0, 0, 1, 1]
-   Shape worlds: [-1, 0, 0, 1, 1, -1]
-   Joint worlds: [0, 0, 1, 1]
-
-
-.. _World starts:
-
-World Start Indices & Dimensions
---------------------------------
-
-In addition to the world grouping arrays, the :class:`~newton.Model` object will also contain Warp arrays that store the per-world starting indices for each entity type.
-
-These arrays include:
-
-- Particles: :attr:`~newton.Model.particle_world_start`
-- Bodies: :attr:`~newton.Model.body_world_start`
-- Shapes: :attr:`~newton.Model.shape_world_start`
-- Joints: :attr:`~newton.Model.joint_world_start`
-- Articulations: :attr:`~newton.Model.articulation_world_start`
-- Equality Constraints: :attr:`~newton.Model.equality_constraint_world_start`
-
-To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
-
-- Joint DOFs: :attr:`~newton.Model.joint_dof_world_start`
-- Joint Coordinates: :attr:`~newton.Model.joint_coord_world_start`
-- Joint Constraints: :attr:`~newton.Model.joint_constraint_world_start`
-
-All ``*_world_start`` arrays adopt a special format that facilitates accounting of the total number of entities in each world as well as the global world (index ``-1``) at the front and back of each per-entity array such as :attr:`~newton.Model.body_world`.
-Specifically, each ``*_world_start`` array contains ``world_count + 2`` entries, with the first ``world_count`` entries corresponding to starting indices of each ``world >= 0`` world,
-the second-to-last entry corresponding to the starting index of the global entities at the back (world index ``-1``), and the last entry corresponding to total number of entities or dimensions in the model.
-
-With this format, we can easily compute the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
-as well as the total number of global entities by summing the first entry with the difference of the last two.
-
-For the previous example, we can compute the per-world shape counts as follows:
-
-.. testcode::
-
-   print("world_count:", model.world_count)
-
-   # Shape start indices per world
-   # Entries: [start_world_0, start_world_1, start_global_back, total_shapes]
-   shape_start = model.shape_world_start.numpy()
-   print("Shape starts:", shape_start.tolist())
-
-   # Compute per-world shape counts
-   world_shape_counts = [
-       int(shape_start[i + 1] - shape_start[i])
-       for i in range(model.world_count)
-   ]
-   # Global shapes: those at the front (before start_world_0) plus at the back
-   global_shape_count = int(shape_start[0]) + int(shape_start[-1] - shape_start[-2])
-
-   print("Shape counts per world:", world_shape_counts)
-   print("Global shape count:", global_shape_count)
-
-.. testoutput::
-
-   world_count: 2
-   Shape starts: [1, 3, 5, 6]
-   Shape counts per world: [2, 2]
-   Global shape count: 2
 
 
 .. _Per-world gravity:
