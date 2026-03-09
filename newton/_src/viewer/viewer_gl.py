@@ -1710,7 +1710,9 @@ class ViewerGL(ViewerBase):
                 # Wireframe mode
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
-                def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
+                def _edit_color3(
+                    label: str, color: tuple[float, float, float]
+                ) -> tuple[bool, tuple[float, float, float]]:
                     """Normalize color_edit3 input/output across imgui_bundle versions."""
                     if _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3:
                         changed, updated_color = imgui.color_edit3(label, imgui.ImVec4(*color, 1.0))
