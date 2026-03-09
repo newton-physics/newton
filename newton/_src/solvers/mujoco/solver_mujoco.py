@@ -108,15 +108,15 @@ class SolverMuJoCo(SolverBase):
           bounding sphere radii (``geom_rbound``) internally based on the geometry definition.
 
     Joint support:
-        - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
-          CABLE joints are not supported.
+        - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, D6.
+          DISTANCE and CABLE joints are not supported.
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
-          :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and
-          :attr:`~newton.Model.joint_target_mode` are supported.
+          :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`,
+          :attr:`~newton.Model.joint_target_mode`, and :attr:`~newton.Control.joint_f` are supported.
         - Equality constraints (CONNECT, WELD, JOINT) and mimic constraints (REVOLUTE and PRISMATIC only) are supported.
-        - :attr:`~newton.Model.joint_velocity_limit`, :attr:`~newton.Model.joint_enabled`,
-          and :attr:`~newton.Control.joint_f` are not supported.
+        - :attr:`~newton.Model.joint_velocity_limit` and :attr:`~newton.Model.joint_enabled`
+          are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 

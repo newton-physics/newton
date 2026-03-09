@@ -108,7 +108,7 @@ class SolverVBD(SolverBase):
     for joints and contacts. Hard constraints are not currently enforced.
 
     Joint limitations:
-        - Supported joint types: BALL, FIXED, FREE (no constraints), CABLE.
+        - Supported joint types: BALL, FIXED, FREE, CABLE.
           PRISMATIC, REVOLUTE, DISTANCE, and D6 joints are not supported.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are used for CABLE
           joints only (as stretch/bend stiffness and damping).

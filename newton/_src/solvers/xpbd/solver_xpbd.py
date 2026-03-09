@@ -50,8 +50,8 @@ class SolverXPBD(SolverBase):
     may be used to advance the simulation state forward in time.
 
     Joint limitations:
-        - Supported joint types: PRISMATIC, REVOLUTE, FIXED, DISTANCE, D6.
-          FREE, BALL, and CABLE joints are not supported.
+        - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE, D6.
+          CABLE joints are not supported.
         - :attr:`~newton.Model.joint_enabled`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and
           :attr:`~newton.Control.joint_f` are supported.
