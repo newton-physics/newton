@@ -171,6 +171,8 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        newton.examples.add_mujoco_contacts_arg(parser)
         parser.set_defaults(world_count=8)
         return parser
 

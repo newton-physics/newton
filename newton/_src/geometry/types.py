@@ -668,6 +668,7 @@ class Mesh:
     def build_sdf(
         self,
         *,
+        device: Devicelike | None = None,
         narrow_band_range: tuple[float, float] | None = None,
         target_voxel_size: float | None = None,
         max_resolution: int | None = None,
@@ -678,6 +679,8 @@ class Mesh:
         """Build and attach an SDF for this mesh.
 
         Args:
+            device: CUDA device for SDF allocation. When ``None``, uses the
+                current :class:`wp.ScopedDevice` or the Warp default device.
             narrow_band_range: Signed narrow-band distance range [m] as
                 ``(inner, outer)``. Uses ``(-0.1, 0.1)`` when not provided.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided,
@@ -710,6 +713,7 @@ class Mesh:
 
         self.sdf = SDF.create_from_mesh(
             self,
+            device=device,
             narrow_band_range=narrow_band_range if narrow_band_range is not None else (-0.1, 0.1),
             target_voxel_size=target_voxel_size,
             max_resolution=max_resolution,
