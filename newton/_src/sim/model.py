@@ -599,7 +599,7 @@ class Model:
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array(dtype=wp.vec3) | None = None
-        """Gravity vector [m/s²], shape [1], dtype vec3."""
+        """Per-world gravity vectors [m/s²], shape [world_count, 3], dtype :class:`vec3`."""
 
         self.equality_constraint_type: wp.array(dtype=wp.int32) | None = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
@@ -690,14 +690,14 @@ class Model:
         """Total number of mimic constraints in the system."""
 
         # indices of particles sharing the same color
-        self.particle_color_groups: list[wp.array(dtype=int)] = []
+        self.particle_color_groups: list[wp.array(dtype=wp.int32)] = []
         """Coloring of all particles for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of particles sharing the same color."""
-        self.particle_colors: wp.array(dtype=int) | None = None
+        self.particle_colors: wp.array(dtype=wp.int32) | None = None
         """Color assignment for every particle."""
 
-        self.body_color_groups: list[wp.array(dtype=int)] = []
+        self.body_color_groups: list[wp.array(dtype=wp.int32)] = []
         """Coloring of all rigid bodies for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of bodies sharing the same color."""
-        self.body_colors: wp.array(dtype=int) | None = None
+        self.body_colors: wp.array(dtype=wp.int32) | None = None
         """Color assignment for every rigid body."""
 
         self.device: wp.Device = wp.get_device(device)

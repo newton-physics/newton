@@ -1166,7 +1166,7 @@ class ModelBuilder:
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
-        self.actuator_entries: dict[tuple[type, tuple], ActuatorEntry] = {}
+        self.actuator_entries: dict[tuple[type[Actuator], tuple[Any, ...]], ModelBuilder.ActuatorEntry] = {}
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by class and scalar parameters."""
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
