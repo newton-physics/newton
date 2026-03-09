@@ -26,7 +26,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.types import MAXVAL, nparray
+from ..core.types import MAXVAL, GizmoAxes, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -789,13 +789,18 @@ class ViewerBase(ABC):
         self,
         name: str,
         transform: wp.transform,
+        translate: GizmoAxes = GizmoAxes.ALL,
+        rotate: GizmoAxes = GizmoAxes.ALL,
     ):
-        """
-        Log a gizmo GUI element for the given name and transform.
+        """Log a gizmo GUI element for the given name and transform.
 
         Args:
             name: The name of the gizmo.
             transform: The transform of the gizmo.
+            translate: Axes on which the translation handles are shown.
+                Use :attr:`GizmoAxes.NONE` to hide all translation handles.
+            rotate: Axes on which the rotation rings are shown.
+                Use :attr:`GizmoAxes.NONE` to hide all rotation rings.
         """
         return
 

@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import numpy as np
@@ -197,6 +197,29 @@ AxisType = Axis | Literal["X", "Y", "Z"] | Literal[0, 1, 2] | int | str
 """Type that can be used to represent an axis, including the enum, string, and integer representations."""
 
 
+class GizmoAxes(IntFlag):
+    """Bit-flag set selecting which axes a gizmo component operates on."""
+
+    NONE = 0
+    """No axes (disables the component)."""
+    X = 1
+    """X-axis."""
+    Y = 2
+    """Y-axis."""
+    Z = 4
+    """Z-axis."""
+    XY = X | Y
+    """X and Y axes."""
+    XZ = X | Z
+    """X and Z axes."""
+    YZ = Y | Z
+    """Y and Z axes."""
+    XYZ = X | Y | Z
+    """All three axes."""
+    ALL = XYZ
+    """Alias for :attr:`XYZ`."""
+
+
 def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
     """Convert an axis representation to a 3D vector."""
     if isinstance(axis, list | tuple | np.ndarray):
@@ -219,6 +242,7 @@ __all__ = [
     "Vec2",
     "Vec3",
     "Vec4",
+    "GizmoAxes",
     "flag_to_int",
     "override",
     "vec5",

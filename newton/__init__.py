@@ -20,6 +20,7 @@ from ._src.core import (
     MAXVAL,
     Axis,
     AxisType,
+    GizmoAxes,
 )
 from ._version import __version__
 
@@ -27,6 +28,7 @@ __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "GizmoAxes",
     "__version__",
 ]
 

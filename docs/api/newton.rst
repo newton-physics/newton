@@ -44,6 +44,7 @@ newton
    Control
    EqType
    GeoType
+   GizmoAxes
    Heightfield
    JointTargetMode
    JointType
