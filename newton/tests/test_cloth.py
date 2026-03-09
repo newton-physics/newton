@@ -21,7 +21,7 @@ import warp as wp
 
 import newton
 from newton import ParticleFlags
-from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # fmt: off
 CLOTH_POINTS = [
@@ -1183,10 +1183,6 @@ def test_cloth_enable_tri_contact(test, device, solver):
 
 
 devices = get_test_devices(mode="basic")
-cuda_devices = get_selected_cuda_test_devices(mode="basic")
-
-# Tests that require NarrowPhase mesh collision (CUDA only).
-cuda_only_tests = {test_cloth_enable_tri_contact}
 
 
 class TestCloth(unittest.TestCase):
@@ -1232,13 +1228,8 @@ tests_to_run = {
 
 for solver, tests in tests_to_run.items():
     for test in tests:
-        test_devices = cuda_devices if test in cuda_only_tests else devices
         add_function_test(
-            TestCloth,
-            f"{test.__name__}_{solver}",
-            partial(test, solver=solver),
-            devices=test_devices,
-            check_output=False,
+            TestCloth, f"{test.__name__}_{solver}", partial(test, solver=solver), devices=devices, check_output=False
         )
 
 
