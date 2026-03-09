@@ -1,6 +1,8 @@
 name: CI
 permissions:
   contents: read
+env:
+  PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
 
 on:
   workflow_call:
