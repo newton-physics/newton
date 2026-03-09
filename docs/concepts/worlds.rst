@@ -71,7 +71,7 @@ The following example creates two different worlds within a single model:
 
    model = builder.finalize()
 
-In this example, we create a model with two worlds (world ``0`` and world ``1``) containing different bodies, shapes and joints, as well as a global ground plane entity (with world index ``-1``).
+In this example, we create a model with two worlds (world ``0`` and world ``1``) containing different bodies, shapes and joints, as well as two global entities (the ground plane at the front and a static box at the back, both with world index ``-1``).
 
 
 .. _Convenience methods:
@@ -87,21 +87,24 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 
    import newton
 
-   # Build a single robot once
-   robot_builder = newton.ModelBuilder()
-   robot_builder.add_urdf(
-       newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
-       floating=False,
-   )
+   # Build a simple two-link arm
+   arm = newton.ModelBuilder()
+   link0 = arm.add_link(mass=1.0)
+   j0 = arm.add_joint_fixed(parent=-1, child=link0)
+   link1 = arm.add_link(mass=1.0)
+   j1 = arm.add_joint_revolute(parent=link0, child=link1)
+   arm.add_articulation(joints=[j0, j1])
+   arm.add_shape_box(body=link0, hx=0.1, hy=0.1, hz=0.1)
+   arm.add_shape_box(body=link1, hx=0.1, hy=0.1, hz=0.1)
 
-   # Create a scene with two instances of the same robot
+   # Create a scene with two instances of the same arm
    scene = newton.ModelBuilder()
    scene.add_ground_plane()
-   scene.add_world(robot_builder)
-   scene.add_world(robot_builder)
+   scene.add_world(arm)
+   scene.add_world(arm)
 
-   multi_robot_model = scene.finalize()
-   print("world_count:", multi_robot_model.world_count)
+   multi_arm_model = scene.finalize()
+   print("world_count:", multi_arm_model.world_count)
 
 .. testoutput::
 
@@ -113,15 +116,16 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 
    import newton
 
-   robot_builder = newton.ModelBuilder()
-   robot_builder.add_urdf(
-       newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
-       floating=False,
-   )
+   arm = newton.ModelBuilder()
+   link0 = arm.add_link(mass=1.0)
+   j0 = arm.add_joint_fixed(parent=-1, child=link0)
+   link1 = arm.add_link(mass=1.0)
+   j1 = arm.add_joint_revolute(parent=link0, child=link1)
+   arm.add_articulation(joints=[j0, j1])
 
    scene = newton.ModelBuilder()
    scene.add_ground_plane()
-   scene.replicate(robot_builder, world_count=4, spacing=(2.0, 0.0, 0.0))
+   scene.replicate(arm, world_count=4, spacing=(2.0, 0.0, 0.0))
 
    replicated_model = scene.finalize()
    print("world_count:", replicated_model.world_count)
@@ -130,7 +134,7 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 .. testoutput::
 
    world_count: 4
-   body_count: 56
+   body_count: 8
 
 
 .. _World grouping:
@@ -197,8 +201,6 @@ as well as the total number of global entities by summing the first entry with t
 For the previous example, we can compute the per-world shape counts as follows:
 
 .. testcode::
-
-   import numpy as np
 
    print("world_count:", model.world_count)
 
@@ -276,14 +278,14 @@ For example:
    @wp.kernel
    def world_body_2d_kernel(
        body_world_start: wp.array(dtype=wp.int32),
-       body_twist: wp.array(dtype=wp.spatial_vectorf),
+       body_qd: wp.array(dtype=wp.spatial_vectorf),
    ):
        world_id, body_world_id = wp.tid()
        world_start = body_world_start[world_id]
        num_bodies_in_world = body_world_start[world_id + 1] - world_start
        if body_world_id < num_bodies_in_world:
            global_body_id = world_start + body_world_id
-           twist = body_twist[global_body_id]
+           twist = body_qd[global_body_id]
            # ... perform computations on twist ...
 
    # Create model with multiple worlds
@@ -303,7 +305,7 @@ For example:
    wp.launch(
        world_body_2d_kernel,
        dim=(model.world_count, max(num_bodies_per_world)),
-       inputs=[model.body_world_start, state.body_twist],
+       inputs=[model.body_world_start, state.body_qd],
    )
 
 This kernel thread partitioning allows each thread to uniquely identify both the world it is operating on (via ``world_id``) and the relative entity index w.r.t that world (via ``body_world_id``).
@@ -313,12 +315,13 @@ This relative index can then be mapped to the global entity index within the mod
 Note that in the simpler case of a homogeneous model consisting of identical worlds, the ``max(num_bodies_per_world)`` reduces to a constant value, and this effectively becomes a *batched* operation.
 For the more general heterogeneous case, the kernel needs to account for the varying number of entities per world, and an important pattern arises w.r.t 2D thread indexing and memory allocations that applies to all per-entity and per-world arrays.
 
-Essentially, the sum ``sum(num_bodies_per_world)`` will always equal the total number of bodies in the model ``model.body_count`` corresponding to the memory allocated for per-body arrays (i.e. when multiplied by the size of the relevant ``dtype``),
-and the maximum ``max(num_bodies_per_world)`` will determine the second dimension of the 2D thread grid used to launch the kernel.
+Essentially, ``sum(num_bodies_per_world)`` equals the total number of *world-local* bodies (i.e. ``body_world_start[-2] - body_world_start[0]``), which excludes any global entities (world index ``-1``).
+Note that ``model.body_count`` may be larger than this sum when global bodies are present, since it includes both world-local and global entities (see :attr:`~newton.Model.body_world_start` for the explicit distinction).
+The maximum ``max(num_bodies_per_world)`` determines the second dimension of the 2D thread grid used to launch the kernel.
 However, since different worlds may have different numbers of bodies, some threads in the 2D grid will be inactive for worlds with fewer bodies than the maximum.
 Therefore, kernels need to check whether the relative entity index is within bounds for the current world before performing any operations, as shown in the example above.
 
-This pattern of computing ``sum`` and ``max`` of per-world entity counts thus provides a consistent way to handle memory allocations and thread grid dimensions for heterogeneous multi-world simulations in Newton.
+This pattern of computing ``sum`` and ``max`` of per-world entity counts provides a consistent way to handle memory allocations and thread grid dimensions for heterogeneous multi-world simulations in Newton.
 
 
 See Also
