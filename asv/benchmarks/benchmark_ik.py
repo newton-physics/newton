@@ -22,8 +22,6 @@
 
 from __future__ import annotations
 
-from functools import partial
-
 import numpy as np
 import warp as wp
 
@@ -37,7 +35,7 @@ def create_franka_model() -> newton.Model:
     builder.num_rigid_contacts_per_world = 0
     builder.default_shape_cfg.density = 100.0
     asset_path = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3.urdf"
-    partial(newton.ModelBuilder.add_urdf, scale=1.0)(builder, asset_path, floating=False)
+    builder.add_urdf(asset_path, floating=False, scale=1.0)
     return builder.finalize(requires_grad=False)
 
 
@@ -91,16 +89,19 @@ def build_ik_solver(model: newton.Model, n_problems: int, ee_links: tuple[int, .
     )
 
 
-def fk_targets(model: newton.Model, q_batch: np.ndarray, ee_links: tuple[int, ...]):
-    state = model.state()
-    pos, rot = [], []
-    for q in q_batch:
-        wp.copy(model.joint_q, wp.array(q, dtype=wp.float32))
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        body_q = state.body_q.numpy()
-        pos.append(body_q[list(ee_links), :3])
-        rot.append(body_q[list(ee_links), 3:7])
-    return np.stack(pos), np.stack(rot)
+def fk_targets(solver, model: newton.Model, q_batch: np.ndarray, ee_links: tuple[int, ...]):
+    batch_size = q_batch.shape[0]
+    solver._fk_two_pass(
+        model,
+        wp.array(q_batch, dtype=wp.float32),
+        solver.body_q,
+        solver.X_local,
+        batch_size,
+    )
+    wp.synchronize_device()
+    bq = solver.body_q.numpy()[:batch_size]
+    ee = np.asarray(ee_links)
+    return bq[:, ee, :3].copy(), bq[:, ee, 3:7].copy()
 
 
 def eval_success(solver, model, q_best, tgt_pos, tgt_rot, ee_links, pos_thresh_m, ori_thresh_rad):
@@ -118,20 +119,21 @@ def eval_success(solver, model, q_best, tgt_pos, tgt_rot, ee_links, pos_thresh_m
     pos_err = np.linalg.norm(bq[:, ee, :3] - tgt_pos, axis=-1).max(axis=-1)
 
     def _qmul(a, b):
-        w1, x1, y1, z1 = np.moveaxis(a, -1, 0)
-        w2, x2, y2, z2 = np.moveaxis(b, -1, 0)
+        # Quaternions stored as (x, y, z, w) — scalar-last, matching Warp convention.
+        x1, y1, z1, w1 = np.moveaxis(a, -1, 0)
+        x2, y2, z2, w2 = np.moveaxis(b, -1, 0)
         return np.stack(
             (
-                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
                 w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
                 w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
                 w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
             ),
             axis=-1,
         )
 
-    tgt_conj = np.concatenate([tgt_rot[..., :1], -tgt_rot[..., 1:]], axis=-1)
+    tgt_conj = np.concatenate([-tgt_rot[..., :3], tgt_rot[..., 3:]], axis=-1)
     rel = _qmul(tgt_conj, bq[:, ee, 3:7])
-    rot_err = (2 * np.arctan2(np.linalg.norm(rel[..., 1:], axis=-1), np.abs(rel[..., 0]))).max(axis=-1)
+    rot_err = (2 * np.arctan2(np.linalg.norm(rel[..., :3], axis=-1), np.abs(rel[..., 3]))).max(axis=-1)
     success = (pos_err < pos_thresh_m) & (rot_err < ori_thresh_rad)
     return success

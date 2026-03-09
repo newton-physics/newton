@@ -47,13 +47,16 @@ class _IKBenchmark:
     SEED = 123
 
     def setup(self, batch_size):
+        if not (wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())):
+            raise SkipNotImplemented
+
         self.model = create_franka_model()
         self.solver, self.pos_obj, self.rot_obj = build_ik_solver(self.model, batch_size, self.EE_LINKS)
         self.n_coords = self.model.joint_coord_count
 
         rng = np.random.default_rng(self.SEED)
         q_gt = random_solutions(self.model, batch_size, rng)
-        self.tgt_p, self.tgt_r = fk_targets(self.model, q_gt, self.EE_LINKS)
+        self.tgt_p, self.tgt_r = fk_targets(self.solver, self.model, q_gt, self.EE_LINKS)
 
         self.winners_d = wp.zeros((batch_size, self.n_coords), dtype=wp.float32)
         self.seeds_d = wp.zeros((batch_size, self.n_coords), dtype=wp.float32)
@@ -67,9 +70,6 @@ class _IKBenchmark:
                 wp.array(self.tgt_r[:, ee].astype(np.float32, copy=False), dtype=wp.vec4)
             )
 
-        # Capture CUDA graph
-        if not (wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())):
-            raise SkipNotImplemented
         with wp.ScopedCapture() as cap:
             self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
         self.solve_graph = cap.graph
