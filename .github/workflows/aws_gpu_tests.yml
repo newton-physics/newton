@@ -91,6 +91,8 @@ jobs:
     runs-on: ${{ needs.start-runner.outputs.label }} # run the job on the newly created runner
     permissions:
       contents: read
+    env:
+      PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1

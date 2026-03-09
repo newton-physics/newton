@@ -1,12 +1,9 @@
-name: Newton + Warp Nightly Builds
+name: Newton + MuJoCo Warp Nightly Builds
 
-# This workflow runs daily to test Newton with the latest nightly warp-lang builds.
-# It uses machulav/ec2-github-runner to spin up GPU instances on AWS EC2.
+# This workflow runs daily to test Newton with the latest mujoco-warp from source.
+# It installs mujoco-warp directly from the google-deepmind/mujoco_warp repository,
+# which pulls in whatever mujoco version it depends on.
 # Scheduled workflows automatically run on the default branch (main).
-#
-# The workflow first checks if there's a new warp-lang nightly build by running
-# 'uv lock -P warp-lang' on a standard GitHub runner. Only if a new version is detected
-# will it spin up an expensive EC2 GPU instance to run the full test suite.
 
 # Workflow configuration variables
 env:
@@ -16,52 +13,18 @@ env:
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
-  AWS_ROLE_DURATION: 1800
+  AWS_ROLE_DURATION: 7200
   PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
 
 on:
   schedule:
-    - cron: '0 11 * * *'  # Daily at 11 AM UTC (3 AM PST)
+    - cron: '0 12 * * *'  # Daily at 12 PM UTC (4 AM PST)
   workflow_dispatch:  # Allow manual triggers
 
 jobs:
-  check-warp-update:
-    name: Check for new warp-lang nightly build
-    if: github.repository == 'newton-physics/newton'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      warp-updated: ${{ steps.check-update.outputs.warp-updated }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867  # v7.1.6
-        with:
-          version: "0.9.0"
-
-      - name: Update warp-lang in lock file
-        run: uv lock -P warp-lang --prerelease allow
-
-      - name: Check if warp-lang version changed
-        id: check-update
-        run: |
-          if git diff --quiet uv.lock; then
-            echo "No new warp-lang nightly build detected"
-            echo "warp-updated=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "New warp-lang nightly build detected!"
-            echo "warp-updated=true" >> "$GITHUB_OUTPUT"
-            echo "Current warp-lang dependency tree:"
-            uv tree --package warp-lang
-          fi
-
   start-runner:
     name: Start self-hosted EC2 runner
-    needs: check-warp-update
-    if: needs.check-warp-update.outputs.warp-updated == 'true'
+    if: github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -111,8 +74,8 @@ jobs:
               {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
             ]
 
-  nightly-warp-tests:
-    name: Run Tests with Warp Nightly Build
+  nightly-mujoco-warp-tests:
+    name: Run Tests with MuJoCo Warp from Source
     needs: start-runner
     runs-on: ${{ needs.start-runner.outputs.label }}
     permissions:
@@ -131,11 +94,16 @@ jobs:
       - name: Set up Python
         run: uv python install
 
-      - name: Update lock file with latest warp-lang nightly build
-        run: uv lock -P warp-lang --prerelease allow
+      - name: Install Newton and override mujoco-warp with source build
+        run: |
+          uv sync --extra dev --extra torch-cu13
+          uv pip install --reinstall-package mujoco-warp "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp.git"
+
+      - name: Print mujoco-warp version info
+        run: uv run --no-sync python -c "import mujoco_warp; print('mujoco_warp version:', getattr(mujoco_warp, '__version__', 'unknown'))"
 
       - name: Run Tests
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --junit-report-xml rspec.xml
+        run: uv run --no-sync -m newton.tests --junit-report-xml rspec.xml
 
       - name: Test Summary
         if: ${{ !cancelled() }}
@@ -152,7 +120,7 @@ jobs:
       contents: read
     needs:
       - start-runner
-      - nightly-warp-tests
+      - nightly-mujoco-warp-tests
     if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
     steps:
       - name: Configure AWS credentials
