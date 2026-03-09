@@ -11,7 +11,95 @@ Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/governance/b
 Installation
 ------------
 
-To install Newton, see the :doc:`installation` guide.
+For regular end-user installation, see the :doc:`installation` guide.
+
+To install Newton from source for development or contribution, first clone the
+repository:
+
+.. code-block:: console
+
+    git clone https://github.com/newton-physics/newton.git
+    cd newton
+
+Method 1: Using uv (Recommended)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Install `uv <https://docs.astral.sh/uv/>`_ if you don't have it already:
+
+.. tab-set::
+    :sync-group: os
+
+    .. tab-item:: macOS / Linux
+        :sync: linux
+
+        .. code-block:: console
+
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    .. tab-item:: Windows
+        :sync: windows
+
+        .. code-block:: console
+
+            powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+Then create a local project environment with the ``dev`` dependency extras:
+
+.. code-block:: console
+
+    uv sync --extra dev
+
+After syncing, the ``dev`` extras are available to all ``uv run`` commands
+without needing to pass ``--extra dev`` each time. For example, to list all
+available examples:
+
+.. code-block:: console
+
+    uv run -m newton.examples
+
+See the :ref:`extra-dependencies` section of the installation guide for a
+description of all available extras.
+
+Method 2: Using pip in a Virtual Environment
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To manually manage a virtual environment, create and activate one first:
+
+.. tab-set::
+    :sync-group: os
+
+    .. tab-item:: macOS / Linux
+        :sync: linux
+
+        .. code-block:: console
+
+            python -m venv .venv
+            source .venv/bin/activate
+
+    .. tab-item:: Windows (console)
+        :sync: windows
+
+        .. code-block:: console
+
+            python -m venv .venv
+            .venv\Scripts\activate.bat
+
+    .. tab-item:: Windows (PowerShell)
+        :sync: windows-ps
+
+        .. code-block:: console
+
+            python -m venv .venv
+            .venv\Scripts\Activate.ps1
+
+Then locally install Newton in editable mode with its development dependencies:
+
+.. code-block:: console
+
+    pip install -e ".[dev]" --extra-index-url https://pypi.nvidia.com/
+
+The ``--extra-index-url`` flag points pip to the NVIDIA package index, which is
+required to find ``warp-lang`` versions newer than those available on PyPI.
 
 Python Dependency Management
 ----------------------------
@@ -69,14 +157,14 @@ Pass ``--help`` to either run method below to see all available flags.
         .. code-block:: console
 
             # install dev extras (including testing & coverage deps)
-            python -m pip install -e .[dev]
+            python -m pip install -e ".[dev]"
             # run tests
             python -m newton.tests
             
 Most tests run when the ``dev`` extras are installed. The tests using PyTorch
 to run inference on an RL policy are skipped if the ``torch`` dependency is
 not installed. In order to run these tests, include the ``torch-cu12`` or
-``torch-cu13`` extras following your CUDA version:
+``torch-cu13`` extras matching your NVIDIA driver's CUDA support:
 
 .. tab-set::
     :sync-group: env
@@ -95,7 +183,7 @@ not installed. In order to run these tests, include the ``torch-cu12`` or
         .. code-block:: console
 
             # install both dev and torch-cu12 extras (need to pull from PyTorch CUDA 12.8 wheel index)
-            python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e .[dev,torch-cu12]
+            python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e ".[dev,torch-cu12]"
             # run tests
             python -m newton.tests
 
@@ -263,7 +351,7 @@ To build the documentation locally, ensure you have the documentation dependenci
 
         .. code-block:: console
 
-            python -m pip install -e .[docs]
+            python -m pip install -e ".[docs]"
             cd path/to/newton/docs && make html
 
 The built documentation will be available in ``docs/_build/html``.
