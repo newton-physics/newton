@@ -1470,7 +1470,7 @@ class SolverImplicitMPM(SolverBase):
         control: newton.Control,
         contacts: newton.Contacts,
         dt: float,
-    ):
+    ) -> None:
         model = self.model
 
         with wp.ScopedDevice(model.device):
@@ -1480,7 +1480,7 @@ class SolverImplicitMPM(SolverBase):
             scratch.release_temporaries()
 
     @override
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         if flags & newton.SolverNotifyFlags.PARTICLE_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
 

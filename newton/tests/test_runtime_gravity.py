@@ -173,14 +173,14 @@ def test_runtime_gravity_with_cuda_graph(test, device):
     solver.step(state_0, state_1, control, None, dt)
 
     # Start graph capture
-    wp.capture_begin()
+    wp.capture_begin(device=device)
 
     try:
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, dt)
 
         # End capture and get graph
-        graph = wp.capture_end()
+        graph = wp.capture_end(device=device)
 
         # Now test that we can change gravity and it affects the simulation
         # even when using the captured graph
@@ -217,7 +217,7 @@ def test_runtime_gravity_with_cuda_graph(test, device):
 
     except Exception as e:
         # Make sure to end capture if something goes wrong
-        wp.capture_end()
+        wp.capture_end(device=device)
         raise e
 
 

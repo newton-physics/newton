@@ -49,6 +49,20 @@ class SolverXPBD(SolverBase):
     After constructing :class:`Model`, :class:`State`, and :class:`Control` (optional) objects, this time-integrator
     may be used to advance the simulation state forward in time.
 
+    Joint limitations:
+        - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE, D6.
+          CABLE joints are not supported.
+        - :attr:`~newton.Model.joint_enabled`,
+          :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and
+          :attr:`~newton.Control.joint_f` are supported.
+          Joint limits are enforced as hard positional constraints (``joint_limit_ke``/``joint_limit_kd`` are not used).
+        - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
+          :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
+          and :attr:`~newton.Model.joint_target_mode` are not supported.
+        - Equality and mimic constraints are not supported.
+
+        See :ref:`Joint feature support` for the full comparison across solvers.
+
     Example
     -------
 
@@ -110,7 +124,7 @@ class SolverXPBD(SolverBase):
                 model.particle_grid.reserve(model.particle_count)
 
     @override
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
@@ -228,7 +242,7 @@ class SolverXPBD(SolverBase):
         return new_body_q, new_body_qd
 
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
@@ -702,5 +716,3 @@ class SolverXPBD(SolverBase):
 
             if model.body_count:
                 self.copy_kinematic_body_state(model, state_in, state_out)
-
-            return state_out

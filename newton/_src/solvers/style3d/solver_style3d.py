@@ -164,7 +164,7 @@ class SolverStyle3D(SolverBase):
         self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
         """Advance the Style3D solver by one time step.
 
         The solver performs non-linear projective dynamics iterations with
