@@ -9,18 +9,85 @@ This guide will help you install Newton and set up your Python environment.
 System Requirements
 -------------------
 
-- Python 3.10 or higher
-- Windows or Linux on x86-64 architecture (Linux aarch64 is supported but not as thoroughly tested)
-- NVIDIA GPU with compute capability >= 5.0 (Maxwell) and driver 545 or newer (see note below)
+Minimum Requirements
+^^^^^^^^^^^^^^^^^^^^
 
-A local installation of the `CUDA Toolkit <https://developer.nvidia.com/cuda-downloads>`__ is not required for Newton.
+.. list-table::
+   :widths: 25 30 45
+   :header-rows: 1
 
-**Note:**
-    - NVIDIA GPU driver 545+ is required for Warp kernel compilation *during* CUDA graph capture. Some examples using graph capture may fail with older drivers.
-    - Unless otherwise specified, Newton's system requirements are identical to NVIDIA's `Warp <https://developer.nvidia.com/warp>`__ requirements.
+   * - Requirement
+     - Minimum
+     - Notes
+   * - Python
+     - 3.10
+     -
+   * - OS
+     - Linux (x86-64, aarch64) or Windows (x86-64)
+     -
+   * - NVIDIA GPU
+     - Compute capability 5.0+ (Maxwell)
+     - Any GeForce GTX 9xx or newer
+   * - NVIDIA Driver
+     - 545 or newer (CUDA 12)
+     - 550 or newer (CUDA 12.4) recommended
+   * - CUDA Toolkit
+     - Not required
+     - `Warp <https://github.com/NVIDIA/warp>`__ bundles its own CUDA runtime
+
+CUDA Compatibility
+^^^^^^^^^^^^^^^^^^
+
+Newton supports both CUDA 12 and CUDA 13. Warp bundles its own CUDA runtime, so no
+local CUDA Toolkit installation is needed.
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - CUDA Version
+     - Notes
+   * - 12.3+
+     - Required for reliable CUDA graph capture
+   * - 12.4+
+     - Recommended for best performance
+   * - 13
+     - Supported
+
+Tested Configurations
+^^^^^^^^^^^^^^^^^^^^^
+
+Newton is continuously tested in the following configurations:
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Component
+     - Configuration
+   * - OS (CPU tests)
+     - Ubuntu 22.04/24.04 (x86-64 + ARM64), Windows, macOS
+   * - OS (GPU tests)
+     - Ubuntu 22.04/24.04 (x86-64), Windows
+   * - GPU
+     - NVIDIA Ada Lovelace, Blackwell
+   * - Python
+     - 3.10, 3.12, 3.14 (import-only)
+   * - CUDA
+     - 12, 13
+
+.. note::
+
+   Unless otherwise specified, Newton's system requirements are identical to
+   NVIDIA's `Warp <https://nvidia.github.io/warp/>`__ requirements.
 
 Platform-Specific Requirements
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**macOS**
+
+macOS is supported for CPU-only simulation workflows. GPU acceleration is not available on
+macOS since Warp requires an NVIDIA GPU with CUDA support.
 
 **Linux aarch64 (ARM64)**
 
