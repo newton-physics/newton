@@ -359,6 +359,40 @@ Test the installation by running an example:
 
     python newton/examples/robot/example_robot_humanoid.py
 
+Versioning
+----------
+
+Newton currently uses the following versioning scheme. This may evolve
+depending on the needs of the project and its users.
+
+Newton uses a **major.minor.micro** versioning scheme, similar to
+`Python itself <https://devguide.python.org/developer-workflow/development-cycle/#devcycle>`__:
+
+* New **major** versions are reserved for major reworks of Newton causing
+  disruptive incompatibility (or reaching the 1.0 milestone).
+* New **minor** versions are feature releases with a new set of features.
+  May contain deprecations, breaking changes, and removals.
+* New **micro** versions are bug-fix releases. In principle, there are no
+  new features. The first release of a new minor version always includes
+  the micro version (e.g., ``1.1.0``), though informal references may
+  shorten it (e.g., "Newton 1.1").
+
+Prerelease Versions
+^^^^^^^^^^^^^^^^^^^
+
+In addition to stable releases, Newton uses the following prerelease
+version formats:
+
+* **Development builds** (``major.minor.micro.dev0``): The version string
+  used in the source code on the main branch between stable releases
+  (e.g., ``1.1.0.dev0``).
+* **Release candidates** (``major.minor.microrcN``): Pre-release versions
+  for QA testing before a stable release, starting with ``rc1`` and
+  incrementing (e.g., ``1.1.0rc1``). Usually not published to PyPI.
+
+Prerelease versions should be considered unstable and are not subject
+to the same compatibility guarantees as stable releases.
+
 Next Steps
 ----------
 
