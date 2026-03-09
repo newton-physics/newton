@@ -1693,8 +1693,14 @@ class ViewerGL(ViewerBase):
 
                 def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
                     """Normalize color_edit3 input/output across imgui_bundle versions."""
-                    changed, updated_color = imgui.color_edit3(label, imgui.ImVec4(*color, 1.0))
-                    return changed, (updated_color.x, updated_color.y, updated_color.z)
+                    # Newer imgui_bundle builds require ImVec4 input and return ImVec4.
+                    # Older builds accept a plain RGB tuple and return an RGB tuple.
+                    try:
+                        changed, updated_color = imgui.color_edit3(label, imgui.ImVec4(*color, 1.0))
+                        return changed, (updated_color.x, updated_color.y, updated_color.z)
+                    except TypeError:
+                        changed, updated_color = imgui.color_edit3(label, color)
+                        return changed, (updated_color[0], updated_color[1], updated_color[2])
 
                 # Light color
                 changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
