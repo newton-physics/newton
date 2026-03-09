@@ -18,7 +18,7 @@ from __future__ import annotations
 import ctypes
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from importlib import metadata
 from typing import Any, Literal
 
@@ -28,7 +28,7 @@ import warp as wp
 import newton as nt
 from newton.selection import ArticulationView
 
-from ..core.types import nparray, override
+from ..core.types import Axis, nparray, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
@@ -353,15 +353,20 @@ class ViewerGL(ViewerBase):
         self,
         name: str,
         transform: wp.transform,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
     ):
         """Log or update a transform gizmo for the current frame.
 
         Args:
             name: Unique gizmo path/name.
             transform: Gizmo world transform.
+            translate: Axes on which the translation handles are shown.
+            rotate: Axes on which the rotation rings are shown.
         """
-        # Store for this frame; call this every frame you want it drawn/active
-        self._gizmo_log[name] = transform
+        t = (Axis.X, Axis.Y, Axis.Z) if translate is None else tuple(set(translate))
+        r = (Axis.X, Axis.Y, Axis.Z) if rotate is None else tuple(set(rotate))
+        self._gizmo_log[name] = (transform, t, r)
 
     @override
     def clear_model(self):
@@ -1715,23 +1720,49 @@ class ViewerGL(ViewerBase):
         view = self.camera.get_view_matrix().reshape(4, 4).transpose()
         proj = self.camera.get_projection_matrix().reshape(4, 4).transpose()
 
+        def m44_to_mat16(m):
+            """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
+            m = np.asarray(m, dtype=np.float32).reshape(4, 4)
+            return giz.Matrix16(m.flatten(order="F").tolist())
+
+        view_ = m44_to_mat16(view)
+        proj_ = m44_to_mat16(proj)
+
+        axis_translate = {
+            Axis.X: giz.OPERATION.translate_x,
+            Axis.Y: giz.OPERATION.translate_y,
+            Axis.Z: giz.OPERATION.translate_z,
+        }
+        axis_rotate = {
+            Axis.X: giz.OPERATION.rotate_x,
+            Axis.Y: giz.OPERATION.rotate_y,
+            Axis.Z: giz.OPERATION.rotate_z,
+        }
+
         # Draw & mutate each gizmo
-        for gid, transform in self._gizmo_log.items():
+        for gid, (transform, translate, rotate) in self._gizmo_log.items():
+            # Use compound ops when all axes are active (includes plane handles).
+            if len(translate) == 3:
+                t_ops = (giz.OPERATION.translate,)
+            else:
+                t_ops = tuple(axis_translate[a] for a in translate if a in axis_translate)
+
+            if len(rotate) == 3:
+                r_ops = (giz.OPERATION.rotate,)
+            else:
+                r_ops = tuple(axis_rotate[a] for a in rotate if a in axis_rotate)
+
+            ops = t_ops + r_ops
+            if not ops:
+                continue
+
             giz.push_id(str(gid))
 
             M = wp.transform_to_matrix(transform)
-
-            def m44_to_mat16(m):
-                """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
-                m = np.asarray(m, dtype=np.float32).reshape(4, 4)
-                return giz.Matrix16(m.flatten(order="F").tolist())
-
-            view_ = m44_to_mat16(view)
-            proj_ = m44_to_mat16(proj)
             M_ = m44_to_mat16(M)
 
-            giz.manipulate(view_, proj_, giz.OPERATION.rotate, giz.MODE.world, M_, None, None)
-            giz.manipulate(view_, proj_, giz.OPERATION.translate, giz.MODE.world, M_, None, None)
+            for op in ops:
+                giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)
 
             M[:] = M_.values.reshape(4, 4, order="F")
             transform[:] = wp.transform_from_matrix(M)
