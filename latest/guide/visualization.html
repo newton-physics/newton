@@ -819,19 +819,57 @@
   <section id="visualization">
 <h1>Visualization<a class="headerlink" href="#visualization" title="Link to this heading">#</a></h1>
 <p>Newton provides multiple viewer backends for different visualization needs, from real-time rendering to offline recording and external integrations.</p>
-<p>All viewer backends share a common interface with <code class="docutils literal notranslate"><span class="pre">set_model()</span></code>, <code class="docutils literal notranslate"><span class="pre">begin_frame()</span></code>, <code class="docutils literal notranslate"><span class="pre">log_state()</span></code>, and <code class="docutils literal notranslate"><span class="pre">end_frame()</span></code> methods.</p>
+<section id="common-interface">
+<h2>Common Interface<a class="headerlink" href="#common-interface" title="Link to this heading">#</a></h2>
+<p>All viewer backends inherit from <code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerBase</span></code> and share a common interface:</p>
+<p><strong>Core loop methods</strong> — every viewer uses the same simulation loop pattern:</p>
+<ul class="simple">
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_model()</span></code> — assign a <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> and optionally limit the number of rendered worlds with <code class="docutils literal notranslate"><span class="pre">max_worlds</span></code></p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_frame()</span></code> — start a new frame with the current simulation time</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_state()</span></code> — update the viewer with the current <a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a> (body transforms, particle positions, etc.)</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_frame()</span></code> — finish the frame and present it</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">is_running()</span></code> — check whether the viewer is still open (useful as a loop condition)</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">is_paused()</span></code> — check whether the simulation is paused (toggled with <code class="docutils literal notranslate"><span class="pre">SPACE</span></code> in <a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerGL</span></code></a>)</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">close()</span></code> — close the viewer and release resources</p></li>
+</ul>
+<p><strong>Camera and layout:</strong></p>
+<ul class="simple">
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_camera()</span></code> — set camera position, pitch, and yaw</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_world_offsets()</span></code> — arrange multiple worlds in a grid with a given spacing along each axis</p></li>
+</ul>
+<p><strong>Custom visualization</strong> — draw debug overlays on top of the simulation:</p>
+<ul class="simple">
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_lines()</span></code> — draw line segments (e.g. rays, normals, force vectors)</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_points()</span></code> — draw a point cloud (e.g. contact locations, particle positions)</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_contacts()</span></code> — visualize <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> as normal lines at contact points</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_gizmo()</span></code> — display a transform gizmo (position + orientation axes)</p></li>
+<li><p><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_scalar()</span></code> / <code class="xref py py-meth docutils literal notranslate"><span class="pre">log_array()</span></code> — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)</p></li>
+</ul>
 <p><strong>Limiting rendered worlds</strong>: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support the <code class="docutils literal notranslate"><span class="pre">max_worlds</span></code> parameter to limit visualization to a subset of environments:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Only render the first 4 environments</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="c1"># Only render the first 4 environments</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerNull</span><span class="p">()</span>
 <span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">max_worlds</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
 </pre></div>
 </div>
+</section>
 <section id="real-time-viewers">
 <h2>Real-time Viewers<a class="headerlink" href="#real-time-viewers" title="Link to this heading">#</a></h2>
 <section id="opengl-viewer">
 <h3>OpenGL Viewer<a class="headerlink" href="#opengl-viewer" title="Link to this heading">#</a></h3>
 <p>Newton provides <a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerGL</span></code></a>, a simple OpenGL viewer for interactive real-time visualization of simulations.
 The viewer requires pyglet (version &gt;= 2.1.6) and imgui_bundle (version &gt;= 1.92.0) to be installed.</p>
+<p>Constructor parameters:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">width</span></code>: Window width in pixels (default: <code class="docutils literal notranslate"><span class="pre">1920</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">height</span></code>: Window height in pixels (default: <code class="docutils literal notranslate"><span class="pre">1080</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">vsync</span></code>: Enable vertical sync (default: <code class="docutils literal notranslate"><span class="pre">False</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">headless</span></code>: Run without a visible window, useful for off-screen rendering (default: <code class="docutils literal notranslate"><span class="pre">False</span></code>)</p></li>
+</ul>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerGL</span><span class="p">()</span>
 
 <span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
@@ -841,11 +879,49 @@ The viewer requires pyglet (version &gt;= 2.1.6) and imgui_bundle (version &gt;=
 <span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
 <span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
 
-<span class="c1"># pause the simulation (blocks the control flow):</span>
-<span class="n">viewer</span><span class="o">.</span><span class="n">pause</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="c1"># check if the simulation is paused (toggled with SPACE key):</span>
+<span class="k">if</span> <span class="n">viewer</span><span class="o">.</span><span class="n">is_paused</span><span class="p">():</span>
+    <span class="k">pass</span>  <span class="c1"># simulation stepping is paused</span>
 </pre></div>
 </div>
-<p>Keyboard shortcuts when working with the OpenGL Viewer (aka newton.viewer.ViewerGL):</p>
+<p><strong>Interactive forces and input:</strong></p>
+<p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL.apply_forces" title="newton.viewer.ViewerGL.apply_forces"><code class="xref py py-meth docutils literal notranslate"><span class="pre">apply_forces()</span></code></a> applies viewer-driven forces (object picking with right-click, wind) to the simulation state.
+Call it each frame before stepping the solver:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span><span class="o">.</span><span class="n">apply_forces</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL.is_key_down" title="newton.viewer.ViewerGL.is_key_down"><code class="xref py py-meth docutils literal notranslate"><span class="pre">is_key_down()</span></code></a> queries whether a key is currently pressed.
+Keys can be specified as single-character strings (<code class="docutils literal notranslate"><span class="pre">'w'</span></code>), special key names (<code class="docutils literal notranslate"><span class="pre">'space'</span></code>, <code class="docutils literal notranslate"><span class="pre">'escape'</span></code>), or pyglet key constants:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="n">viewer</span><span class="o">.</span><span class="n">is_key_down</span><span class="p">(</span><span class="s1">&#39;r&#39;</span><span class="p">):</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>  <span class="c1"># reset</span>
+</pre></div>
+</div>
+<p><strong>Headless mode and frame capture:</strong></p>
+<p>In headless mode (<code class="docutils literal notranslate"><span class="pre">headless=True</span></code>), the viewer renders off-screen without opening a window.
+Use <a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL.get_frame" title="newton.viewer.ViewerGL.get_frame"><code class="xref py py-meth docutils literal notranslate"><span class="pre">get_frame()</span></code></a> to retrieve the rendered image as a GPU array:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerGL</span><span class="p">(</span><span class="n">headless</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+
+<span class="c1"># Returns a wp.array with shape (height, width, 3), dtype wp.uint8</span>
+<span class="n">frame</span> <span class="o">=</span> <span class="n">viewer</span><span class="o">.</span><span class="n">get_frame</span><span class="p">()</span>
+</pre></div>
+</div>
+<p><strong>Custom UI panels:</strong></p>
+<p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL.register_ui_callback" title="newton.viewer.ViewerGL.register_ui_callback"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_ui_callback()</span></code></a> adds custom imgui UI elements to the viewer.
+The <code class="docutils literal notranslate"><span class="pre">position</span></code> parameter controls placement: <code class="docutils literal notranslate"><span class="pre">&quot;side&quot;</span></code> (default), <code class="docutils literal notranslate"><span class="pre">&quot;stats&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;free&quot;</span></code>, or <code class="docutils literal notranslate"><span class="pre">&quot;panel&quot;</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">my_ui</span><span class="p">(</span><span class="n">ui</span><span class="p">):</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">imgui_bundle.imgui</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">imgui</span>
+    <span class="n">imgui</span><span class="o">.</span><span class="n">text</span><span class="p">(</span><span class="s2">&quot;Hello from custom UI!&quot;</span><span class="p">)</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">register_ui_callback</span><span class="p">(</span><span class="n">my_ui</span><span class="p">,</span> <span class="n">position</span><span class="o">=</span><span class="s2">&quot;side&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Keyboard shortcuts when working with the OpenGL Viewer:</p>
 <div class="pst-scrollable-table-container"><table class="table" id="id1">
 <caption><span class="caption-text">Keyboard Shortcuts</span><a class="headerlink" href="#id1" title="Link to this table">#</a></caption>
 <thead>
@@ -897,40 +973,49 @@ This is useful for capturing simulations for debugging, sharing results, or post
 </pre></div>
 </div>
 <p><strong>Recording a simulation:</strong></p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Record to binary format (more efficient, requires cbor2)</span>
-<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerFile</span><span class="p">(</span><span class="s2">&quot;simulation.bin&quot;</span><span class="p">,</span> <span class="n">auto_save</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">save_interval</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span><span class="o">,</span><span class="w"> </span><span class="nn">os</span>
 
-<span class="c1"># Or record to JSON format (human-readable, no extra dependencies)</span>
-<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerFile</span><span class="p">(</span><span class="s2">&quot;simulation.json&quot;</span><span class="p">)</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="c1"># Record to JSON format (human-readable, no extra dependencies)</span>
+<span class="n">output_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">tempfile</span><span class="o">.</span><span class="n">mkdtemp</span><span class="p">(),</span> <span class="s2">&quot;simulation.json&quot;</span><span class="p">)</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerFile</span><span class="p">(</span><span class="n">output_path</span><span class="p">)</span>
 
 <span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 
-<span class="c1"># at every frame:</span>
-<span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
-<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
-<span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+<span class="n">sim_time</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">):</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+    <span class="n">sim_time</span> <span class="o">+=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span>
 
 <span class="c1"># Close to save the recording</span>
 <span class="n">viewer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
 </pre></div>
 </div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span> ...
+</pre></div>
+</div>
 <p><strong>Loading and playing back recordings:</strong></p>
 <p>Use <a class="reference internal" href="../api/_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile" title="newton.viewer.ViewerFile"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerFile</span></code></a> to load a recording, then restore the model and state for a given frame. Use <a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerGL</span></code></a> (or another rendering viewer) to visualize.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Load a recording for playback</span>
-<span class="n">viewer_file</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerFile</span><span class="p">(</span><span class="s2">&quot;simulation.bin&quot;</span><span class="p">)</span>
+<span class="n">viewer_file</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerFile</span><span class="p">(</span><span class="n">output_path</span><span class="p">)</span>
 <span class="n">viewer_file</span><span class="o">.</span><span class="n">load_recording</span><span class="p">()</span>
 
 <span class="c1"># Restore the model and state from the recording</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="p">()</span>
 <span class="n">viewer_file</span><span class="o">.</span><span class="n">load_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Frames: </span><span class="si">{</span><span class="n">viewer_file</span><span class="o">.</span><span class="n">get_frame_count</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
 <span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
-<span class="n">viewer_file</span><span class="o">.</span><span class="n">load_state</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">frame_id</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>  <span class="c1"># frame index in [0, get_frame_count())</span>
-
-<span class="c1"># Use ViewerGL for visualization</span>
-<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerGL</span><span class="p">()</span>
-<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
-<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">viewer_file</span><span class="o">.</span><span class="n">load_state</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">frame_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>  <span class="c1"># frame index in [0, get_frame_count())</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Frames: 5
 </pre></div>
 </div>
 <p>For a complete example with UI controls for scrubbing and playback, see <code class="docutils literal notranslate"><span class="pre">newton/examples/basic/example_replay_viewer.py</span></code>.</p>
@@ -939,11 +1024,20 @@ This is useful for capturing simulations for debugging, sharing results, or post
 <li><p><code class="docutils literal notranslate"><span class="pre">output_path</span></code>: Path to the output file (format determined by extension: .json or .bin)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">auto_save</span></code>: If True, automatically save periodically during recording (default: <code class="docutils literal notranslate"><span class="pre">True</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">save_interval</span></code>: Number of frames between auto-saves when auto_save=True (default: <code class="docutils literal notranslate"><span class="pre">100</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">max_history_size</span></code>: Maximum number of frames to keep in memory (default: <code class="docutils literal notranslate"><span class="pre">None</span></code> for unlimited)</p></li>
 </ul>
 </section>
 <section id="rendering-to-usd">
 <h3>Rendering to USD<a class="headerlink" href="#rendering-to-usd" title="Link to this heading">#</a></h3>
 <p>Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the <a class="reference internal" href="../api/_generated/newton.viewer.ViewerUSD.html#newton.viewer.ViewerUSD" title="newton.viewer.ViewerUSD"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerUSD</span></code></a> backend.</p>
+<p>Constructor parameters:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">output_path</span></code>: Path to the output USD file</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fps</span></code>: Frames per second for time sampling (default: <code class="docutils literal notranslate"><span class="pre">60</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">up_axis</span></code>: USD up axis, <code class="docutils literal notranslate"><span class="pre">&quot;Y&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">&quot;Z&quot;</span></code> (default: <code class="docutils literal notranslate"><span class="pre">&quot;Z&quot;</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">num_frames</span></code>: Maximum number of frames to record, or <code class="docutils literal notranslate"><span class="pre">None</span></code> for unlimited (default: <code class="docutils literal notranslate"><span class="pre">100</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scaling</span></code>: Uniform scaling applied to the scene root (default: <code class="docutils literal notranslate"><span class="pre">1.0</span></code>)</p></li>
+</ul>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerUSD</span><span class="p">(</span><span class="n">output_path</span><span class="o">=</span><span class="s2">&quot;simulation.usd&quot;</span><span class="p">,</span> <span class="n">fps</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">up_axis</span><span class="o">=</span><span class="s2">&quot;Z&quot;</span><span class="p">)</span>
 
 <span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
@@ -969,15 +1063,26 @@ enabling real-time or offline visualization with advanced features like time scr
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>rerun-sdk
 </pre></div>
 </div>
+<p>Constructor parameters:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">app_id</span></code>: Application ID for Rerun (default: <code class="docutils literal notranslate"><span class="pre">&quot;newton-viewer&quot;</span></code>). Use different IDs to differentiate between parallel viewer instances.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">address</span></code>: Optional server address to connect to a remote Rerun server. If provided, connects to the specified server.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">serve_web_viewer</span></code>: Serve a web viewer over HTTP and open it in the browser (default: <code class="docutils literal notranslate"><span class="pre">True</span></code>). If <code class="docutils literal notranslate"><span class="pre">False</span></code>, spawns a native Rerun viewer.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">web_port</span></code>: Port for the web viewer (default: <code class="docutils literal notranslate"><span class="pre">9090</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">grpc_port</span></code>: Port for the gRPC server (default: <code class="docutils literal notranslate"><span class="pre">9876</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">keep_historical_data</span></code>: Keep historical state data in the viewer for time scrubbing (default: <code class="docutils literal notranslate"><span class="pre">False</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">keep_scalar_history</span></code>: Keep scalar time-series history (default: <code class="docutils literal notranslate"><span class="pre">True</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">record_to_rrd</span></code>: Optional path to save a <code class="docutils literal notranslate"><span class="pre">.rrd</span></code> recording file</p></li>
+</ul>
 <p><strong>Usage</strong>:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Default usage: spawns a local viewer</span>
 <span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerRerun</span><span class="p">(</span>
-    <span class="n">app_id</span><span class="o">=</span><span class="s2">&quot;newton-simulation&quot;</span> <span class="c1"># Optional application identifier to differentiate multiple parallel instances.</span>
+    <span class="n">app_id</span><span class="o">=</span><span class="s2">&quot;newton-simulation&quot;</span>
 <span class="p">)</span>
 
 <span class="c1"># Or specify a custom server address for remote viewing</span>
 <span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerRerun</span><span class="p">(</span>
-    <span class="n">address</span><span class="o">=</span><span class="s2">&quot;rerun+http://127.0.0.1:9876/proxy&quot;</span><span class="p">,</span> <span class="c1"># Optional server address to connect to a remote rerun server.</span>
+    <span class="n">address</span><span class="o">=</span><span class="s2">&quot;rerun+http://127.0.0.1:9876/proxy&quot;</span><span class="p">,</span>
     <span class="n">app_id</span><span class="o">=</span><span class="s2">&quot;newton-simulation&quot;</span>
 <span class="p">)</span>
 
@@ -1118,15 +1223,25 @@ will display an embedded player with timeline controls:</p>
 <h3>Null Viewer<a class="headerlink" href="#null-viewer" title="Link to this heading">#</a></h3>
 <p>The <a class="reference internal" href="../api/_generated/newton.viewer.ViewerNull.html#newton.viewer.ViewerNull" title="newton.viewer.ViewerNull"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerNull</span></code></a> provides a no-operation viewer for headless environments or automated testing where visualization is not required.
 It simply counts frames and provides stub implementations for all viewer methods.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run for 1000 frames without visualization</span>
-<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerNull</span><span class="p">(</span><span class="n">num_frames</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">sim_time</span> <span class="o">=</span> <span class="mf">0.0</span>
 
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerNull</span><span class="p">(</span><span class="n">num_frames</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
 <span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 
 <span class="k">while</span> <span class="n">viewer</span><span class="o">.</span><span class="n">is_running</span><span class="p">():</span>
     <span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
     <span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
     <span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+    <span class="n">sim_time</span> <span class="o">+=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Ran </span><span class="si">{</span><span class="n">viewer</span><span class="o">.</span><span class="n">frame_count</span><span class="si">}</span><span class="s2"> frames&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Ran 10 frames
 </pre></div>
 </div>
 <p>This is particularly useful for:</p>
@@ -1137,6 +1252,53 @@ It simply counts frames and provides stub implementations for all viewer methods
 <li><p>Batch processing of simulations</p></li>
 </ul>
 </section>
+</section>
+<section id="custom-visualization">
+<h2>Custom Visualization<a class="headerlink" href="#custom-visualization" title="Link to this heading">#</a></h2>
+<p>In addition to rendering simulation state with <code class="xref py py-meth docutils literal notranslate"><span class="pre">log_state()</span></code>, you can draw custom debug overlays using the <code class="docutils literal notranslate"><span class="pre">log_*</span></code> methods available on all viewers.</p>
+<p><strong>Drawing lines:</strong></p>
+<p>Use <code class="xref py py-meth docutils literal notranslate"><span class="pre">log_lines()</span></code> to draw line segments — useful for visualizing forces, rays, or normals:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Draw force vectors at body positions</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">log_lines</span><span class="p">(</span>
+    <span class="s2">&quot;/debug/forces&quot;</span><span class="p">,</span>
+    <span class="n">starts</span><span class="o">=</span><span class="n">positions</span><span class="p">,</span>       <span class="c1"># wp.array(dtype=wp.vec3)</span>
+    <span class="n">ends</span><span class="o">=</span><span class="n">positions</span> <span class="o">+</span> <span class="n">forces</span><span class="p">,</span> <span class="c1"># wp.array(dtype=wp.vec3)</span>
+    <span class="n">colors</span><span class="o">=</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="c1"># red</span>
+    <span class="n">width</span><span class="o">=</span><span class="mf">0.005</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Drawing points:</strong></p>
+<p>Use <code class="xref py py-meth docutils literal notranslate"><span class="pre">log_points()</span></code> to draw a point cloud:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span><span class="o">.</span><span class="n">log_points</span><span class="p">(</span>
+    <span class="s2">&quot;/debug/targets&quot;</span><span class="p">,</span>
+    <span class="n">points</span><span class="o">=</span><span class="n">target_positions</span><span class="p">,</span> <span class="c1"># wp.array(dtype=wp.vec3)</span>
+    <span class="n">radii</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span>              <span class="c1"># uniform radius, or wp.array(dtype=wp.float32)</span>
+    <span class="n">colors</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="c1"># green</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Visualizing contacts:</strong></p>
+<p>Use <code class="xref py py-meth docutils literal notranslate"><span class="pre">log_contacts()</span></code> to draw contact normals from a <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> object.
+The viewer’s <code class="docutils literal notranslate"><span class="pre">show_contacts</span></code> flag (toggled in the <a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerGL</span></code></a> sidebar) controls visibility:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span><span class="o">.</span><span class="n">log_contacts</span><span class="p">(</span><span class="n">contacts</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Transform gizmos:</strong></p>
+<p>Use <code class="xref py py-meth docutils literal notranslate"><span class="pre">log_gizmo()</span></code> to display a coordinate-frame gizmo at a given transform:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span><span class="o">.</span><span class="n">log_gizmo</span><span class="p">(</span><span class="s2">&quot;/debug/target_frame&quot;</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">pos</span><span class="p">,</span> <span class="n">rot</span><span class="p">))</span>
+</pre></div>
+</div>
+<p><strong>Camera and world layout:</strong></p>
+<p>Set the camera programmatically with <code class="xref py py-meth docutils literal notranslate"><span class="pre">set_camera()</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span><span class="o">.</span><span class="n">set_camera</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">),</span> <span class="n">pitch</span><span class="o">=-</span><span class="mf">0.3</span><span class="p">,</span> <span class="n">yaw</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>When visualizing multiple worlds, use <code class="xref py py-meth docutils literal notranslate"><span class="pre">set_world_offsets()</span></code> to arrange them in a grid
+(must be called after <code class="xref py py-meth docutils literal notranslate"><span class="pre">set_model()</span></code>):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span><span class="o">.</span><span class="n">set_world_offsets</span><span class="p">(</span><span class="n">spacing</span><span class="o">=</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
+</pre></div>
+</div>
 </section>
 <section id="choosing-the-right-viewer">
 <h2>Choosing the Right Viewer<a class="headerlink" href="#choosing-the-right-viewer" title="Link to this heading">#</a></h2>
@@ -1209,6 +1371,7 @@ It simply counts frames and provides stub implementations for all viewer methods
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-interface">Common Interface</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#real-time-viewers">Real-time Viewers</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#opengl-viewer">OpenGL Viewer</a></li>
 </ul>
@@ -1227,6 +1390,7 @@ It simply counts frames and provides stub implementations for all viewer methods
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#null-viewer">Null Viewer</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-visualization">Custom Visualization</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-right-viewer">Choosing the Right Viewer</a></li>
 </ul>
   </nav></div>
