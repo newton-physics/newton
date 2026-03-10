@@ -10,7 +10,7 @@ quantities that are commonly needed for control, reinforcement learning, robotic
 Overview
 --------
 
-Newton sensors follow a consistent pattern:
+Most Newton sensors follow a common pattern:
 
 1. **Initialization**: Configure the sensor with the model and specify what to measure
 2. **Update**: Call ``sensor.update(state, ...)`` during the simulation loop to compute measurements
@@ -23,6 +23,40 @@ Newton sensors follow a consistent pattern:
    include them.
 
    ``SensorContact`` additionally requires a call to ``solver.update_contacts()`` before ``sensor.update()``.
+
+   ``SensorTiledCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
+   attributes.
+
+.. code-block:: python
+
+   import newton
+   from newton.sensors import SensorIMU
+
+   # Build the model
+   builder = newton.ModelBuilder()
+   builder.add_usd("robot.usda")
+   builder.add_ground_plane()
+   model = builder.finalize()
+
+   # 1. Create sensor and specify what to measure
+   imu = SensorIMU(model, sites="imu_*")
+
+   # Create solver and state
+   solver = newton.solvers.SolverMuJoCo(model)
+   state = model.state()
+   control = model.control()
+
+   # Simulation loop
+   for _ in range(100):
+       state.clear_forces()
+       solver.step(state, state, control, None, dt=1.0 / 60.0)
+
+       # 2. Compute measurements from the current state
+       imu.update(state)
+
+       # 3. Results stored on sensor attributes
+       print(imu.accelerometer.numpy())  # [n_sensors, 3] linear acceleration
+       print(imu.gyroscope.numpy())      # [n_sensors, 3] angular velocity
 
 .. _label-matching:
 
