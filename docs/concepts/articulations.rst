@@ -293,12 +293,12 @@ Joint types
      - Free (floating) joint with 6 degrees of freedom in velocity space
      - 7 (3D position + 4D quaternion)
      - 6 (see :ref:`Twist conventions in Newton <Twist conventions>`)
-     - 0
+     - 6
    * - ``JointType.DISTANCE``
      - Distance joint that keeps two bodies at a distance within its joint limits
      - 7
      - 6
-     - 1
+     - 6
    * - ``JointType.D6``
      - Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
      - up to 6
@@ -593,9 +593,11 @@ Use :meth:`newton.selection.ArticulationView.set_root_transforms` to move select
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     assert np.allclose(view.get_root_transforms(state).numpy()[0, :, 0], [0.2, 2.2])
 
-For floating-base articulations, this updates the root free-joint coordinates in ``joint_q``.
-For fixed-base articulations, ``set_root_transforms()`` moves the articulation by writing
-``Model.joint_X_p`` (there is no free-joint root state to edit).
+For floating-base articulations (root joint type ``FREE`` or ``DISTANCE``), this updates
+the root coordinates in ``joint_q``.
+For non-floating-base articulations (for example ``FIXED`` or a world-attached
+``REVOLUTE`` root), ``set_root_transforms()`` moves the articulation by writing
+``Model.joint_X_p`` because there is no root pose stored in state coordinates.
 
 Use ``ArticulationView`` to inspect and modify selected articulations
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
