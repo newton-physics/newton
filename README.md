@@ -20,7 +20,7 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 - **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
 - **GPU:** NVIDIA GPU (Maxwell or newer), driver 545 or newer (CUDA 12). No local CUDA Toolkit installation required. macOS runs on CPU.
 
-For detailed system requirements and tested configurations, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
+For detailed system requirements and tested configurations, see the [installation guide](https://newton-physics.github.io/newton/1.0.0/guide/installation.html).
 
 ## Quickstart
 
@@ -29,7 +29,7 @@ pip install "newton[examples]"
 python -m newton.examples basic_pendulum
 ```
 
-To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
+To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/1.0.0/guide/installation.html).
 
 ## Examples
 
@@ -763,11 +763,11 @@ python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 
 ## Contributing and Development
 
-See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for instructions on how to contribute to Newton.
+See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/1.0.0/guide/development.html) for instructions on how to contribute to Newton.
 
 ## Support and Community Discussion
 
-For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/latest/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
+For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/1.0.0/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
 
 ## Code of Conduct
 
