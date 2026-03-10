@@ -199,7 +199,7 @@ class SensorContact:
     - **Counterpart** — the other body or shape in a contact interaction.
     - **Force reading** — one entry of the force matrix (:class:`vec3`).
 
-    Parameters that select bodies or shapes accept label patterns — see :ref:`label-matching`.
+    Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
 
     Raises:
         ValueError: If the configuration of sensing/counterpart objects is invalid.

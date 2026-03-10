@@ -35,7 +35,7 @@ def compute_shape_transforms_kernel(
     """Compute world transforms for a list of shape indices.
 
     Args:
-        shape_indices: Array of shape indices
+        shapes: Array of shape indices
         shape_body: Model's shape_body array (body parent of each shape)
         shape_transform: Model's shape_transform array (local transforms)
         body_q: State's body_q array (body world transforms)
@@ -67,8 +67,8 @@ def compute_relative_transforms_kernel(
 
     Args:
         all_shape_transforms: Array of world transforms for all shapes (indexed by shape index)
-        shape_indices: Indices of target shapes
-        reference_indices: Indices of reference sites
+        shapes: Indices of target shapes
+        reference_sites: Indices of reference sites
         relative_transforms: Output array of relative transforms
 
     Computes X_ro = X_wr^{-1} * X_wo for each pair, where:
@@ -91,13 +91,21 @@ def compute_relative_transforms_kernel(
 class SensorFrameTransform:
     """Sensor that measures transforms of shapes/sites relative to reference sites.
 
-    This sensor computes the transform from a reference frame (site) to target shapes
-    (which can be regular shapes or sites).
+    This sensor computes the relative transform from each reference site to each
+    target shape: ``X_ro = inverse(X_wr) * X_wo``, where *X_wo* is the world
+    transform of the target, *X_wr* is the world transform of the reference site,
+    and *X_ro* expresses the target's pose in the reference frame.
+
+    **Objects** (``shapes``) can be any shape index, including both regular shapes
+    and sites. **Reference frames** (``reference_sites``) must be sites (validated
+    at initialization). A single reference site broadcasts to all shapes;
+    otherwise the counts must match 1:1.
 
     Attributes:
-        transforms: Output array of relative transforms (updated after each call to update())
+        transforms: Relative transforms [m, unitless quaternion], shape
+            ``(N, 7)`` (updated after each call to :meth:`update`).
 
-    The ``shapes`` and ``reference_sites`` parameters accept label patterns — see :ref:`label-matching`.
+    The ``shapes`` and ``reference_sites`` parameters accept label patterns -- see :ref:`label-matching`.
 
     Example:
         Measure shapes relative to a site::
@@ -116,7 +124,7 @@ class SensorFrameTransform:
             sensor.update(state)
 
             # Access transforms
-            transforms = sensor.transforms.numpy()  # shape: (N, 7) [pos, quat]
+            transforms = sensor.transforms.numpy()  # shape: (N, 7)
     """
 
     def __init__(

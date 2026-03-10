@@ -77,36 +77,37 @@ def compute_sensor_imu_kernel(
 
 
 class SensorIMU:
-    """Inertial Measurement Unit Sensor.
+    """Inertial Measurement Unit sensor.
 
-    This sensor measures the acceleration and angular velocity at the sites given.
+    Measures linear acceleration (specific force) and angular velocity at the
+    given sites. Each site defines an IMU frame; outputs are expressed in that
+    frame.
 
-    Body Accelerations Attribute:
-    This sensor requires the extended state attribute ``body_qdd`` to be computed by the solver.  This requires
-    a solver that supports computing ``body_qdd``, and requesting ``body_qdd`` from the model before calling
-    ``model.state()``. Instantiating the SensorIMU will automatically request ``body_qdd`` from the model by default.
+    This sensor requires the extended state attribute ``body_qdd``. By default,
+    constructing the sensor requests ``body_qdd`` from the model so that
+    subsequent ``model.state()`` calls allocate it automatically. The solver
+    must also support computing ``body_qdd``
+    (e.g. :class:`~newton.solvers.SolverMuJoCo`).
 
     The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
 
     Example:
-        Create a SensorIMU for a model with a list of site indices::
+        ::
 
-            # Obtain shape indices (e.g. via selection or direct indexing)
-            sensor_sites = [0, 1, 2]  # indices of sites to attach IMU sensors
-
-            model = Model()
-            sensor = SensorIMU(model, sensor_sites)
+            imu = SensorIMU(model, sites=[s1, s2])
             state = model.state()
 
-            # Update after step()
-            sensor.update(state)
+            # after solver step
+            imu.update(state)
+            acc = imu.accelerometer.numpy()
+            gyro = imu.gyroscope.numpy()
     """
 
     accelerometer: wp.array(dtype=wp.vec3)
-    """Linear acceleration readings in sensor frame, shape (n_sensors,)."""
+    """Linear acceleration readings [m/s²] in sensor frame, shape ``(n_sensors,)``."""
 
     gyroscope: wp.array(dtype=wp.vec3)
-    """Angular velocity readings in sensor frame, shape (n_sensors,)."""
+    """Angular velocity readings [rad/s] in sensor frame, shape ``(n_sensors,)``."""
 
     def __init__(
         self,
