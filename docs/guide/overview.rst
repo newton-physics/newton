@@ -34,6 +34,8 @@ Key Features
    `DeepWiki Newton Physics page <https://deepwiki.com/newton-physics/newton>`__.
 
 
+.. _guide-core-concepts:
+
 Core Concepts
 -------------
 
@@ -41,14 +43,23 @@ Core Concepts
    :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
 
    graph TD
+   I[Application] --> A[ModelBuilder]
+   I --> J[Control]
+   I --> D[Solver]
+   I --> F[Viewer]
+   G[Importer] --> A
    A[ModelBuilder] -->|builds| B[Model]
    B --> C[State]
+   B --> E[Contacts]
+   B --> J
    C --> D[Solver]
-   D --> C
    B --> F[Viewer]
    C --> F
-   G[Importer] --> A
-   I[Application] --> A
+   E --> D
+   J --> D
+   D --> C
+   C --> K[Sensors]
+   E --> K
    F --> H[Visualization]
 
 - :class:`~newton.ModelBuilder`: The entry point for constructing
@@ -58,12 +69,22 @@ Core Concepts
   bodies, joints, shapes, and physical properties.
 - :class:`~newton.State`: Represents the dynamic state at a given time,
   including positions and velocities that solvers update each step.
+  Optional :doc:`extended attributes <../concepts/extended_attributes>`
+  store derived quantities such as rigid-body accelerations for
+  sensors.
+- :class:`~newton.Contacts`: Stores the active contact set produced by
+  :meth:`Model.collide <newton.Model.collide>`, with optional extended
+  attributes such as contact forces for sensing and analysis.
 - :class:`~newton.Control`: Encodes control inputs such as joint targets
   and forces applied during the simulation loop.
 - :doc:`Solver <../api/newton_solvers>`: Advances the simulation by
   integrating physics, handling contacts, and enforcing constraints.
   Newton provides multiple solver backends, including XPBD, VBD,
   MuJoCo, Featherstone, and SemiImplicit.
+- :doc:`Sensors <../concepts/sensors>`: Compute observations from
+  :class:`~newton.State`, :class:`~newton.Contacts`, sites, and shapes.
+  Many sensors rely on optional :doc:`extended attributes
+  <../concepts/extended_attributes>` that store derived solver outputs.
 - **Importer**: Loads models from external formats via
   :meth:`~newton.ModelBuilder.add_urdf`,
   :meth:`~newton.ModelBuilder.add_mjcf`, and
@@ -76,11 +97,14 @@ Simulation Loop
 
 1. Build or import a model with :class:`~newton.ModelBuilder`.
 2. Finalize the builder into a :class:`~newton.Model`.
-3. Initialize a :class:`~newton.State` and any :class:`~newton.Control`
-   inputs.
-4. Step a :doc:`solver <../api/newton_solvers>` to advance the
-   simulation.
-5. Inspect, render, or export the results.
+3. Create any sensors, then allocate one or more
+   :class:`~newton.State` objects plus :class:`~newton.Control` inputs
+   and :class:`~newton.Contacts`.
+4. Call :meth:`Model.collide <newton.Model.collide>` to populate the
+   contact set for the current state.
+5. Step a :doc:`solver <../api/newton_solvers>` using the current
+   state, control, and contacts.
+6. Update sensors, inspect outputs, render, or export the results.
 
 Quick Links
 -----------
