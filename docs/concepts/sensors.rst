@@ -47,7 +47,7 @@ Available Sensors
 
 Newton currently provides five sensor types:
 
-* :class:`~newton.sensors.SensorContact` -- Detects and reports contact information between bodies or shapes
+* :class:`~newton.sensors.SensorContact` -- Detects and reports contact forces between bodies or shapes
 * :class:`~newton.sensors.SensorFrameTransform` -- Computes relative transforms between reference frames
 * :class:`~newton.sensors.SensorIMU` -- Measures linear acceleration and angular velocity at site frames
 * :class:`~newton.sensors.SensorRaycast` -- Performs ray casting for distance measurements and collision detection
