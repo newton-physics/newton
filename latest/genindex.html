@@ -851,6 +851,8 @@ window.addEventListener("load", () => mermaid.run());
             <dt><a href="api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone.__init__">(newton.solvers.SolverFeatherstone method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.__init__">(newton.solvers.SolverImplicitMPM method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.Config.__init__">(newton.solvers.SolverImplicitMPM.Config method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.__init__">(newton.solvers.SolverKamino method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.__init__">(newton.solvers.SolverKamino.Config method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.__init__">(newton.solvers.SolverMuJoCo method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit.__init__">(newton.solvers.SolverSemiImplicit method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D.__init__">(newton.solvers.SolverStyle3D method)</a></dt>
@@ -1047,13 +1049,13 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_cylinder">add_shape_cylinder() (newton.ModelBuilder method)</a>
         </dt>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_ellipsoid">add_shape_ellipsoid() (newton.ModelBuilder method)</a>
+        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
-        <dt>
-          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_ellipsoid">add_shape_ellipsoid() (newton.ModelBuilder method)</a>
-        </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_gaussian">add_shape_gaussian() (newton.ModelBuilder method)</a>
         </dt>
@@ -1118,6 +1120,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config.anchor_contact">anchor_contact (newton.geometry.HydroelasticSDF.Config attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.angular_velocity_damping">angular_velocity_damping (newton.solvers.SolverKamino.Config attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile.apply_forces">apply_forces() (newton.viewer.ViewerFile method)</a>
@@ -1483,6 +1488,9 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.collect_rigid_contact_forces">collect_rigid_contact_forces() (newton.solvers.SolverVBD method)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.collect_solver_info">collect_solver_info (newton.solvers.SolverKamino.Config attribute)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline.collide">collide() (newton.CollisionPipeline method)</a>
         </dt>
         <dd>
@@ -1617,6 +1625,9 @@ window.addEventListener("load", () => mermaid.run());
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.compute_solution_metrics">compute_solution_metrics (newton.solvers.SolverKamino.Config attribute)</a>
+        </dt>
         <dt>
           <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.compute_surface_triangles">compute_surface_triangles() (newton.TetMesh static method)</a>
         </dt>
@@ -2146,13 +2157,13 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.JointType.html#newton.JointType.FIXED">FIXED (newton.JointType attribute)</a>
         </dt>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.flags">flags (newton.ModelBuilder.ShapeConfig property)</a>
+        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
-        <dt>
-          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.flags">flags (newton.ModelBuilder.ShapeConfig property)</a>
-        </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba">flatten_color_image_to_rgba() (newton.sensors.SensorTiledCamera method)</a>
         </dt>
@@ -2182,6 +2193,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.JointTargetMode.html#newton.JointTargetMode.from_gains">from_gains() (newton.JointTargetMode static method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.from_model">from_model() (newton.solvers.SolverKamino.Config static method)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.Axis.html#newton.Axis.from_string">from_string() (newton.Axis class method)</a>
@@ -2470,6 +2484,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.integrate_particles">integrate_particles() (newton.solvers.SolverBase method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.integrator">integrator (newton.solvers.SolverKamino.Config attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomAttribute.is_custom_frequency">is_custom_frequency (newton.ModelBuilder.CustomAttribute property)</a>
@@ -3157,10 +3174,6 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.newton_shape_to_mjc_geom">newton_shape_to_mjc_geom (newton.solvers.SolverMuJoCo attribute)</a>
         </dt>
-      </dl>
-    </td>
-    <td style="width: 33%; vertical-align: top;">
-      <dl>
         <dt>
           <a href="api/_generated/newton.GeoType.html#newton.GeoType.NONE">NONE (newton.GeoType attribute)</a>
         </dt>
@@ -3170,6 +3183,10 @@ window.addEventListener("load", () => mermaid.run());
             <dt><a href="api/_generated/newton.JointTargetMode.html#newton.JointTargetMode.NONE">(newton.JointTargetMode attribute)</a></dt>
           </dl>
         </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
         <dt>
           <a href="api/_generated/newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config.normal_matching">normal_matching (newton.geometry.HydroelasticSDF.Config attribute)</a>
         </dt>
@@ -3186,6 +3203,7 @@ window.addEventListener("load", () => mermaid.run());
           <dl>
             <dt><a href="api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone.notify_model_changed">(newton.solvers.SolverFeatherstone method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.notify_model_changed">(newton.solvers.SolverImplicitMPM method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.notify_model_changed">(newton.solvers.SolverKamino method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.notify_model_changed">(newton.solvers.SolverMuJoCo method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.notify_model_changed">(newton.solvers.SolverVBD method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD.notify_model_changed">(newton.solvers.SolverXPBD method)</a></dt>
@@ -3461,6 +3479,8 @@ window.addEventListener("load", () => mermaid.run());
         <dd>
           <dl>
             <dt><a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.register_custom_attributes">(newton.solvers.SolverImplicitMPM class method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.register_custom_attributes">(newton.solvers.SolverKamino static method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.register_custom_attributes">(newton.solvers.SolverKamino.Config static method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.register_custom_attributes">(newton.solvers.SolverMuJoCo class method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D.register_custom_attributes">(newton.solvers.SolverStyle3D class method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.register_custom_attributes">(newton.solvers.SolverVBD class method)</a></dt>
@@ -3503,6 +3523,13 @@ window.addEventListener("load", () => mermaid.run());
           </dl>
         </dd>
         <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.reset">reset() (newton.solvers.SolverKamino method)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
           <a href="api/_generated/newton.ik.IKObjective.html#newton.ik.IKObjective.residual_dim">residual_dim() (newton.ik.IKObjective method)</a>
         </dt>
         <dd>
@@ -3512,10 +3539,6 @@ window.addEventListener("load", () => mermaid.run());
             <dt><a href="api/_generated/newton.ik.IKObjectiveRotation.html#newton.ik.IKObjectiveRotation.residual_dim">(newton.ik.IKObjectiveRotation method)</a></dt>
           </dl>
         </dd>
-      </dl>
-    </td>
-    <td style="width: 33%; vertical-align: top;">
-      <dl>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.restitution">restitution (newton.ModelBuilder.ShapeConfig attribute)</a>
         </dt>
@@ -3565,6 +3588,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.ik.IKSampler.html#newton.ik.IKSampler.ROBERTS">ROBERTS (newton.ik.IKSampler attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.rotation_correction">rotation_correction (newton.solvers.SolverKamino.Config attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.Gaussian.html#newton.Gaussian.rotations">rotations (newton.Gaussian property)</a>
@@ -3832,10 +3858,6 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.shape_material_ka">shape_material_ka (newton.Model attribute)</a>
         </dt>
-      </dl>
-    </td>
-    <td style="width: 33%; vertical-align: top;">
-      <dl>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.shape_material_kd">shape_material_kd (newton.Model attribute)</a>
         </dt>
@@ -3845,6 +3867,10 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.shape_material_kf">shape_material_kf (newton.Model attribute)</a>
         </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.shape_material_kh">shape_material_kh (newton.Model attribute)</a>
         </dt>
@@ -3961,6 +3987,12 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.Config">SolverImplicitMPM.Config (class in newton.solvers)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino">SolverKamino (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config">SolverKamino.Config (class in newton.solvers)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo">SolverMuJoCo (class in newton.solvers)</a>
         </dt>
         <dt>
@@ -3986,6 +4018,12 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD">SolverXPBD (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.sparse_dynamics">sparse_dynamics (newton.solvers.SolverKamino.Config attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.sparse_jacobian">sparse_jacobian (newton.solvers.SolverKamino.Config attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.GeoType.html#newton.GeoType.SPHERE">SPHERE (newton.GeoType attribute)</a>
@@ -4040,6 +4078,7 @@ window.addEventListener("load", () => mermaid.run());
             <dt><a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.step">(newton.solvers.SolverBase method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone.step">(newton.solvers.SolverFeatherstone method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.step">(newton.solvers.SolverImplicitMPM method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.step">(newton.solvers.SolverKamino method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.step">(newton.solvers.SolverMuJoCo method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit.step">(newton.solvers.SolverSemiImplicit method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D.step">(newton.solvers.SolverStyle3D method)</a></dt>
@@ -4256,11 +4295,18 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dd>
           <dl>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.update_contacts">(newton.solvers.SolverKamino method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.update_contacts">(newton.solvers.SolverMuJoCo method)</a></dt>
           </dl>
         </dd>
         <dt>
           <a href="api/_generated/newton.viewer.ViewerViser.html#newton.viewer.ViewerViser.url">url (newton.viewer.ViewerViser property)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.use_collision_detector">use_collision_detector (newton.solvers.SolverKamino.Config attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.use_fk_solver">use_fk_solver (newton.solvers.SolverKamino.Config attribute)</a>
         </dt>
       </dl>
     </td>
@@ -4284,6 +4330,7 @@ window.addEventListener("load", () => mermaid.run());
         <dd>
           <dl>
             <dt><a href="api/_generated/newton.SDF.html#newton.SDF.validate">(newton.SDF method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.Config.validate">(newton.solvers.SolverKamino.Config method)</a></dt>
           </dl>
         </dd>
         <dt>

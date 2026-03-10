@@ -891,7 +891,16 @@ flowchart LR
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a></p></td>
+<td><p>Semi-implicit: Euler, Moreau-Jean</p></td>
+<td><p>✅ maximal coordinates</p></td>
+<td><p>✅ maximal coordinates</p></td>
+<td><p>❌</p></td>
+<td><p>❌</p></td>
+<td><p>❌</p></td>
+<td><p>❌</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></td>
 <td><p>Explicit, Semi-implicit, Implicit</p></td>
 <td><p>✅ <sup>1</sup></p></td>
 <td><p>✅ generalized coordinates</p></td>
@@ -900,7 +909,7 @@ flowchart LR
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a></p></td>
 <td><p>Semi-implicit</p></td>
 <td><p>✅</p></td>
 <td><p>✅ maximal coordinates</p></td>
@@ -909,7 +918,7 @@ flowchart LR
 <td><p>✅</p></td>
 <td><p>🟨 basic <sup>2</sup></p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D" title="newton.solvers.SolverStyle3D"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverStyle3D</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D" title="newton.solvers.SolverStyle3D"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverStyle3D</span></code></a></p></td>
 <td><p>Implicit</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
@@ -918,7 +927,7 @@ flowchart LR
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></td>
 <td><p>Implicit</p></td>
 <td><p>✅</p></td>
 <td><p>🟨 <a class="reference internal" href="#joint-feature-support"><span class="std std-ref">limited joint support</span></a></p></td>
@@ -927,7 +936,7 @@ flowchart LR
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></td>
 <td><p>Implicit</p></td>
 <td><p>✅</p></td>
 <td><p>✅ maximal coordinates</p></td>
@@ -953,11 +962,10 @@ The tables below document which joint features each solver handles.</p>
 <p>Only <a class="reference internal" href="_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a> and <a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>
 operate on <a class="reference internal" href="../concepts/articulations.html#articulations"><span class="std std-ref">articulations</span></a> (generalized/reduced coordinates).
 The maximal-coordinate solvers (<a class="reference internal" href="_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>,
-<a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a>) enforce joints as pairwise body constraints
-but do not use the articulation kinematic-tree structure.
-<a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> supports a subset of joint types via soft
-constraints (AVBD). <a class="reference internal" href="_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D" title="newton.solvers.SolverStyle3D"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverStyle3D</span></code></a> and
-<a class="reference internal" href="_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM" title="newton.solvers.SolverImplicitMPM"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverImplicitMPM</span></code></a> do not support joints.</p>
+<a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a>, and <a class="reference internal" href="_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a>)
+enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
+<a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> supports a subset of joint types via soft constraints (AVBD).
+<a class="reference internal" href="_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D" title="newton.solvers.SolverStyle3D"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverStyle3D</span></code></a> and <a class="reference internal" href="_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM" title="newton.solvers.SolverImplicitMPM"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverImplicitMPM</span></code></a> do not support joints.</p>
 <p><strong>Joint types</strong></p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -967,6 +975,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></th>
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></th>
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></th>
+<th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a></p></th>
 </tr>
 </thead>
 <tbody>
@@ -976,6 +985,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p>REVOLUTE</p></th>
 <td><p>✅</p></td>
@@ -983,8 +993,10 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p>BALL</p></th>
+<td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
@@ -997,8 +1009,10 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
+<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p>FREE</p></th>
+<td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
@@ -1011,12 +1025,14 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>✅</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
+<td><p>❌</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p>D6</p></th>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
+<td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p>CABLE</p></th>
@@ -1025,6 +1041,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>✅</p></td>
+<td><p>❌</p></td>
 </tr>
 </tbody>
 </table>
@@ -1041,6 +1058,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></th>
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></th>
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></th>
+<th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a></p></th>
 </tr>
 </thead>
 <tbody>
@@ -1050,6 +1068,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>✅</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
+<td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a></p></th>
 <td><p>✅</p></td>
@@ -1057,12 +1076,14 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>❌</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_friction" title="newton.Model.joint_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_friction</span></code></a></p></th>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>✅</p></td>
+<td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_limit_lower" title="newton.Model.joint_limit_lower"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_lower</span></code></a> / <a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_limit_upper" title="newton.Model.joint_limit_upper"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_upper</span></code></a></p></th>
@@ -1071,12 +1092,14 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_limit_ke" title="newton.Model.joint_limit_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_ke</span></code></a> / <a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_limit_kd" title="newton.Model.joint_limit_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_kd</span></code></a></p></th>
 <td><p>✅</p></td>
 <td><p>✅ <sup>2</sup></p></td>
 <td><p>❌</p></td>
 <td><p>✅</p></td>
+<td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_effort_limit" title="newton.Model.joint_effort_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_effort_limit</span></code></a></p></th>
@@ -1085,8 +1108,10 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>❌</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>❌</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_velocity_limit" title="newton.Model.joint_velocity_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_velocity_limit</span></code></a></p></th>
+<td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
@@ -1108,6 +1133,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></th>
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></th>
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></th>
+<th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a></p></th>
 </tr>
 </thead>
 <tbody>
@@ -1117,6 +1143,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>🟨 <sup>4</sup></p></td>
+<td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_target_mode" title="newton.Model.joint_target_mode"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_mode</span></code></a></p></th>
 <td><p>❌</p></td>
@@ -1124,6 +1151,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>❌</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p><a class="reference internal" href="_generated/newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_f</span></code></a> (feedforward forces)</p></th>
 <td><p>✅</p></td>
@@ -1131,6 +1159,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>✅</p></td>
 </tr>
 </tbody>
 </table>
@@ -1144,6 +1173,7 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></th>
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></th>
 <th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></th>
+<th class="head"><p><a class="reference internal" href="_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a></p></th>
 </tr>
 </thead>
 <tbody>
@@ -1153,12 +1183,14 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <td><p>❌</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p>Mimic constraints</p></th>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>✅ <sup>3</sup></p></td>
+<td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
 </tbody>
@@ -1231,22 +1263,25 @@ control, or model arrays. In practice, this starts by calling
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM" title="newton.solvers.SolverImplicitMPM"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverImplicitMPM</span></code></a></p></td>
 <td><p>Implicit MPM solver.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverKamino</span></code></a></p></td>
+<td><p>A physics solver for simulating constrained multi-body systems containing kinematic loops, under-/overactuation, joint-limits, hard frictional contacts and restitutive impacts.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></td>
 <td><p>This solver provides an interface to simulate physics using the <a class="reference external" href="https://github.com/google-deepmind/mujoco">MuJoCo</a> physics engine, optimized with GPU acceleration through <a class="reference external" href="https://github.com/google-deepmind/mujoco_warp">mujoco_warp</a>.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverNotifyFlags.html#newton.solvers.SolverNotifyFlags" title="newton.solvers.SolverNotifyFlags"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverNotifyFlags</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverNotifyFlags.html#newton.solvers.SolverNotifyFlags" title="newton.solvers.SolverNotifyFlags"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverNotifyFlags</span></code></a></p></td>
 <td><p>Flags indicating which parts of the model have been updated and require the solver to be notified.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a></p></td>
 <td><p>A semi-implicit integrator using symplectic Euler.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D" title="newton.solvers.SolverStyle3D"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverStyle3D</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D" title="newton.solvers.SolverStyle3D"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverStyle3D</span></code></a></p></td>
 <td><p>Projective dynamics based cloth solver.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></td>
 <td><p>An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></td>
 <td><p>An implicit integrator using eXtended Position-Based Dynamics (XPBD) for rigid and soft body simulation.</p></td>
 </tr>
 </tbody>
