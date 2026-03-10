@@ -57,7 +57,7 @@ The MJCF importer from Warp sim only uses the ``geom_density`` defined in the MJ
 ``Model``
 ---------
 
-:attr:`newton.Model.shape_is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
+:attr:`newton.Model.shape_is_solid` is now of dtype ``bool`` instead of ``wp.uint8``.
 
 The ``Model.ground`` attribute and the special ground collision handling have been removed. Instead, you need to manually add a ground plane via :meth:`newton.ModelBuilder.add_ground_plane`.
 
