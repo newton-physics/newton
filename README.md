@@ -233,13 +233,13 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_bend.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_bend.jpg" alt="Cable Bend">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_twist.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_twist.jpg" alt="Cable Twist">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_twist.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_twist.jpg" alt="Cable Twist">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_y_junction.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_y_junction.jpg" alt="Cable Y-Junction">
       </a>
     </td>
     <td align="center" width="33%">
@@ -250,10 +250,10 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples cable_bend</code>
+      <code>python -m newton.examples cable_twist</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples cable_twist</code>
+      <code>python -m newton.examples cable_y_junction</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples cable_bundle_hysteresis</code>
@@ -266,14 +266,8 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_y_junction.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_y_junction.jpg" alt="Cable Y-Junction">
-      </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_helix.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_helix.jpg" alt="Cable Helix">
-      </a>
     </td>
   </tr>
   <tr>
@@ -281,10 +275,8 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples cable_pile</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples cable_y_junction</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples cable_helix</code>
     </td>
   </tr>
   <tr>

@@ -239,20 +239,6 @@ class TestCableExamples(unittest.TestCase):
 
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_bend",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_bend_damping",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
     name="cable.example_cable_twist",
     devices=test_devices,
     use_viewer=True,
@@ -260,7 +246,14 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_helix",
+    name="cable.example_cable_y_junction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
@@ -268,29 +261,6 @@ add_example_test(
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_pile",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_y_junction",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_joints",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_drives",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
