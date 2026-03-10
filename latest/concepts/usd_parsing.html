@@ -818,7 +818,7 @@
                   
   <section id="usd-parsing-and-schema-resolver-system">
 <span id="usd-parsing"></span><h1>USD Parsing and Schema Resolver System<a class="headerlink" href="#usd-parsing-and-schema-resolver-system" title="Link to this heading">#</a></h1>
-<p>Newton provides USD (Universal Scene Description) ingestion and schema resolver pipelines that enable integration of physics assets authored for different simulation solvers. This system allows Newton to use existing USD assets authored for other simulation solvers.</p>
+<p>Newton provides USD (Universal Scene Description) ingestion and schema resolver pipelines that enable integration of physics assets authored for different simulation solvers.</p>
 <section id="understanding-usd-and-usdphysics">
 <h2>Understanding USD and UsdPhysics<a class="headerlink" href="#understanding-usd-and-usdphysics" title="Link to this heading">#</a></h2>
 <p>USD (Universal Scene Description) is Pixar’s open-source framework for interchange of 3D computer graphics data. It provides an ecosystem for describing 3D scenes with hierarchical composition, animation, and metadata.
@@ -833,7 +833,7 @@ UsdPhysics is the standard USD schema for physics simulation, defining for insta
 <p>However, UsdPhysics provides only a basic foundation. Different physics solvers like PhysX and MuJoCo often require additional attributes not covered by these standard schemas.
 PhysX and MuJoCo have their own schemas for describing physics assets. While some of these attributes are <em>conceptually</em> common between many solvers, many are solver-specific.
 Even among the common attributes, the names and semantics may differ and they are only conceptually similar. Therefore, some transformation is needed to make these attributes usable by Newton.
-Newton’s schema resolver system automatically handles these differences, allowing assets authored for any solver to work with Newton’s simulation. See the next section for more details.</p>
+Newton’s schema resolver system automatically handles these differences, allowing assets authored for any solver to work with Newton’s simulation. See <a class="reference internal" href="#schema-resolvers"><span class="std std-ref">Schema Resolvers</span></a> for more details.</p>
 </section>
 <section id="newton-s-usd-import-system">
 <h2>Newton’s USD Import System<a class="headerlink" href="#newton-s-usd-import-system" title="Link to this heading">#</a></h2>
@@ -891,18 +891,21 @@ fallback heuristics and is also the fastest import path since <code class="docut
 can be skipped entirely.</p>
 </div>
 </section>
-<section id="solver-attribute-remapping">
-<span id="schema-resolvers"></span><h2>1. Solver Attribute Remapping<a class="headerlink" href="#solver-attribute-remapping" title="Link to this heading">#</a></h2>
+<section id="schema-resolvers">
+<span id="id1"></span><h2>Schema Resolvers<a class="headerlink" href="#schema-resolvers" title="Link to this heading">#</a></h2>
+<p>Schema resolvers bridge the gap between solver-specific USD schemas and Newton’s internal representation. They remap attributes authored for PhysX, MuJoCo, or other solvers to the equivalent Newton properties, handle priority-based resolution when multiple solvers define the same attribute, and collect solver-native attributes for inspection or custom pipelines.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Using the <code class="docutils literal notranslate"><span class="pre">schema_resolvers</span></code> argument in <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a> to collect solver-specific attributes is an experimental feature that may be removed or changed significantly in the future.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">schema_resolvers</span></code> argument in <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a> is an experimental feature that may be removed or changed significantly in the future.</p>
 </div>
+<section id="solver-attribute-remapping">
+<h3>Solver Attribute Remapping<a class="headerlink" href="#solver-attribute-remapping" title="Link to this heading">#</a></h3>
 <p>When working with USD assets authored for other physics solvers like PhysX or MuJoCo, Newton’s schema resolver system can automatically remap various solver attributes to Newton’s internal representation. This enables Newton to use physics properties from assets originally designed for other simulators without manual conversion.</p>
 <p>The following tables show examples of how solver-specific attributes are mapped to Newton’s internal representation. Some attributes map directly while others require mathematical transformations.</p>
 <p><strong>PhysX Attribute Remapping Examples:</strong></p>
-<p>The table below demonstrates PhysX attribute remapping with both direct mapping and transformation examples:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id1">
-<caption><span class="caption-text">PhysX Attribute Remapping</span><a class="headerlink" href="#id1" title="Link to this table">#</a></caption>
+<p>The table below shows PhysX attribute remapping examples:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id2">
+<caption><span class="caption-text">PhysX Attribute Remapping</span><a class="headerlink" href="#id2" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 30.0%" />
 <col style="width: 30.0%" />
@@ -919,11 +922,7 @@ can be skipped entirely.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">armature</span></code></p></td>
 <td><p>Direct mapping</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">physxScene:timeStepsPerSecond</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">time_step</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span> <span class="pre">/</span> <span class="pre">timeStepsPerSecond</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">physxArticulation:enabledSelfCollisions</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">physxArticulation:enabledSelfCollisions</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">self_collision_enabled</span></code> (per articulation)</p></td>
 <td><p>Direct mapping</p></td>
 </tr>
@@ -932,8 +931,8 @@ can be skipped entirely.</p>
 </div>
 <p><strong>Newton articulation remapping:</strong></p>
 <p>On articulation root prims (with <code class="docutils literal notranslate"><span class="pre">PhysicsArticulationRootAPI</span></code> or <code class="docutils literal notranslate"><span class="pre">NewtonArticulationRootAPI</span></code>), the following is resolved:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id2">
-<caption><span class="caption-text">Newton Articulation Remapping</span><a class="headerlink" href="#id2" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id3">
+<caption><span class="caption-text">Newton Articulation Remapping</span><a class="headerlink" href="#id3" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 30.0%" />
 <col style="width: 30.0%" />
@@ -955,9 +954,9 @@ can be skipped entirely.</p>
 </div>
 <p>The parser resolves <code class="docutils literal notranslate"><span class="pre">self_collision_enabled</span></code> from either <code class="docutils literal notranslate"><span class="pre">newton:selfCollisionEnabled</span></code> or <code class="docutils literal notranslate"><span class="pre">physxArticulation:enabledSelfCollisions</span></code> (in resolver priority order). The <code class="docutils literal notranslate"><span class="pre">enable_self_collisions</span></code> argument to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a> is used as the default when neither attribute is authored.</p>
 <p><strong>MuJoCo Attribute Remapping Examples:</strong></p>
-<p>Similarly, MuJoCo attributes can be remapped to Newton. Note that <code class="docutils literal notranslate"><span class="pre">mjc:solref</span></code> requires a more complex transformation to convert MuJoCo’s solver reference parameters into stiffness and damping coefficients:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id3">
-<caption><span class="caption-text">MuJoCo Attribute Remapping</span><a class="headerlink" href="#id3" title="Link to this table">#</a></caption>
+<p>The table below shows MuJoCo attribute remapping examples, including both direct mappings and transformations:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id4">
+<caption><span class="caption-text">MuJoCo Attribute Remapping</span><a class="headerlink" href="#id4" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 30.0%" />
 <col style="width: 30.0%" />
@@ -974,9 +973,9 @@ can be skipped entirely.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">armature</span></code></p></td>
 <td><p>Direct mapping</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mjc:solref</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">stiffness</span></code>/<code class="docutils literal notranslate"><span class="pre">damping</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">k</span> <span class="pre">=</span> <span class="pre">1/(timeconst^2)</span></code>, <code class="docutils literal notranslate"><span class="pre">b</span> <span class="pre">=</span> <span class="pre">2*dampratio/timeconst</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mjc:margin</span></code>, <code class="docutils literal notranslate"><span class="pre">mjc:gap</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">margin</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">margin</span> <span class="pre">=</span> <span class="pre">mjc:margin</span> <span class="pre">-</span> <span class="pre">mjc:gap</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -989,7 +988,6 @@ can be skipped entirely.</p>
 <span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysxSceneAPI&quot;</span><span class="p">]</span>
 <span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="c1"># PhysX scene settings that Newton can understand</span>
-<span class="w">    </span><span class="kt">uint</span><span class="w"> </span><span class="na">physxScene:timeStepsPerSecond</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">120</span><span class="w">  </span><span class="c1"># → time_step = 1/120 = 0.0083</span>
 <span class="w">    </span><span class="kt">uint</span><span class="w"> </span><span class="na">physxScene:maxVelocityIterationCount</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">16</span><span class="w">  </span><span class="c1"># → max_solver_iterations = 16</span>
 <span class="p">}</span>
 
@@ -1009,21 +1007,22 @@ can be skipped entirely.</p>
 <span class="k k-Tokens">def</span><span class="w"> </span>Mesh<span class="w"> </span><span class="s">&quot;collision_shape&quot;</span><span class="w"> </span><span class="p">(</span>
 <span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsCollisionAPI&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;PhysxCollisionAPI&quot;</span><span class="p">]</span>
 <span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="c1"># PhysX collision settings</span>
-<span class="w">   </span><span class="kt">float</span><span class="w"> </span><span class="na">physxCollision:contactOffset</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.02</span><span class="w">  </span><span class="c1"># → gap = 0.02</span>
+<span class="w">    </span><span class="c1"># PhysX collision settings (gap = contactOffset - restOffset)</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">physxCollision:contactOffset</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.05</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">physxCollision:restOffset</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.01</span><span class="w">   </span><span class="c1"># → gap = 0.04</span>
 <span class="p">}</span>
 </pre></div>
 </div>
 </section>
 <section id="priority-based-resolution">
-<h2>2. Priority-Based Resolution<a class="headerlink" href="#priority-based-resolution" title="Link to this heading">#</a></h2>
+<h3>Priority-Based Resolution<a class="headerlink" href="#priority-based-resolution" title="Link to this heading">#</a></h3>
 <p>When multiple physics solvers define conflicting attributes for the same property, the user can define which solver attributes should be preferred by configuring the resolver order.</p>
 <p><strong>Resolution Hierarchy:</strong></p>
 <p>The attribute resolution process follows a three-layer fallback hierarchy to determine which value to use:</p>
 <ol class="arabic simple">
-<li><p><strong>Authored Values</strong>: First resolver in priority order with an authored value wins</p></li>
-<li><p><strong>Explicit Defaults</strong>: User-provided default parameter in <code class="docutils literal notranslate"><span class="pre">Resolver.get_value(default=...)</span></code> calls with a non-None value wins if no authored value is found</p></li>
-<li><p><strong>Schema Mapping Defaults</strong>: Resolver-specific default values from the schema definition if no authored value or explicit default is found</p></li>
+<li><p><strong>Authored Values</strong>: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.</p></li>
+<li><p><strong>Importer Defaults</strong>: If no authored value is found, Newton’s importer uses a property-specific fallback (e.g. <code class="docutils literal notranslate"><span class="pre">builder.default_joint_cfg.armature</span></code> for joint armature). This takes precedence over schema-level defaults.</p></li>
+<li><p><strong>Approximated Schema Defaults</strong>: If neither an authored value nor an importer default is available, Newton falls back to a hardcoded approximation of each solver’s schema default, defined in Newton’s resolver mapping. These approximations will be replaced by actual USD schema defaults in a future release.</p></li>
 </ol>
 <p><strong>Configuring Resolver Priority:</strong></p>
 <p>The order of resolvers in the <code class="docutils literal notranslate"><span class="pre">schema_resolvers</span></code> list determines priority, with earlier entries taking precedence. To demonstrate this, consider a USD asset where the same joint has conflicting armature values authored for different solvers:</p>
@@ -1066,7 +1065,7 @@ can be skipped entirely.</p>
 </div>
 </section>
 <section id="solver-specific-attribute-collection">
-<h2>3. Solver-Specific Attribute Collection<a class="headerlink" href="#solver-specific-attribute-collection" title="Link to this heading">#</a></h2>
+<h3>Solver-Specific Attribute Collection<a class="headerlink" href="#solver-specific-attribute-collection" title="Link to this heading">#</a></h3>
 <p>Some attributes are solver-specific and cannot be directly used by Newton’s simulation. The schema resolver system preserves these solver-specific attributes during import, making them accessible as part of the parsing results. This is useful for:</p>
 <ul class="simple">
 <li><p>Debugging and inspection of solver-specific properties</p></li>
@@ -1076,8 +1075,8 @@ can be skipped entirely.</p>
 </ul>
 <p><strong>Solver-Specific Attribute Namespaces:</strong></p>
 <p>Each solver has its own namespace prefixes for solver-specific attributes. The table below shows the namespace conventions and provides examples of attributes that would be collected from each solver:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id4">
-<caption><span class="caption-text">Solver-Specific Namespaces</span><a class="headerlink" href="#id4" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id5">
+<caption><span class="caption-text">Solver-Specific Namespaces</span><a class="headerlink" href="#id5" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 20.0%" />
 <col style="width: 40.0%" />
@@ -1100,7 +1099,7 @@ can be skipped entirely.</p>
 </tr>
 <tr class="row-even"><td><p><strong>Newton</strong></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">newton</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">newton:hullVertexLimit</span></code>, <code class="docutils literal notranslate"><span class="pre">newton:contactGap</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">newton:maxHullVertices</span></code>, <code class="docutils literal notranslate"><span class="pre">newton:contactGap</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -1128,8 +1127,9 @@ can be skipped entirely.</p>
 </pre></div>
 </div>
 </section>
-<section id="custom-attribute-framework">
-<h2>4. Custom Attribute Framework<a class="headerlink" href="#custom-attribute-framework" title="Link to this heading">#</a></h2>
+</section>
+<section id="custom-attributes-from-usd">
+<h2>Custom Attributes from USD<a class="headerlink" href="#custom-attributes-from-usd" title="Link to this heading">#</a></h2>
 <p>USD assets can define custom attributes that become part of the model/state/control attributes, see <a class="reference internal" href="custom_attributes.html#custom-attributes"><span class="std std-ref">Custom Attributes</span></a> for more information.
 Besides the programmatic way of defining custom attributes through the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_attribute" title="newton.ModelBuilder.add_custom_attribute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_custom_attribute()</span></code></a> method, Newton’s USD importer also supports declaring custom attributes from within a USD stage.</p>
 <p><strong>Overview:</strong></p>
@@ -1164,8 +1164,8 @@ Besides the programmatic way of defining custom attributes through the <a class=
 </ul>
 <p><strong>Supported Data Types:</strong></p>
 <p>The system automatically infers data types from authored USD values. The following table shows the mapping between USD types and Warp types used internally by Newton:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id5">
-<caption><span class="caption-text">Custom Attribute Data Types</span><a class="headerlink" href="#id5" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id6">
+<caption><span class="caption-text">Custom Attribute Data Types</span><a class="headerlink" href="#id6" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 25.0%" />
 <col style="width: 25.0%" />
@@ -1211,8 +1211,8 @@ Besides the programmatic way of defining custom attributes through the <a class=
 </div>
 <p><strong>Assignment Types:</strong></p>
 <p>The <code class="docutils literal notranslate"><span class="pre">assignment</span></code> field in the declaration determines where the custom attribute data will be stored. The following table describes each assignment type and its typical use cases:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id6">
-<caption><span class="caption-text">Custom Attribute Assignments</span><a class="headerlink" href="#id6" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id7">
+<caption><span class="caption-text">Custom Attribute Assignments</span><a class="headerlink" href="#id7" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 15.0%" />
 <col style="width: 25.0%" />
@@ -1296,7 +1296,7 @@ Besides the programmatic way of defining custom attributes through the <a class=
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">)</span>
 
-<span class="w">    </span><span class="c1"># ARTICULATION frequency attribute</span>
+<span class="w">    </span><span class="c1"># Articulation frequency attribute</span>
 <span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:articulation_stiffness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">100.0</span><span class="w"> </span><span class="p">(</span>
 <span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
 <span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
@@ -1335,7 +1335,8 @@ Besides the programmatic way of defining custom attributes through the <a class=
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>Articulation Frequency Attributes</strong>: Attributes with <code class="docutils literal notranslate"><span class="pre">frequency</span> <span class="pre">=</span> <span class="pre">&quot;articulation&quot;</span></code> store per-articulation values and must be authored on USD prims that have the <code class="docutils literal notranslate"><span class="pre">PhysicsArticulationRootAPI</span></code> schema applied. The USD parser automatically detects articulation root prims and extracts custom articulation attributes when importing the scene.</p>
+<p>Attributes with <code class="docutils literal notranslate"><span class="pre">frequency</span> <span class="pre">=</span> <span class="pre">&quot;articulation&quot;</span></code> store per-articulation values and must be
+authored on USD prims that have the <code class="docutils literal notranslate"><span class="pre">PhysicsArticulationRootAPI</span></code> schema applied.</p>
 </div>
 <p><strong>Accessing Custom Attributes in Python:</strong></p>
 <p>After importing the USD file with the custom attributes shown above, they become accessible as properties on the appropriate objects (<code class="docutils literal notranslate"><span class="pre">Model</span></code>, <code class="docutils literal notranslate"><span class="pre">State</span></code>, or <code class="docutils literal notranslate"><span class="pre">Control</span></code>) based on their assignment. The following example shows how to import and access these attributes:</p>
@@ -1366,20 +1367,14 @@ Besides the programmatic way of defining custom attributes through the <a class=
 <span class="n">gear_ratios</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">gear_ratio</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>       <span class="c1"># Per-joint scalar</span>
 <span class="n">pid_gains</span> <span class="o">=</span> <span class="n">control</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">pid_gains</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>        <span class="c1"># Per-joint vec2</span>
 
-<span class="c1"># Access ARTICULATION frequency attributes</span>
-<span class="n">arctic_stiff</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">articulation_stiffness</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>       <span class="c1"># Per-articulation scalar (ARTICULATION frequency)</span>
-
-<span class="c1"># Namespace isolation: model.mass_scale and state.namespace_a.mass_scale are independent</span>
-<span class="c1"># - model.mass_scale has value 1.5 for robot_body (default namespace, model assignment)</span>
-<span class="c1"># - state.namespace_a.mass_scale has value 2.5 for the same robot_body (namespace_a, state assignment)</span>
-<span class="c1"># These are separate attributes stored in different objects with independent values</span>
+<span class="n">arctic_stiff</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">articulation_stiffness</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>      <span class="c1"># Per-articulation scalar</span>
 </pre></div>
 </div>
 <p><strong>Namespace Isolation:</strong></p>
 <p>Attributes with the same name in different namespaces are completely independent and stored separately. This allows the same attribute name to be used for different purposes across namespaces. In the example above, <code class="docutils literal notranslate"><span class="pre">mass_scale</span></code> appears in both the default namespace (as a model attribute) and in <code class="docutils literal notranslate"><span class="pre">namespace_a</span></code> (as a state attribute). These are treated as completely separate attributes with independent values, assignments, and storage locations.</p>
 </section>
 <section id="limitations">
-<h2>5. Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
+<h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
 <p>Importing USD files where many (&gt; 30) mesh colliders are under the same rigid body
 can result in a crash in <code class="docutils literal notranslate"><span class="pre">UsdPhysics.LoadUsdPhysicsFromRange</span></code>.  This is a known
 thread-safety issue in OpenUSD and will be fixed in a future release of
@@ -1457,11 +1452,14 @@ document the precedence rules between the environment variable and the API.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#understanding-usd-and-usdphysics">Understanding USD and UsdPhysics</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton-s-usd-import-system">Newton’s USD Import System</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mass-and-inertia-precedence">Mass and Inertia Precedence</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-attribute-remapping">1. Solver Attribute Remapping</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#priority-based-resolution">2. Priority-Based Resolution</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-specific-attribute-collection">3. Solver-Specific Attribute Collection</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-attribute-framework">4. Custom Attribute Framework</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">5. Limitations</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#schema-resolvers">Schema Resolvers</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-attribute-remapping">Solver Attribute Remapping</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#priority-based-resolution">Priority-Based Resolution</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-specific-attribute-collection">Solver-Specific Attribute Collection</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-attributes-from-usd">Custom Attributes from USD</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
 </ul>
   </nav></div>
 
