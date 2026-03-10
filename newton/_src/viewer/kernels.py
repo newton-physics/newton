@@ -332,7 +332,8 @@ def compute_joint_basis_lines(
 
     joint_t = joint_type[joint_id]
     if (
-        joint_t != int(newton.JointType.REVOLUTE)
+        joint_t != int(newton.JointType.PRISMATIC)
+        and joint_t != int(newton.JointType.REVOLUTE)
         and joint_t != int(newton.JointType.D6)
         and joint_t != int(newton.JointType.CABLE)
         and joint_t != int(newton.JointType.BALL)
