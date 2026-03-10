@@ -45,6 +45,7 @@ from ..core.types import (
     nparray,
 )
 from ..geometry import (
+    Gaussian,
     GeoType,
     Mesh,
     ParticleFlags,
@@ -4533,6 +4534,19 @@ class ModelBuilder:
             for child in body_children[child_body]:
                 if not visited[child]:
                     dfs(child_body, child, incoming_xform, last_dynamic_body)
+                elif (child_body, child) in joint_data:
+                    # Loop-closing joint: child was already visited via another path.
+                    # Retain the joint but don't re-process the child body.
+                    loop_joint = joint_data[(child_body, child)]
+                    if loop_joint["type"] != JointType.FIXED:
+                        loop_joint["parent_xform"] = incoming_xform * loop_joint["parent_xform"]
+                        loop_joint["parent"] = last_dynamic_body
+                        if child in body_merged_parent:
+                            # Child was merged into another body — remap child and adjust child_xform
+                            merge_xform = body_merged_transform[child]
+                            loop_joint["child_xform"] = merge_xform * loop_joint["child_xform"]
+                            loop_joint["child"] = body_merged_parent[child]
+                        retained_joints.append(loop_joint)
 
         for body in body_children[-1]:
             if not visited[body]:
@@ -4701,6 +4715,16 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+
+        # Update DOF and coordinate counts to match the rebuilt arrays
+        self.joint_dof_count = len(self.joint_qd)
+        self.joint_coord_count = len(self.joint_q)
+
+        # Trim per-DOF arrays that were not cleared/rebuilt above
+        for attr_name in ("joint_velocity_limit", "joint_friction"):
+            arr = getattr(self, attr_name)
+            if len(arr) > self.joint_dof_count:
+                setattr(self, attr_name, arr[: self.joint_dof_count])
 
         # Reset the constraint count based on the retained joints
         self.joint_constraint_count = len(self.joint_cts)
@@ -5492,6 +5516,87 @@ class ModelBuilder:
             cfg=cfg,
             scale=scale,
             src=heightfield,
+            is_static=True,
+            label=label,
+            custom_attributes=custom_attributes,
+        )
+
+    def add_shape_gaussian(
+        self,
+        body: int,
+        gaussian: Gaussian,
+        xform: Transform | None = None,
+        scale: Vec3 | None = None,
+        cfg: ShapeConfig | None = None,
+        collision_proxy: str | Mesh | None = None,
+        label: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a Gaussian splat shape to a body.
+
+        The Gaussian is attached as a ``GeoType.GAUSSIAN`` shape for rendering.
+        Collision is handled separately via *collision_proxy*.
+
+        Args:
+            body: The index of the parent body this shape belongs to.
+                Use ``-1`` for static world geometry.
+            gaussian: The :class:`Gaussian` splat asset.
+            xform: Transform in parent body's local frame. Defaults to identity.
+            scale: 3D scale applied to Gaussian positions. Defaults to ``(1, 1, 1)``.
+            cfg: Shape configuration. If ``None``, uses :attr:`default_shape_cfg`
+                with ``has_shape_collision=False`` (Gaussians are render-only by
+                default).
+            collision_proxy: Collision strategy. Options:
+
+                - ``None``: no collision (render-only).
+                - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
+                - A :class:`Mesh` instance: use the provided mesh as collision proxy.
+            label: Optional unique label for identifying the shape.
+            custom_attributes: Dictionary of custom attribute values for SHAPE
+                frequency attributes.
+
+        Returns:
+            The index of the Gaussian shape.
+        """
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        else:
+            cfg = cfg.copy()
+
+        # Gaussian shape is render-only; collisions are represented by optional proxy geometry.
+        proxy_cfg_base = cfg.copy()
+        cfg.has_shape_collision = False
+        cfg.has_particle_collision = False
+        cfg.density = 0.0
+
+        # Optionally add a collision proxy alongside the Gaussian shape
+        if collision_proxy is not None:
+            if isinstance(collision_proxy, str):
+                proxy_mesh = gaussian.compute_proxy_mesh(method=collision_proxy)
+            elif isinstance(collision_proxy, Mesh):
+                proxy_mesh = collision_proxy
+            else:
+                raise TypeError(f"collision_proxy must be None, a string, or a Mesh, got {type(collision_proxy)}")
+
+            proxy_cfg = proxy_cfg_base.copy()
+            proxy_cfg.is_visible = False
+            proxy_cfg.has_shape_collision = True
+            self.add_shape_convex_hull(
+                body=body,
+                xform=xform,
+                mesh=proxy_mesh,
+                scale=scale,
+                cfg=proxy_cfg,
+                label=f"{label or 'gaussian'}_collision_proxy",
+            )
+
+        return self.add_shape(
+            body=body,
+            type=GeoType.GAUSSIAN,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            src=gaussian,
             is_static=True,
             label=label,
             custom_attributes=custom_attributes,
@@ -9014,12 +9119,16 @@ class ModelBuilder:
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
             finalized_geos = {}  # do not duplicate geometry
+            gaussians = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
+                        elif isinstance(geo, Gaussian):
+                            finalized_geos[geo_hash] = len(gaussians)
+                            gaussians.append(geo.finalize(device=device))
                         else:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
@@ -9029,6 +9138,8 @@ class ModelBuilder:
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m.gaussians_count = len(gaussians)
+            m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
             m.shape_margin = wp.array(self.shape_margin, dtype=wp.float32, requires_grad=requires_grad)
@@ -9286,6 +9397,7 @@ class ModelBuilder:
                             target_voxel_size=sdf_target_voxel_size,
                             max_resolution=effective_max_resolution,
                             bake_scale=bake_scale,
+                            device=device,
                         )
 
                 if cache_key is not None:

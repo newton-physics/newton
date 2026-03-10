@@ -187,7 +187,7 @@ The following patterns are valid and commonly used:
      - Yes (acts as obstacle/support)
      - Yes (can push dynamic bodies while following prescribed motion)
      - Yes
-   * - Mass/inertia
+   * - Mass/inertia (see :ref:`Mass and Inertia`)
      - Not used for motion when fixed
      - Preserved for body properties and future dynamic switching
      - Fully used by dynamics

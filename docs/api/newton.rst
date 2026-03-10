@@ -43,6 +43,7 @@ newton
    Contacts
    Control
    EqType
+   Gaussian
    GeoType
    Heightfield
    JointTargetMode
