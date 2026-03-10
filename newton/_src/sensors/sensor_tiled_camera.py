@@ -239,7 +239,7 @@ class SensorTiledCamera:
     def sync_transforms(self, state: State):
         """Synchronize shape transforms from the simulation state.
 
-        Called automatically by :meth:`update` when *state* is not None.
+        :meth:`update` calls this automatically when *state* is not None.
 
         Args:
             state: The current simulation state containing body transforms.
@@ -286,7 +286,7 @@ class SensorTiledCamera:
         channel is optional -- pass None to skip that channel's rendering entirely.
 
         Args:
-            state: Simulation state with body transforms. If not None, :meth:`sync_transforms` is called automatically.
+            state: Simulation state with body transforms. If not None, calls :meth:`sync_transforms` first.
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
                 ``(camera_count, height, width, 2)``.
@@ -325,8 +325,7 @@ class SensorTiledCamera:
         Args:
             width: Image width [px].
             height: Image height [px].
-            camera_fovs: Vertical field-of-view angles [rad], one per camera. Accepts a single float, a list, a NumPy
-                array, or a Warp array.
+            camera_fovs: Vertical FOV angles [rad], shape ``(camera_count,)``.
 
         Returns:
             camera_rays: Shape ``(camera_count, height, width, 2)``, dtype ``vec3f``.
@@ -352,8 +351,8 @@ class SensorTiledCamera:
 
         Args:
             image: Color output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
-            out_buffer: Pre-allocated RGBA buffer. If None, one is created.
-            worlds_per_row: Tiles per row in the grid. If None, chosen automatically.
+            out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
+            worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
         return self.render_context.utils.flatten_color_image_to_rgba(image, out_buffer, worlds_per_row)
 
@@ -369,8 +368,8 @@ class SensorTiledCamera:
 
         Args:
             image: Normal output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
-            out_buffer: Pre-allocated RGBA buffer. If None, one is created.
-            worlds_per_row: Tiles per row in the grid. If None, chosen automatically.
+            out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
+            worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
         return self.render_context.utils.flatten_normal_image_to_rgba(image, out_buffer, worlds_per_row)
 
@@ -383,19 +382,19 @@ class SensorTiledCamera:
     ):
         """Flatten rendered depth image to a tiled RGBA buffer.
 
-        Depth is encoded as grayscale: values are inverted (closer = brighter) and normalized to the ``[50, 255]``
+        Encodes depth as grayscale: inverts values (closer = brighter) and normalized to the ``[50, 255]``
         range. Background pixels (no hit) remain black.
 
         Args:
             image: Depth output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
-            out_buffer: Pre-allocated RGBA buffer. If None, one is created.
-            worlds_per_row: Tiles per row in the grid. If None, chosen automatically.
-            depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. Automatically determined if None.
+            out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
+            worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
+            depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
         """
         return self.render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, worlds_per_row, depth_range)
 
     def assign_random_colors_per_world(self, seed: int = 100):
-        """Assign a random color to all shapes, per world.
+        """Assign each world a random color, applied to all its shapes.
 
         Args:
             seed: Random seed.
@@ -425,7 +424,7 @@ class SensorTiledCamera:
 
         Args:
             resolution: Texture resolution in pixels (square texture).
-            checker_size: Size of each checker square in pixels.
+            checker_size: Size of each checkerboard square in pixels.
         """
         self.render_context.utils.assign_checkerboard_material_to_all_shapes(resolution, checker_size)
 
@@ -433,6 +432,11 @@ class SensorTiledCamera:
         dtype=wp.uint32, ndim=4
     ):
         """Create a color output array for :meth:`update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
 
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
@@ -444,6 +448,11 @@ class SensorTiledCamera:
     ):
         """Create a depth output array for :meth:`update`.
 
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
+
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``float32``.
         """
@@ -453,6 +462,11 @@ class SensorTiledCamera:
         dtype=wp.uint32, ndim=4
     ):
         """Create a shape-index output array for :meth:`update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
 
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
@@ -464,6 +478,11 @@ class SensorTiledCamera:
     ):
         """Create a normal output array for :meth:`update`.
 
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
+
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``vec3f``.
         """
@@ -473,6 +492,11 @@ class SensorTiledCamera:
         dtype=wp.uint32, ndim=4
     ):
         """Create an albedo output array for :meth:`update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
 
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
