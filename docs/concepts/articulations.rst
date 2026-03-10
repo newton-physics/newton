@@ -16,20 +16,23 @@ Generalized and maximal coordinates
 There are two types of parameterizations to describe the configuration of an articulation:
 generalized coordinates and maximal coordinates.
 
-Generalized (sometimes also called "reduced") coordinates describe the configuration of an articulation in terms of joint positions and velocities.
-For example, a double-pendulum articulation (two links serially attached to world by revolute joints) has two generalized coordinates corresponding to the two joint angles (:attr:`newton.State.joint_q`) and joint velocities (:attr:`newton.State.joint_qd`).
+Generalized (sometimes also called "reduced") coordinates describe an articulation in terms of its joint positions and velocities.
+For example, a double-pendulum articulation has two revolute joints, so its generalized state consists of two joint angles in :attr:`newton.State.joint_q` and two corresponding joint velocities in :attr:`newton.State.joint_qd`.
 See the table below for the number of generalized coordinates for each joint type.
-Note that for a floating-base articulation (which is connected to the world by a free joint), the generalized coordinates include the maximal coordinates of the base link, i.e. the 3D position and 4D orientation of the base link.
+For a floating-base articulation (one connected to the world by a free joint), the generalized coordinates also include the base link pose: a 3D position and an XYZW quaternion.
 
 Maximal coordinates describe the configuration of an articulation in terms of the body link positions and velocities.
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 
-To convert between these two representations we use forward and inverse kinematics:
+To convert between these two representations, we use forward and inverse kinematics:
 forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to maximal coordinates, and inverse kinematics (:func:`newton.eval_ik`) converts maximal coordinates to generalized coordinates.
 
-In Newton, we support both parameterizations and it is up to the solver which one to use to read and write the configuration.
-For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone` use generalized coordinates, while :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit` use maximal coordinates.
+Newton supports both parameterizations, and each solver chooses which one it treats as the primary articulation state representation.
+For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`
+use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
+:class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
+use maximal coordinates.
 Note that collision detection, e.g., via :meth:`newton.Model.collide` requires the maximal coordinates to be current in the state.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
@@ -59,7 +62,7 @@ This is not a problem for generalized-coordinate solvers, as they do not use the
 
 In order to update the body poses (maximal coordinates), we need to use the forward kinematics function :func:`newton.eval_fk`:
 
-.. code-block:: python
+.. testcode::
 
   newton.eval_fk(model, state.joint_q, state.joint_qd, state)
   
@@ -111,6 +114,8 @@ Since :meth:`~newton.ModelBuilder.add_body` automatically adds a free joint, the
 
 This scene can now be simulated by both maximal-coordinate and generalized-coordinate solvers.
 
+.. _Kinematic links:
+
 Kinematic links and bodies
 --------------------------
 
@@ -140,7 +145,7 @@ The following patterns are valid and commonly used:
 3. **Static fixed-root body**: root link is kinematic and attached to world with a fixed joint.
    This has zero joint DOFs and behaves as static.
 
-.. code-block:: python
+.. testcode:: articulation-kinematic-combinations
 
    builder = newton.ModelBuilder()
 
@@ -158,6 +163,8 @@ The following patterns are valid and commonly used:
    static_root = builder.add_link(is_kinematic=True, mass=1.0)
    j_static = builder.add_joint_fixed(parent=-1, child=static_root)
    builder.add_articulation([j_static])
+
+   model = builder.finalize()
 
 .. list-table:: Static vs kinematic vs dynamic bodies/links
    :header-rows: 1
@@ -206,7 +213,7 @@ Velocity consistency for prescribed motion
 For prescribed motion, it is up to the user to keep position and velocity updates consistent across time.
 In particular, ``qd`` should be consistent with the finite-differenced motion implied by ``q``.
 For scalar coordinates, this is the familiar ``q_next = q + qd * dt`` relation; quaternion-based coordinates
-(for example FREE/BALL) require manifold-consistent quaternion integration instead of direct addition.
+(for example FREE/BALL joint) require manifold-consistent quaternion integration instead of direct addition.
 
 When writing kinematic state values:
 
@@ -219,8 +226,8 @@ Rigid-body solver behavior
 
 The rigid-body solvers (:class:`~newton.solvers.SolverMuJoCo`,
 :class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverXPBD`,
-:class:`~newton.solvers.SolverSemiImplicit`) support the same user-facing
-kinematic authoring model:
+:class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverVBD`)
+support the same user-facing kinematic authoring model:
 
 - Kinematic links keep their declared joint type (free/revolute/etc.).
 - A kinematic root attached to world by a fixed joint remains fixed (zero DOFs).
@@ -232,16 +239,18 @@ Implementation details differ by coordinate formulation:
 - Generalized-coordinate solvers (:class:`~newton.solvers.SolverMuJoCo`,
   :class:`~newton.solvers.SolverFeatherstone`) treat kinematic motion through prescribed joint state.
 - Maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`,
-  :class:`~newton.solvers.SolverSemiImplicit`) use prescribed body transforms/twists.
-- Contact handling is not identical across all four solvers. :class:`~newton.solvers.SolverXPBD`,
-  :class:`~newton.solvers.SolverMuJoCo`, and :class:`~newton.solvers.SolverFeatherstone`
-  treat kinematic bodies like infinite-mass colliders for contact response, while
+  :class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverVBD`)
+  use prescribed body transforms/twists.
+- Contact handling of kinematic bodies is not identical across the solvers. :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverMuJoCo`, and
+  :class:`~newton.solvers.SolverFeatherstone` treat kinematic bodies like
+  infinite-mass colliders for contact response, while
   :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
   does not zero inverse mass/inertia inside its contact solver. Contacts against
   kinematic bodies can therefore be softer under SemiImplicit.
 
 In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
-large internal armature value.
+large internal armature value; see :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
 
@@ -255,47 +264,38 @@ Joint types
 
    * - Joint Type
      - Description
-     - DOFs in ``joint_q``
+     - Coordinates in ``joint_q``
      - DOFs in ``joint_qd``
-     - DOFs in ``joint_axis``
    * - ``JointType.PRISMATIC``
      - Prismatic (slider) joint with 1 linear degree of freedom
-     - 1
      - 1
      - 1
    * - ``JointType.REVOLUTE``
      - Revolute (hinge) joint with 1 angular degree of freedom
      - 1
      - 1
-     - 1
    * - ``JointType.BALL``
      - Ball (spherical) joint with quaternion state representation
      - 4
      - 3
-     - 3
    * - ``JointType.FIXED``
      - Fixed (static) joint with no degrees of freedom
-     - 0
      - 0
      - 0
    * - ``JointType.FREE``
      - Free (floating) joint with 6 degrees of freedom in velocity space
      - 7 (3D position + 4D quaternion)
      - 6 (see :ref:`Twist conventions in Newton <Twist conventions>`)
-     - 0
    * - ``JointType.DISTANCE``
      - Distance joint that keeps two bodies at a distance within its joint limits
      - 7
      - 6
-     - 1
    * - ``JointType.D6``
      - Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
      - up to 6
      - up to 6
-     - up to 6
    * - ``JointType.CABLE``
      - Cable joint with 1 linear (stretch/shear) and 1 angular (bend/twist) degree of freedom
-     - 2
      - 2
      - 2
 
@@ -305,93 +305,160 @@ Prismatic, revolute, planar, and universal joints can be seen as special cases o
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :attr:`newton.Model.joint_q` array stores the generalized joint positions for all joints in the model.
-The positional dofs for each joint can be queried as follows:
+The :attr:`newton.Model.joint_q` array stores the default generalized joint positions
+for all joints in the model and is used to initialize :attr:`newton.State.joint_q`.
+Both arrays share the same per-joint layout.
+For scalar-coordinate joints (for example this D6 joint), the positional coordinates can be queried as follows:
 
-.. code-block:: python
+.. testsetup:: articulation-joint-layout
 
-    q_start = Model.joint_q_start[joint_id]
-    q_end = Model.joint_q_start[joint_id + 1]
-    # now the positional dofs can be queried as follows:
-    q0 = State.joint_q[q_start]
-    q1 = State.joint_q[q_start + 1]
-    ...
+    builder = newton.ModelBuilder()
+    body = builder.add_link()
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    joint = builder.add_joint_d6(
+        parent=-1,
+        child=body,
+        linear_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, limit_lower=-0.5, limit_upper=0.5)],
+        angular_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, limit_lower=-1.0, limit_upper=1.0)],
+    )
+    builder.add_articulation([joint])
+
+    model = builder.finalize()
+    state = model.state()
+    control = model.control()
+    joint_id = 0
+
+    joint_q_start = model.joint_q_start.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    joint_q = state.joint_q.numpy()
+    joint_qd = state.joint_qd.numpy()
+    joint_dof_dim = model.joint_dof_dim.numpy()
+    joint_axis = model.joint_axis.numpy()
+    joint_limit_lower = model.joint_limit_lower.numpy()
+    joint_target_pos = control.joint_target_pos.numpy()
+    joint_f = control.joint_f.numpy()
+
+.. testcode:: articulation-joint-layout
+
+    q_start = joint_q_start[joint_id]
+    coord_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
+    # now the positional coordinates can be queried as follows:
+    q = joint_q[q_start : q_start + coord_count]
+    q0 = q[0]
+    q1 = q[1]
 
 Definition of ``joint_qd``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :attr:`newton.Model.joint_qd` array stores the generalized joint velocities for all joints in the model.
-The generalized joint forces at :attr:`newton.Control.joint_f` are stored in the same order.
+The :attr:`newton.Model.joint_qd` array stores the default generalized joint velocities
+for all joints in the model and is used to initialize :attr:`newton.State.joint_qd`.
+The generalized joint forces at :attr:`newton.Control.joint_f` use the same DOF order.
 
-The velocity dofs for each joint can be queried as follows:
+Several other arrays also use this same DOF-ordered layout, indexed from
+:attr:`newton.Model.joint_qd_start` rather than :attr:`newton.Model.joint_q_start`.
+This includes :attr:`newton.Model.joint_axis`, joint limits and other per-DOF
+properties defined via :class:`newton.ModelBuilder.JointDofConfig`, and the
+position targets at :attr:`newton.Control.joint_target_pos`.
 
-.. code-block:: python
+For every joint, these per-DOF arrays are stored consecutively, with linear DOFs
+first and angular DOFs second. Use :attr:`newton.Model.joint_dof_dim` to query
+how many of each a joint has.
 
-    qd_start = Model.joint_qd_start[joint_id]
-    qd_end = Model.joint_qd_start[joint_id + 1]
-    # now the velocity dofs can be queried as follows:
-    qd0 = State.joint_qd[qd_start]
-    qd1 = State.joint_qd[qd_start + 1]
-    ...
+The velocity DOFs for each joint can be queried as follows:
+
+.. testcode:: articulation-joint-layout
+
+    qd_start = joint_qd_start[joint_id]
+    dof_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
+    # now the velocity DOFs can be queried as follows:
+    qd = joint_qd[qd_start : qd_start + dof_count]
+    qd0 = qd[0]
+    qd1 = qd[1]
     # the generalized joint forces can be queried as follows:
-    f0 = Control.joint_f[qd_start]
-    f1 = Control.joint_f[qd_start + 1]
-    ...
+    f = joint_f[qd_start : qd_start + dof_count]
+    f0 = f[0]
+    f1 = f[1]
+
+The same start index can be used to query other per-DOF arrays for that joint:
+
+.. testcode:: articulation-joint-layout
+
+    num_linear_dofs = joint_dof_dim[joint_id, 0]
+    num_angular_dofs = joint_dof_dim[joint_id, 1]
+    # all per-DOF arrays for this joint start at this index:
+    dof_start = joint_qd_start[joint_id]
+    # the axis vector for the first linear DOF
+    first_lin_axis = joint_axis[dof_start]
+    # the position target for this linear DOF
+    first_lin_target = joint_target_pos[dof_start]
+    # the joint limit of this linear DOF
+    first_lin_limit = joint_limit_lower[dof_start]
+    # the axis vector for the first angular DOF comes after all linear DOFs
+    first_ang_axis = joint_axis[dof_start + num_linear_dofs]
+    # the position target for this angular DOF
+    first_ang_target = joint_target_pos[dof_start + num_linear_dofs]
+    # the joint limit of this angular DOF
+    first_ang_limit = joint_limit_lower[dof_start + num_linear_dofs]
+
+    assert (num_linear_dofs, num_angular_dofs) == (1, 1)
+    assert np.allclose(first_lin_axis, [1.0, 0.0, 0.0])
+    assert np.allclose(first_ang_axis, [0.0, 0.0, 1.0])
+    assert np.allclose([first_lin_limit, first_ang_limit], [-0.5, -1.0])
+
 
 Common articulation workflows
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-ArticulationView: selection interface for RL and batched control
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Center ``joint_q`` between joint limits with Warp kernels
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-:class:`newton.selection.ArticulationView` is the high-level interface for selecting a subset
-of articulations and accessing their joints/links/DoFs with stable tensor shapes. This is
-especially useful in RL pipelines where the same observation/action logic is applied to many
-parallel environments.
-
-Construct a view by matching articulation keys with a pattern and optional filters:
-
-.. code-block:: python
-
-    import newton
-
-    # select all articulations whose key starts with "robot"
-    view = newton.selection.ArticulationView(model, pattern="robot*")
-
-    # select only scalar-joint articulations (exclude quaternion-root joint types)
-    scalar_view = newton.selection.ArticulationView(
-        model,
-        pattern="robot*",
-        include_joint_types=[newton.JointType.PRISMATIC, newton.JointType.REVOLUTE],
-        exclude_joint_types=[newton.JointType.FREE, newton.JointType.BALL],
-    )
-
-Use views to read/write batched state slices (joint positions/velocities, root transforms,
-link transforms) without manual index bookkeeping.
-
-Center ``joint_q`` at joint limits with Warp kernels
-""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-Joint limits are stored in DoF order (``joint_qd`` layout), while ``joint_q`` stores generalized
+Joint limits are stored in DOF order (``joint_qd`` layout), while ``joint_q`` stores generalized
 joint coordinates (which may include quaternion coordinates for free/ball joints).
+The pattern below sets each scalar coordinate to the midpoint between its lower and upper limits.
 
 A robust pattern is:
 
 1. Loop over joints.
-2. Use ``Model.joint_qd_start`` to find each joint's DoF span.
-3. Use ``Model.joint_q_start`` to find where that joint starts in ``State.joint_q``.
-4. Center only scalar coordinates (for example, revolute/prismatic axes) and skip quaternion joints.
+2. Use ``Model.joint_qd_start`` to find the first DOF index for each joint.
+3. Use ``Model.joint_dof_dim`` to get the number of linear and angular DOFs for that joint.
+4. Use ``Model.joint_q_start`` to find where that joint starts in ``State.joint_q``.
+5. Center only scalar coordinates (for example, revolute/prismatic axes) and skip quaternion joints.
 
-.. code-block:: python
+.. testsetup:: articulation-center-joint-q
 
-    import warp as wp
-    import newton
+    builder = newton.ModelBuilder()
+    parent = builder.add_link()
+    child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_box(parent, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(child, hx=0.1, hy=0.1, hz=0.1)
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=parent,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        limit_lower=-1.0,
+        limit_upper=1.0,
+    )
+    j1 = builder.add_joint_revolute(
+        parent=parent,
+        child=child,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform_identity(),
+        limit_lower=0.0,
+        limit_upper=2.0,
+    )
+    builder.add_articulation([j0, j1])
 
+    model = builder.finalize()
+    state = model.state()
+
+.. testcode:: articulation-center-joint-q
 
     @wp.kernel
     def center_joint_q_from_limits(
         joint_q_start: wp.array(dtype=wp.int32),
         joint_qd_start: wp.array(dtype=wp.int32),
+        joint_dof_dim: wp.array2d(dtype=wp.int32),
         joint_type: wp.array(dtype=wp.int32),
         joint_limit_lower: wp.array(dtype=float),
         joint_limit_upper: wp.array(dtype=float),
@@ -399,9 +466,9 @@ A robust pattern is:
     ):
         joint_id = wp.tid()
 
-        # DoF span for this joint in qd-order arrays (limits/axes/forces)
+        # First DOF index for this joint in qd-order arrays (limits/axes/forces)
         qd_begin = joint_qd_start[joint_id]
-        qd_end = joint_qd_start[joint_id + 1]
+        dof_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
 
         # Start index for this joint in generalized coordinates q
         q_begin = joint_q_start[joint_id]
@@ -409,14 +476,14 @@ A robust pattern is:
         # Skip free/ball joints because their q entries include quaternion coordinates.
         jt = joint_type[joint_id]
         if (
-            jt == int(newton.JointType.FREE)
-            or jt == int(newton.JointType.BALL)
-            or jt == int(newton.JointType.DISTANCE)
+            jt == newton.JointType.FREE
+            or jt == newton.JointType.BALL
+            or jt == newton.JointType.DISTANCE
         ):
             return
 
-        # For scalar joints, q coordinates align with this joint's DoF count.
-        for local_dof in range(qd_end - qd_begin):
+        # For scalar joints, q coordinates align with this joint's total DOF count.
+        for local_dof in range(dof_count):
             qd_idx = qd_begin + local_dof
             q_idx = q_begin + local_dof
 
@@ -433,6 +500,7 @@ A robust pattern is:
         inputs=[
             model.joint_q_start,
             model.joint_qd_start,
+            model.joint_dof_dim,
             model.joint_type,
             model.joint_limit_lower,
             model.joint_limit_upper,
@@ -443,12 +511,65 @@ A robust pattern is:
     # Recompute transforms after editing generalized coordinates
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
+ArticulationView: selection interface for RL and batched control
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+:class:`newton.selection.ArticulationView` is the high-level interface for selecting a subset
+of articulations and accessing their joints/links/DOFs with stable tensor shapes. This is
+especially useful in RL pipelines where the same observation/action logic is applied to many
+parallel environments.
+
+Construct a view by matching articulation keys with a pattern and optional filters:
+
+.. testsetup:: articulation-view
+
+    builder = newton.ModelBuilder()
+    for i in range(2):
+        root = builder.add_link(
+            xform=wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0), wp.quat_identity())
+        )
+        tip = builder.add_link(
+            xform=wp.transform(wp.vec3(float(i) * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity())
+        )
+        builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(tip, hx=0.1, hy=0.1, hz=0.1)
+        j_root = builder.add_joint_free(parent=-1, child=root)
+        j_tip = builder.add_joint_revolute(
+            parent=root,
+            child=tip,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j_root, j_tip], label=f"robot_{i}")
+
+    model = builder.finalize()
+    state = model.state()
+
+.. testcode:: articulation-view
+
+    # select all articulations whose key starts with "robot"
+    view = newton.selection.ArticulationView(model, pattern="robot*")
+    assert view.count == 2
+
+    # select only scalar-joint articulations (exclude quaternion-root joint types)
+    scalar_view = newton.selection.ArticulationView(
+        model,
+        pattern="robot*",
+        include_joint_types=[newton.JointType.PRISMATIC, newton.JointType.REVOLUTE],
+        exclude_joint_types=[newton.JointType.FREE, newton.JointType.BALL],
+    )
+    assert scalar_view.get_dof_positions(state).shape == (1, 2, 1)
+
+Use views to read/write batched state slices (joint positions/velocities, root transforms,
+link transforms) without manual index bookkeeping.
+
 Move articulations in world space
 """""""""""""""""""""""""""""""""
 
 Use :meth:`newton.selection.ArticulationView.set_root_transforms` to move selected articulations:
 
-.. code-block:: python
+.. testcode:: articulation-view
 
     view = newton.selection.ArticulationView(model, pattern="robot*")
     root_tf = view.get_root_transforms(state).numpy()
@@ -459,62 +580,45 @@ Use :meth:`newton.selection.ArticulationView.set_root_transforms` to move select
 
     # recompute link transforms from generalized coordinates
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    assert np.allclose(view.get_root_transforms(state).numpy()[0, :, 0], [0.2, 2.2])
 
-For floating-base articulations, this updates the root free-joint coordinates in ``joint_q``.
-For fixed-base articulations, ``set_root_transforms()`` moves the articulation by writing
-``Model.joint_X_p`` (there is no free-joint root state to edit).
+For floating-base articulations (root joint type ``FREE`` or ``DISTANCE``), this updates
+the root coordinates in ``joint_q``.
+For non-floating-base articulations (for example ``FIXED`` or a world-attached
+``REVOLUTE`` root), ``set_root_transforms()`` moves the articulation by writing
+``Model.joint_X_p`` because there is no root pose stored in state coordinates.
 
 Use ``ArticulationView`` to inspect and modify selected articulations
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-``ArticulationView`` provides stable, per-articulation access to links, joints, DoFs, and attributes:
+``ArticulationView`` provides stable, per-articulation access to links, joints, DOFs, and attributes:
 
-.. code-block:: python
+.. testcode:: articulation-view
 
     view = newton.selection.ArticulationView(model, pattern="robot*")
+    scalar_view = newton.selection.ArticulationView(
+        model,
+        pattern="robot*",
+        include_joint_types=[newton.JointType.PRISMATIC, newton.JointType.REVOLUTE],
+        exclude_joint_types=[newton.JointType.FREE, newton.JointType.BALL],
+    )
 
     # inspect
-    q = view.get_dof_positions(state)         # shape [world_count, articulation_count, dof_count]
-    qd = view.get_dof_velocities(state)       # shape [world_count, articulation_count, dof_count]
-    link_q = view.get_link_transforms(state)  # shape [world_count, articulation_count, link_count]
+    q = scalar_view.get_dof_positions(state)     # shape [world_count, articulation_count, dof_count]
+    qd = scalar_view.get_dof_velocities(state)   # shape [world_count, articulation_count, dof_count]
+    link_q = view.get_link_transforms(state)     # shape [world_count, articulation_count, link_count]
+    assert q.shape == (1, 2, 1)
+    assert qd.shape == (1, 2, 1)
+    assert link_q.shape == (1, 2, 2)
 
     # edit selected articulation values in-place
     q_np = q.numpy()
     q_np[..., 0] = 0.0
-    view.set_dof_positions(state, q_np)
+    scalar_view.set_dof_positions(state, q_np)
+    assert np.allclose(scalar_view.get_dof_positions(state).numpy()[0, :, 0], 0.0)
 
     # if model attributes are edited through the view, notify the solver afterwards
     # solver.notify_model_changed()
-
-Axis-related quantities
-^^^^^^^^^^^^^^^^^^^^^^^
-
-Axis-related quantities include the definition of the joint axis in :attr:`newton.Model.joint_axis` and other properties
-defined via :class:`newton.ModelBuilder.JointDofConfig`. The joint targets in :attr:`newton.Control.joint_target` are also
-stored in the same per-axis order.
-
-The :attr:`newton.Model.joint_dof_dim` array can be used to query the number of linear and angular dofs.
-All axis-related quantities are stored in consecutive order for every joint. First, the linear dofs are stored, followed by the angular dofs.
-The indexing of the linear and angular degrees of freedom for a joint at a given ``joint_index`` is as follows:
-
-.. code-block:: python
-
-    num_linear_dofs = Model.joint_dof_dim[joint_index, 0]
-    num_angular_dofs = Model.joint_dof_dim[joint_index, 1]
-    # the joint axes for each joint start at this index:
-    axis_start = Model.joint_qd_start[joint_id]
-    # the first linear 3D axis
-    first_lin_axis = Model.joint_axis[axis_start]
-    # the joint target for this linear dof
-    first_lin_target = Control.joint_target[axis_start]
-    # the joint limit of this linear dof
-    first_lin_limit = Model.joint_limit_lower[axis_start]
-    # the first angular 3D axis is therefore
-    first_ang_axis = Model.joint_axis[axis_start + num_linear_dofs]
-    # the joint target for this angular dof
-    first_ang_target = Control.joint_target[axis_start + num_linear_dofs]
-    # the joint limit of this angular dof
-    first_ang_limit = Model.joint_limit_lower[axis_start + num_linear_dofs]
 
 
 .. _FK-IK:
@@ -553,7 +657,6 @@ Given the parent body's world transform :math:`x_{wp}` and the joint transform :
    x_{wc} = x_{wp} \cdot x_{pj} \cdot x_{j} \cdot x_{cj}^{-1}.
 
 
-
 .. autofunction:: newton.eval_fk
    :noindex:
 
@@ -571,14 +674,21 @@ An **orphan joint** is a joint that is not part of any articulation. This situat
 * The USD asset does not define a ``PhysicsArticulationRootAPI`` on any prim, so no articulations are discovered during parsing.
 * A joint connects two bodies that are not under any ``PhysicsArticulationRootAPI`` prim, even though other articulations exist in the scene.
 
-When orphan joints are detected during USD parsing (:meth:`~newton.ModelBuilder.add_usd`), Newton issues a warning with the affected joint paths.
+When orphan joints are detected during USD parsing (:meth:`~newton.ModelBuilder.add_usd`), Newton issues a warning that lists the affected joint paths.
 
 **Validation and finalization**
 
 By default, :meth:`~newton.ModelBuilder.finalize` validates that every joint belongs to an articulation and raises a :class:`ValueError` if orphan joints are found.
 To proceed with orphan joints, skip this validation:
 
-.. code-block:: python
+.. testsetup:: articulation-orphan-joints
+
+   builder = newton.ModelBuilder()
+   body = builder.add_link()
+   builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+   builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+
+.. testcode:: articulation-orphan-joints
 
    model = builder.finalize(skip_validation_joints=True)
 
