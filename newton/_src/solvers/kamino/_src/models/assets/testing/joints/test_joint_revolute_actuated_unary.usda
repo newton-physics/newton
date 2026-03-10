@@ -1,0 +1,72 @@
+#usda 1.0
+(
+    doc = """Authored manually for testing purposes."""
+    defaultPrim = "test_joint_revolute_actuated_unary"
+    timeCodesPerSecond = 1000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "World"
+{
+    float physics:gravityMagnitude = 9.8067
+    vector3f physics:gravityDirection = (0, 0, -1)
+}
+
+def Xform "test_joint_revolute_actuated_unary"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "body_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.00841418, 0.0170561, 0.0250432)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 0.228447
+            float3 physics:diagonalInertia = (1.45422e-05, 0.000130947, 0.000131568)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (0.962133, 0.122309, -0.172458, -0.172042)
+        }
+    }
+
+    def Scope "Joints"
+    {
+        def PhysicsRevoluteJoint "actuated_revolute_joint" (
+            prepend apiSchemas = ["PhysicsDriveAPI:angular"]  # NOTE: This enables the UsdPhysics.JointDrive(...) attribute
+        )
+        {
+            bool physics:jointEnabled = 1
+
+            rel physics:body1 = </test_joint_revolute_actuated_unary/RigidBodies/body_1>
+
+            uniform token physics:axis = "Y"
+
+            point3f physics:localPos0 = (-0.0299066, 0.0320934, 0.0161268)
+            point3f physics:localPos1 = (-0.0383208, 0.0150373, -0.00891642)
+            quatf physics:localRot0 = (0.510989, 0.283121, -0.776741, 0.235387)
+            quatf physics:localRot1 = (0.510989, 0.283121, -0.776741, 0.235387)
+
+            float physics:lowerLimit = -90  # NOTE: The presence of these properties enables the UsdPhysics.JointLimit(...) attribute
+            float physics:upperLimit = 90
+
+            bool physics:collisionEnabled = 0
+
+            float drive:angular:physics:maxForce = 100.0
+            float drive:angular:physics:targetPosition = -1.0
+            float drive:angular:physics:targetVelocity = 1.0
+            float drive:angular:physics:stiffness = 10.0
+            float drive:angular:physics:damping = 1.0
+            uniform token drive:angular:physics:type = "force"  # can be in {"force", "acceleration"}
+        }
+    }
+}
