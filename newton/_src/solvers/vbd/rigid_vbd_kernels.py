@@ -251,12 +251,9 @@ def compute_kappa_dot_analytic(
     R_wp = wp.quat_to_matrix(q_wp)
     omega_rel_parent = wp.transpose(R_wp) * (omega_c_world - omega_p_world)
 
-    R_wc = wp.quat_to_matrix(q_wc)
-    R_wp_r = wp.quat_to_matrix(q_wp_rest)
-    R_wc_r = wp.quat_to_matrix(q_wc_rest)
-    R_rel = wp.transpose(R_wp) * R_wc
-    R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
-    R_align = R_rel * wp.transpose(R_rel_rest)
+    q_rel = wp.quat_inverse(q_wp) * q_wc
+    q_rel_rest = wp.quat_inverse(q_wp_rest) * q_wc_rest
+    R_align = wp.quat_to_matrix(q_rel * wp.quat_inverse(q_rel_rest))
 
     Jr_inv = compute_right_jacobian_inverse(kappa_now)
     omega_right = wp.transpose(R_align) * omega_rel_parent
@@ -300,13 +297,9 @@ def evaluate_angular_constraint_force_hessian_isotropic(
     Jr_inv = compute_right_jacobian_inverse(kappa_now_vec)
     R_wp = wp.quat_to_matrix(q_wp)
 
-    # Build the same R_align used in cable_get_kappa
-    R_wc = wp.quat_to_matrix(q_wc)
-    R_wp_r = wp.quat_to_matrix(q_wp_rest)
-    R_wc_r = wp.quat_to_matrix(q_wc_rest)
-    R_rel = wp.transpose(R_wp) * R_wc
-    R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
-    R_align = R_rel * wp.transpose(R_rel_rest)
+    q_rel = wp.quat_inverse(q_wp) * q_wc
+    q_rel_rest = wp.quat_inverse(q_wp_rest) * q_wc_rest
+    R_align = wp.quat_to_matrix(q_rel * wp.quat_inverse(q_rel_rest))
 
     # Virtual-work pullback consistent with kappa_dot = Jr_inv * (R_align^T * (R_wp^T * w_rel_world))
     # tau_world = R_wp * (A^T * f_kappa), where A = R_align * Jr_inv
@@ -415,13 +408,9 @@ def evaluate_angular_constraint_force_hessian_revolute(
     Jr_inv = compute_right_jacobian_inverse(kappa_now_vec)
     R_wp = wp.quat_to_matrix(q_wp)
 
-    # Build R_align (same as isotropic)
-    R_wc = wp.quat_to_matrix(q_wc)
-    R_wp_r = wp.quat_to_matrix(q_wp_rest)
-    R_wc_r = wp.quat_to_matrix(q_wc_rest)
-    R_rel = wp.transpose(R_wp) * R_wc
-    R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
-    R_align = R_rel * wp.transpose(R_rel_rest)
+    q_rel = wp.quat_inverse(q_wp) * q_wc
+    q_rel_rest = wp.quat_inverse(q_wp_rest) * q_wc_rest
+    R_align = wp.quat_to_matrix(q_rel * wp.quat_inverse(q_rel_rest))
 
     J_world = R_wp * (R_align * wp.transpose(Jr_inv))
 
@@ -763,12 +752,9 @@ def evaluate_angular_constraint_force_hessian_d6(
     Jr_inv = compute_right_jacobian_inverse(kappa_now_vec)
     R_wp = wp.quat_to_matrix(q_wp)
 
-    R_wc = wp.quat_to_matrix(q_wc)
-    R_wp_r = wp.quat_to_matrix(q_wp_rest)
-    R_wc_r = wp.quat_to_matrix(q_wc_rest)
-    R_rel = wp.transpose(R_wp) * R_wc
-    R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
-    R_align = R_rel * wp.transpose(R_rel_rest)
+    q_rel = wp.quat_inverse(q_wp) * q_wc
+    q_rel_rest = wp.quat_inverse(q_wp_rest) * q_wc_rest
+    R_align = wp.quat_to_matrix(q_rel * wp.quat_inverse(q_rel_rest))
 
     J_world = R_wp * (R_align * wp.transpose(Jr_inv))
 
@@ -1208,12 +1194,9 @@ def compute_kappa_and_jacobian(
     kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
     Jr_inv = compute_right_jacobian_inverse(kappa)
     R_wp = wp.quat_to_matrix(q_wp)
-    R_wc = wp.quat_to_matrix(q_wc)
-    R_wp_r = wp.quat_to_matrix(q_wp_rest)
-    R_wc_r = wp.quat_to_matrix(q_wc_rest)
-    R_rel = wp.transpose(R_wp) * R_wc
-    R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
-    R_align = R_rel * wp.transpose(R_rel_rest)
+    q_rel = wp.quat_inverse(q_wp) * q_wc
+    q_rel_rest = wp.quat_inverse(q_wp_rest) * q_wc_rest
+    R_align = wp.quat_to_matrix(q_rel * wp.quat_inverse(q_rel_rest))
     J_world = R_wp * (R_align * wp.transpose(Jr_inv))
     return kappa, J_world
 

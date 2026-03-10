@@ -919,7 +919,7 @@ def apply_joint_forces(
     type = joint_type[tid]
     if not joint_enabled[tid]:
         return
-    if type == JointType.FIXED:
+    if type == JointType.FIXED or type == JointType.CABLE:
         return
 
     # rigid body indices of the child and parent
@@ -970,7 +970,7 @@ def apply_joint_forces(
     elif type == JointType.BALL:
         t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
 
-    elif type == JointType.REVOLUTE or type == JointType.PRISMATIC or type == JointType.D6 or type == JointType.CABLE:
+    elif type == JointType.REVOLUTE or type == JointType.PRISMATIC or type == JointType.D6:
         # unroll for loop to ensure joint actions remain differentiable
         # (since differentiating through a dynamic for loop that updates a local variable is not supported)
 
