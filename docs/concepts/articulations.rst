@@ -520,8 +520,7 @@ For a given joint, the linear and angular DOFs are indexed as follows:
 Forward / Inverse Kinematics
 ----------------------------
 
-Articulated rigid-body mechanisms are kinematically described by the joints that connect the bodies as well as the
-the relative transforms from the parent and child bodies to their respective joint anchor frames (in parent and child body frame).
+Articulated rigid-body mechanisms are kinematically described by the joints that connect the bodies as well as the relative transforms from the parent and child bodies to their respective joint anchor frames (in parent and child body frame).
 
 .. image:: /_static/joint_transforms.png
    :width: 400
