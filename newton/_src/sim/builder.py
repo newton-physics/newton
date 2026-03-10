@@ -1112,7 +1112,7 @@ class ModelBuilder:
         """Equality constraint anchors accumulated for :attr:`Model.equality_constraint_anchor`."""
         self.equality_constraint_relpose: list[Transform] = []
         """Relative poses accumulated for :attr:`Model.equality_constraint_relpose`."""
-        self.equality_constraint_torquescale: list[float | None] = []
+        self.equality_constraint_torquescale: list[float] = []
         """Torque scales accumulated for :attr:`Model.equality_constraint_torquescale`."""
         self.equality_constraint_joint1: list[int] = []
         """First joint indices accumulated for :attr:`Model.equality_constraint_joint1`."""
@@ -4177,12 +4177,16 @@ class ModelBuilder:
             relpose_tf = wp.transform_identity()
         else:
             relpose_tf = wp.transform(*relpose)
+        if torquescale is None:
+            torquescale_value = 1.0 if constraint_type == EqType.WELD else 0.0
+        else:
+            torquescale_value = float(torquescale)
 
         self.equality_constraint_type.append(constraint_type)
         self.equality_constraint_body1.append(body1)
         self.equality_constraint_body2.append(body2)
         self.equality_constraint_anchor.append(anchor_vec)
-        self.equality_constraint_torquescale.append(torquescale)
+        self.equality_constraint_torquescale.append(torquescale_value)
         self.equality_constraint_relpose.append(relpose_tf)
         self.equality_constraint_joint1.append(joint1)
         self.equality_constraint_joint2.append(joint2)
