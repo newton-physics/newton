@@ -69,7 +69,7 @@ The following example creates two different worlds within a single model:
    model = builder.finalize()
 
 
-In this example, we are creating a model with two worlds (world ``0`` and world ``1``) containing different bodies, shapes and joints.  The example ends with the additional creation of a global ground plane entity (with world index ``-1``).
+In this example, we are creating a model with two worlds (world ``0`` and world ``1``) containing different bodies, shapes and joints, as well as two global entities (the ground plane at the front and a static box at the back, both with world index ``-1``).
 
 
 .. _World grouping:
