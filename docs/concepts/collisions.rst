@@ -15,7 +15,7 @@ Newton's collision system is also compatible with :class:`~newton.solvers.Solver
 Collision Pipeline
 ------------------
 
-Newton's collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See :ref:`Collision Pipeline Details` for more information.
+Newton's collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See :ref:`Collision Pipeline Details` for details.
 
 Basic usage:
 
