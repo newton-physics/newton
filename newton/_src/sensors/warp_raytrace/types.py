@@ -35,3 +35,13 @@ class RenderOrder(enum.IntEnum):
     """Render all pixels of a whole view before continuing to the next one"""
     TILED = 2
     """Render pixels in tiles, defined by tile_width x tile_height"""
+
+
+class GaussianRenderMode(enum.IntEnum):
+    """Gaussian Render Mode"""
+
+    FAST = 0
+    """Fast Render Mode"""
+
+    QUALITY = 1
+    """Quality Render Mode, collect hits until minimum transmittance is reached"""

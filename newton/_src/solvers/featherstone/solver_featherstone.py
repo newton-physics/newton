@@ -186,7 +186,7 @@ class SolverFeatherstone(SolverBase):
                     self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
 
     @override
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True
@@ -341,7 +341,7 @@ class SolverFeatherstone(SolverBase):
         control: Control,
         contacts: Contacts,
         dt: float,
-    ):
+    ) -> None:
         requires_grad = state_in.requires_grad
 
         # optionally create dynamical auxiliary variables
@@ -770,5 +770,3 @@ class SolverFeatherstone(SolverBase):
             self.integrate_particles(model, state_in, state_out, dt)
 
             self._step += 1
-
-            return state_out

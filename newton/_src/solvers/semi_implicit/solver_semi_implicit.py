@@ -111,7 +111,7 @@ class SolverSemiImplicit(SolverBase):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
-    ):
+    ) -> None:
         """
         Simulate the model for a given time step using the given control input.
 

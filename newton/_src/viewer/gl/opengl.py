@@ -1676,9 +1676,10 @@ class RendererGL:
 
         self._shadow_shader.update(self._light_space_matrix)
 
-        # render from light's point of view
+        # render from light's point of view (skip objects that don't cast shadows)
+        shadow_objects = {k: v for k, v in objects.items() if getattr(v, "cast_shadow", True)}
         with self._shadow_shader:
-            self._draw_objects(objects)
+            self._draw_objects(shadow_objects)
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
