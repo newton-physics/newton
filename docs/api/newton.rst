@@ -38,10 +38,12 @@ newton
    :nosignatures:
 
    Axis
+   BodyFlags
    CollisionPipeline
    Contacts
    Control
    EqType
+   Gaussian
    GeoType
    Heightfield
    JointTargetMode
@@ -53,6 +55,7 @@ newton
    SDF
    ShapeFlags
    State
+   TetMesh
 
 .. rubric:: Functions
 

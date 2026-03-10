@@ -37,7 +37,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.joints import JointTargetMode
+from ..sim.enums import JointTargetMode
 from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -173,11 +173,17 @@ def parse_usd(
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
         load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-        hide_collision_shapes: If True, collision shapes are hidden. Default is False.
+        hide_collision_shapes: If True, collision shapes on bodies that already
+            have visual-only geometry are hidden. Collision shapes on bodies
+            without visual-only geometry remain visible as a rendering fallback.
+            Mesh colliders with authored PBR material data (texture,
+            roughness, or metallic) also remain visible so collision-only
+            render meshes are not lost.
+            Default is False.
         force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
-            ``hide_collision_shapes=True`` still takes precedence and will suppress
-            the VISIBLE flag even when this option is set. Default is False.
+            ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
+            colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -269,6 +275,7 @@ def parse_usd(
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
+    default_joint_velocity_limit = builder.default_joint_cfg.velocity_limit
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -337,7 +344,7 @@ def parse_usd(
     # cache for resolved material properties (keyed by prim path)
     material_props_cache: dict[str, dict[str, Any]] = {}
     # cache for mesh data loaded from USD prims
-    mesh_cache: dict[tuple[str, bool], Mesh] = {}
+    mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -386,6 +393,51 @@ def parse_usd(
         mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
         mesh_cache[key] = mesh
         return mesh
+
+    def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
+        """Load a renderable mesh without changing physics mass properties."""
+        material_props = _get_material_props_cached(prim)
+        texture = material_props.get("texture")
+        physics_mesh = _get_mesh_cached(prim)
+        if texture is not None:
+            render_mesh = _get_mesh_cached(prim, load_uvs=True)
+            # Texture UV expansion is render-only. Preserve the collision mesh's
+            # mass/inertia so visibility changes do not perturb simulation.
+            mesh = Mesh(
+                render_mesh.vertices,
+                render_mesh.indices,
+                normals=render_mesh.normals,
+                uvs=render_mesh.uvs,
+                compute_inertia=False,
+                is_solid=physics_mesh.is_solid,
+                maxhullvert=physics_mesh.maxhullvert,
+                sdf=physics_mesh.sdf,
+            )
+            mesh.mass = physics_mesh.mass
+            mesh.com = physics_mesh.com
+            mesh.inertia = physics_mesh.inertia
+            mesh.has_inertia = physics_mesh.has_inertia
+        else:
+            mesh = physics_mesh.copy(recompute_inertia=False)
+        if texture:
+            mesh.texture = texture
+        if mesh.texture is not None and mesh.uvs is None:
+            warnings.warn(
+                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                stacklevel=2,
+            )
+            mesh.texture = None
+        if material_props.get("color") is not None and mesh.texture is None:
+            mesh.color = material_props["color"]
+        if material_props.get("roughness") is not None:
+            mesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            mesh.metallic = material_props["metallic"]
+        return mesh
+
+    def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
+        # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
+        return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
 
     bodies_with_visual_shapes: set[int] = set()
 
@@ -541,25 +593,7 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "mesh":
-                # Resolve material properties first (cached) to determine if we need UVs
-                material_props = _get_material_props_cached(prim)
-                texture = material_props.get("texture")
-                # Only load UVs if we have a texture to avoid expensive faceVarying expansion
-                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None))
-                if texture:
-                    mesh.texture = texture
-                if mesh.texture is not None and mesh.uvs is None:
-                    warnings.warn(
-                        f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                        stacklevel=2,
-                    )
-                    mesh.texture = None
-                if material_props.get("color") is not None and mesh.texture is None:
-                    mesh.color = material_props["color"]
-                if material_props.get("roughness") is not None:
-                    mesh.roughness = material_props["roughness"]
-                if material_props.get("metallic") is not None:
-                    mesh.metallic = material_props["metallic"]
+                mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
@@ -588,6 +622,7 @@ def parse_usd(
         label: str,
         armature: float,
         articulation_root_xform: wp.transform | None = None,
+        is_kinematic: bool = False,
     ) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
         # Extract custom attributes for this body
@@ -599,6 +634,7 @@ def parse_usd(
             xform=xform,
             label=label,
             armature=armature,
+            is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
         path_body_map[label] = b
@@ -633,14 +669,24 @@ def parse_usd(
             (prim, physics_scene_prim), "newton:armature", builder.default_body_armature
         )
 
+        is_kinematic = rigid_body_desc.kinematicBody
+
         if add_body_to_builder:
-            return add_body(prim, origin, path, body_armature, articulation_root_xform=articulation_root_xform)
+            return add_body(
+                prim,
+                origin,
+                path,
+                body_armature,
+                articulation_root_xform=articulation_root_xform,
+                is_kinematic=is_kinematic,
+            )
         else:
             result = {
                 "prim": prim,
                 "xform": origin,
                 "label": path,
                 "armature": body_armature,
+                "is_kinematic": is_kinematic,
             }
             if articulation_root_xform is not None:
                 result["articulation_root_xform"] = articulation_root_xform
@@ -703,6 +749,13 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
+        joint_velocity_limit = R.get_value(
+            joint_prim,
+            prim_type=PrimType.JOINT,
+            key="velocity_limit",
+            default=None,
+            verbose=verbose,
+        )
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
@@ -750,6 +803,7 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
+            joint_params["velocity_limit"] = joint_velocity_limit
             if joint_desc.drive.enabled:
                 target_vel = joint_desc.drive.targetVelocity
                 target_pos = joint_desc.drive.targetPosition
@@ -802,6 +856,8 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
+                if joint_params["velocity_limit"] is not None:
+                    joint_params["velocity_limit"] *= DegreesToRadian
 
                 joint_index = builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -927,6 +983,9 @@ def parse_usd(
                             target_kd=target_kd,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            velocity_limit=joint_velocity_limit
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
@@ -979,6 +1038,9 @@ def parse_usd(
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            velocity_limit=joint_velocity_limit * DegreesToRadian
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
@@ -1739,18 +1801,25 @@ def parse_usd(
         if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
             continue
         # Skip body-to-world joints (where one body is empty/world) only when
-        # FREE joints will be auto-inserted for remaining bodies.
-        # When no_articulations=True and has_joints=True, FREE joints are NOT
-        # auto-inserted, so we should parse body-to-world joints in that case.
+        # FREE joints will be auto-inserted for remaining bodies — but always
+        # keep body-to-world FIXED joints so the body is properly welded to
+        # world instead of receiving an incorrect FREE base joint.
         body0_path = str(joint_desc.body0)
         body1_path = str(joint_desc.body1)
         is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
+        is_fixed_joint = joint_desc.type == UsdPhysics.ObjectType.FixedJoint
         free_joints_auto_inserted = not (no_articulations and has_joints)
-        if is_body_to_world and free_joints_auto_inserted:
+        if is_body_to_world and free_joints_auto_inserted and not is_fixed_joint:
             continue
         try:
-            parse_joint(joint_desc, incoming_xform=incoming_world_xform)
-            orphan_joints.append(joint_path)
+            joint_index = parse_joint(joint_desc, incoming_xform=incoming_world_xform)
+            # Handle body-to-world FIXED joints separately to ensure proper welding.
+            # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
+            if joint_index is not None and is_body_to_world and is_fixed_joint:
+                child_body = builder.joint_child[joint_index]
+                builder.add_articulation([joint_index], label=builder.body_label[child_body])
+            else:
+                orphan_joints.append(joint_path)
         except ValueError as exc:
             if verbose:
                 print(f"Skipping joint {joint_path}: {exc}")
@@ -2001,16 +2070,46 @@ def parse_usd(
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
 
+                has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
+                collider_has_visual_material = (
+                    key == UsdPhysics.ObjectType.MeshShape
+                    and _has_visual_material_properties(_get_material_props_cached(prim))
+                )
+
+                hide_collider_for_body = (
+                    hide_collision_shapes and has_body_visual_shapes and not collider_has_visual_material
+                )
+                show_collider_by_policy = should_show_collider(
+                    force_show_colliders,
+                    has_visual_shapes=has_body_visual_shapes,
+                )
+                collider_is_visible = (
+                    show_collider_by_policy or collider_has_visual_material
+                ) and not hide_collider_for_body
+
+                shape_ke = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="ke",
+                    verbose=verbose,
+                )
+                if shape_ke is None:
+                    shape_ke = builder.default_shape_cfg.ke
+                shape_kd = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="kd",
+                    verbose=verbose,
+                )
+                if shape_kd is None:
+                    shape_kd = builder.default_shape_cfg.kd
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
-                        ke=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_ke", builder.default_shape_cfg.ke
-                        ),
-                        kd=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_kd", builder.default_shape_cfg.kd
-                        ),
+                        ke=shape_ke,
+                        kd=shape_kd,
                         kf=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
                         ),
@@ -2025,11 +2124,7 @@ def parse_usd(
                         mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
-                        is_visible=should_show_collider(
-                            force_show_colliders,
-                            has_visual_shapes=load_visual_shapes and body_id in bodies_with_visual_shapes,
-                        )
-                        and not hide_collision_shapes,
+                        is_visible=collider_is_visible,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2092,7 +2187,12 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    mesh = _get_mesh_cached(prim)
+                    if collider_is_visible:
+                        # Visible colliders should render with the same visual material metadata
+                        # as visual-only mesh imports.
+                        mesh = _get_mesh_with_visual_material(prim, path_name=path)
+                    else:
+                        mesh = _get_mesh_cached(prim)
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,

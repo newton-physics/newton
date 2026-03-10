@@ -15,6 +15,7 @@
 
 import enum
 import os
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
+    from ..sim.model import Model
     from .sdf_utils import SDF
 
 
@@ -53,28 +55,31 @@ class GeoType(enum.IntEnum):
     that can be used for collision, rendering, or simulation.
     """
 
-    PLANE = 0
+    NONE = 0
+    """No geometry (placeholder)."""
+
+    PLANE = 1
     """Plane."""
 
-    HFIELD = 1
+    HFIELD = 2
     """Height field (terrain)."""
 
-    SPHERE = 2
+    SPHERE = 3
     """Sphere."""
 
-    CAPSULE = 3
+    CAPSULE = 4
     """Capsule (cylinder with hemispherical ends)."""
 
-    ELLIPSOID = 4
+    ELLIPSOID = 5
     """Ellipsoid."""
 
-    CYLINDER = 5
+    CYLINDER = 6
     """Cylinder."""
 
-    BOX = 6
+    BOX = 7
     """Axis-aligned box."""
 
-    MESH = 7
+    MESH = 8
     """Triangle mesh."""
 
     CONE = 9
@@ -83,8 +88,8 @@ class GeoType(enum.IntEnum):
     CONVEX_MESH = 10
     """Convex hull."""
 
-    NONE = 11
-    """No geometry (placeholder)."""
+    GAUSSIAN = 11
+    """Gaussian splat."""
 
 
 class Mesh:
@@ -666,6 +671,7 @@ class Mesh:
     def build_sdf(
         self,
         *,
+        device: Devicelike | None = None,
         narrow_band_range: tuple[float, float] | None = None,
         target_voxel_size: float | None = None,
         max_resolution: int | None = None,
@@ -676,12 +682,15 @@ class Mesh:
         """Build and attach an SDF for this mesh.
 
         Args:
+            device: CUDA device for SDF allocation. When ``None``, uses the
+                current :class:`wp.ScopedDevice` or the Warp default device.
             narrow_band_range: Signed narrow-band distance range [m] as
                 ``(inner, outer)``. Uses ``(-0.1, 0.1)`` when not provided.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided,
                 takes precedence over ``max_resolution``.
-            max_resolution: Maximum sparse-grid dimension [voxel] when
-                ``target_voxel_size`` is not provided.
+            max_resolution: Maximum sparse-grid dimension [voxel] along the longest
+                AABB axis, used when ``target_voxel_size`` is not provided. Must be
+                divisible by 8.
             margin: Extra AABB padding [m] added before discretization. Uses
                 ``0.05`` when not provided.
             shape_margin: Shape margin offset [m] to subtract from SDF values.
@@ -707,6 +716,7 @@ class Mesh:
 
         self.sdf = SDF.create_from_mesh(
             self,
+            device=device,
             narrow_band_range=narrow_band_range if narrow_band_range is not None else (-0.1, 0.1),
             target_voxel_size=target_voxel_size,
             max_resolution=max_resolution,
@@ -863,6 +873,544 @@ class Mesh:
                     self._metallic,
                 )
             )
+        return self._cached_hash
+
+    # ---- Factory methods ---------------------------------------------------
+
+    @staticmethod
+    def create_from_usd(prim, **kwargs) -> "Mesh":
+        """Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.
+
+        This is a convenience wrapper around :func:`newton.usd.get_mesh`.
+        See that function for full documentation.
+
+        Args:
+            prim: The USD prim to load the mesh from.
+            **kwargs: Additional arguments passed to :func:`newton.usd.get_mesh`
+                (e.g. ``load_normals``, ``load_uvs``).
+
+        Returns:
+            Mesh: A new Mesh instance.
+        """
+        from ..usd.utils import get_mesh  # noqa: PLC0415
+
+        result = get_mesh(prim, **kwargs)
+        if isinstance(result, tuple):
+            return result[0]
+        return result
+
+    @staticmethod
+    def create_from_file(filename: str, method: str | None = None, **kwargs) -> "Mesh":
+        """Load a Mesh from a 3D model file.
+
+        Supports common surface mesh formats including OBJ, PLY, STL, and
+        other formats supported by trimesh, meshio, openmesh, or pcu.
+
+        Args:
+            filename: Path to the mesh file.
+            method: Loading backend to use (``"trimesh"``, ``"meshio"``,
+                ``"pcu"``, ``"openmesh"``). If ``None``, each backend is
+                tried in order until one succeeds.
+            **kwargs: Additional arguments passed to the :class:`Mesh`
+                constructor (e.g. ``compute_inertia``, ``is_solid``).
+
+        Returns:
+            Mesh: A new Mesh instance.
+        """
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"File not found: {filename}")
+
+        from .utils import load_mesh  # noqa: PLC0415
+
+        mesh_points, mesh_indices = load_mesh(filename, method=method)
+        return Mesh(vertices=mesh_points, indices=mesh_indices, **kwargs)
+
+
+class TetMesh:
+    """Represents a tetrahedral mesh for volumetric deformable simulation.
+
+    Stores vertex positions (surface + interior nodes), tetrahedral element
+    connectivity, and an optional surface triangle mesh. If no surface mesh
+    is provided, it is automatically computed from the open (unshared) faces
+    of the tetrahedra.
+
+    Optionally carries per-element material arrays and a density value loaded
+    from file. These are used as defaults by builder methods and can be
+    overridden at instantiation time.
+
+    Example:
+        Create a TetMesh from raw arrays:
+
+        .. code-block:: python
+
+            import numpy as np
+            import newton
+
+            vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+            tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+            tet_mesh = newton.TetMesh(vertices, tet_indices)
+    """
+
+    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"})
+
+    def __init__(
+        self,
+        vertices: Sequence[Vec3] | nparray,
+        tet_indices: Sequence[int] | nparray,
+        k_mu: nparray | float | None = None,
+        k_lambda: nparray | float | None = None,
+        k_damp: nparray | float | None = None,
+        density: float | None = None,
+        custom_attributes: ("dict[str, nparray] | dict[str, tuple[nparray, Model.AttributeFrequency]] | None") = None,
+    ):
+        """Construct a TetMesh from vertex positions and tet connectivity.
+
+        Args:
+            vertices: Vertex positions [m], shape (N, 3).
+            tet_indices: Tetrahedral element indices, flattened (4 per tet).
+            k_mu: First elastic Lame parameter [Pa]. Scalar (uniform) or
+                per-element array of shape (tet_count,).
+            k_lambda: Second elastic Lame parameter [Pa]. Scalar (uniform) or
+                per-element array of shape (tet_count,).
+            k_damp: Rayleigh damping coefficient [-] (dimensionless). Scalar
+                (uniform) or per-element array of shape (tet_count,).
+            density: Uniform density [kg/m^3] for mass computation.
+            custom_attributes: Dictionary of named custom arrays with their
+                :class:`~newton.Model.AttributeFrequency`. Each value can be
+                either a bare array (frequency auto-inferred from length) or a
+                ``(array, frequency)`` tuple.
+        """
+        self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        self._tet_indices = np.array(tet_indices, dtype=np.int32).flatten()
+        if len(self._tet_indices) % 4 != 0:
+            raise ValueError(f"tet_indices length must be a multiple of 4, got {len(self._tet_indices)}.")
+
+        vertex_count = len(self._vertices)
+        if len(self._tet_indices) > 0:
+            idx_min = int(self._tet_indices.min())
+            idx_max = int(self._tet_indices.max())
+            if idx_min < 0:
+                raise ValueError(f"tet_indices contains negative index {idx_min}.")
+            if idx_max >= vertex_count:
+                raise ValueError(f"tet_indices contains index {idx_max} which exceeds vertex count {vertex_count}.")
+
+        tet_count = len(self._tet_indices) // 4
+
+        self._k_mu = self._broadcast_material(k_mu, tet_count, "k_mu")
+        self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
+        self._k_damp = self._broadcast_material(k_damp, tet_count, "k_damp")
+        self._density = density
+        # Compute surface triangles from boundary faces (before custom attrs so tri_count is available)
+        self._surface_tri_indices = self._compute_surface_triangles()
+        tri_count = len(self._surface_tri_indices) // 3
+
+        self.custom_attributes: dict[str, tuple[np.ndarray, int]] = {}
+        for k, v in (custom_attributes or {}).items():
+            if k in self._RESERVED_ATTR_KEYS:
+                raise ValueError(
+                    f"Custom attribute name '{k}' is reserved. Reserved names: {sorted(self._RESERVED_ATTR_KEYS)}"
+                )
+            if isinstance(v, tuple):
+                arr, freq = v
+                self.custom_attributes[k] = (np.asarray(arr), freq)
+            else:
+                arr = np.asarray(v)
+                freq = self._infer_frequency(arr, vertex_count, tet_count, tri_count, k)
+                self.custom_attributes[k] = (arr, freq)
+
+        self._cached_hash: int | None = None
+
+    @staticmethod
+    def _broadcast_material(value: nparray | float | None, tet_count: int, name: str) -> np.ndarray | None:
+        if value is None:
+            return None
+        arr = np.asarray(value, dtype=np.float32)
+        if arr.ndim == 0:
+            return np.full(tet_count, arr.item(), dtype=np.float32)
+        arr = arr.flatten()
+        if len(arr) == 1:
+            return np.full(tet_count, arr[0], dtype=np.float32)
+        if len(arr) != tet_count:
+            raise ValueError(f"{name} array length ({len(arr)}) does not match tet count ({tet_count}).")
+        return arr
+
+    @staticmethod
+    def _infer_frequency(
+        arr: np.ndarray, vertex_count: int, tet_count: int, tri_count: int, name: str
+    ) -> "Model.AttributeFrequency":
+        """Infer :class:`~newton.Model.AttributeFrequency` from array length.
+
+        Args:
+            arr: The attribute array.
+            vertex_count: Number of vertices in the mesh.
+            tet_count: Number of tetrahedra in the mesh.
+            tri_count: Number of surface triangles in the mesh.
+            name: Attribute name (for error messages).
+
+        Returns:
+            The inferred frequency.
+
+        Raises:
+            ValueError: If the array length is ambiguous (matches multiple
+                counts) or matches none of the known counts.
+        """
+        from ..sim.model import Model  # noqa: PLC0415
+
+        first_dim = arr.shape[0] if arr.ndim >= 1 else 1
+        counts = {"vertex_count": vertex_count, "tet_count": tet_count, "tri_count": tri_count}
+        matches = [label for label, c in counts.items() if first_dim == c and c > 0]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches "
+                f"{', '.join(matches)}. Pass an explicit (array, frequency) tuple instead."
+            )
+        if first_dim == vertex_count and vertex_count > 0:
+            return Model.AttributeFrequency.PARTICLE
+        if first_dim == tet_count and tet_count > 0:
+            return Model.AttributeFrequency.TETRAHEDRON
+        if first_dim == tri_count and tri_count > 0:
+            return Model.AttributeFrequency.TRIANGLE
+        raise ValueError(
+            f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches none of "
+            f"vertex_count ({vertex_count}), tet_count ({tet_count}), tri_count ({tri_count}). "
+            f"Pass an explicit (array, frequency) tuple instead."
+        )
+
+    @staticmethod
+    def compute_surface_triangles(tet_indices: nparray) -> np.ndarray:
+        """Extract boundary triangles from tetrahedral element indices.
+
+        Finds faces that belong to exactly one tetrahedron (boundary faces)
+        using a vectorized approach.
+
+        Args:
+            tet_indices: Flattened tetrahedral element indices (4 per tet).
+
+        Returns:
+            Flattened boundary triangle indices, 3 per triangle, int32.
+        """
+        tet_indices = np.asarray(tet_indices, dtype=np.int32).flatten()
+        tets = tet_indices.reshape(-1, 4)
+        n = len(tets)
+        if n == 0:
+            return np.array([], dtype=np.int32)
+
+        # Each tet contributes 4 faces with specific winding order:
+        #   face 0: (v0, v2, v1)
+        #   face 1: (v1, v2, v3)
+        #   face 2: (v0, v1, v3)
+        #   face 3: (v0, v3, v2)
+        # fmt: off
+        face_idx = np.array([
+            [0, 2, 1],
+            [1, 2, 3],
+            [0, 1, 3],
+            [0, 3, 2],
+        ])
+        # fmt: on
+
+        # Build all faces: shape (4*n, 3) with original winding
+        all_faces = tets[:, face_idx].reshape(-1, 3)
+
+        # Sort vertex indices per face to create canonical keys
+        sorted_faces = np.sort(all_faces, axis=1)
+
+        # Find unique sorted faces and their counts
+        _, inverse, counts = np.unique(sorted_faces, axis=0, return_inverse=True, return_counts=True)
+
+        # Boundary faces appear exactly once
+        boundary_mask = counts[inverse] == 1
+
+        return all_faces[boundary_mask].astype(np.int32).flatten()
+
+    def _compute_surface_triangles(self) -> np.ndarray:
+        return TetMesh.compute_surface_triangles(self._tet_indices)
+
+    # ---- Properties --------------------------------------------------------
+
+    @property
+    def vertices(self) -> nparray:
+        """Vertex positions [m], shape (N, 3), float32."""
+        return self._vertices
+
+    @property
+    def tet_indices(self) -> nparray:
+        """Tetrahedral element indices, flattened, 4 per tet."""
+        return self._tet_indices
+
+    @property
+    def tet_count(self) -> int:
+        """Number of tetrahedral elements."""
+        return len(self._tet_indices) // 4
+
+    @property
+    def vertex_count(self) -> int:
+        """Number of vertices."""
+        return len(self._vertices)
+
+    @property
+    def surface_tri_indices(self) -> nparray:
+        """Surface triangle indices (open faces), flattened, 3 per tri.
+
+        Automatically computed from tet connectivity at construction time
+        by extracting boundary faces (faces belonging to exactly one tet).
+        """
+        return self._surface_tri_indices
+
+    @property
+    def k_mu(self) -> nparray | None:
+        """Per-element first Lame parameter [Pa], shape (tet_count,) or None."""
+        return self._k_mu
+
+    @property
+    def k_lambda(self) -> nparray | None:
+        """Per-element second Lame parameter [Pa], shape (tet_count,) or None."""
+        return self._k_lambda
+
+    @property
+    def k_damp(self) -> nparray | None:
+        """Per-element Rayleigh damping coefficient [-], shape (tet_count,) or None."""
+        return self._k_damp
+
+    @property
+    def density(self) -> float | None:
+        """Uniform density [kg/m^3] or None."""
+        return self._density
+
+    # ---- Factory methods ---------------------------------------------------
+
+    @staticmethod
+    def create_from_usd(prim) -> "TetMesh":
+        """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
+
+        Reads vertex positions from the ``points`` attribute and tetrahedral
+        connectivity from ``tetVertexIndices``. If a physics material is bound
+        to the prim (via ``material:binding:physics``) and contains
+        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
+        (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+        those values are read and converted to Lame parameters (``k_mu``,
+        ``k_lambda``) and density on the returned TetMesh. Material properties
+        are set to ``None`` if not present.
+
+        Example:
+
+            .. code-block:: python
+
+                from pxr import Usd
+                import newton
+                import newton.usd
+
+                usd_stage = Usd.Stage.Open("tetmesh.usda")
+                tetmesh = newton.usd.get_tetmesh(usd_stage.GetPrimAtPath("/MyTetMesh"))
+
+                # tetmesh.vertices  -- np.ndarray, shape (N, 3)
+                # tetmesh.tet_indices -- np.ndarray, flattened (4 per tet)
+
+        Args:
+            prim: The USD prim to load the tetrahedral mesh from.
+
+        Returns:
+            TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
+        """
+        from ..usd.utils import get_tetmesh  # noqa: PLC0415
+
+        return get_tetmesh(prim)
+
+    @staticmethod
+    def create_from_file(filename: str) -> "TetMesh":
+        """Load a TetMesh from a volumetric mesh file.
+
+        Supports ``.vtk``, ``.msh``, ``.vtu``, and other formats with
+        tetrahedral cells via meshio. Also supports ``.npz`` files saved
+        by :meth:`TetMesh.save` (numpy only, no extra dependencies).
+
+        Args:
+            filename: Path to the volumetric mesh file.
+
+        Returns:
+            TetMesh: A new TetMesh instance.
+        """
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"File not found: {filename}")
+
+        ext = os.path.splitext(filename)[1].lower()
+
+        if ext == ".npz":
+            data = np.load(filename)
+            kwargs = {}
+            for key in ("k_mu", "k_lambda", "k_damp"):
+                if key in data:
+                    kwargs[key] = data[key]
+            if "density" in data:
+                kwargs["density"] = float(data["density"])
+            known_keys = {
+                "vertices",
+                "tet_indices",
+                "k_mu",
+                "k_lambda",
+                "k_damp",
+                "density",
+                "__custom_names__",
+                "__custom_freqs__",
+            }
+            freq_map: dict[str, int] = {}
+            if "__custom_names__" in data and "__custom_freqs__" in data:
+                from ..sim.model import Model as _Model  # noqa: PLC0415
+
+                names = data["__custom_names__"]
+                freqs = data["__custom_freqs__"]
+                for n, f in zip(names, freqs, strict=True):
+                    freq_map[str(n)] = int(f)
+            custom: dict[str, np.ndarray | tuple] = {}
+            for k in data.files:
+                if k not in known_keys:
+                    arr = np.asarray(data[k])
+                    if k in freq_map:
+                        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+                        custom[k] = (arr, _Model.AttributeFrequency(freq_map[k]))
+                    else:
+                        custom[k] = arr
+            if custom:
+                kwargs["custom_attributes"] = custom
+            return TetMesh(
+                vertices=data["vertices"],
+                tet_indices=data["tet_indices"],
+                **kwargs,
+            )
+
+        import meshio
+
+        m = meshio.read(filename)
+
+        # Find tetrahedral cells
+        tet_indices = None
+        tet_cell_idx = None
+        for i, cell_block in enumerate(m.cells):
+            if cell_block.type == "tetra":
+                tet_indices = np.array(cell_block.data, dtype=np.int32).flatten()
+                tet_cell_idx = i
+                break
+
+        if tet_indices is None:
+            raise ValueError(f"No tetrahedral cells found in '{filename}'.")
+
+        vertices = np.array(m.points, dtype=np.float32)
+
+        # Read material arrays from cell data
+        kwargs: dict = {}
+        material_keys = {"k_mu", "k_lambda", "k_damp", "density"}
+        if m.cell_data and tet_cell_idx is not None:
+            for key in material_keys:
+                if key in m.cell_data:
+                    arr = np.asarray(m.cell_data[key][tet_cell_idx], dtype=np.float32)
+                    if key == "density":
+                        if arr.size > 1 and not np.allclose(arr, arr[0]):
+                            raise ValueError(
+                                f"Non-uniform per-element density found in '{filename}'. "
+                                f"TetMesh only supports a single uniform density value."
+                            )
+                        kwargs["density"] = float(arr[0])
+                    else:
+                        kwargs[key] = arr
+
+        # Read custom attributes from cell data and point data
+        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+        custom: dict[str, tuple[np.ndarray, _Model.AttributeFrequency]] = {}
+        if m.cell_data and tet_cell_idx is not None:
+            for key, arrays in m.cell_data.items():
+                if key not in material_keys:
+                    custom[key] = (np.asarray(arrays[tet_cell_idx]), _Model.AttributeFrequency.TETRAHEDRON)
+        if m.point_data:
+            for key, arr in m.point_data.items():
+                custom[key] = (np.asarray(arr), _Model.AttributeFrequency.PARTICLE)
+        if custom:
+            kwargs["custom_attributes"] = custom
+
+        return TetMesh(vertices=vertices, tet_indices=tet_indices, **kwargs)
+
+    def save(self, filename: str):
+        """Save the TetMesh to a file.
+
+        For ``.npz``, saves all arrays via :func:`numpy.savez` (no extra
+        dependencies). For other formats (``.vtk``, ``.msh``, ``.vtu``,
+        etc.), uses meshio.
+
+        Args:
+            filename: Path to write the file to.
+        """
+        ext = os.path.splitext(filename)[1].lower()
+
+        if ext == ".npz":
+            save_dict = {
+                "vertices": self._vertices,
+                "tet_indices": self._tet_indices,
+            }
+            if self._k_mu is not None:
+                save_dict["k_mu"] = self._k_mu
+            if self._k_lambda is not None:
+                save_dict["k_lambda"] = self._k_lambda
+            if self._k_damp is not None:
+                save_dict["k_damp"] = self._k_damp
+            if self._density is not None:
+                save_dict["density"] = np.array(self._density)
+            custom_names = []
+            custom_freqs = []
+            for k, (arr, freq) in self.custom_attributes.items():
+                save_dict[k] = arr
+                custom_names.append(k)
+                custom_freqs.append(int(freq))
+            if custom_names:
+                save_dict["__custom_names__"] = np.array(custom_names)
+                save_dict["__custom_freqs__"] = np.array(custom_freqs, dtype=np.int32)
+            np.savez(filename, **save_dict)
+            return
+
+        import meshio
+
+        cells = [("tetra", self._tet_indices.reshape(-1, 4))]
+        cell_data: dict[str, list[np.ndarray]] = {}
+        point_data: dict[str, np.ndarray] = {}
+
+        # Save material arrays as cell data
+        for name, arr in [("k_mu", self._k_mu), ("k_lambda", self._k_lambda), ("k_damp", self._k_damp)]:
+            if arr is not None:
+                cell_data[name] = [arr]
+        if self._density is not None:
+            cell_data["density"] = [np.full(self.tet_count, self._density, dtype=np.float32)]
+
+        # Save custom attributes as point or cell data based on frequency
+        from ..sim.model import Model as _Model  # noqa: PLC0415
+
+        for name, (arr, freq) in self.custom_attributes.items():
+            if freq == _Model.AttributeFrequency.TETRAHEDRON:
+                cell_data[name] = [arr]
+            elif freq == _Model.AttributeFrequency.PARTICLE:
+                point_data[name] = arr
+            else:
+                warnings.warn(
+                    f"Custom attribute '{name}' with frequency {freq} cannot be saved to meshio format "
+                    f"(only PARTICLE and TETRAHEDRON are supported). Skipping.",
+                    stacklevel=2,
+                )
+
+        mesh = meshio.Mesh(
+            points=self._vertices,
+            cells=cells,
+            cell_data=cell_data if cell_data else {},
+            point_data=point_data if point_data else {},
+        )
+        mesh.write(filename)
+
+    def __eq__(self, other):
+        if not isinstance(other, TetMesh):
+            return NotImplemented
+        return np.array_equal(self._vertices, other._vertices) and np.array_equal(self._tet_indices, other._tet_indices)
+
+    def __hash__(self):
+        if self._cached_hash is None:
+            self._cached_hash = hash((self._vertices.tobytes(), self._tet_indices.tobytes()))
         return self._cached_hash
 
 
@@ -1025,3 +1573,391 @@ class Heightfield:
                 )
             )
         return self._cached_hash
+
+
+class Gaussian:
+    """Represents a Gaussian splat asset for rendering and rigid body attachment.
+
+    A Gaussian splat is a collection of oriented, scaled 3D Gaussians with
+    appearance data (color via spherical harmonics or flat RGB). Gaussian
+    objects can be attached to rigid bodies as a shape type (``GeoType.GAUSSIAN``)
+    for rendering, with collision handled by an optional proxy geometry.
+
+    Example:
+        Load a Gaussian splat from a ``.ply`` file and inspect it:
+
+        .. code-block:: python
+
+            import newton
+
+            gaussian = newton.Gaussian.create_from_ply("object.ply")
+            print(gaussian.count, gaussian.sh_degree)
+    """
+
+    @wp.struct
+    class Data:
+        num_points: wp.int32
+        transforms: wp.array(dtype=wp.transformf)
+        scales: wp.array(dtype=wp.vec3f)
+        opacities: wp.array(dtype=wp.float32)
+        sh_coeffs: wp.array(dtype=wp.float32, ndim=2)
+        bvh_id: wp.uint64
+        min_response: wp.float32
+
+    def __init__(
+        self,
+        positions: nparray,
+        rotations: nparray | None = None,
+        scales: nparray | None = None,
+        opacities: nparray | None = None,
+        sh_coeffs: nparray | None = None,
+        min_response: float = 0.1,
+    ):
+        """Construct a Gaussian splat asset from arrays.
+
+        Args:
+            positions: Gaussian centers in local space [m], shape ``(N, 3)``, float.
+            rotations: Quaternion orientations ``(x, y, z, w)``, shape ``(N, 4)``, float.
+                If ``None``, defaults to identity quaternions.
+            scales: Per-axis scales (linear), shape ``(N, 3)``, float.
+                If ``None``, defaults to ones.
+            opacities: Opacity values ``[0, 1]``, shape ``(N,)``, float.
+                If ``None``, defaults to ones (fully opaque).
+            sh_coeffs: Spherical harmonic coefficients, shape ``(N, C)``, float.
+                The number of coefficients *C* determines the SH degree
+                (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.).
+        """
+
+        self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+        n = self._positions.shape[0]
+
+        if rotations is not None:
+            self._rotations = np.ascontiguousarray(np.asarray(rotations, dtype=np.float32).reshape(n, 4))
+        else:
+            self._rotations = np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (n, 1))
+
+        if scales is not None:
+            self._scales = np.ascontiguousarray(np.asarray(scales, dtype=np.float32).reshape(n, 3))
+        else:
+            self._scales = np.ones((n, 3), dtype=np.float32)
+
+        if opacities is not None:
+            self._opacities = np.ascontiguousarray(np.asarray(opacities, dtype=np.float32).reshape(n))
+        else:
+            self._opacities = np.ones(n, dtype=np.float32)
+
+        if sh_coeffs is not None:
+            self._sh_coeffs = np.ascontiguousarray(np.asarray(sh_coeffs, dtype=np.float32).reshape(n, -1))
+        else:
+            self._sh_coeffs = np.ones((n, 3), dtype=np.float32)
+
+        if not np.isfinite(min_response) or not (0.0 < min_response < 1.0):
+            raise ValueError("min_response must be finite and in (0, 1)")
+        self._min_response = float(min_response)
+
+        self._cached_hash = None
+        self._positions.setflags(write=False)
+        self._rotations.setflags(write=False)
+        self._scales.setflags(write=False)
+        self._opacities.setflags(write=False)
+        self._sh_coeffs.setflags(write=False)
+
+        # GPU arrays populated by finalize()
+        self.warp_bvh: wp.Bvh = None
+        self.warp_data: Gaussian.Data = None
+
+        # Inertia: Gaussians are render-only so they contribute no mass
+        self.has_inertia = False
+        self.mass = 0.0
+        self.com = wp.vec3()
+        self.I = wp.mat33()
+        self.is_solid = False
+
+    # ---- Properties ----------------------------------------------------------
+
+    @property
+    def count(self) -> int:
+        """Number of Gaussians in this asset."""
+        return self._positions.shape[0]
+
+    @property
+    def positions(self) -> nparray:
+        """Gaussian centers in local space [m], shape ``(N, 3)``, float."""
+        return self._positions
+
+    @property
+    def rotations(self) -> nparray:
+        """Quaternion orientations ``(x, y, z, w)``, shape ``(N, 4)``, float."""
+        return self._rotations
+
+    @property
+    def scales(self) -> nparray:
+        """Per-axis linear scales, shape ``(N, 3)``, float."""
+        return self._scales
+
+    @property
+    def opacities(self) -> nparray:
+        """Opacity values ``[0, 1]``, shape ``(N,)``, float."""
+        return self._opacities
+
+    @property
+    def sh_coeffs(self) -> nparray | None:
+        """Spherical harmonic coefficients, shape ``(N, C)``, float."""
+        return self._sh_coeffs
+
+    @property
+    def sh_degree(self) -> int:
+        """Spherical harmonics degree (0--3), inferred from *sh_coeffs* shape."""
+        c = self._sh_coeffs.shape[1]
+        # SH bands: degree 0 -> 1*3=3, degree 1 -> 4*3=12,
+        #           degree 2 -> 9*3=27, degree 3 -> 16*3=48
+        for deg, num in ((3, 48), (2, 27), (1, 12), (0, 3)):
+            if c >= num:
+                return deg
+        return 0
+
+    @property
+    def min_response(self) -> float:
+        """Min response, float."""
+        return self._min_response
+
+    # ---- Finalize (GPU upload) -----------------------------------------------
+
+    def finalize(self, device: Devicelike = None) -> Data:
+        """Upload Gaussian data to the GPU as Warp arrays.
+
+        Args:
+            device: Device on which to allocate buffers.
+
+        Returns:
+            Gaussian.Data struct containing the Warp arrays.
+        """
+
+        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+
+        with wp.ScopedDevice(device):
+            self.warp_data = Gaussian.Data()
+            self.warp_data.transforms = wp.array(
+                np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf
+            )
+            self.warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
+            self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
+            self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            self.warp_data.min_response = self.min_response
+            self.warp_data.num_points = self.warp_data.transforms.shape[0]
+
+            lowers = wp.zeros(self.count, dtype=wp.vec3f)
+            uppers = wp.zeros(self.count, dtype=wp.vec3f)
+
+            wp.launch(
+                kernel=compute_gaussian_bvh_bounds,
+                dim=self.count,
+                inputs=[self.warp_data, lowers, uppers],
+            )
+
+            self.warp_bvh = wp.Bvh(lowers, uppers)
+            self.warp_data.bvh_id = self.warp_bvh.id
+        return self.warp_data
+
+    # ---- Factory methods -----------------------------------------------------
+
+    @staticmethod
+    def create_from_ply(filename: str, min_response: float = 0.1) -> "Gaussian":
+        """Load Gaussian splat data from a ``.ply`` file (standard 3DGS format).
+
+        Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
+        (``scale_0..2``, stored as log-scale), opacities (logit-space),
+        and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
+        and logit-opacity to linear values.
+
+        Args:
+            filename: Path to a ``.ply`` file in standard 3DGS format.
+            min_response: Min response (default = 0.1).
+
+        Returns:
+            A new :class:`Gaussian` instance.
+        """
+        from plyfile import PlyData  # noqa: PLC0415
+
+        plydata = PlyData.read(filename)
+        vertex = plydata["vertex"]
+
+        positions = np.stack([vertex["x"], vertex["y"], vertex["z"]], axis=1).astype(np.float32)
+
+        # Rotations (quaternion w,x,y,z)
+        if "rot_0" in vertex:
+            rotations = np.stack([vertex["rot_1"], vertex["rot_2"], vertex["rot_3"], vertex["rot_0"]], axis=1).astype(
+                np.float32
+            )
+            rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
+        else:
+            rotations = None
+
+        # Scales (stored as log-scale in standard 3DGS)
+        if "scale_0" in vertex:
+            log_scales = np.stack([vertex["scale_0"], vertex["scale_1"], vertex["scale_2"]], axis=1).astype(np.float32)
+            scales = np.exp(log_scales)
+        else:
+            scales = None
+
+        # Opacities (stored in logit-space in standard 3DGS)
+        if "opacity" in vertex:
+            logit_opacities = np.array(vertex["opacity"], dtype=np.float32)
+            opacities = 1.0 / (1.0 + np.exp(-logit_opacities))
+        else:
+            opacities = None
+
+        # Spherical harmonic coefficients
+        sh_dc_names = [f"f_dc_{i}" for i in range(3)]
+        has_sh_dc = all(name in vertex for name in sh_dc_names)
+
+        sh_coeffs = None
+        if has_sh_dc:
+            sh_dc = np.stack([vertex[name] for name in sh_dc_names], axis=1).astype(np.float32)
+
+            rest_names = []
+            i = 0
+            while f"f_rest_{i}" in vertex:
+                rest_names.append(f"f_rest_{i}")
+                i += 1
+
+            if rest_names:
+                sh_rest = np.stack([vertex[name] for name in rest_names], axis=1).astype(np.float32)
+                sh_coeffs = np.concatenate([sh_dc, sh_rest], axis=1)
+            else:
+                sh_coeffs = sh_dc
+
+        return Gaussian(
+            positions=positions,
+            rotations=rotations,
+            scales=scales,
+            opacities=opacities,
+            sh_coeffs=sh_coeffs,
+            min_response=min_response,
+        )
+
+    @staticmethod
+    def create_from_usd(prim, min_response: float = 0.1) -> "Gaussian":
+        """Load Gaussian splat data from a USD prim.
+
+        Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+
+        Args:
+            prim: A USD prim containing Gaussian splat data.
+            min_response: Min response (default = 0.1).
+
+        Returns:
+            A new :class:`Gaussian` instance.
+        """
+
+        def _get_attr(name):
+            attr = prim.GetAttribute(name)
+            if attr and attr.HasValue():
+                return np.array(attr.Get(), dtype=np.float32)
+
+            attr = prim.GetAttribute(f"{name}h")
+            if attr and attr.HasValue():
+                return np.array(attr.Get(), dtype=np.float32)
+
+            return None
+
+        positions = _get_attr("positions")
+        if positions is None:
+            raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
+
+        return Gaussian(
+            positions=positions,
+            rotations=_get_attr("orientations"),
+            scales=_get_attr("scales"),
+            opacities=_get_attr("opacities"),
+            sh_coeffs=_get_attr("radiance:sphericalHarmonicsCoefficients"),
+            min_response=min_response,
+        )
+
+    # ---- Utility -------------------------------------------------------------
+
+    def compute_aabb(self) -> tuple[nparray, nparray]:
+        """Compute axis-aligned bounding box of Gaussian centers.
+
+        Returns:
+            Tuple of ``(lower, upper)`` as ``(3,)`` arrays [m].
+        """
+        lower = self._positions.min(axis=0)
+        upper = self._positions.max(axis=0)
+        return lower, upper
+
+    def compute_proxy_mesh(self, method: str = "convex_hull") -> "Mesh":
+        """Generate a proxy collision :class:`Mesh` from Gaussian positions.
+
+        Args:
+            method: ``"convex_hull"`` (default) or ``"alphashape"`` or ``"points"``.
+
+        Returns:
+            A :class:`Mesh` for use as collision proxy.
+        """
+
+        if method == "convex_hull":
+            from .utils import remesh_convex_hull  # noqa: PLC0415
+
+            hull_verts, hull_faces = remesh_convex_hull(self._positions)
+            return Mesh(hull_verts, hull_faces, compute_inertia=True)
+        elif method == "alphashape":
+            from .utils import remesh_alphashape  # noqa: PLC0415
+
+            hull_verts, hull_faces = remesh_alphashape(self._positions)
+            return Mesh(hull_verts, hull_faces, compute_inertia=True)
+        elif method == "points":
+            return self.compute_points_mesh()
+
+        raise ValueError(
+            f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull', 'alphashape', 'points'."
+        )
+
+    def compute_points_mesh(self) -> "Mesh":
+        from ..utils.mesh import create_mesh_box  # noqa: PLC0415
+
+        mesh_points, mesh_indices, _normals, _uvs = create_mesh_box(
+            1.0,
+            1.0,
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+        )
+
+        points = (
+            (self.positions[: self.count][:, None] + self.scales[: self.count][:, None] * mesh_points)
+            .flatten()
+            .reshape(-1, 3)
+        )
+        offsets = mesh_points.shape[0] * np.arange(self.count)
+        indices = (offsets[:, None] + mesh_indices).flatten()
+        return Mesh(vertices=points, indices=indices)
+
+    @override
+    def __hash__(self) -> int:
+        if self._cached_hash is None:
+            self._cached_hash = hash(
+                (
+                    self._positions.data.tobytes(),
+                    self._rotations.data.tobytes(),
+                    self._scales.data.tobytes(),
+                    self._opacities.data.tobytes(),
+                    self._sh_coeffs.data.tobytes(),
+                    float(self._min_response),
+                )
+            )
+        return self._cached_hash
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Gaussian):
+            return NotImplemented
+        return (
+            np.array_equal(self._positions, other._positions)
+            and np.array_equal(self._rotations, other._rotations)
+            and np.array_equal(self._scales, other._scales)
+            and np.array_equal(self._opacities, other._opacities)
+            and np.array_equal(self._sh_coeffs, other._sh_coeffs)
+            and self._min_response == other._min_response
+        )

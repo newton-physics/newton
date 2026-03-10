@@ -36,15 +36,12 @@ from newton.solvers import SolverImplicitMPM
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-        voxel_size=0.05,
-        particles_per_cell=3,
-        tolerance=1.0e-5,
-        grid_type="sparse",
-    ):
-        # setup simulation parameters first
+    def __init__(self, viewer, args):
+        voxel_size = args.voxel_size
+        particles_per_cell = args.particles_per_cell
+        tolerance = args.tolerance
+        grid_type = args.grid_type
+
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -315,6 +312,15 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
+        parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
+        parser.add_argument("--grid-type", "-gt", choices=["sparse", "dense", "fixed"], default="sparse")
+        parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
+        return parser
+
 
 def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, density):
     cell_size = (bounds_hi - bounds_lo) / res
@@ -339,29 +345,12 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, de
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
-    parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
-    parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
-    parser.add_argument("--grid-type", "-gt", choices=["sparse", "dense", "fixed"], default="sparse")
-    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
-
-    # Parse arguments and initialize viewer
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    # This example requires a GPU device
     if wp.get_device().is_cpu:
         print("Error: This example requires a GPU device.")
         sys.exit(1)
 
-    # Create example and load policy
-    example = Example(
-        viewer,
-        voxel_size=args.voxel_size,
-        particles_per_cell=args.particles_per_cell,
-        tolerance=args.tolerance,
-        grid_type=args.grid_type,
-    )
-
-    # Run via unified example runner
+    example = Example(viewer, args)
     newton.examples.run(example, args)

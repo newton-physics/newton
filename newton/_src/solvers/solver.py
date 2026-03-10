@@ -17,7 +17,7 @@
 import warp as wp
 
 from ..geometry import ParticleFlags
-from ..sim import Contacts, Control, Model, ModelBuilder, State
+from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State
 
 
 @wp.kernel
@@ -118,6 +118,7 @@ def integrate_bodies(
     I: wp.array(dtype=wp.mat33),
     inv_m: wp.array(dtype=float),
     inv_I: wp.array(dtype=wp.mat33),
+    body_flags: wp.array(dtype=wp.int32),
     body_world: wp.array(dtype=wp.int32),
     gravity: wp.array(dtype=wp.vec3),
     angular_damping: float,
@@ -127,6 +128,15 @@ def integrate_bodies(
     body_qd_new: wp.array(dtype=wp.spatial_vector),
 ):
     tid = wp.tid()
+
+    if (body_flags[tid] & BodyFlags.KINEMATIC) != 0:
+        # Kinematic bodies are user-prescribed and pass through unchanged.
+        # NOTE: SemiImplicit does not zero inv_mass/inv_inertia for kinematic
+        # bodies in the contact solver, so contact responses may be weaker
+        # than XPBD or MuJoCo/Featherstone which treat them as infinite-mass.
+        body_q_new[tid] = body_q[tid]
+        body_qd_new[tid] = body_qd[tid]
+        return
 
     # positions
     q = body_q[tid]
@@ -160,6 +170,23 @@ def integrate_bodies(
     body_qd_new[tid] = qd_new
 
 
+@wp.kernel
+def _update_effective_inv_mass_inertia(
+    body_flags: wp.array(dtype=wp.int32),
+    model_inv_mass: wp.array(dtype=float),
+    model_inv_inertia: wp.array(dtype=wp.mat33),
+    eff_inv_mass: wp.array(dtype=float),
+    eff_inv_inertia: wp.array(dtype=wp.mat33),
+):
+    tid = wp.tid()
+    if (body_flags[tid] & BodyFlags.KINEMATIC) != 0:
+        eff_inv_mass[tid] = 0.0
+        eff_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    else:
+        eff_inv_mass[tid] = model_inv_mass[tid]
+        eff_inv_inertia[tid] = model_inv_inertia[tid]
+
+
 class SolverBase:
     """Generic base class for solvers.
 
@@ -182,6 +209,31 @@ class SolverBase:
         """
         return self.model.device
 
+    def _init_kinematic_state(self):
+        """Allocate and populate effective inverse mass/inertia arrays."""
+        model = self.model
+        self.body_inv_mass_effective = wp.empty_like(model.body_inv_mass)
+        self.body_inv_inertia_effective = wp.empty_like(model.body_inv_inertia)
+        if model.body_count:
+            self._refresh_kinematic_state()
+
+    def _refresh_kinematic_state(self):
+        """Update effective arrays from model, zeroing kinematic bodies."""
+        model = self.model
+        if model.body_count:
+            wp.launch(
+                kernel=_update_effective_inv_mass_inertia,
+                dim=model.body_count,
+                inputs=[
+                    model.body_flags,
+                    model.body_inv_mass,
+                    model.body_inv_inertia,
+                    self.body_inv_mass_effective,
+                    self.body_inv_inertia_effective,
+                ],
+                device=model.device,
+            )
+
     def integrate_bodies(
         self,
         model: Model,
@@ -189,7 +241,7 @@ class SolverBase:
         state_out: State,
         dt: float,
         angular_damping: float = 0.0,
-    ):
+    ) -> None:
         """
         Integrate the rigid bodies of the model.
 
@@ -214,6 +266,7 @@ class SolverBase:
                     model.body_inertia,
                     model.body_inv_mass,
                     model.body_inv_inertia,
+                    model.body_flags,
                     model.body_world,
                     model.gravity,
                     angular_damping,
@@ -229,7 +282,7 @@ class SolverBase:
         state_in: State,
         state_out: State,
         dt: float,
-    ):
+    ) -> None:
         """
         Integrate the particles of the model.
 
@@ -260,7 +313,7 @@ class SolverBase:
 
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
-    ) -> State | None:
+    ) -> None:
         """
         Simulate the model for a given time step using the given control input.
 
@@ -275,7 +328,7 @@ class SolverBase:
         """
         raise NotImplementedError()
 
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the

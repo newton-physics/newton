@@ -29,6 +29,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
+from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -106,6 +107,17 @@ class SolverVBD(SolverBase):
     For rigid bodies, the AVBD algorithm uses **soft constraints** with adaptive penalty parameters
     for joints and contacts. Hard constraints are not currently enforced.
 
+    Joint limitations:
+        - Supported joint types: BALL, FIXED, FREE, CABLE.
+          PRISMATIC, REVOLUTE, DISTANCE, and D6 joints are not supported.
+        - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are used for CABLE
+          joints only (as stretch/bend stiffness and damping).
+        - Other joint properties (:attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_armature`,
+          :attr:`~newton.Model.joint_friction`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
+          :attr:`~newton.Model.joint_target_mode`, :attr:`~newton.Control.joint_f`) are not supported.
+        - Equality and mimic constraints are not supported.
+
+        See :ref:`Joint feature support` for the full comparison across solvers.
 
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
@@ -561,6 +573,10 @@ class SolverVBD(SolverBase):
         self.body_particle_contact_material_kd = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
 
+        # Kinematic body support: create effective inv_mass / inv_inertia arrays
+        # with kinematic bodies zeroed out.
+        self._init_kinematic_state()
+
         # Validation
         has_bodies = self.model.body_count > 0
         has_body_coloring = len(self.model.body_color_groups) > 0
@@ -570,6 +586,11 @@ class SolverVBD(SolverBase):
                 "model.body_color_groups is empty but rigid bodies are present! When using the SolverVBD you must call ModelBuilder.color() "
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
+
+    @override
+    def notify_model_changed(self, flags: int):
+        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+            self._refresh_kinematic_state()
 
     # =====================================================
     # Initialization Helper Methods
@@ -1153,7 +1174,7 @@ class SolverVBD(SolverBase):
         control: Control,
         contacts: Contacts | None,
         dt: float,
-    ):
+    ) -> None:
         """Execute one simulation timestep using VBD (particles) and AVBD (rigid bodies).
 
         The solver follows a 3-phase structure:
@@ -1319,8 +1340,8 @@ class SolverVBD(SolverBase):
                     state_in.body_f,
                     model.body_com,
                     model.body_inertia,
-                    model.body_inv_mass,
-                    model.body_inv_inertia,
+                    self.body_inv_mass_effective,
+                    self.body_inv_inertia_effective,
                     state_in.body_q,  # input/output
                     state_in.body_qd,  # input/output
                 ],
@@ -1742,7 +1763,7 @@ class SolverVBD(SolverBase):
                         state_in.body_q,
                         state_in.body_qd,
                         model.body_com,
-                        model.body_inv_mass,
+                        self.body_inv_mass_effective,
                         # AVBD body-particle soft contact penalties and material properties
                         self.friction_epsilon,
                         self.body_particle_contact_penalty_k,
@@ -1784,7 +1805,7 @@ class SolverVBD(SolverBase):
                         self.body_q_prev,
                         state_in.body_q,
                         model.body_com,
-                        model.body_inv_mass,
+                        self.body_inv_mass_effective,
                         self.friction_epsilon,
                         self.body_body_contact_penalty_k,
                         self.body_body_contact_material_kd,
@@ -1821,7 +1842,7 @@ class SolverVBD(SolverBase):
                     self.body_q_prev,
                     model.body_q,
                     model.body_mass,
-                    model.body_inv_mass,
+                    self.body_inv_mass_effective,
                     model.body_inertia,
                     self.body_inertia_q,
                     model.body_com,

@@ -252,8 +252,7 @@ def _build_cable_chain(
 
     if pin_first and len(rod_bodies) > 0:
         first_body = rod_bodies[0]
-        builder.body_mass[first_body] = 0.0
-        builder.body_inv_mass[first_body] = 0.0
+        builder.body_flags[first_body] = int(newton.BodyFlags.KINEMATIC)
 
     builder.color()
     model = builder.finalize(device=device)
@@ -507,8 +506,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
 
         # Pin the first body of each cable.
         first_body = rod_bodies[0]
-        builder.body_mass[first_body] = 0.0
-        builder.body_inv_mass[first_body] = 0.0
+        builder.body_flags[first_body] = int(newton.BodyFlags.KINEMATIC)
 
         all_rod_bodies.append(rod_bodies)
         tip_bodies.append(rod_bodies[-1])
@@ -650,8 +648,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
 
     # Pin the first body (anchored capsule)
     first_body = rod_bodies[0]
-    builder.body_mass[first_body] = 0.0
-    builder.body_inv_mass[first_body] = 0.0
+    builder.body_flags[first_body] = int(newton.BodyFlags.KINEMATIC)
 
     builder.color()
     model = builder.finalize(device=device)

@@ -35,26 +35,31 @@ __all__ = [
 # ==================================================================================
 from ._src.geometry import (
     SDF,
+    Gaussian,
     GeoType,
     Heightfield,
     Mesh,
     ParticleFlags,
     ShapeFlags,
+    TetMesh,
 )
 
 __all__ += [
     "SDF",
+    "Gaussian",
     "GeoType",
     "Heightfield",
     "Mesh",
     "ParticleFlags",
     "ShapeFlags",
+    "TetMesh",
 ]
 
 # ==================================================================================
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
+    BodyFlags,
     CollisionPipeline,
     Contacts,
     Control,
@@ -71,6 +76,7 @@ from ._src.sim import (  # noqa: E402
 )
 
 __all__ += [
+    "BodyFlags",
     "CollisionPipeline",
     "Contacts",
     "Control",

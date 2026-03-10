@@ -34,75 +34,11 @@ class ViewerBase(ABC):
     def __init__(self):
         """Initialize shared viewer state and rendering caches."""
         self.time = 0.0
-
         self.device = wp.get_device()
-        self.model = None
-        self.model_changed = True
+        self.picking_enabled = True
 
-        # map from shape hash -> Instances
-        self._shape_instances = {}
-
-        # inertia box instances -- created on-demand
-        self._inertia_box_instances: ViewerBase.ShapeInstances | None = None
-
-        # cache for geometry created via log_shapes()
-        # maps from geometry hash -> mesh path
-        self._geometry_cache: dict[int, str] = {}
-
-        # line vertices for contact visualization
-        self._contact_points0 = None
-        self._contact_points1 = None
-
-        # line vertices for joint basis vectors (3 lines per joint)
-        self._joint_points0 = None
-        self._joint_points1 = None
-        self._joint_colors = None
-
-        self._com_positions = None
-        self._com_colors = None
-        self._com_radii = None
-
-        # World offset support
-        self.world_offsets = None  # Array of vec3 offsets per world
-        self.max_worlds = None  # Limit on worlds to render (None = all)
-
-        # Display options as individual boolean attributes
-        self.show_joints = False
-        self.show_com = False
-        self.show_particles = False
-        self.show_contacts = False
-        self.show_springs = False
-        self.show_triangles = True
-        self.show_collision = False  # force show collision shapes
-        self.show_visual = True  # show visual shapes (non collider)
-        self.show_static = False  # force static shapes to be visible
-        self.show_inertia_boxes = False
-        self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
-        """Whether to show the hydroelastic contact surface wireframe."""
-        self.picking_enabled = True  # enable interactive picking via mouse
-
-        # cache for hydroelastic contact surface line rendering (lazily allocated)
-        self._hydro_surface_line_starts: wp.array | None = None
-        self._hydro_surface_line_ends: wp.array | None = None
-        self._hydro_surface_line_colors: wp.array | None = None
-
-        self.model_shape_color: wp.array(dtype=wp.vec3) = None
-        """Color of shapes created from :attr:`model`, shape ``(model.shape_count,)``."""
-        # map from shape index to the slot in the contiguous shape color array ``self.model_shape_color``
-        self._shape_to_slot: nparray | None = None
-        # map from shape index -> Instances
-        self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
-
-        # cache for isomeshes (computed on demand for collision shapes with SDF volumes)
-        # keyed by volume.id (uint64) to deduplicate when multiple shapes share the same SDF volume
-        self._isomesh_cache: dict[int, newton.Mesh | None] = {}
-
-        # SDF isomesh instances -- created on-demand for collision visualization
-        self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
-        self._sdf_isomesh_populated: bool = False  # lazy flag for SDF isomesh population
-        # Host mirror of per-shape SDF table indices. Filled once in set_model()
-        # to avoid repeated device->host copies in shape population loops.
-        self._shape_sdf_index_host: nparray | None = None
+        # All model-dependent state is initialized by clear_model()
+        self.clear_model()
 
     def is_running(self) -> bool:
         """Report whether the viewer backend should keep running.
@@ -131,6 +67,80 @@ class ViewerBase(ABC):
         """
         return False
 
+    def clear_model(self) -> None:
+        """Reset all model-dependent state to defaults.
+
+        Called from ``__init__`` to establish initial values and whenever the
+        current model needs to be discarded (e.g. before :meth:`set_model` or
+        when switching examples).
+        """
+        self.model = None
+        self.model_changed = True
+
+        # Shape instance batches (shape hash -> ShapeInstances)
+        self._shape_instances = {}
+        self._inertia_box_instances: ViewerBase.ShapeInstances | None = None
+
+        # Geometry mesh cache (geometry hash -> mesh path)
+        self._geometry_cache: dict[int, str] = {}
+
+        # Contact line vertices
+        self._contact_points0 = None
+        self._contact_points1 = None
+
+        # Joint basis line vertices (3 lines per joint)
+        self._joint_points0 = None
+        self._joint_points1 = None
+        self._joint_colors = None
+
+        # Center-of-mass visualization
+        self._com_positions = None
+        self._com_colors = None
+        self._com_radii = None
+
+        # World offset support
+        self.world_offsets = None
+        self.max_worlds = None
+
+        # Picking
+        self.picking_enabled = True
+
+        # Display options
+        self.show_joints = False
+        self.show_com = False
+        self.show_particles = False
+        self.show_contacts = False
+        self.show_springs = False
+        self.show_triangles = True
+        self.show_gaussians = False
+        self.show_collision = False
+        self.show_visual = True
+        self.show_static = False
+        self.show_inertia_boxes = False
+        self.show_hydro_contact_surface = False
+
+        self.gaussians_max_points = 100_000  # Max number of points to visualize per gaussian
+
+        # Hydroelastic contact surface line cache
+        self._hydro_surface_line_starts: wp.array | None = None
+        self._hydro_surface_line_ends: wp.array | None = None
+        self._hydro_surface_line_colors: wp.array | None = None
+
+        # Per-shape color buffer and indexing
+        self.model_shape_color: wp.array(dtype=wp.vec3) = None
+        self._shape_to_slot: nparray | None = None
+        self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
+
+        # Isomesh cache for SDF collision visualization
+        self._isomesh_cache: dict[int, newton.Mesh | None] = {}
+
+        # Gaussian shapes rendered as point clouds (skipped by the mesh instancing pipeline).
+        # Each entry is (name, gaussian, parent_body, shape_xform, world_index, flags, is_static).
+        self._gaussian_instances: list[tuple[str, newton.Gaussian, int, wp.transform, int, int, bool]] = []
+        self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
+        self._sdf_isomesh_populated: bool = False
+        self._shape_sdf_index_host: nparray | None = None
+
     def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
         """
         Set the model to be visualized.
@@ -141,7 +151,7 @@ class ViewerBase(ABC):
                         Useful for performance when training with many environments.
         """
         if self.model is not None:
-            raise RuntimeError("Viewer set_model() can be called only once.")
+            self.clear_model()
 
         self.model = model
         self.max_worlds = max_worlds
@@ -297,10 +307,6 @@ class ViewerBase(ABC):
 
     def _auto_compute_world_offsets(self):
         """Automatically compute world offsets based on model extents."""
-        # If only one world or no worlds, no offsets needed
-        if self._get_render_world_count() <= 1:
-            return
-
         max_extents = self._get_world_extents()
         if max_extents is None:
             return
@@ -376,8 +382,41 @@ class ViewerBase(ABC):
 
             shapes.colors_changed = False
 
+        self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
         self.model_changed = False
+
+    def _log_gaussian_shapes(self, state: newton.State):
+        """Render Gaussian shapes as point clouds with current body transforms."""
+        if not self._gaussian_instances:
+            return
+
+        body_q_np = None
+        offsets_np = None
+
+        for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
+            visible = self._should_show_shape(flags, is_static)
+            if not visible or not self.show_gaussians:
+                self.log_gaussian(gname, gaussian, hidden=True)
+                continue
+            if parent >= 0:
+                if body_q_np is None:
+                    body_q_np = state.body_q.numpy()
+
+                body_xform = wp.transform_expand(body_q_np[parent])
+                world_xform = wp.transform_multiply(body_xform, shape_xform)
+            else:
+                world_xform = shape_xform
+
+            if self.world_offsets is not None and world_idx >= 0:
+                if offsets_np is None:
+                    offsets_np = self.world_offsets.numpy()
+                offset = offsets_np[world_idx]
+                world_xform = wp.transformf(
+                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
+                    world_xform.q,
+                )
+            self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
         """Log SDF isomeshes, inertia boxes, triangles, particles, joints, COM."""
@@ -678,6 +717,16 @@ class ViewerBase(ABC):
             hidden: Whether the created mesh should be hidden.
         """
 
+        if geo_type == newton.GeoType.GAUSSIAN:
+            if geo_src is None:
+                raise ValueError(f"log_geo requires geo_src for GAUSSIAN (name={name})")
+            if not isinstance(geo_src, newton.Gaussian):
+                raise TypeError(f"log_geo expected newton.Gaussian for GAUSSIAN (name={name})")
+            if not self.show_gaussians:
+                hidden = True
+            self.log_gaussian(name, geo_src, hidden=hidden)
+            return
+
         # Heightfield: convert to mesh for rendering
         if geo_type == newton.GeoType.HFIELD:
             if geo_src is None:
@@ -926,6 +975,31 @@ class ViewerBase(ABC):
             hidden: Whether the points should be hidden.
         """
         pass
+
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """
+        Log a :class:`newton.Gaussian` splat asset as a point cloud of spheres.
+
+        Each Gaussian is rendered as a sphere positioned at its center, with
+        radius equal to the largest per-axis scale and color derived from the
+        DC spherical-harmonics coefficients.
+
+        The default implementation is a no-op.  Override in viewer backends
+        that support point-cloud rendering.
+
+        Args:
+            name: Unique path/name for the Gaussian point cloud.
+            gaussian: The :class:`newton.Gaussian` asset to visualize.
+            xform: Optional world-space transform applied to all splat centers.
+            hidden: Whether the point cloud should be hidden.
+        """
+        return
 
     @abstractmethod
     def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
@@ -1194,6 +1268,17 @@ class ViewerBase(ABC):
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
 
+            # Gaussians bypass the mesh instancing pipeline; render as point clouds.
+            if geo_type == newton.GeoType.GAUSSIAN:
+                if isinstance(geo_src, newton.Gaussian):
+                    parent = shape_body[s]
+                    xform = wp.transform_expand(shape_transform[s])
+                    gname = f"/model/gaussians/gaussian_{len(self._gaussian_instances)}"
+                    self._gaussian_instances.append(
+                        (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
+                    )
+                continue
+
             # check whether we can instance an already created shape with the same geometry
             geo_hash = self._hash_geometry(
                 int(geo_type),
@@ -1211,7 +1296,12 @@ class ViewerBase(ABC):
                     float(geo_thickness),
                     bool(geo_is_solid),
                     geo_src=geo_src
-                    if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+                    if geo_type
+                    in (
+                        newton.GeoType.MESH,
+                        newton.GeoType.CONVEX_MESH,
+                        newton.GeoType.HFIELD,
+                    )
                     else None,
                 )
             else:

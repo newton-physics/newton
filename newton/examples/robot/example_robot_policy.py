@@ -275,7 +275,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
 
         # Set model in viewer
         self.viewer.set_model(self.model)
@@ -320,8 +320,6 @@ class Example:
 
     def simulate(self):
         """Simulate performs one frame's worth of updates."""
-        self.model.collide(self.state_0, self.contacts)
-
         need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
 
         for i in range(self.sim_substeps):
@@ -330,7 +328,7 @@ class Example:
             # Apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
             # Swap states - handle CUDA graph case specially
             if need_state_copy and i == self.sim_substeps - 1:
@@ -339,6 +337,8 @@ class Example:
             else:
                 # We can just swap the state references
                 self.state_0, self.state_1 = self.state_1, self.state_0
+
+        self.solver.update_contacts(self.contacts, self.state_0)
 
     def reset(self):
         print("[INFO] Resetting example")

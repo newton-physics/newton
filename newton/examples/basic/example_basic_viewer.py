@@ -34,7 +34,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         self.viewer = viewer
 
         # self.colors and materials per instance
@@ -92,10 +92,32 @@ class Example:
         self.time = 0.0
         self.spacing = 2.0
 
+        # Renderer settings
+        self.renderer = getattr(self.viewer, "renderer", None)
+
     def gui(self, ui):
         ui.text("Custom UI text")
         _changed, self.time = ui.slider_float("Time", self.time, 0.0, 100.0)
         _changed, self.spacing = ui.slider_float("Spacing", self.spacing, 0.0, 10.0)
+
+        if self.renderer is not None:
+            ui.separator()
+            ui.text("Renderer Settings")
+            changed, value = ui.slider_float("Diffuse Scale", self.renderer.diffuse_scale, 0.0, 5.0)
+            if changed:
+                self.renderer.diffuse_scale = value
+            changed, value = ui.slider_float("Specular Scale", self.renderer.specular_scale, 0.0, 5.0)
+            if changed:
+                self.renderer.specular_scale = value
+            changed, value = ui.slider_float("Shadow Radius", self.renderer.shadow_radius, 0.0, 10.0)
+            if changed:
+                self.renderer.shadow_radius = value
+            changed, value = ui.slider_float("Shadow Extents", self.renderer.shadow_extents, 1.0, 50.0)
+            if changed:
+                self.renderer.shadow_extents = value
+            changed, value = ui.checkbox("Spotlight", self.renderer.spotlight_enabled)
+            if changed:
+                self.renderer.spotlight_enabled = value
 
     def step(self):
         pass
@@ -216,5 +238,5 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)
