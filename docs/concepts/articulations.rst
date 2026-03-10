@@ -266,47 +266,38 @@ Joint types
 
    * - Joint Type
      - Description
-     - DOFs in ``joint_q``
-     - DOFs in ``joint_qd``
-     - DOFs in ``joint_axis``
+     - Coordinates in ``joint_q``
+     - DoFs in ``joint_qd``
    * - ``JointType.PRISMATIC``
      - Prismatic (slider) joint with 1 linear degree of freedom
-     - 1
      - 1
      - 1
    * - ``JointType.REVOLUTE``
      - Revolute (hinge) joint with 1 angular degree of freedom
      - 1
      - 1
-     - 1
    * - ``JointType.BALL``
      - Ball (spherical) joint with quaternion state representation
      - 4
      - 3
-     - 3
    * - ``JointType.FIXED``
      - Fixed (static) joint with no degrees of freedom
-     - 0
      - 0
      - 0
    * - ``JointType.FREE``
      - Free (floating) joint with 6 degrees of freedom in velocity space
      - 7 (3D position + 4D quaternion)
      - 6 (see :ref:`Twist conventions in Newton <Twist conventions>`)
-     - 6
    * - ``JointType.DISTANCE``
      - Distance joint that keeps two bodies at a distance within its joint limits
      - 7
-     - 6
      - 6
    * - ``JointType.D6``
      - Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
      - up to 6
      - up to 6
-     - up to 6
    * - ``JointType.CABLE``
      - Cable joint with 1 linear (stretch/shear) and 1 angular (bend/twist) degree of freedom
-     - 2
      - 2
      - 2
 
@@ -363,15 +354,25 @@ Definition of ``joint_qd``
 
 The :attr:`newton.Model.joint_qd` array stores the default generalized joint velocities
 for all joints in the model and is used to initialize :attr:`newton.State.joint_qd`.
-The generalized joint forces at :attr:`newton.Control.joint_f` use the same per-joint order.
+The generalized joint forces at :attr:`newton.Control.joint_f` use the same DoF order.
 
-The velocity dofs for each joint can be queried as follows:
+Several other arrays also use this same DoF-ordered layout, indexed from
+:attr:`newton.Model.joint_qd_start` rather than :attr:`newton.Model.joint_q_start`.
+This includes :attr:`newton.Model.joint_axis`, joint limits and other per-DoF
+properties defined via :class:`newton.ModelBuilder.JointDofConfig`, and the
+position targets at :attr:`newton.Control.joint_target_pos`.
+
+For every joint, these per-DoF arrays are stored consecutively, with linear DoFs
+first and angular DoFs second. Use :attr:`newton.Model.joint_dof_dim` to query
+how many of each a joint has.
+
+The velocity DoFs for each joint can be queried as follows:
 
 .. testcode:: articulation-joint-layout
 
     qd_start = joint_qd_start[joint_id]
     dof_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
-    # now the velocity dofs can be queried as follows:
+    # now the velocity DoFs can be queried as follows:
     qd = joint_qd[qd_start : qd_start + dof_count]
     qd0 = qd[0]
     qd1 = qd[1]
@@ -380,37 +381,26 @@ The velocity dofs for each joint can be queried as follows:
     f0 = f[0]
     f1 = f[1]
 
-
-
-Axis-related quantities
-^^^^^^^^^^^^^^^^^^^^^^^
-
-Axis-related quantities include the definition of the joint axis in :attr:`newton.Model.joint_axis` and other properties
-defined via :class:`newton.ModelBuilder.JointDofConfig`. The position targets in
-:attr:`newton.Control.joint_target_pos` are also stored in the same per-axis order.
-
-The :attr:`newton.Model.joint_dof_dim` array can be used to query the number of linear and angular dofs.
-All axis-related quantities are stored in consecutive order for every joint. First, the linear dofs are stored, followed by the angular dofs.
-The indexing of the linear and angular degrees of freedom for a joint at a given ``joint_index`` is as follows:
+The same start index can be used to query other per-DoF arrays for that joint:
 
 .. testcode:: articulation-joint-layout
 
     num_linear_dofs = joint_dof_dim[joint_id, 0]
     num_angular_dofs = joint_dof_dim[joint_id, 1]
-    # the joint axes for each joint start at this index:
-    axis_start = joint_qd_start[joint_id]
-    # the first linear 3D axis
-    first_lin_axis = joint_axis[axis_start]
-    # the position target for this linear dof
-    first_lin_target = joint_target_pos[axis_start]
-    # the joint limit of this linear dof
-    first_lin_limit = joint_limit_lower[axis_start]
-    # the first angular 3D axis is therefore
-    first_ang_axis = joint_axis[axis_start + num_linear_dofs]
-    # the position target for this angular dof
-    first_ang_target = joint_target_pos[axis_start + num_linear_dofs]
-    # the joint limit of this angular dof
-    first_ang_limit = joint_limit_lower[axis_start + num_linear_dofs]
+    # all per-DoF arrays for this joint start at this index:
+    dof_start = joint_qd_start[joint_id]
+    # the axis vector for the first linear DoF
+    first_lin_axis = joint_axis[dof_start]
+    # the position target for this linear DoF
+    first_lin_target = joint_target_pos[dof_start]
+    # the joint limit of this linear DoF
+    first_lin_limit = joint_limit_lower[dof_start]
+    # the axis vector for the first angular DoF comes after all linear DoFs
+    first_ang_axis = joint_axis[dof_start + num_linear_dofs]
+    # the position target for this angular DoF
+    first_ang_target = joint_target_pos[dof_start + num_linear_dofs]
+    # the joint limit of this angular DoF
+    first_ang_limit = joint_limit_lower[dof_start + num_linear_dofs]
 
     assert (num_linear_dofs, num_angular_dofs) == (1, 1)
     assert np.allclose(first_lin_axis, [1.0, 0.0, 0.0])
