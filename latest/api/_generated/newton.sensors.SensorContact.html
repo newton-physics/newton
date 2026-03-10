@@ -814,27 +814,55 @@
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorContact</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">sensing_obj_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sensing_obj_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">counterpart_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">counterpart_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_total</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">request_contact_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_contact.py#L173"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorContact" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Measures net contact forces on a set of <strong>sensing objects</strong> (bodies or shapes).</p>
-<p>In its simplest form the sensor reports the total contact force acting on each sensing object.
-Optionally, specify <strong>counterparts</strong> to break the force down by the body or shape it originates
-from.  With <code class="docutils literal notranslate"><span class="pre">include_total=True</span></code> (default) a total-force column is prepended.</p>
+<p>In its simplest form the sensor reports the total contact force acting on each sensing object. Optionally, specify
+<strong>counterparts</strong> to break the force down per contacting body or shape. With <code class="docutils literal notranslate"><span class="pre">include_total=True</span></code> (default) a
+total-force column is prepended.</p>
 <p>The result is a force matrix: one row per sensing object, one column per counterpart reading.</p>
 <p class="rubric">Multi-world behaviour</p>
-<p>When the model contains multiple worlds, pair tables are built per-world.  Cross-world shape
-pairs are excluded — only within-world and global counterparts (e.g. ground plane) contribute.
-Global bodies and shapes cannot be sensing objects.</p>
-<p>The force matrix has shape <code class="docutils literal notranslate"><span class="pre">(sum_of_sensors_across_worlds,</span> <span class="pre">max_readings)</span></code> where
-<code class="docutils literal notranslate"><span class="pre">max_readings</span></code> is the maximum counterpart count of any single world.  Rows are
-world-contiguous (world 0 first, then world 1, …).  Columns beyond a world’s own reading
-count are zero-padded.</p>
+<p>When the model contains multiple worlds, pair tables are built per-world. Cross-world shape pairs are excluded –
+only within-world and global counterparts (e.g. ground plane) contribute. Global bodies and shapes cannot be sensing
+objects.</p>
+<p>The force matrix has shape <code class="docutils literal notranslate"><span class="pre">(sum_of_sensors_across_worlds,</span> <span class="pre">max_readings)</span></code> where <code class="docutils literal notranslate"><span class="pre">max_readings</span></code> is the maximum
+counterpart count of any single world. Rows are world-contiguous (world 0 first, then world 1, …). Columns
+beyond a world’s own reading count are zero-padded.</p>
 <p><a class="reference internal" href="#newton.sensors.SensorContact.sensing_objs" title="newton.sensors.SensorContact.sensing_objs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">sensing_objs</span></code></a>, <a class="reference internal" href="#newton.sensors.SensorContact.counterparts" title="newton.sensors.SensorContact.counterparts"><code class="xref py py-attr docutils literal notranslate"><span class="pre">counterparts</span></code></a>, and <a class="reference internal" href="#newton.sensors.SensorContact.reading_indices" title="newton.sensors.SensorContact.reading_indices"><code class="xref py py-attr docutils literal notranslate"><span class="pre">reading_indices</span></code></a> are per-world nested
 lists indexed as <code class="docutils literal notranslate"><span class="pre">attr[world][i]</span></code>.</p>
 <p class="rubric">Terms</p>
 <ul class="simple">
-<li><p><strong>Sensing object</strong> — body or shape carrying a contact sensor.</p></li>
-<li><p><strong>Counterpart</strong> — the other body or shape in a contact interaction.</p></li>
-<li><p><strong>Force reading</strong> — one entry of the force matrix (<code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>).</p></li>
+<li><p><strong>Sensing object</strong> – body or shape carrying a contact sensor.</p></li>
+<li><p><strong>Counterpart</strong> – the other body or shape in a contact interaction.</p></li>
+<li><p><strong>Force reading</strong> – one entry of the force matrix (<code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>).</p></li>
 </ul>
-<p>Parameters that select bodies or shapes accept label patterns — see <a class="reference internal" href="../../concepts/sensors.html#label-matching"><span class="std std-ref">Label Matching</span></a>.</p>
+<p class="rubric">Construction and update order</p>
+<p><code class="docutils literal notranslate"><span class="pre">SensorContact</span></code> requests the <code class="docutils literal notranslate"><span class="pre">force</span></code> extended attribute from the model at init, so a <a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a>
+object created afterwards (via <a class="reference internal" href="newton.Model.html#newton.Model.contacts" title="newton.Model.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.contacts()</span></code></a> or directly) will include it
+automatically.</p>
+<p><a class="reference internal" href="#newton.sensors.SensorContact.update" title="newton.sensors.SensorContact.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a> reads from <code class="docutils literal notranslate"><span class="pre">contacts.force</span></code>. Call <code class="docutils literal notranslate"><span class="pre">solver.update_contacts(contacts)</span></code> before
+<code class="docutils literal notranslate"><span class="pre">sensor.update()</span></code> so that contact forces are current.</p>
+<p>Parameters that select bodies or shapes accept label patterns – see <a class="reference internal" href="../../concepts/sensors.html#label-matching"><span class="std std-ref">Label Matching</span></a>.</p>
+<p class="rubric">Example</p>
+<p>Measure net contact force on a sphere resting on the ground:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.sensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">SensorContact</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_identity</span><span class="p">()))</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;ball&quot;</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">sensor</span> <span class="o">=</span> <span class="n">SensorContact</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sensing_obj_shapes</span><span class="o">=</span><span class="s2">&quot;ball&quot;</span><span class="p">)</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span><span class="p">)</span>
+<span class="n">solver</span><span class="o">.</span><span class="n">update_contacts</span><span class="p">(</span><span class="n">contacts</span><span class="p">)</span>
+<span class="n">sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+<span class="n">force</span> <span class="o">=</span> <span class="n">sensor</span><span class="o">.</span><span class="n">net_force</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># (n_sensing_objs, max_readings, 3)</span>
+</pre></div>
+</div>
 <dl class="field-list simple">
 <dt class="field-odd">Raises<span class="colon">:</span></dt>
 <dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><strong>ValueError</strong></a> – If the configuration of sensing/counterpart objects is invalid.</p>
@@ -886,7 +914,8 @@ against shape labels, or list of patterns where any one matches.</p></li>
 <li><p><strong>include_total</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True and counterparts are specified, add a reading for the total contact force for
 each sensing object. Does nothing when no counterparts are specified.</p></li>
 <li><p><strong>verbose</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><em>None</em>) – If True, print details. If None, uses <code class="docutils literal notranslate"><span class="pre">wp.config.verbose</span></code>.</p></li>
-<li><p><strong>request_contact_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True (default), transparently request the extended contact attribute <code class="docutils literal notranslate"><span class="pre">force</span></code> from the model.</p></li>
+<li><p><strong>request_contact_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True (default), transparently request the extended contact attribute
+<code class="docutils literal notranslate"><span class="pre">force</span></code> from the model.</p></li>
 </ul>
 </dd>
 </dl>
@@ -975,20 +1004,20 @@ shape <code class="docutils literal notranslate"><span class="pre">(n_sensing_ob
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact"><code class="docutils literal notranslate"><span class="pre">SensorContact</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType"><code class="docutils literal notranslate"><span class="pre">SensorContact.ObjectType</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.BODY"><code class="docutils literal notranslate"><span class="pre">SensorContact.ObjectType.BODY</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.SHAPE"><code class="docutils literal notranslate"><span class="pre">SensorContact.ObjectType.SHAPE</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.TOTAL"><code class="docutils literal notranslate"><span class="pre">SensorContact.ObjectType.TOTAL</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType"><code class="docutils literal notranslate"><span class="pre">ObjectType</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.BODY"><code class="docutils literal notranslate"><span class="pre">BODY</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.SHAPE"><code class="docutils literal notranslate"><span class="pre">SHAPE</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.ObjectType.TOTAL"><code class="docutils literal notranslate"><span class="pre">TOTAL</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.__init__"><code class="docutils literal notranslate"><span class="pre">SensorContact.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.update"><code class="docutils literal notranslate"><span class="pre">SensorContact.update()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.counterparts"><code class="docutils literal notranslate"><span class="pre">SensorContact.counterparts</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.net_force"><code class="docutils literal notranslate"><span class="pre">SensorContact.net_force</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.reading_indices"><code class="docutils literal notranslate"><span class="pre">SensorContact.reading_indices</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.sensing_obj_transforms"><code class="docutils literal notranslate"><span class="pre">SensorContact.sensing_obj_transforms</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.sensing_objs"><code class="docutils literal notranslate"><span class="pre">SensorContact.sensing_objs</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.shape"><code class="docutils literal notranslate"><span class="pre">SensorContact.shape</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.update"><code class="docutils literal notranslate"><span class="pre">update()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.counterparts"><code class="docutils literal notranslate"><span class="pre">counterparts</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.net_force"><code class="docutils literal notranslate"><span class="pre">net_force</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.reading_indices"><code class="docutils literal notranslate"><span class="pre">reading_indices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.sensing_obj_transforms"><code class="docutils literal notranslate"><span class="pre">sensing_obj_transforms</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.sensing_objs"><code class="docutils literal notranslate"><span class="pre">sensing_objs</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorContact.shape"><code class="docutils literal notranslate"><span class="pre">shape</span></code></a></li>
 </ul>
 </li>
 </ul>

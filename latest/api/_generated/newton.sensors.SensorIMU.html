@@ -813,24 +813,37 @@
 <dt class="sig sig-object py" id="newton.sensors.SensorIMU">
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorIMU</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sites</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">request_state_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_imu.py#L79"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorIMU" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>Inertial Measurement Unit Sensor.</p>
-<p>This sensor measures the acceleration and angular velocity at the sites given.</p>
-<p>Body Accelerations Attribute:
-This sensor requires the extended state attribute <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> to be computed by the solver.  This requires
-a solver that supports computing <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code>, and requesting <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> from the model before calling
-<code class="docutils literal notranslate"><span class="pre">model.state()</span></code>. Instantiating the SensorIMU will automatically request <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> from the model by default.</p>
+<p>Inertial Measurement Unit sensor.</p>
+<p>Measures linear acceleration (specific force) and angular velocity at the
+given sites. Each site defines an IMU frame; outputs are expressed in that
+frame.</p>
+<p>This sensor requires the extended state attribute <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code>. By default,
+constructing the sensor requests <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> from the model so that
+subsequent <code class="docutils literal notranslate"><span class="pre">model.state()</span></code> calls allocate it automatically. The solver
+must also support computing <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code>
+(e.g. <a class="reference internal" href="newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>).</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">sites</span></code> parameter accepts label patterns – see <a class="reference internal" href="../../concepts/sensors.html#label-matching"><span class="std std-ref">Label Matching</span></a>.</p>
 <p class="rubric">Example</p>
-<p>Create a SensorIMU for a model with a list of site indices:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Obtain shape indices (e.g. via selection or direct indexing)</span>
-<span class="n">sensor_sites</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">]</span>  <span class="c1"># indices of sites to attach IMU sensors</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.sensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">SensorIMU</span>
 
-<span class="n">model</span> <span class="o">=</span> <span class="n">Model</span><span class="p">()</span>
-<span class="n">sensor</span> <span class="o">=</span> <span class="n">SensorIMU</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sensor_sites</span><span class="p">)</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_identity</span><span class="p">()))</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;imu_0&quot;</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">imu</span> <span class="o">=</span> <span class="n">SensorIMU</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sites</span><span class="o">=</span><span class="s2">&quot;imu_*&quot;</span><span class="p">)</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 <span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
 
-<span class="c1"># Update after step()</span>
-<span class="n">sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="c1"># after solver step</span>
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span><span class="p">)</span>
+<span class="n">imu</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">acc</span> <span class="o">=</span> <span class="n">imu</span><span class="o">.</span><span class="n">accelerometer</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">gyro</span> <span class="o">=</span> <span class="n">imu</span><span class="o">.</span><span class="n">gyroscope</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
 </pre></div>
 </div>
 <dl class="field-list simple">
@@ -845,7 +858,7 @@ data.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – The model to use.</p></li>
-<li><p><strong>sites</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – List of shape indices, single pattern to match against shape
+<li><p><strong>sites</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – List of site indices, single pattern to match against site
 labels, or list of patterns where any one matches.</p></li>
 <li><p><strong>verbose</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><em>None</em>) – If True, print details. If None, uses <code class="docutils literal notranslate"><span class="pre">wp.config.verbose</span></code>.</p></li>
 <li><p><strong>request_state_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True (default), transparently request the extended state attribute <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> from the model.
@@ -872,13 +885,13 @@ If False, <code class="docutils literal notranslate"><span class="pre">model</sp
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorIMU.accelerometer">
 <span class="sig-name descname"><span class="pre">accelerometer</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">vec3f</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.sensors.SensorIMU.accelerometer" title="Link to this definition">#</a></dt>
-<dd><p>Linear acceleration readings in sensor frame, shape (n_sensors,).</p>
+<dd><p>Linear acceleration readings [m/s²] in sensor frame, shape <code class="docutils literal notranslate"><span class="pre">(n_sensors,)</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorIMU.gyroscope">
 <span class="sig-name descname"><span class="pre">gyroscope</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">vec3f</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.sensors.SensorIMU.gyroscope" title="Link to this definition">#</a></dt>
-<dd><p>Angular velocity readings in sensor frame, shape (n_sensors,).</p>
+<dd><p>Angular velocity readings [rad/s] in sensor frame, shape <code class="docutils literal notranslate"><span class="pre">(n_sensors,)</span></code>.</p>
 </dd></dl>
 
 </dd></dl>
@@ -909,10 +922,10 @@ If False, <code class="docutils literal notranslate"><span class="pre">model</sp
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU"><code class="docutils literal notranslate"><span class="pre">SensorIMU</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU.__init__"><code class="docutils literal notranslate"><span class="pre">SensorIMU.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU.update"><code class="docutils literal notranslate"><span class="pre">SensorIMU.update()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU.accelerometer"><code class="docutils literal notranslate"><span class="pre">SensorIMU.accelerometer</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU.gyroscope"><code class="docutils literal notranslate"><span class="pre">SensorIMU.gyroscope</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU.update"><code class="docutils literal notranslate"><span class="pre">update()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU.accelerometer"><code class="docutils literal notranslate"><span class="pre">accelerometer</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorIMU.gyroscope"><code class="docutils literal notranslate"><span class="pre">gyroscope</span></code></a></li>
 </ul>
 </li>
 </ul>

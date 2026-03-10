@@ -814,34 +814,41 @@
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorFrameTransform</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shapes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reference_sites</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_frame_transform.py#L91"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorFrameTransform" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Sensor that measures transforms of shapes/sites relative to reference sites.</p>
-<p>This sensor computes the transform from a reference frame (site) to target shapes
-(which can be regular shapes or sites).</p>
+<p>This sensor computes the relative transform from each reference site to each
+target shape: <code class="docutils literal notranslate"><span class="pre">X_ro</span> <span class="pre">=</span> <span class="pre">inverse(X_wr)</span> <span class="pre">*</span> <span class="pre">X_wo</span></code>, where <em>X_wo</em> is the world
+transform of the target, <em>X_wr</em> is the world transform of the reference site,
+and <em>X_ro</em> expresses the target’s pose in the reference frame.</p>
+<p><strong>Objects</strong> (<code class="docutils literal notranslate"><span class="pre">shapes</span></code>) can be any shape index, including both regular shapes
+and sites. <strong>Reference frames</strong> (<code class="docutils literal notranslate"><span class="pre">reference_sites</span></code>) must be sites (validated
+at initialization). A single reference site broadcasts to all shapes;
+otherwise the counts must match 1:1.</p>
 <dl class="field-list simple">
 </dl>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorFrameTransform.transforms">
 <span class="sig-name descname"><span class="pre">transforms</span></span><a class="headerlink" href="#newton.sensors.SensorFrameTransform.transforms" title="Link to this definition">#</a></dt>
-<dd><p>Output array of relative transforms (updated after each call to update())</p>
+<dd><p>Relative transforms [m, unitless quaternion], shape
+<code class="docutils literal notranslate"><span class="pre">(N,)</span></code> (updated after each call to <a class="reference internal" href="#newton.sensors.SensorFrameTransform.update" title="newton.sensors.SensorFrameTransform.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>).</p>
 </dd></dl>
 
-<p>The <code class="docutils literal notranslate"><span class="pre">shapes</span></code> and <code class="docutils literal notranslate"><span class="pre">reference_sites</span></code> parameters accept label patterns — see <a class="reference internal" href="../../concepts/sensors.html#label-matching"><span class="std std-ref">Label Matching</span></a>.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">shapes</span></code> and <code class="docutils literal notranslate"><span class="pre">reference_sites</span></code> parameters accept label patterns – see <a class="reference internal" href="../../concepts/sensors.html#label-matching"><span class="std std-ref">Label Matching</span></a>.</p>
 <p class="rubric">Example</p>
-<p>Measure shapes relative to a site:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Get shape indices somehow (e.g., via selection or direct indexing)</span>
-<span class="n">shape_indices</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">]</span>  <span class="c1"># indices of shapes to measure</span>
-<span class="n">reference_site_idx</span> <span class="o">=</span> <span class="mi">5</span>  <span class="c1"># index of reference site</span>
+<p>Measure a shape’s pose relative to a reference site:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.sensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">SensorFrameTransform</span>
 
-<span class="n">sensor</span> <span class="o">=</span> <span class="n">SensorFrameTransform</span><span class="p">(</span>
-    <span class="n">model</span><span class="p">,</span>
-    <span class="n">shapes</span><span class="o">=</span><span class="n">shape_indices</span><span class="p">,</span>
-    <span class="n">reference_sites</span><span class="o">=</span><span class="p">[</span><span class="n">reference_site_idx</span><span class="p">],</span>
-<span class="p">)</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_identity</span><span class="p">()))</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;box&quot;</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;ref&quot;</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 
-<span class="c1"># Update after eval_fk</span>
+<span class="n">sensor</span> <span class="o">=</span> <span class="n">SensorFrameTransform</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">shapes</span><span class="o">=</span><span class="s2">&quot;box&quot;</span><span class="p">,</span> <span class="n">reference_sites</span><span class="o">=</span><span class="s2">&quot;ref&quot;</span><span class="p">)</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
 <span class="n">sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
-
-<span class="c1"># Access transforms</span>
-<span class="n">transforms</span> <span class="o">=</span> <span class="n">sensor</span><span class="o">.</span><span class="n">transforms</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># shape: (N, 7) [pos, quat]</span>
+<span class="n">transforms</span> <span class="o">=</span> <span class="n">sensor</span><span class="o">.</span><span class="n">transforms</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># shape: (N, 7)</span>
 </pre></div>
 </div>
 <dl class="py method">
@@ -854,10 +861,9 @@
 <li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – The model to measure.</p></li>
 <li><p><strong>shapes</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – List of shape indices, single pattern to match against shape
 labels, or list of patterns where any one matches.</p></li>
-<li><p><strong>reference_sites</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – List of shape indices, single pattern to match against
-shape labels, or list of patterns where any one matches. Reference
-shapes must have the SITE flag. Must match 1:1 with shapes, or be
-a single site for all shapes.</p></li>
+<li><p><strong>reference_sites</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – List of site indices, single pattern to match against
+site labels, or list of patterns where any one matches. Must expand
+to one site or the same number as <code class="docutils literal notranslate"><span class="pre">shapes</span></code>.</p></li>
 <li><p><strong>verbose</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><em>None</em>) – If True, print details. If None, uses <code class="docutils literal notranslate"><span class="pre">wp.config.verbose</span></code>.</p></li>
 </ul>
 </dd>
@@ -871,10 +877,10 @@ a single site for all shapes.</p></li>
 <dt class="sig sig-object py" id="newton.sensors.SensorFrameTransform.update">
 <span class="sig-name descname"><span class="pre">update</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorFrameTransform.update" title="Link to this definition">#</a></dt>
 <dd><p>Update sensor measurements based on current state.</p>
-<p>This should be called after eval_fk to compute transforms.</p>
+<p>Reads <code class="docutils literal notranslate"><span class="pre">state.body_q</span></code> to compute world-frame shape transforms.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The current state with body_q populated by eval_fk</p>
+<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The current state. Reads <code class="docutils literal notranslate"><span class="pre">body_q</span></code>, which is updated by a solver step or <a class="reference internal" href="newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-func docutils literal notranslate"><span class="pre">eval_fk()</span></code></a>.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -907,9 +913,9 @@ a single site for all shapes.</p></li>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorFrameTransform"><code class="docutils literal notranslate"><span class="pre">SensorFrameTransform</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorFrameTransform.transforms"><code class="docutils literal notranslate"><span class="pre">SensorFrameTransform.transforms</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorFrameTransform.__init__"><code class="docutils literal notranslate"><span class="pre">SensorFrameTransform.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorFrameTransform.update"><code class="docutils literal notranslate"><span class="pre">SensorFrameTransform.update()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorFrameTransform.transforms"><code class="docutils literal notranslate"><span class="pre">transforms</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorFrameTransform.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorFrameTransform.update"><code class="docutils literal notranslate"><span class="pre">update()</span></code></a></li>
 </ul>
 </li>
 </ul>
