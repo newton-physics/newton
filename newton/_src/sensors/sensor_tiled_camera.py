@@ -382,7 +382,7 @@ class SensorTiledCamera:
     ):
         """Flatten rendered depth image to a tiled RGBA buffer.
 
-        Encodes depth as grayscale: inverts values (closer = brighter) and normalized to the ``[50, 255]``
+        Encodes depth as grayscale: inverts values (closer = brighter) and normalizes to the ``[50, 255]``
         range. Background pixels (no hit) remain black.
 
         Args:
