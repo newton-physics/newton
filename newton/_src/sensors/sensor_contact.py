@@ -349,7 +349,7 @@ class SensorContact:
             pairs = model.shape_contact_pairs.numpy()
             assert pairs.dtype == np.int32
             pairs = pairs.astype(np.int64)
-            contact_pairs = set((pairs[:, 0] << 32) | pairs[:, 1])
+            contact_pairs = set(((pairs[:, 0] << 32) | pairs[:, 1]).tolist())
 
         TOTAL = self.ObjectType.TOTAL
         wc = model.world_count
