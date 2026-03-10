@@ -758,6 +758,67 @@ class TestModelJoints(unittest.TestCase):
             builder_4.collapse_fixed_joints(joints_to_keep=["fixed_1"])
         self.assertIn("Skipped joint fixed_1 has a child body_2 with zero or negative mass", str(cm.warning))
 
+    def test_collapse_fixed_joints_preserves_loop_closure(self):
+        """Test that collapse_fixed_joints retains loop-closing joints.
+
+        Covers two symmetric cases:
+        1. The merged-away body is the loop joint's *parent* (parent remapping).
+        2. The merged-away body is the loop joint's *child* (child remapping).
+        """
+
+        # --- Case 1: merged body is the loop joint's parent ---
+        # world --(free)--> b0 --(revolute)--> b1 --(fixed)--> b2 --(revolute, loop)--> b0
+        # After collapse b2 merges into b1; loop joint parent must remap b2 -> b1
+        builder = ModelBuilder()
+        b0 = builder.add_link(label="b0", mass=1.0)
+        j0 = builder.add_joint_free(parent=-1, child=b0)
+        b1 = builder.add_link(label="b1", mass=1.0)
+        j1 = builder.add_joint_revolute(parent=b0, child=b1, axis=wp.vec3(0, 0, 1))
+        b2 = builder.add_link(label="b2", mass=1.0)
+        j2 = builder.add_joint_fixed(parent=b1, child=b2)
+        builder.add_joint_revolute(parent=b2, child=b0, axis=wp.vec3(0, 0, 1), label="loop_b2_b0")
+        builder.add_articulation([j0, j1, j2])
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("loop_b2_b0", builder.joint_label)
+        loop_i = builder.joint_label.index("loop_b2_b0")
+        self.assertEqual(
+            builder.joint_parent[loop_i],
+            builder.body_label.index("b1"),
+            "Loop joint parent should be remapped from b2 to b1",
+        )
+        self.assertEqual(
+            builder.joint_child[loop_i], builder.body_label.index("b0"), "Loop joint child (b0) should be unchanged"
+        )
+
+        # --- Case 2: merged body is the loop joint's child ---
+        # world --(free)--> b0 --(fixed)--> b1
+        # world --(free)--> b2 --(revolute, loop)--> b1
+        # After collapse b1 merges into b0; loop joint child must remap b1 -> b0
+        builder = ModelBuilder()
+        b0 = builder.add_link(label="b0", mass=1.0)
+        j0 = builder.add_joint_free(parent=-1, child=b0)
+        b1 = builder.add_link(label="b1", mass=1.0)
+        j_fixed = builder.add_joint_fixed(parent=b0, child=b1, label="fixed_b0_b1")
+        b2 = builder.add_link(label="b2", mass=1.0)
+        j2 = builder.add_joint_free(parent=-1, child=b2)
+        builder.add_joint_revolute(parent=b2, child=b1, axis=wp.vec3(0, 0, 1), label="loop_b2_b1")
+        builder.add_articulation([j0, j_fixed])
+        builder.add_articulation([j2])
+
+        builder.collapse_fixed_joints()
+
+        # b1 is merged into b0 -> 2 bodies (b0, b2)
+        self.assertEqual(builder.body_count, 2)
+        # the loop joint survives and is remapped from b2 -> b1 to b2 -> b0
+        self.assertIn("loop_b2_b1", builder.joint_label)
+        loop_i = builder.joint_label.index("loop_b2_b1")
+        self.assertEqual(builder.joint_parent[loop_i], builder.body_label.index("b2"))
+        self.assertEqual(builder.joint_child[loop_i], builder.body_label.index("b0"))
+
     def test_articulation_validation_contiguous(self):
         """Test that articulation requires contiguous joint indices"""
         builder = ModelBuilder()

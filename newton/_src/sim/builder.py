@@ -4534,6 +4534,19 @@ class ModelBuilder:
             for child in body_children[child_body]:
                 if not visited[child]:
                     dfs(child_body, child, incoming_xform, last_dynamic_body)
+                elif (child_body, child) in joint_data:
+                    # Loop-closing joint: child was already visited via another path.
+                    # Retain the joint but don't re-process the child body.
+                    loop_joint = joint_data[(child_body, child)]
+                    if loop_joint["type"] != JointType.FIXED:
+                        loop_joint["parent_xform"] = incoming_xform * loop_joint["parent_xform"]
+                        loop_joint["parent"] = last_dynamic_body
+                        if child in body_merged_parent:
+                            # Child was merged into another body — remap child and adjust child_xform
+                            merge_xform = body_merged_transform[child]
+                            loop_joint["child_xform"] = merge_xform * loop_joint["child_xform"]
+                            loop_joint["child"] = body_merged_parent[child]
+                        retained_joints.append(loop_joint)
 
         for body in body_children[-1]:
             if not visited[body]:
@@ -4702,6 +4715,16 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+
+        # Update DOF and coordinate counts to match the rebuilt arrays
+        self.joint_dof_count = len(self.joint_qd)
+        self.joint_coord_count = len(self.joint_q)
+
+        # Trim per-DOF arrays that were not cleared/rebuilt above
+        for attr_name in ("joint_velocity_limit", "joint_friction"):
+            arr = getattr(self, attr_name)
+            if len(arr) > self.joint_dof_count:
+                setattr(self, attr_name, arr[: self.joint_dof_count])
 
         # Reset the constraint count based on the retained joints
         self.joint_constraint_count = len(self.joint_cts)
