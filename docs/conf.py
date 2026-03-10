@@ -161,6 +161,8 @@ autodoc_preserve_defaults = True
 
 autodoc_typehints_description_target = "documented"
 
+toc_object_entries_show_parents = "hide"
+
 autodoc_default_options = {
     "members": True,
     "member-order": "groupwise",
