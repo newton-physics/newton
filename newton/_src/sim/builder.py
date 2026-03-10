@@ -145,7 +145,7 @@ class ModelBuilder:
     1. **Using begin_world()/end_world()**: Entities added outside any world
        context, before the first :meth:`begin_world` or after the matching
        :meth:`end_world`, are assigned to the global world (index ``-1``).
-       :class:`ModelBuilder` manages ``current_world`` while a world context is
+       :class:`ModelBuilder` manages :attr:`current_world` while a world context is
        active::
 
            builder = ModelBuilder()
@@ -165,9 +165,9 @@ class ModelBuilder:
            main.add_world(robot)  # All robot entities -> world 0
            main.replicate(robot, world_count=2)  # Add more worlds from the same source
 
-    ``current_world`` is builder-managed state. Prefer :meth:`begin_world`,
-    :meth:`end_world`, :meth:`add_world`, or :meth:`replicate`. Direct
-    assignment is deprecated and retained only for backward compatibility.
+    :attr:`current_world` is builder-managed, read-only state. Use
+    :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
+    :meth:`replicate` to manage world assignment.
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -1100,8 +1100,9 @@ class ModelBuilder:
         :attr:`Model.gravity`."""
 
         self.rigid_gap: float = 0.1
-        """Default rigid contact gap [m] used by :meth:`finalize <ModelBuilder.finalize>` to populate
-        :attr:`Model.shape_gap`."""
+        """Default rigid contact gap [m] applied when adding a shape whose
+        :attr:`ShapeConfig.gap` is ``None``. The resolved per-shape values are later
+        propagated to :attr:`Model.shape_gap`."""
 
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
@@ -2612,7 +2613,8 @@ class ModelBuilder:
                 ``self.gravity`` and ``self.up_vector``).
 
         Raises:
-            RuntimeError: If called when already inside a world context (current_world != -1).
+            RuntimeError: If called when already inside a world context
+                (:attr:`current_world` is not ``-1``).
 
         Example::
 
@@ -2663,7 +2665,8 @@ class ModelBuilder:
         to the global world (-1) until :meth:`begin_world` is called again.
 
         Raises:
-            RuntimeError: If called when not in a world context (current_world == -1).
+            RuntimeError: If called when not in a world context
+                (:attr:`current_world` is ``-1``).
 
         Example::
 
@@ -2733,7 +2736,7 @@ class ModelBuilder:
         """Copies the data from another `ModelBuilder` into this `ModelBuilder`.
 
         All entities from the source builder are added to this builder's current world context
-        (the value of `self.current_world`). Any world assignments that existed in the source
+        (the value of :attr:`current_world`). Any world assignments that existed in the source
         builder are overwritten - all entities will be assigned to the active world context.
 
         Use :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
