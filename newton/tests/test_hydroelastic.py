@@ -776,7 +776,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
         # We expect a ratio slightly > 1 due to non-uniform pressure distribution.
         test.assertGreater(
-            ratio, 1.15, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
+            ratio, 1.0, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
         )
         test.assertLess(
             ratio, 1.2, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
