@@ -2223,20 +2223,22 @@ class TestImportMjcfGeometry(unittest.TestCase):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _write_box_stl(path, hx=1.0, hy=0.5, hz=2.0):
-        """Write a binary STL box with given half-extents centred at origin."""
+    def _write_box_stl(path, hx=1.0, hy=0.5, hz=2.0, cx=0.0, cy=0.0, cz=0.0):
+        """Write a binary STL box with given half-extents centred at (cx, cy, cz)."""
         # 12 triangles for an axis-aligned box
         tris = []
         for sign in (-1, 1):
             for axis in range(3):
-                v = [[-hx, -hy, -hz], [-hx, -hy, -hz], [-hx, -hy, -hz], [-hx, -hy, -hz]]
+                v = [None, None, None, None]
                 # Build a face perpendicular to *axis* at *sign* distance.
                 u, w = (axis + 1) % 3, (axis + 2) % 3
+                c = [cx, cy, cz]
+                h = [hx, hy, hz]
                 for i, (su, sw) in enumerate([(1, 1), (-1, 1), (-1, -1), (1, -1)]):
-                    v[i] = [0.0, 0.0, 0.0]
-                    v[i][axis] = sign * [hx, hy, hz][axis]
-                    v[i][u] = su * [hx, hy, hz][u]
-                    v[i][w] = sw * [hx, hy, hz][w]
+                    v[i] = [c[0], c[1], c[2]]
+                    v[i][axis] = c[axis] + sign * h[axis]
+                    v[i][u] = c[u] + su * h[u]
+                    v[i][w] = c[w] + sw * h[w]
                 if sign > 0:
                     tris.append((v[0], v[1], v[2]))
                     tris.append((v[0], v[2], v[3]))
@@ -2326,8 +2328,9 @@ class TestImportMjcfGeometry(unittest.TestCase):
         """type='box' mesh='...' with fitaabb='false' (default) uses equivalent inertia box."""
         with tempfile.TemporaryDirectory() as tmpdir:
             stl_path = os.path.join(tmpdir, "box.stl")
-            # A unit cube: all half-extents equal → inertia box should be symmetric
-            self._write_box_stl(stl_path, hx=1.0, hy=1.0, hz=1.0)
+            # Asymmetric box offset from the origin to exercise axis ordering
+            # and COM translation.
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0, cx=3.0, cy=0.0, cz=0.0)
             mjcf = f"""\
 <mujoco>
     <compiler meshdir="{tmpdir}"/>
@@ -2343,8 +2346,11 @@ class TestImportMjcfGeometry(unittest.TestCase):
             builder.add_mjcf(mjcf)
             self.assertEqual(builder.shape_type[0], GeoType.BOX)
             s = builder.shape_scale[0]
-            # For a unit cube the equivalent inertia box should be ~(1, 1, 1)
-            np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 1.0, 1.0], atol=0.05)
+            # Half-extents are sorted ascending: (0.5, 1.0, 2.0)
+            np.testing.assert_allclose([s[0], s[1], s[2]], [0.5, 1.0, 2.0], atol=0.05)
+            # Shape transform should include the COM offset (3, 0, 0)
+            t = builder.shape_transform[0]
+            self.assertAlmostEqual(t.p[0], 3.0, places=1)
 
     def test_fit_with_fitscale(self):
         """fitscale attribute scales the fitted primitive."""
@@ -2367,6 +2373,53 @@ class TestImportMjcfGeometry(unittest.TestCase):
             self.assertEqual(builder.shape_type[0], GeoType.BOX)
             s = builder.shape_scale[0]
             np.testing.assert_allclose([s[0], s[1], s[2]], [2.0, 1.0, 4.0], atol=1e-4)
+
+    def test_fit_cylinder_to_mesh_aabb(self):
+        """type='cylinder' mesh='...' with fitaabb='true' fits cylinder to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="cylinder" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.CYLINDER)
+            s = builder.shape_scale[0]
+            # radius = max(1.0, 0.5) = 1.0, half_height = 2.0 (no cap subtraction)
+            self.assertAlmostEqual(s[0], 1.0, places=4)
+            self.assertAlmostEqual(s[1], 2.0, places=4)
+
+    def test_fit_ellipsoid_to_mesh_aabb(self):
+        """type='ellipsoid' mesh='...' with fitaabb='true' fits ellipsoid to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="ellipsoid" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.ELLIPSOID)
+            s = builder.shape_scale[0]
+            # Ellipsoid uses AABB half-extents directly: (1.0, 0.5, 2.0)
+            np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
 
     def test_mesh_without_explicit_type_stays_mesh(self):
         """A geom with mesh= but no type= should still be treated as a mesh shape."""

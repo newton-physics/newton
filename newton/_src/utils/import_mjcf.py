@@ -816,6 +816,11 @@ def parse_mjcf(
                                 print(f"Warning: unsupported fit type {geom_type} for {geom_name}")
                             fit_to_mesh = False
 
+                        if fit_to_mesh:
+                            # Shift the geom origin to the mesh center of mass.
+                            center_offset = wp.vec3(*com)
+                            tf = tf * wp.transform(center_offset, wp.quat_identity())
+
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
                     xform=tf,
