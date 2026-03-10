@@ -29,7 +29,10 @@ To convert between these two representations we use forward and inverse kinemati
 forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to maximal coordinates, and inverse kinematics (:func:`newton.eval_ik`) converts maximal coordinates to generalized coordinates.
 
 In Newton, we support both parameterizations and it is up to the solver which one to use to read and write the configuration.
-For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone` use generalized coordinates, while :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit` use maximal coordinates.
+For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`
+use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
+:class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
+use maximal coordinates.
 Note that collision detection, e.g., via :meth:`newton.Model.collide` requires the maximal coordinates to be current in the state.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
@@ -247,8 +250,9 @@ Implementation details differ by coordinate formulation:
   kinematic bodies can therefore be softer under SemiImplicit.
 
 In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
-large internal armature value; see :ref:`Kinematic Links and Fixed Roots
-<mujoco-kinematic-links-and-fixed-roots>` for details.
+large internal armature value; see
+:ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>`
+for details.
 
 .. _Joint types:
 
@@ -312,7 +316,9 @@ Prismatic, revolute, planar, and universal joints can be seen as special cases o
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :attr:`newton.Model.joint_q` array stores the generalized joint positions for all joints in the model.
+The :attr:`newton.Model.joint_q` array stores the default generalized joint positions
+for all joints in the model and is used to initialize :attr:`newton.State.joint_q`.
+Both arrays share the same per-joint layout.
 For scalar-coordinate joints (for example this D6 joint), the positional coordinates can be queried as follows:
 
 .. testsetup:: articulation-joint-layout
@@ -355,8 +361,9 @@ For scalar-coordinate joints (for example this D6 joint), the positional coordin
 Definition of ``joint_qd``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :attr:`newton.Model.joint_qd` array stores the generalized joint velocities for all joints in the model.
-The generalized joint forces at :attr:`newton.Control.joint_f` are stored in the same order.
+The :attr:`newton.Model.joint_qd` array stores the default generalized joint velocities
+for all joints in the model and is used to initialize :attr:`newton.State.joint_qd`.
+The generalized joint forces at :attr:`newton.Control.joint_f` use the same per-joint order.
 
 The velocity dofs for each joint can be queried as follows:
 
