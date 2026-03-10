@@ -515,7 +515,7 @@ ArticulationView: selection interface for RL and batched control
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
 :class:`newton.selection.ArticulationView` is the high-level interface for selecting a subset
-of articulations and accessing their joints/links/DoFs with stable tensor shapes. This is
+of articulations and accessing their joints/links/DOFs with stable tensor shapes. This is
 especially useful in RL pipelines where the same observation/action logic is applied to many
 parallel environments.
 
@@ -591,7 +591,7 @@ For non-floating-base articulations (for example ``FIXED`` or a world-attached
 Use ``ArticulationView`` to inspect and modify selected articulations
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-``ArticulationView`` provides stable, per-articulation access to links, joints, DoFs, and attributes:
+``ArticulationView`` provides stable, per-articulation access to links, joints, DOFs, and attributes:
 
 .. testcode:: articulation-view
 
