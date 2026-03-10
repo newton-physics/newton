@@ -907,6 +907,9 @@ This matches Bullet/ODE/PhysX practice.</p></li>
 <span id="twist-conventions"></span><h3>Newton Conventions<a class="headerlink" href="#newton-conventions" title="Link to this heading">#</a></h3>
 <p><strong>Newton</strong> follows the standard physics engine convention for most solvers,
 aligning with Isaac Lab’s approach.
+Newton’s public <code class="docutils literal notranslate"><span class="pre">spatial_vector</span></code> arrays use <code class="docutils literal notranslate"><span class="pre">(linear,</span> <span class="pre">angular)</span></code> ordering,
+unlike Warp’s native <code class="docutils literal notranslate"><span class="pre">(angular,</span> <span class="pre">linear)</span></code> convention. This applies to arrays
+such as <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.body_qd</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_f" title="newton.State.body_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.body_f</span></code></a>.
 Newton’s <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qd</span></code></a> stores <strong>both</strong> linear and angular velocities
 in the world frame.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
