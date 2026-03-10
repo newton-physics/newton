@@ -426,8 +426,8 @@ def _compute_net_force(contacts, model, state):
     return np.sum(force_mag[:, None] * normals[mask], axis=0)
 
 
-def test_reduced_vs_unreduced_contact_forces(test, device):
-    """Reduced and unreduced hydroelastic forces must agree within 1%."""
+def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: bool):
+    """Reduced hydroelastic forces must match the unreduced reference."""
     cube_half = 0.1
     sphere_radius = 0.1
     narrow_band = cube_half * 0.4
@@ -464,7 +464,7 @@ def test_reduced_vs_unreduced_contact_forces(test, device):
     cfg_reduced = HydroelasticSDF.Config(
         output_contact_surface=True,
         reduce_contacts=True,
-        anchor_contact=False,
+        anchor_contact=anchor_contact,
     )
     cfg_unreduced = HydroelasticSDF.Config(
         output_contact_surface=True,
@@ -487,17 +487,18 @@ def test_reduced_vs_unreduced_contact_forces(test, device):
 
         f_red = _compute_net_force(contacts_red, model, state)
         f_unr = _compute_net_force(contacts_unr, model, state)
+        anchor_label = "with anchor" if anchor_contact else "without anchor"
 
         if pen == 0.0:
             # No penetration — both forces should be near zero
-            test.assertLess(np.linalg.norm(f_red), 1e-3, f"pen={pen}: reduced force should be ~0")
-            test.assertLess(np.linalg.norm(f_unr), 1e-3, f"pen={pen}: unreduced force should be ~0")
+            test.assertLess(np.linalg.norm(f_red), 1e-3, f"pen={pen} ({anchor_label}): reduced force should be ~0")
+            test.assertLess(np.linalg.norm(f_unr), 1e-3, f"pen={pen} ({anchor_label}): unreduced force should be ~0")
             continue
 
         # z-component (normal force) — must be positive and match within 1%
-        test.assertGreater(f_unr[2], 0.0, f"pen={pen}: unreduced Fz should be positive")
+        test.assertGreater(f_unr[2], 0.0, f"pen={pen} ({anchor_label}): unreduced Fz should be positive")
         rel_z = abs(f_red[2] - f_unr[2]) / abs(f_unr[2])
-        test.assertLess(rel_z, 0.01, f"pen={pen}: Fz mismatch {rel_z * 100:.2f}%")
+        test.assertLess(rel_z, 0.01, f"pen={pen} ({anchor_label}): Fz mismatch {rel_z * 100:.2f}%")
 
         # xy-components — should be small; match as fraction of Fz
         for axis, label in [(0, "Fx"), (1, "Fy")]:
@@ -505,8 +506,18 @@ def test_reduced_vs_unreduced_contact_forces(test, device):
             test.assertLess(
                 abs_diff / abs(f_unr[2]),
                 0.01,
-                f"pen={pen}: {label} diff {abs_diff:.4f} > 1% of Fz {f_unr[2]:.4f}",
+                f"pen={pen} ({anchor_label}): {label} diff {abs_diff:.4f} > 1% of Fz {f_unr[2]:.4f}",
             )
+
+
+def test_reduced_vs_unreduced_contact_forces(test, device):
+    """Reduced and unreduced hydroelastic forces must agree within 1% without anchors."""
+    _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact=False)
+
+
+def test_reduced_vs_unreduced_contact_forces_with_anchor_contact(test, device):
+    """Reduced hydroelastic forces must still match with anchor_contact enabled."""
+    _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact=True)
 
 
 def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
@@ -888,6 +899,14 @@ add_function_test(
     TestHydroelastic,
     "test_reduced_vs_unreduced_contact_forces",
     test_reduced_vs_unreduced_contact_forces,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_forces_with_anchor_contact",
+    test_reduced_vs_unreduced_contact_forces_with_anchor_contact,
     devices=cuda_devices,
     check_output=False,
 )

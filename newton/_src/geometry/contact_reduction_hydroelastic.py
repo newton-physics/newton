@@ -585,6 +585,20 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
                         # Stiffness from the normal bin's aggregate
                         nbin_total_depth = total_depth_reduced[nbin_entry_idx]
+                        if wp.static(anchor_contact) and nbin_agg_mag > wp.static(EPS_LARGE):
+                            nbin_anchor_depth = float(0.0)
+                            nbin_max_depth_value = ht_values[
+                                wp.static(NUM_SPATIAL_DIRECTIONS) * ht_capacity + nbin_entry_idx
+                            ]
+                            if nbin_max_depth_value != wp.uint64(0):
+                                nbin_max_depth_contact_id = unpack_contact_id(nbin_max_depth_value)
+                                nbin_max_depth = position_depth[nbin_max_depth_contact_id][3]
+                                if nbin_max_depth < 0.0:
+                                    nbin_anchor_depth = -nbin_max_depth
+
+                            if weight_sum[nbin_entry_idx] > wp.static(EPS_SMALL) and nbin_anchor_depth > 1e-6:
+                                nbin_total_depth = nbin_total_depth + nbin_anchor_depth
+
                         if nbin_agg_mag > wp.static(EPS_SMALL) and nbin_total_depth > 0.0:
                             c_stiffness = k_eff_first * nbin_agg_mag / (nbin_total_depth + wp.static(EPS_SMALL))
                         else:
