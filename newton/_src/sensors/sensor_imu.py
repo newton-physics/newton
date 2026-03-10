@@ -92,12 +92,26 @@ class SensorIMU:
     The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
 
     Example:
-        ::
 
-            imu = SensorIMU(model, sites=[s1, s2])
+        .. testcode::
+
+            import warp as wp
+            import newton
+            from newton.sensors import SensorIMU
+
+            builder = newton.ModelBuilder()
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform((0, 0, 1), wp.quat_identity()))
+            builder.add_shape_sphere(body, radius=0.1)
+            builder.add_site(body, label="imu_0")
+            model = builder.finalize()
+
+            imu = SensorIMU(model, sites="imu_*")
+            solver = newton.solvers.SolverMuJoCo(model)
             state = model.state()
 
             # after solver step
+            solver.step(state, state, None, None, dt=1.0 / 60.0)
             imu.update(state)
             acc = imu.accelerometer.numpy()
             gyro = imu.gyroscope.numpy()
@@ -124,7 +138,7 @@ class SensorIMU:
 
         Args:
             model: The model to use.
-            sites: List of shape indices, single pattern to match against shape
+            sites: List of site indices, single pattern to match against site
                 labels, or list of patterns where any one matches.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
             request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.

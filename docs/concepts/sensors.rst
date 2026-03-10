@@ -27,15 +27,18 @@ Most Newton sensors follow a common pattern:
    ``SensorTiledCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
    attributes.
 
-.. code-block:: python
+.. testcode::
 
+   import warp as wp
    import newton
    from newton.sensors import SensorIMU
 
    # Build the model
    builder = newton.ModelBuilder()
-   builder.add_usd("robot.usda")
    builder.add_ground_plane()
+   body = builder.add_body(xform=wp.transform((0, 0, 1), wp.quat_identity()))
+   builder.add_shape_sphere(body, radius=0.1)
+   builder.add_site(body, label="imu_0")
    model = builder.finalize()
 
    # 1. Create sensor and specify what to measure
@@ -44,19 +47,26 @@ Most Newton sensors follow a common pattern:
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
    state = model.state()
-   control = model.control()
 
    # Simulation loop
    for _ in range(100):
        state.clear_forces()
-       solver.step(state, state, control, None, dt=1.0 / 60.0)
+       solver.step(state, state, None, None, dt=1.0 / 60.0)
 
        # 2. Compute measurements from the current state
        imu.update(state)
 
        # 3. Results stored on sensor attributes
-       print(imu.accelerometer.numpy())  # [n_sensors, 3] linear acceleration
-       print(imu.gyroscope.numpy())      # [n_sensors, 3] angular velocity
+       acc = imu.accelerometer.numpy()   # (n_sensors, 3) linear acceleration
+       gyro = imu.gyroscope.numpy()      # (n_sensors, 3) angular velocity
+
+   print("accelerometer shape:", acc.shape)
+   print("gyroscope shape:", gyro.shape)
+
+.. testoutput::
+
+   accelerometer shape: (1, 3)
+   gyroscope shape: (1, 3)
 
 .. _label-matching:
 

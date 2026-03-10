@@ -209,6 +209,31 @@ class SensorContact:
 
     Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
 
+    Example:
+        Measure net contact force on a sphere resting on the ground:
+
+        .. testcode::
+
+            import warp as wp
+            import newton
+            from newton.sensors import SensorContact
+
+            builder = newton.ModelBuilder()
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform((0, 0, 0.1), wp.quat_identity()))
+            builder.add_shape_sphere(body, radius=0.1, label="ball")
+            model = builder.finalize()
+
+            sensor = SensorContact(model, sensing_obj_shapes="ball")
+            solver = newton.solvers.SolverMuJoCo(model)
+            state = model.state()
+            contacts = model.contacts()
+
+            solver.step(state, state, None, None, dt=1.0 / 60.0)
+            solver.update_contacts(contacts)
+            sensor.update(state, contacts)
+            force = sensor.net_force.numpy()  # (n_sensing_objs, max_readings, 3)
+
     Raises:
         ValueError: If the configuration of sensing/counterpart objects is invalid.
     """

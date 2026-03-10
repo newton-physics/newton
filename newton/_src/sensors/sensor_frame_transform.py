@@ -108,22 +108,24 @@ class SensorFrameTransform:
     The ``shapes`` and ``reference_sites`` parameters accept label patterns -- see :ref:`label-matching`.
 
     Example:
-        Measure shapes relative to a site::
+        Measure a shape's pose relative to a reference site:
 
-            # Get shape indices somehow (e.g., via selection or direct indexing)
-            shape_indices = [0, 1, 2]  # indices of shapes to measure
-            reference_site_idx = 5  # index of reference site
+        .. testcode::
 
-            sensor = SensorFrameTransform(
-                model,
-                shapes=shape_indices,
-                reference_sites=[reference_site_idx],
-            )
+            import warp as wp
+            import newton
+            from newton.sensors import SensorFrameTransform
 
-            # Update after eval_fk
+            builder = newton.ModelBuilder()
+            body = builder.add_body(xform=wp.transform((0, 0, 1), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, label="box")
+            builder.add_site(body, label="ref")
+            model = builder.finalize()
+
+            sensor = SensorFrameTransform(model, shapes="box", reference_sites="ref")
+            state = model.state()
+
             sensor.update(state)
-
-            # Access transforms
             transforms = sensor.transforms.numpy()  # shape: (N, 7)
     """
 
@@ -142,9 +144,8 @@ class SensorFrameTransform:
             shapes: List of shape indices, single pattern to match against shape
                 labels, or list of patterns where any one matches.
             reference_sites: List of site indices, single pattern to match against
-                shape labels, or list of patterns where any one matches. Matched
-                shapes must have the SITE flag. Must match 1:1 with shapes, or be
-                a single site for all shapes.
+                site labels, or list of patterns where any one matches. Must expand
+                to one site or the same number as ``shapes``.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
 
         Raises:
@@ -228,10 +229,10 @@ class SensorFrameTransform:
     def update(self, state: State):
         """Update sensor measurements based on current state.
 
-        This should be called after eval_fk to compute transforms.
+        Reads ``state.body_q`` to compute world-frame shape transforms.
 
         Args:
-            state: The current state with body_q populated by eval_fk
+            state: The current state. Reads ``body_q``, which is updated by a solver step or :func:`~newton.eval_fk`.
         """
         # Compute world transforms for all unique shapes directly into the all_shape_transforms array
         wp.launch(
