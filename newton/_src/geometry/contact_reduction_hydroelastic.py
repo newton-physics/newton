@@ -196,7 +196,6 @@ def get_reduce_hydroelastic_contacts_kernel():
             pd = reducer_data.position_depth[i]
             normal = decode_oct(reducer_data.normal[i])
             pair = reducer_data.shape_pairs[i]
-            area = reducer_data.contact_area[i]
 
             position = wp.vec3(pd[0], pd[1], pd[2])
             depth = pd[3]
@@ -529,9 +528,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             rotation_q = wp.quat_identity()
             if wp.static(normal_matching) and use_aggregate_features:
                 nbin_normal_sum = total_normal_reduced[entry_idx]
-                rotation_q = _compute_normal_matching_rotation(
-                    nbin_normal_sum, agg_force_vec, agg_force_mag
-                )
+                rotation_q = _compute_normal_matching_rotation(nbin_normal_sum, agg_force_vec, agg_force_mag)
 
             # Get transform and gap sum (same for all contacts in the entry)
             transform_b = shape_transform[shape_b_first]
@@ -583,9 +580,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         # Normal matching from the normal bin's rotation
                         if wp.static(normal_matching) and nbin_agg_mag > wp.static(EPS_LARGE):
                             voxel_nsum = total_normal_reduced[nbin_entry_idx]
-                            voxel_rot_q = _compute_normal_matching_rotation(
-                                voxel_nsum, nbin_agg_force, nbin_agg_mag
-                            )
+                            voxel_rot_q = _compute_normal_matching_rotation(voxel_nsum, nbin_agg_force, nbin_agg_mag)
                             final_normal = wp.normalize(wp.quat_rotate(voxel_rot_q, contact_normal))
 
                         # Stiffness from the normal bin's aggregate
