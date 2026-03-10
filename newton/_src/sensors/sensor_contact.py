@@ -173,31 +173,39 @@ def _bucket_indices_by_world(
 class SensorContact:
     """Measures net contact forces on a set of **sensing objects** (bodies or shapes).
 
-    In its simplest form the sensor reports the total contact force acting on each sensing object.
-    Optionally, specify **counterparts** to break the force down by the body or shape it originates
-    from.  With ``include_total=True`` (default) a total-force column is prepended.
+    In its simplest form the sensor reports the total contact force acting on each sensing object. Optionally, specify
+    **counterparts** to break the force down per contacting body or shape. With ``include_total=True`` (default) a
+    total-force column is prepended.
 
     The result is a force matrix: one row per sensing object, one column per counterpart reading.
 
     .. rubric:: Multi-world behaviour
 
-    When the model contains multiple worlds, pair tables are built per-world.  Cross-world shape
-    pairs are excluded — only within-world and global counterparts (e.g. ground plane) contribute.
-    Global bodies and shapes cannot be sensing objects.
+    When the model contains multiple worlds, pair tables are built per-world. Cross-world shape pairs are excluded --
+    only within-world and global counterparts (e.g. ground plane) contribute. Global bodies and shapes cannot be sensing
+    objects.
 
-    The force matrix has shape ``(sum_of_sensors_across_worlds, max_readings)`` where
-    ``max_readings`` is the maximum counterpart count of any single world.  Rows are
-    world-contiguous (world 0 first, then world 1, …).  Columns beyond a world's own reading
-    count are zero-padded.
+    The force matrix has shape ``(sum_of_sensors_across_worlds, max_readings)`` where ``max_readings`` is the maximum
+    counterpart count of any single world. Rows are world-contiguous (world 0 first, then world 1, ...). Columns
+    beyond a world's own reading count are zero-padded.
 
     :attr:`sensing_objs`, :attr:`counterparts`, and :attr:`reading_indices` are per-world nested
     lists indexed as ``attr[world][i]``.
 
     .. rubric:: Terms
 
-    - **Sensing object** — body or shape carrying a contact sensor.
-    - **Counterpart** — the other body or shape in a contact interaction.
-    - **Force reading** — one entry of the force matrix (:class:`vec3`).
+    - **Sensing object** -- body or shape carrying a contact sensor.
+    - **Counterpart** -- the other body or shape in a contact interaction.
+    - **Force reading** -- one entry of the force matrix (:class:`vec3`).
+
+    .. rubric:: Construction and update order
+
+    ``SensorContact`` requests the ``force`` extended attribute from the model at init, so a :class:`~newton.Contacts`
+    object created afterwards (via :meth:`Model.contacts() <newton.Model.contacts>` or directly) will include it
+    automatically.
+
+    :meth:`update` reads from ``contacts.force``. Call ``solver.update_contacts(contacts, state)`` before
+    ``sensor.update()`` so that contact forces are current.
 
     Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
 
@@ -267,7 +275,8 @@ class SensorContact:
             include_total: If True and counterparts are specified, add a reading for the total contact force for
                 each sensing object. Does nothing when no counterparts are specified.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
-            request_contact_attributes: If True (default), transparently request the extended contact attribute ``force`` from the model.
+            request_contact_attributes: If True (default), transparently request the extended contact attribute
+            ``force`` from the model.
         """
 
         if (sensing_obj_bodies is None) == (sensing_obj_shapes is None):
@@ -431,8 +440,7 @@ class SensorContact:
         body_shapes: dict[int, list[int]],
         shape_contact_pairs: set[int] | None = None,
     ):
-        """Given bodies and shapes for sensing objects and counterparts, build the
-        shape_pair -> reading index mapping"""
+        """Given bodies and shapes for sensing objects and counterparts, build the shape_pair -> reading index mapping"""
         TOTAL = cls.ObjectType.TOTAL
 
         # TOTAL, then bodies, then shapes

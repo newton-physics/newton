@@ -4,8 +4,8 @@
 Sensors
 =======
 
-Sensors in Newton provide a way to extract measurements and observations from the simulation.
-They compute derived quantities that are commonly needed for control, reinforcement learning, robotics applications, and analysis.
+Sensors in Newton provide a way to extract measurements and observations from the simulation. They compute derived
+quantities that are commonly needed for control, reinforcement learning, robotics applications, and analysis.
 
 Overview
 --------
@@ -13,29 +13,29 @@ Overview
 Newton sensors follow a consistent pattern:
 
 1. **Initialization**: Configure the sensor with the model and specify what to measure
-2. **Update**: Call ``sensor.update(...)`` during the simulation loop to compute measurements
+2. **Update**: Call ``sensor.update(state, ...)`` during the simulation loop to compute measurements
 3. **Access**: Read results from sensor attributes (typically as Warp arrays)
 
 .. note::
 
-   Construct sensors that require :doc:`extended attributes <extended_attributes>`
-   (e.g. ``body_qdd``) before allocating ``State`` or ``Contacts`` objects
-   (``model.state()``, ``model.contacts()``) so the attribute is requested in time.
+   Sensors automatically request any :doc:`extended attributes <extended_attributes>` they need
+   (e.g. ``body_qdd``, ``Contacts.force``) at init, so ``State`` and ``Contacts`` objects created afterwards will
+   include them.
+
+   ``SensorContact`` additionally requires a call to ``solver.update_contacts()`` before ``sensor.update()``.
 
 .. _label-matching:
 
 Label Matching
 --------------
 
-Several Newton APIs accept **label patterns** to select bodies, shapes, joints,
-sites, etc. by name. Parameters that support label matching accept one of the
-following:
+Several Newton APIs accept **label patterns** to select bodies, shapes, joints, sites, etc. by name. Parameters that
+support label matching accept one of the following:
 
 - A **list of integer indices** -- selects directly by index.
-- A **single string pattern** -- selects all entries whose label matches the
-  pattern via :func:`fnmatch.fnmatch` (supports ``*`` and ``?`` wildcards).
-- A **list of string patterns** -- selects all entries whose label matches at
-  least one of the patterns.
+- A **single string pattern** -- selects all entries whose label matches the pattern via :func:`fnmatch.fnmatch`
+  (supports ``*`` and ``?`` wildcards).
+- A **list of string patterns** -- selects all entries whose label matches at least one of the patterns.
 
 Examples::
 
@@ -55,16 +55,12 @@ Newton provides five sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
-* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or
-  shapes, with optional per-counterpart breakdown.
-* :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of
-  shapes/sites with respect to reference sites.
-* :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular
-  velocity at site frames.
-* :class:`~newton.sensors.SensorRaycast` -- ray-based depth images from a
-  virtual camera.
-* :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth
-  rendering across multiple worlds.
+* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or shapes, with optional per-counterpart
+  breakdown.
+* :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
+* :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
+* :class:`~newton.sensors.SensorRaycast` -- ray-based depth images from a virtual camera.
+* :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
 
 Extended Attributes
 -------------------
@@ -90,7 +86,7 @@ overhead.
 Sensors that depend on extended attributes (e.g. ``body_qdd``,
 ``Contacts.force``) may add nontrivial cost to the solver step itself, since
 the solver must compute and store these additional quantities regardless of
-whether the sensor reads them every frame.
+whether the sensor is evaluated after each step.
 
 See Also
 --------
