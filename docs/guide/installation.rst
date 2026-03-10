@@ -233,7 +233,7 @@ robot template across many worlds and step them all simultaneously on the GPU:
     # The solver steps all 1024 worlds in parallel
     solver = newton.solvers.SolverMuJoCo(model)
 
-See the :doc:`/guide/key-concepts` guide and :doc:`/integrations/isaac-lab`
+See the :doc:`/guide/overview` guide and :doc:`/integrations/isaac-lab`
 for more details.
 
 .. _extra-dependencies:
