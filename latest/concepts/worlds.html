@@ -818,12 +818,12 @@
                   
   <section id="worlds">
 <span id="id1"></span><h1>Worlds<a class="headerlink" href="#worlds" title="Link to this heading">#</a></h1>
-<p>Newton enables multiple independent simulations, referred to <em>worlds</em>, within a single <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> object.
-Each <em>world</em>, thus provides an index-based grouping of all primary simulation entities such as particles, bodies, shapes, joints, articulations and equality constraints.</p>
+<p>Newton enables multiple independent simulations, referred to as <em>worlds</em>, within a single <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> object.
+Each <em>world</em> provides an index-based grouping of all primary simulation entities such as particles, bodies, shapes, joints, articulations and equality constraints.</p>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
 <p>GPU-accelerated operations in Newton often involve parallelizing over an entire set of model entities, e.g. bodies, shapes or joints, without needing to consider which specific world they belong to.
-However, some operations such as those part of Collision Detection (CD), can exploit world-based grouping to effectively filter-out potential collisions between shapes that belong to different worlds.
+However, some operations, such as those part of Collision Detection (CD), can exploit world-based grouping to effectively filter out potential collisions between shapes that belong to different worlds.
 Moreover, world-based grouping can also facilitate partitioning of thread grids according to both world indices and the number of entities per world.
 Such operations facilitate support for simulating multiple, and potentially heterogeneous, worlds defined within a <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> instance.
 Lastly, world-based grouping also enables selectively operating on only the entities that belong to a specific world, i.e. masking, as well as partitioning of the <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a> data.</p>
@@ -838,41 +838,44 @@ Moreover, the selection API still operates under the assumption of model homogen
 <span id="id2"></span><h2>World Assignment<a class="headerlink" href="#world-assignment" title="Link to this heading">#</a></h2>
 <p>World assignment occurs when entities are added to an instance of <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>, using one of the entity-specific methods such as <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_body" title="newton.ModelBuilder.add_body"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_body()</span></code></a>,
 <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_joint" title="newton.ModelBuilder.add_joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_joint()</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape" title="newton.ModelBuilder.add_shape"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_shape()</span></code></a> etc, and this can either be global (world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>) or specific to a particular world (world index <code class="docutils literal notranslate"><span class="pre">0,</span> <span class="pre">1,</span> <span class="pre">2,</span> <span class="pre">...</span></code>).
-When entities are added before the first call to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a>, or the last call to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.end_world" title="newton.ModelBuilder.end_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_world()</span></code></a>, they are assigned to the global world (index <code class="docutils literal notranslate"><span class="pre">-1</span></code>).
+When entities are added before the first call to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a>, or after the last call to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.end_world" title="newton.ModelBuilder.end_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_world()</span></code></a>, they are assigned to the global world (index <code class="docutils literal notranslate"><span class="pre">-1</span></code>).
 Conversely, entities can be assigned to specific worlds when added between calls to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a> and <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.end_world" title="newton.ModelBuilder.end_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_world()</span></code></a>.
-Each entity added between these calls is assigned the current world index. The following example illustrates how to create two different worlds within a single model:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+Each entity added between these calls is assigned the current world index.</p>
+<p>The following example creates two different worlds within a single model:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
 
 <span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
 
 <span class="c1"># Global entity at front (world -1)</span>
-<span class="n">ground</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
 
-<span class="c1"># World 0</span>
+<span class="c1"># World 0: two free-floating spheres</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">begin_world</span><span class="p">()</span>
-<span class="n">body00</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.1</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
-<span class="n">body01</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.2</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
-<span class="n">shape00</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body00</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
-<span class="n">shape02</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body01</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">b0</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">b1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">b0</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">b1</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">end_world</span><span class="p">()</span>
 
-<span class="c1"># World 1</span>
+<span class="c1"># World 1: fixed-base revolute articulation with boxes</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">begin_world</span><span class="p">()</span>
-<span class="n">body10</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
-<span class="n">body11</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
-<span class="n">joint11</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=</span><span class="n">body10</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">body11</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
-<span class="n">shape10</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body10</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
-<span class="n">shape11</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body11</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">link0</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">j0</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_fixed</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">link0</span><span class="p">)</span>
+<span class="n">link1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+<span class="n">j1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=</span><span class="n">link0</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">link1</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">(</span><span class="n">joints</span><span class="o">=</span><span class="p">[</span><span class="n">j0</span><span class="p">,</span> <span class="n">j1</span><span class="p">])</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">link0</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">link1</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">end_world</span><span class="p">()</span>
 
 <span class="c1"># Global entity at back (world -1)</span>
-<span class="n">static_box</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.05</span><span class="p">)</span>
 
-<span class="c1"># Finalize model</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 </pre></div>
 </div>
-<p>In this example, we are creating a model with two worlds (world <code class="docutils literal notranslate"><span class="pre">0</span></code> and world <code class="docutils literal notranslate"><span class="pre">1</span></code>) containing different bodies, shapes and joints, as well as the global ground plane entity (with world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p>
+<p>In this example, we create a model with two worlds (world <code class="docutils literal notranslate"><span class="pre">0</span></code> and world <code class="docutils literal notranslate"><span class="pre">1</span></code>) containing different bodies, shapes and joints, as well as two global entities (the ground plane at the front and a static box at the back, both with world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p>
 </section>
 <section id="world-grouping">
 <span id="id3"></span><h2>World Grouping<a class="headerlink" href="#world-grouping" title="Link to this heading">#</a></h2>
@@ -887,49 +890,158 @@ When <a class="reference internal" href="../api/_generated/newton.ModelBuilder.h
 <li><p>Articulations: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.articulation_world" title="newton.Model.articulation_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">articulation_world</span></code></a></p></li>
 <li><p>Equality Constraints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.equality_constraint_world" title="newton.Model.equality_constraint_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">equality_constraint_world</span></code></a></p></li>
 </ul>
-<p>For the example above, the corresponding world grouping arrays would be as follows:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Body worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">body_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>  <span class="c1"># Example: Body worlds: [0  0  1  1]</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">shape_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>  <span class="c1"># Example: Shape worlds: [-1  0  0  1  1  -1]</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Joint worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">joint_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>  <span class="c1"># Example: Joint worlds: [0  0  1  1]</span>
+<p>The corresponding world grouping arrays for the example above are:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Body worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">body_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">shape_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Joint worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">joint_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Body worlds: [0, 0, 1, 1]
+Shape worlds: [-1, 0, 0, 1, 1, -1]
+Joint worlds: [0, 0, 1, 1]
 </pre></div>
 </div>
 </section>
 <section id="world-start-indices-dimensions">
 <span id="world-starts"></span><h2>World Start Indices &amp; Dimensions<a class="headerlink" href="#world-start-indices-dimensions" title="Link to this heading">#</a></h2>
 <p>In addition to the world grouping arrays, the <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> object will also contain Warp arrays that store the per-world starting indices for each entity type.</p>
-<p>These arrays include:
-- Particles: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_world_start" title="newton.Model.particle_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_world_start</span></code></a>
-- Bodies: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world_start" title="newton.Model.body_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world_start</span></code></a>
-- Shapes: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_world_start" title="newton.Model.shape_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_world_start</span></code></a>
-- Joints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_world_start" title="newton.Model.joint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_world_start</span></code></a>
-- Articulations: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.articulation_world_start" title="newton.Model.articulation_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">articulation_world_start</span></code></a>
-- Equality Constraints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.equality_constraint_world_start" title="newton.Model.equality_constraint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">equality_constraint_world_start</span></code></a></p>
-<p>To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
-- Joint DOFs: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_dof_world_start" title="newton.Model.joint_dof_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_dof_world_start</span></code></a>
-- Joint Coordinates: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_coord_world_start" title="newton.Model.joint_coord_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_coord_world_start</span></code></a>
-- Joint Constraints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_constraint_world_start" title="newton.Model.joint_constraint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_constraint_world_start</span></code></a></p>
-<p>All <code class="xref py py-attr docutils literal notranslate"><span class="pre">world_*_start</span></code> arrays adopt a special format that facilitates accounting of the total number of entities in each world as well as the global world (index <code class="docutils literal notranslate"><span class="pre">-1</span></code>) at the front and back of each per-entity array such as <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world" title="newton.Model.body_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world</span></code></a>.
-Specifically, each <code class="xref py py-attr docutils literal notranslate"><span class="pre">world_*_start</span></code> array contains <code class="docutils literal notranslate"><span class="pre">world_count</span> <span class="pre">+</span> <span class="pre">2</span></code> entries, with the first <code class="docutils literal notranslate"><span class="pre">world_count</span></code> entries corresponding to starting indices of each <code class="docutils literal notranslate"><span class="pre">world</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code> world,
-the second last entry corresponds to the starting index of the global entities at the back (world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>), and the last entry corresponding to total number of entities or dimensions in the model.</p>
+<p>These arrays include:</p>
+<ul class="simple">
+<li><p>Particles: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_world_start" title="newton.Model.particle_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_world_start</span></code></a></p></li>
+<li><p>Bodies: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world_start" title="newton.Model.body_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world_start</span></code></a></p></li>
+<li><p>Shapes: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_world_start" title="newton.Model.shape_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_world_start</span></code></a></p></li>
+<li><p>Joints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_world_start" title="newton.Model.joint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_world_start</span></code></a></p></li>
+<li><p>Articulations: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.articulation_world_start" title="newton.Model.articulation_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">articulation_world_start</span></code></a></p></li>
+<li><p>Equality Constraints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.equality_constraint_world_start" title="newton.Model.equality_constraint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">equality_constraint_world_start</span></code></a></p></li>
+</ul>
+<p>To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:</p>
+<ul class="simple">
+<li><p>Joint DOFs: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_dof_world_start" title="newton.Model.joint_dof_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_dof_world_start</span></code></a></p></li>
+<li><p>Joint Coordinates: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_coord_world_start" title="newton.Model.joint_coord_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_coord_world_start</span></code></a></p></li>
+<li><p>Joint Constraints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_constraint_world_start" title="newton.Model.joint_constraint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_constraint_world_start</span></code></a></p></li>
+</ul>
+<p>All <code class="docutils literal notranslate"><span class="pre">*_world_start</span></code> arrays adopt a special format that facilitates accounting of the total number of entities in each world as well as the global world (index <code class="docutils literal notranslate"><span class="pre">-1</span></code>) at the front and back of each per-entity array such as <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world" title="newton.Model.body_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world</span></code></a>.
+Specifically, each <code class="docutils literal notranslate"><span class="pre">*_world_start</span></code> array contains <code class="docutils literal notranslate"><span class="pre">world_count</span> <span class="pre">+</span> <span class="pre">2</span></code> entries, with the first <code class="docutils literal notranslate"><span class="pre">world_count</span></code> entries corresponding to starting indices of each <code class="docutils literal notranslate"><span class="pre">world</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code> world,
+the second-to-last entry corresponding to the starting index of the global entities at the back (world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>), and the last entry corresponding to total number of entities or dimensions in the model.</p>
 <p>With this format, we can easily compute the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
 as well as the total number of global entities by summing the first entry with the difference of the last two.</p>
-<p>For the previous example, we can compute the per-world shape counts as follows:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Total number of worlds</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;model.world_count :&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">)</span>  <span class="c1"># In this example, we have worlds 0 and 1, and world_count = 2</span>
+<p>Continuing the same example, we can compute the per-world shape counts as follows:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;world_count:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">)</span>
 
 <span class="c1"># Shape start indices per world</span>
 <span class="c1"># Entries: [start_world_0, start_world_1, start_global_back, total_shapes]</span>
 <span class="n">shape_start</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">shape_world_start</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape starts: &quot;</span><span class="p">,</span> <span class="n">shape_start</span><span class="p">)</span>
-<span class="c1"># Output: Shape starts: [1  3  5  6]  # 1 global shape at front, 2 shapes in world 0, 2 shapes in world 1, 1 global shape at back, total 6 shapes</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape starts:&quot;</span><span class="p">,</span> <span class="n">shape_start</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
 
-<span class="c1"># Compute per-world body counts</span>
-<span class="n">world_shape_counts</span> <span class="o">=</span> <span class="p">[</span><span class="n">shape_start</span><span class="p">[</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">shape_start</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">)]</span>
-<span class="n">global_shape_count</span> <span class="o">=</span> <span class="n">shape_start</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">shape_start</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">+</span> <span class="n">shape_start</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># Global shapes at front and back</span>
+<span class="c1"># Compute per-world shape counts</span>
+<span class="n">world_shape_counts</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="nb">int</span><span class="p">(</span><span class="n">shape_start</span><span class="p">[</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">shape_start</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">)</span>
+<span class="p">]</span>
+<span class="c1"># Global shapes: those at the front (before start_world_0) plus at the back</span>
+<span class="n">global_shape_count</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">shape_start</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">+</span> <span class="nb">int</span><span class="p">(</span><span class="n">shape_start</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">shape_start</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">])</span>
 
-<span class="c1"># Print shape counts</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape counts per world: &quot;</span><span class="p">,</span> <span class="n">world_shape_counts</span><span class="p">)</span>  <span class="c1"># Output: Shape counts per world: [2, 2]</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Global shape count: &quot;</span><span class="p">,</span> <span class="n">global_shape_count</span><span class="p">)</span>      <span class="c1"># Output: Global shape count: 2</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape counts per world:&quot;</span><span class="p">,</span> <span class="n">world_shape_counts</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Global shape count:&quot;</span><span class="p">,</span> <span class="n">global_shape_count</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>world_count: 2
+Shape starts: [1, 3, 5, 6]
+Shape counts per world: [2, 2]
+Global shape count: 2
+</pre></div>
+</div>
+</section>
+<section id="convenience-methods-add-world-and-replicate">
+<span id="convenience-methods"></span><h2>Convenience Methods: <code class="docutils literal notranslate"><span class="pre">add_world</span></code> and <code class="docutils literal notranslate"><span class="pre">replicate</span></code><a class="headerlink" href="#convenience-methods-add-world-and-replicate" title="Link to this heading">#</a></h2>
+<p>While <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a> and <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.end_world" title="newton.ModelBuilder.end_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_world()</span></code></a> give full control, Newton provides two convenience methods for the most common multi-world patterns:</p>
+<p><strong>add_world</strong>: adds a pre-built <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a> as a new world in a single call (combines <code class="docutils literal notranslate"><span class="pre">begin_world</span></code> / <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_builder" title="newton.ModelBuilder.add_builder"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_builder()</span></code></a> / <code class="docutils literal notranslate"><span class="pre">end_world</span></code>):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="c1"># Build a simple two-link arm</span>
+<span class="n">arm</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">link0</span> <span class="o">=</span> <span class="n">arm</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">j0</span> <span class="o">=</span> <span class="n">arm</span><span class="o">.</span><span class="n">add_joint_fixed</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">link0</span><span class="p">)</span>
+<span class="n">link1</span> <span class="o">=</span> <span class="n">arm</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">j1</span> <span class="o">=</span> <span class="n">arm</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=</span><span class="n">link0</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">link1</span><span class="p">)</span>
+<span class="n">arm</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">(</span><span class="n">joints</span><span class="o">=</span><span class="p">[</span><span class="n">j0</span><span class="p">,</span> <span class="n">j1</span><span class="p">])</span>
+<span class="n">arm</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">link0</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
+<span class="n">arm</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">link1</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
+
+<span class="c1"># Create a scene with two instances of the same arm</span>
+<span class="n">scene</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">scene</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">scene</span><span class="o">.</span><span class="n">add_world</span><span class="p">(</span><span class="n">arm</span><span class="p">)</span>
+<span class="n">scene</span><span class="o">.</span><span class="n">add_world</span><span class="p">(</span><span class="n">arm</span><span class="p">)</span>
+
+<span class="n">multi_arm_model</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;world_count:&quot;</span><span class="p">,</span> <span class="n">multi_arm_model</span><span class="o">.</span><span class="n">world_count</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>world_count: 2
+</pre></div>
+</div>
+<p><strong>replicate</strong>: creates <code class="docutils literal notranslate"><span class="pre">N</span></code> copies of a builder, each as its own world, with optional spatial offsets.</p>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>Using physical <code class="docutils literal notranslate"><span class="pre">spacing</span></code> to separate replicated worlds moves bodies away from the origin,
+which can reduce numerical stability. For visual separation, prefer using viewer-level world
+offsets (e.g. <code class="docutils literal notranslate"><span class="pre">viewer.set_world_offsets()</span></code>) while keeping <code class="docutils literal notranslate"><span class="pre">spacing=(0,</span> <span class="pre">0,</span> <span class="pre">0)</span></code> so that all
+worlds remain at the origin in the physics simulation.</p>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="n">arm</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">link0</span> <span class="o">=</span> <span class="n">arm</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">j0</span> <span class="o">=</span> <span class="n">arm</span><span class="o">.</span><span class="n">add_joint_fixed</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">link0</span><span class="p">)</span>
+<span class="n">link1</span> <span class="o">=</span> <span class="n">arm</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">j1</span> <span class="o">=</span> <span class="n">arm</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=</span><span class="n">link0</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">link1</span><span class="p">)</span>
+<span class="n">arm</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">(</span><span class="n">joints</span><span class="o">=</span><span class="p">[</span><span class="n">j0</span><span class="p">,</span> <span class="n">j1</span><span class="p">])</span>
+
+<span class="n">scene</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">scene</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">scene</span><span class="o">.</span><span class="n">replicate</span><span class="p">(</span><span class="n">arm</span><span class="p">,</span> <span class="n">world_count</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">spacing</span><span class="o">=</span><span class="p">(</span><span class="mf">2.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
+
+<span class="n">replicated_model</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;world_count:&quot;</span><span class="p">,</span> <span class="n">replicated_model</span><span class="o">.</span><span class="n">world_count</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;body_count:&quot;</span><span class="p">,</span> <span class="n">replicated_model</span><span class="o">.</span><span class="n">body_count</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>world_count: 4
+body_count: 8
+</pre></div>
+</div>
+</section>
+<section id="per-world-gravity">
+<span id="id4"></span><h2>Per-World Gravity<a class="headerlink" href="#per-world-gravity" title="Link to this heading">#</a></h2>
+<p>Each world can have its own gravity vector, which is useful for simulating different environments
+(e.g., Earth gravity in one world, lunar gravity in another).
+Per-world gravity can be configured at build time via the <code class="docutils literal notranslate"><span class="pre">gravity</span></code> argument of <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a>,
+or modified at runtime via <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.set_gravity" title="newton.Model.set_gravity"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_gravity()</span></code></a>:</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Global entities (world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>) use the gravity of world <code class="docutils literal notranslate"><span class="pre">0</span></code>.
+Keep this in mind when mixing global and world-specific entities with different gravity vectors.</p>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="n">robot_builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">robot_builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+
+<span class="n">scene</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">scene</span><span class="o">.</span><span class="n">add_world</span><span class="p">(</span><span class="n">robot_builder</span><span class="p">)</span>
+<span class="n">scene</span><span class="o">.</span><span class="n">add_world</span><span class="p">(</span><span class="n">robot_builder</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="c1"># Set different gravity for each world</span>
+<span class="n">model</span><span class="o">.</span><span class="n">set_gravity</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">9.81</span><span class="p">),</span> <span class="n">world</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>  <span class="c1"># Earth</span>
+<span class="n">model</span><span class="o">.</span><span class="n">set_gravity</span><span class="p">((</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.62</span><span class="p">),</span> <span class="n">world</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># Moon</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Gravity shape:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">gravity</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Gravity shape: (2, 3)
 </pre></div>
 </div>
 </section>
@@ -937,24 +1049,21 @@ as well as the total number of global entities by summing the first entry with t
 <span id="world-entity-partitioning"></span><h2>World-Entity GPU Thread Partitioning<a class="headerlink" href="#world-entity-gpu-thread-partitioning" title="Link to this heading">#</a></h2>
 <p>Another important use of world grouping is to facilitate partitioning of GPU thread grids according to both world indices and the number of entities per world, i.e. into 2D world-entity grids.</p>
 <p>For example:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
 
 <span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
-<span class="k">def</span><span class="w"> </span><span class="mi">2</span><span class="n">d_world_body_example_kernel</span><span class="p">(</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">world_body_2d_kernel</span><span class="p">(</span>
     <span class="n">body_world_start</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
-    <span class="n">body_world</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
-    <span class="n">body_twist</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">spatial_vectorf</span><span class="p">),</span>
+    <span class="n">body_qd</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">spatial_vectorf</span><span class="p">),</span>
 <span class="p">):</span>
-    <span class="n">world_id</span><span class="p">,</span> <span class="n">body_world_id</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">tid</span><span class="p">()</span>  <span class="c1"># 2D world-entity grid</span>
-    <span class="c1"># Perform operations specific to the world and entity here</span>
+    <span class="n">world_id</span><span class="p">,</span> <span class="n">body_world_id</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">tid</span><span class="p">()</span>
     <span class="n">world_start</span> <span class="o">=</span> <span class="n">body_world_start</span><span class="p">[</span><span class="n">world_id</span><span class="p">]</span>
     <span class="n">num_bodies_in_world</span> <span class="o">=</span> <span class="n">body_world_start</span><span class="p">[</span><span class="n">world_id</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">world_start</span>
     <span class="k">if</span> <span class="n">body_world_id</span> <span class="o">&lt;</span> <span class="n">num_bodies_in_world</span><span class="p">:</span>
-       <span class="n">global_body_id</span> <span class="o">=</span> <span class="n">world_start</span> <span class="o">+</span> <span class="n">body_world_id</span>
-       <span class="c1"># Access body-specific data using global_body_id</span>
-       <span class="n">twist</span> <span class="o">=</span> <span class="n">body_twist</span><span class="p">[</span><span class="n">global_body_id</span><span class="p">]</span>
-       <span class="c1"># ... perform computations on twist ...</span>
+        <span class="n">global_body_id</span> <span class="o">=</span> <span class="n">world_start</span> <span class="o">+</span> <span class="n">body_world_id</span>
+        <span class="n">twist</span> <span class="o">=</span> <span class="n">body_qd</span><span class="p">[</span><span class="n">global_body_id</span><span class="p">]</span>
+        <span class="c1"># ... perform computations on twist ...</span>
 
 <span class="c1"># Create model with multiple worlds</span>
 <span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
@@ -963,28 +1072,42 @@ as well as the total number of global entities by summing the first entry with t
 
 <span class="c1"># Define number of entities per world (e.g., bodies)</span>
 <span class="n">body_world_start</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">body_world_start</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
-<span class="n">num_bodies_per_world</span> <span class="o">=</span> <span class="p">[</span><span class="n">body_world_start</span><span class="p">[</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">body_world_start</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">)]</span>
+<span class="n">num_bodies_per_world</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">body_world_start</span><span class="p">[</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">body_world_start</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">)</span>
+<span class="p">]</span>
 
-<span class="c1"># Launch kernel with 2D grid: (world_count, max_num_entities)</span>
-<span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="mi">2</span><span class="n">d_world_body_example_kernel</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="n">num_bodies_per_world</span><span class="p">)),</span> <span class="o">...</span><span class="p">)</span>
+<span class="c1"># Launch kernel with 2D grid: (world_count, max_entities_per_world)</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+    <span class="n">world_body_2d_kernel</span><span class="p">,</span>
+    <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="n">num_bodies_per_world</span><span class="p">)),</span>
+    <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">model</span><span class="o">.</span><span class="n">body_world_start</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">body_qd</span><span class="p">],</span>
+<span class="p">)</span>
 </pre></div>
 </div>
-<p>This kernel thread partitioning allows each thread to uniquely identify both the world it is operating on (via <code class="docutils literal notranslate"><span class="pre">world_id</span></code>) and the relative entity index w.r.t that world (via <code class="docutils literal notranslate"><span class="pre">entity_id</span></code>).
-The world-relative <code class="docutils literal notranslate"><span class="pre">entity_id</span></code> index is useful in certain operations such as accessing the body-specific column of constraint Jacobian matrices in maximal-coordinate formulations, which are stored in contiguous blocks per world.
-This relative index can then be mapped to the global entity index within the model by adding the corresponding starting index from the <code class="xref py py-attr docutils literal notranslate"><span class="pre">world_*_start</span></code> arrays.</p>
+<p>This kernel thread partitioning allows each thread to uniquely identify both the world it is operating on (via <code class="docutils literal notranslate"><span class="pre">world_id</span></code>) and the relative entity index w.r.t that world (via <code class="docutils literal notranslate"><span class="pre">body_world_id</span></code>).
+The world-relative index is useful in certain operations such as accessing the body-specific column of constraint Jacobian matrices in maximal-coordinate formulations, which are stored in contiguous blocks per world.
+This relative index can then be mapped to the global entity index within the model by adding the corresponding starting index from the <code class="docutils literal notranslate"><span class="pre">*_world_start</span></code> arrays.</p>
 <p>Note that in the simpler case of a homogeneous model consisting of identical worlds, the <code class="docutils literal notranslate"><span class="pre">max(num_bodies_per_world)</span></code> reduces to a constant value, and this effectively becomes a <em>batched</em> operation.
 For the more general heterogeneous case, the kernel needs to account for the varying number of entities per world, and an important pattern arises w.r.t 2D thread indexing and memory allocations that applies to all per-entity and per-world arrays.</p>
-<p>Essentially, the sum <code class="docutils literal notranslate"><span class="pre">sum(num_bodies_per_world)</span></code> will always equal the total number of bodies in the model <code class="docutils literal notranslate"><span class="pre">model.num_bodies</span></code> corresponding memory allocated for per-body arrays (i.e. when multiplied by the size of the relevant <code class="docutils literal notranslate"><span class="pre">dtype</span></code>),
-and the maximum <code class="docutils literal notranslate"><span class="pre">max(num_bodies_per_world)</span></code> will determine the second dimension of the 2D thread grid used to launch the kernel.
-However, since different worlds may have different number of bodies, some threads in the 2D grid will be inactive for worlds with fewer bodies than the maximum.
+<p>Essentially, <code class="docutils literal notranslate"><span class="pre">sum(num_bodies_per_world)</span></code> equals the total number of <em>world-local</em> bodies (i.e. <code class="docutils literal notranslate"><span class="pre">body_world_start[-2]</span> <span class="pre">-</span> <span class="pre">body_world_start[0]</span></code>), which excludes any global entities (world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>).
+Note that <code class="docutils literal notranslate"><span class="pre">model.body_count</span></code> may be larger than this sum when global bodies are present, since it includes both world-local and global entities (see <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world_start" title="newton.Model.body_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world_start</span></code></a> for the explicit distinction).
+The maximum <code class="docutils literal notranslate"><span class="pre">max(num_bodies_per_world)</span></code> determines the second dimension of the 2D thread grid used to launch the kernel.
+However, since different worlds may have different numbers of bodies, some threads in the 2D grid will be inactive for worlds with fewer bodies than the maximum.
 Therefore, kernels need to check whether the relative entity index is within bounds for the current world before performing any operations, as shown in the example above.</p>
-<p>This pattern of computing <code class="docutils literal notranslate"><span class="pre">sum_of_num_*</span></code> and <code class="docutils literal notranslate"><span class="pre">max_of_num_*</span></code> thus provides a consistent way to handle memory allocations and thread grid dimensions for heterogeneous multi-world simulations in Newton.</p>
+<p>This pattern of computing <code class="docutils literal notranslate"><span class="pre">sum</span></code> and <code class="docutils literal notranslate"><span class="pre">max</span></code> of per-world entity counts provides a consistent way to handle memory allocations and thread grid dimensions for heterogeneous multi-world simulations in Newton.</p>
 </section>
 <section id="see-also">
 <h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a></p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a></p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a></p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.end_world" title="newton.ModelBuilder.end_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_world()</span></code></a></p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_world" title="newton.ModelBuilder.add_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_world()</span></code></a></p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.replicate" title="newton.ModelBuilder.replicate"><code class="xref py py-meth docutils literal notranslate"><span class="pre">replicate()</span></code></a></p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.set_gravity" title="newton.Model.set_gravity"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_gravity()</span></code></a></p></li>
 </ul>
 </section>
 </section>
@@ -1016,6 +1139,8 @@ Therefore, kernels need to check whether the relative entity index is within bou
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#world-assignment">World Assignment</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#world-grouping">World Grouping</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#world-start-indices-dimensions">World Start Indices &amp; Dimensions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#convenience-methods-add-world-and-replicate">Convenience Methods: <code class="docutils literal notranslate"><span class="pre">add_world</span></code> and <code class="docutils literal notranslate"><span class="pre">replicate</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#per-world-gravity">Per-World Gravity</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#world-entity-gpu-thread-partitioning">World-Entity GPU Thread Partitioning</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See Also</a></li>
 </ul>
