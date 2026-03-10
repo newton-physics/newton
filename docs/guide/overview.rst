@@ -42,25 +42,47 @@ Core Concepts
 .. mermaid::
    :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
 
-   graph TD
-   I[Application] --> A[ModelBuilder]
-   I --> J[Control]
-   I --> D[Solver]
-   I --> F[Viewer]
-   G[Importer] --> A
-   A[ModelBuilder] -->|builds| B[Model]
-   B --> C[State]
-   B --> E[Contacts]
-   B --> J
-   C --> D[Solver]
-   B --> F[Viewer]
-   C --> F
-   E --> D
-   J --> D
-   D --> C
-   C --> K[Sensors]
-   E --> K
-   F --> H[Visualization]
+   flowchart LR
+       subgraph Authoring["Model Authoring"]
+           direction LR
+           P[Python API] --> A[ModelBuilder]
+
+           subgraph Imported["Imported assets"]
+               direction TB
+               U[URDF]
+               M[MJCF]
+               S[USD]
+           end
+
+           U --> G[Importer]
+           M --> G
+           S --> G
+           G --> A
+       end
+
+       B[Model]
+
+       subgraph Loop["Simulation Loop"]
+           direction LR
+           C[State] --> D[Solver]
+           J[Control] --> D
+           E[Contacts] --> D
+           D --> C2[Updated state]
+       end
+
+       subgraph Outputs["Outputs"]
+           direction TB
+           K[Sensors]
+           F[Viewer]
+       end
+
+       A -->|builds| B
+       B --> C
+       B --> J
+       B --> E
+       C2 --> K
+       E --> K
+       C2 --> F
 
 - :class:`~newton.ModelBuilder`: The entry point for constructing
   simulation models from primitives or imported assets.
