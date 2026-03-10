@@ -103,7 +103,7 @@ class SensorFrameTransform:
 
     Attributes:
         transforms: Relative transforms [m, unitless quaternion], shape
-            ``(N, 7)`` (updated after each call to :meth:`update`).
+            ``(N,)`` (updated after each call to :meth:`update`).
 
     The ``shapes`` and ``reference_sites`` parameters accept label patterns -- see :ref:`label-matching`.
 
@@ -141,8 +141,8 @@ class SensorFrameTransform:
             model: The model to measure.
             shapes: List of shape indices, single pattern to match against shape
                 labels, or list of patterns where any one matches.
-            reference_sites: List of shape indices, single pattern to match against
-                shape labels, or list of patterns where any one matches. Reference
+            reference_sites: List of site indices, single pattern to match against
+                shape labels, or list of patterns where any one matches. Matched
                 shapes must have the SITE flag. Must match 1:1 with shapes, or be
                 a single site for all shapes.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.

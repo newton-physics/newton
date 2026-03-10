@@ -204,7 +204,7 @@ class SensorContact:
     object created afterwards (via :meth:`Model.contacts() <newton.Model.contacts>` or directly) will include it
     automatically.
 
-    :meth:`update` reads from ``contacts.force``. Call ``solver.update_contacts(contacts, state)`` before
+    :meth:`update` reads from ``contacts.force``. Call ``solver.update_contacts(contacts)`` before
     ``sensor.update()`` so that contact forces are current.
 
     Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
@@ -276,7 +276,7 @@ class SensorContact:
                 each sensing object. Does nothing when no counterparts are specified.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
             request_contact_attributes: If True (default), transparently request the extended contact attribute
-            ``force`` from the model.
+                ``force`` from the model.
         """
 
         if (sensing_obj_bodies is None) == (sensing_obj_shapes is None):
@@ -440,7 +440,8 @@ class SensorContact:
         body_shapes: dict[int, list[int]],
         shape_contact_pairs: set[int] | None = None,
     ):
-        """Given bodies and shapes for sensing objects and counterparts, build the shape_pair -> reading index mapping"""
+        """Given bodies and shapes for sensing objects and counterparts,
+        build the shape_pair -> reading index mapping."""
         TOTAL = cls.ObjectType.TOTAL
 
         # TOTAL, then bodies, then shapes
