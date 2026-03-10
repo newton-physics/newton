@@ -5174,7 +5174,9 @@ class ModelBuilder:
 
         Args:
             plane: The plane equation `(a, b, c, d)`. If `xform` is `None`, this defines the plane.
-                The normal is `(a,b,c)` and `d` is the offset. Defaults to `(0.0, 0.0, 1.0, 0.0)` (an XY ground plane at Z=0) if `xform` is also `None`.
+                The normal is `(a,b,c)`. If `(a,b,c)` is unit-length, `d` is the negative signed offset from the
+                origin along that normal, so `(0.0, 0.0, 1.0, -h)` defines the plane `z = h`. Defaults to
+                `(0.0, 0.0, 1.0, 0.0)` (an XY ground plane at Z=0) if `xform` is also `None`.
             xform: The transform of the plane in the world or parent body's frame. If `None`, transform is derived from `plane`. Defaults to `None`.
             width: The visual/collision extent of the plane along its local X-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             length: The visual/collision extent of the plane along its local Y-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
@@ -5189,8 +5191,8 @@ class ModelBuilder:
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
             # compute position and rotation from plane equation
-            # For plane equation ax + by + cz + d = 0, the closest point to origin is -(d/||n||) * (n/||n||)
-            # where n = (a, b, c). Both the normal and d need to be normalized.
+            # For plane equation ax + by + cz + d = 0, the closest point to the origin is
+            # -(d/||n||) * (n/||n||), so the signed offset along the normalized normal is -d/||n||.
             normal = np.array(plane[:3])
             norm = np.linalg.norm(normal)
             normal /= norm
