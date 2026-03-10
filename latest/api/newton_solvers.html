@@ -436,10 +436,6 @@ window.addEventListener("load", () => mermaid.run());
   
 
   
-    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
-      <span class="fa-solid fa-outdent"></span>
-    </button>
-  
 </div>
 
     </header>
@@ -873,6 +869,7 @@ flowchart LR
 <th class="head"><p>Particles</p></th>
 <th class="head"><p>Cloth</p></th>
 <th class="head"><p>Soft bodies</p></th>
+<th class="head"><p>Differentiable</p></th>
 </tr>
 </thead>
 <tbody>
@@ -883,6 +880,7 @@ flowchart LR
 <td><p>✅</p></td>
 <td><p>🟨 no self-collision</p></td>
 <td><p>✅</p></td>
+<td><p>🟨 basic <sup>2</sup></p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM" title="newton.solvers.SolverImplicitMPM"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverImplicitMPM</span></code></a></p></td>
 <td><p>Implicit</p></td>
@@ -891,11 +889,13 @@ flowchart LR
 <td><p>✅</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
+<td><p>❌</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a></p></td>
 <td><p>Explicit, Semi-implicit, Implicit</p></td>
-<td><p>✅ (uses its own collision pipeline from MuJoCo/mujoco_warp by default, unless <code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts</span></code> is set to False)</p></td>
+<td><p>✅ <sup>1</sup></p></td>
 <td><p>✅ generalized coordinates</p></td>
+<td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
 <td><p>❌</p></td>
@@ -907,6 +907,7 @@ flowchart LR
 <td><p>✅</p></td>
 <td><p>🟨 no self-collision</p></td>
 <td><p>✅</p></td>
+<td><p>🟨 basic <sup>2</sup></p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverStyle3D.html#newton.solvers.SolverStyle3D" title="newton.solvers.SolverStyle3D"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverStyle3D</span></code></a></p></td>
 <td><p>Implicit</p></td>
@@ -914,6 +915,7 @@ flowchart LR
 <td><p>❌</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
+<td><p>❌</p></td>
 <td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a></p></td>
@@ -923,6 +925,7 @@ flowchart LR
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
+<td><p>❌</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></td>
 <td><p>Implicit</p></td>
@@ -931,9 +934,16 @@ flowchart LR
 <td><p>✅</p></td>
 <td><p>🟨 no self-collision</p></td>
 <td><p>🟨 experimental</p></td>
+<td><p>❌</p></td>
 </tr>
 </tbody>
 </table>
+</div>
+<div class="line-block">
+<div class="line"><sup>1</sup> Uses its own collision pipeline from MuJoCo/mujoco_warp by default,
+unless <code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts</span></code> is set to <code class="docutils literal notranslate"><span class="pre">False</span></code>.</div>
+<div class="line"><sup>2</sup> <code class="docutils literal notranslate"><span class="pre">basic</span></code> means Newton includes several examples that use these solvers in diffsim workflows,
+see <a class="reference internal" href="#differentiability"><span class="std std-ref">Differentiability</span></a> for further details.</div>
 </div>
 </section>
 <section id="joint-feature-support">
@@ -1158,6 +1168,51 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
 <div class="line"><sup>3</sup> Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.</div>
 <div class="line"><sup>4</sup> Used for CABLE joints only (as stretch/bend stiffness and damping).</div>
 </div>
+</section>
+<section id="differentiability">
+<span id="id2"></span><h2>Differentiability<a class="headerlink" href="#differentiability" title="Link to this heading">#</a></h2>
+<p>Differentiable simulation in Newton typically runs a forward rollout inside
+<code class="docutils literal notranslate"><span class="pre">wp.Tape()</span></code>, computes a scalar loss from the simulated state, and then calls
+<code class="docutils literal notranslate"><span class="pre">tape.backward(loss)</span></code> to populate gradients on differentiable state,
+control, or model arrays. In practice, this starts by calling
+<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a> with <code class="docutils literal notranslate"><span class="pre">requires_grad=True</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">loss_kernel</span><span class="p">(</span><span class="n">particle_q</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">),</span> <span class="n">target</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">loss</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)):</span>
+    <span class="n">delta</span> <span class="o">=</span> <span class="n">particle_q</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">-</span> <span class="n">target</span>
+    <span class="n">loss</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">delta</span><span class="p">,</span> <span class="n">delta</span><span class="p">)</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_particle</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">vel</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">(</span><span class="n">requires_grad</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverSemiImplicit</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="n">state_in</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">state_out</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+<span class="n">loss</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">,</span> <span class="n">requires_grad</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">target</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.25</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+
+<span class="n">tape</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Tape</span><span class="p">()</span>
+<span class="k">with</span> <span class="n">tape</span><span class="p">:</span>
+    <span class="n">state_in</span><span class="o">.</span><span class="n">clear_forces</span><span class="p">()</span>
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span><span class="p">)</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">loss_kernel</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">state_out</span><span class="o">.</span><span class="n">particle_q</span><span class="p">,</span> <span class="n">target</span><span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">loss</span><span class="p">],</span>
+    <span class="p">)</span>
+
+<span class="n">tape</span><span class="o">.</span><span class="n">backward</span><span class="p">(</span><span class="n">loss</span><span class="p">)</span>
+<span class="n">initial_velocity_grad</span> <span class="o">=</span> <span class="n">state_in</span><span class="o">.</span><span class="n">particle_qd</span><span class="o">.</span><span class="n">grad</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="k">assert</span> <span class="nb">float</span><span class="p">(</span><span class="n">initial_velocity_grad</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">])</span> <span class="o">&lt;</span> <span class="mf">0.0</span>
+</pre></div>
+</div>
+<p>See the <a class="reference external" href="https://github.com/newton-physics/newton/tree/main/newton/examples/diffsim">DiffSim examples on GitHub</a> for the current reference workflows.</p>
 <div class="toctree-wrapper compound">
 </div>
 <p class="rubric">Submodules</p>
@@ -1210,27 +1265,6 @@ constraints (AVBD). <a class="reference internal" href="_generated/newton.solver
             </div>
             
             
-              
-                <dialog id="pst-secondary-sidebar-modal"></dialog>
-                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
-
-
-  <div class="sidebar-secondary-item">
-<div
-    id="pst-page-navigation-heading-2"
-    class="page-toc tocsection onthispage">
-    <i class="fa-solid fa-list"></i> On this page
-  </div>
-  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
-    <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-features">Supported Features</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#joint-feature-support">Joint Feature Support</a><ul class="visible nav section-nav flex-column">
-</ul>
-</li>
-</ul>
-  </nav></div>
-
-</div></div>
               
             
           </div>
