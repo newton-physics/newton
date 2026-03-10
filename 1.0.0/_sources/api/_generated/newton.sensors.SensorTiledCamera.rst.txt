@@ -1,0 +1,8 @@
+﻿newton.sensors.SensorTiledCamera
+================================
+
+.. autoclass:: newton.sensors.SensorTiledCamera
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

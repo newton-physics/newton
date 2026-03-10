@@ -1,0 +1,6 @@
+﻿newton.math.quat\_decompose
+===========================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: quat_decompose

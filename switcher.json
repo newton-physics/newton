@@ -5,9 +5,14 @@
     "url": "https://newton-physics.github.io/newton/latest/"
   },
   {
-    "name": "0.2.2 (stable)",
-    "version": "0.2.2",
+    "name": "1.0.0 (stable)",
+    "version": "1.0.0",
     "preferred": true,
+    "url": "https://newton-physics.github.io/newton/1.0.0/"
+  },
+  {
+    "name": "0.2.2",
+    "version": "0.2.2",
     "url": "https://newton-physics.github.io/newton/0.2.2/"
   }
 ]
