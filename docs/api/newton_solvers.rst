@@ -222,7 +222,7 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
      - |yes| :sup:`2`
      - |no|
      - |yes|
-     - |yes|
+     - |yes| :sup:`4`
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
      - |no|

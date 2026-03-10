@@ -190,8 +190,8 @@ class SolverVBD(SolverBase):
         rigid_contact_k_start: float = 1.0e2,  # AVBD: initial stiffness for all body contacts (body-body + body-particle)
         rigid_joint_linear_k_start: float = 1.0e4,  # AVBD: initial stiffness seed for linear joint constraints
         rigid_joint_angular_k_start: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint constraints
-        rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/REVOLUTE/PRISMATIC)
-        rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/REVOLUTE/PRISMATIC)
+        rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/REVOLUTE/PRISMATIC/D6)
+        rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/REVOLUTE/PRISMATIC/D6)
         rigid_joint_linear_kd: float = 1.0e-2,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable angular joint constraints
         rigid_body_contact_buffer_size: int = 64,
@@ -254,11 +254,11 @@ class SolverVBD(SolverBase):
             rigid_joint_angular_k_start: Initial penalty seed for angular joint constraints (e.g., cable bend, FIXED angular).
                 Used to seed the per-constraint adaptive penalties for all angular joint constraints.
             rigid_joint_linear_ke: Stiffness cap used by AVBD for **non-cable** linear joint constraint scalars
-                (BALL, FIXED, REVOLUTE, and the perpendicular linear part of PRISMATIC). Cable joints use the
+                (BALL, FIXED, REVOLUTE, PRISMATIC, and D6 projected linear slots). Cable joints use the
                 per-joint caps in ``model.joint_target_ke`` instead (cable interprets ``joint_target_ke/kd`` as
                 constraint tuning).
             rigid_joint_angular_ke: Stiffness cap used by AVBD for **non-cable** angular joint constraint scalars
-                (FIXED, PRISMATIC, and the perpendicular angular part of REVOLUTE).
+                (FIXED, REVOLUTE, PRISMATIC, and D6 projected angular slots).
             rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints (paired with
                 ``rigid_joint_linear_ke``).
             rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints (paired with
@@ -725,7 +725,7 @@ class SolverVBD(SolverBase):
             joint_k0_np = np.zeros((constraint_count,), dtype=float)
             # Per-constraint stiffness caps used for AVBD warmstart clamping and penalty growth limiting.
             # - Cable constraints: use model.joint_target_ke (cable material/constraint tuning; still model-DOF indexed)
-            # - Rigid constraints (BALL/FIXED/REVOLUTE/PRISMATIC): use solver-level caps (rigid_joint_linear_ke/angular_ke)
+            # - Rigid constraints (BALL/FIXED/REVOLUTE/PRISMATIC/D6): use solver-level caps (rigid_joint_linear_ke/angular_ke)
             # Start from zeros and explicitly fill per joint/constraint-slot below for clarity.
             joint_k_max_np = np.zeros((constraint_count,), dtype=float)
             joint_kd_np = np.zeros((constraint_count,), dtype=float)
