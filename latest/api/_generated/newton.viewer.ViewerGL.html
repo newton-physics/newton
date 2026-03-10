@@ -1024,6 +1024,22 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.viewer.ViewerGL.log_gaussian">
+<span class="sig-name descname"><span class="pre">log_gaussian</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gaussian</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hidden</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.log_gaussian" title="Link to this definition">#</a></dt>
+<dd><p>Log a <a class="reference internal" href="newton.Gaussian.html#newton.Gaussian" title="newton.Gaussian"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Gaussian</span></code></a> as a point cloud of spheres.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the Gaussian point cloud.</p></li>
+<li><p><strong>gaussian</strong> (<a class="reference internal" href="newton.Gaussian.html#newton.Gaussian" title="newton._src.geometry.types.Gaussian"><em>Gaussian</em></a>) – The <a class="reference internal" href="newton.Gaussian.html#newton.Gaussian" title="newton.Gaussian"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Gaussian</span></code></a> asset to visualize.</p></li>
+<li><p><strong>xform</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.transformf.html#warp.transformf" title="(in Warp v1.12.0)"><em>transformf</em></a><em> | </em><em>None</em>) – Optional world-space transform applied to all splat centers.</p></li>
+<li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the point cloud should be hidden.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.log_gizmo">
 <span class="sig-name descname"><span class="pre">log_gizmo</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">transform</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.log_gizmo" title="Link to this definition">#</a></dt>
 <dd><p>Log or update a transform gizmo for the current frame.</p>
@@ -1375,6 +1391,7 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.is_running"><code class="docutils literal notranslate"><span class="pre">ViewerGL.is_running()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.log_array"><code class="docutils literal notranslate"><span class="pre">ViewerGL.log_array()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.log_capsules"><code class="docutils literal notranslate"><span class="pre">ViewerGL.log_capsules()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.log_gaussian"><code class="docutils literal notranslate"><span class="pre">ViewerGL.log_gaussian()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.log_gizmo"><code class="docutils literal notranslate"><span class="pre">ViewerGL.log_gizmo()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.log_instances"><code class="docutils literal notranslate"><span class="pre">ViewerGL.log_instances()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerGL.log_lines"><code class="docutils literal notranslate"><span class="pre">ViewerGL.log_lines()</span></code></a></li>

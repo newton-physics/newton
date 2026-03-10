@@ -826,7 +826,7 @@
 <h1>newton.sensors.SensorTiledCamera<a class="headerlink" href="#newton-sensors-sensortiledcamera" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorTiledCamera</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_tiled_camera.py#L94"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorTiledCamera" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorTiledCamera</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_tiled_camera.py#L97"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorTiledCamera" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>A Warp-based tiled camera sensor for raytraced rendering across multiple worlds.</p>
 <p>Renders color and depth images for multiple cameras and worlds, organizing the
@@ -881,6 +881,25 @@ output as tiles in a grid layout.</p>
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.default_light_shadows">
 <span class="sig-name descname"><span class="pre">default_light_shadows</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.default_light_shadows" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.GaussianRenderMode">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">GaussianRenderMode</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
+<p>Gaussian Render Mode</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.GaussianRenderMode.FAST">
+<span class="sig-name descname"><span class="pre">FAST</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode.FAST" title="Link to this definition">#</a></dt>
+<dd><p>Fast Render Mode</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.GaussianRenderMode.QUALITY">
+<span class="sig-name descname"><span class="pre">QUALITY</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode.QUALITY" title="Link to this definition">#</a></dt>
+<dd><p>Quality Render Mode, collect hits until minimum transmittance is reached</p>
+</dd></dl>
 
 </dd></dl>
 
@@ -1239,6 +1258,11 @@ If None, no albedo rendering is performed.</p></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.colors_per_world"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.colors_per_world</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.default_light"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.default_light</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.default_light_shadows"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.default_light_shadows</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.GaussianRenderMode</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode.FAST"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.GaussianRenderMode.FAST</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode.QUALITY"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.GaussianRenderMode.QUALITY</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderLightType"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderLightType</span></code></a><ul class="nav section-nav flex-column">
