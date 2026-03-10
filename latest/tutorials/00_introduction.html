@@ -170,16 +170,16 @@
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
-    Key Concepts
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
-<li class="nav-item current active">
-  <a class="nav-link nav-internal" href="../guide/tutorials.html">
-    Tutorials
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -191,13 +191,6 @@
                 </button>
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
-    Development
-  </a>
-</li>
-
-
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
     Worlds
@@ -482,13 +475,6 @@
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../guide/tutorials.html">
     Tutorials
@@ -722,7 +708,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1 current active"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
 </ul>
@@ -982,7 +967,7 @@ Added 4 bodies with collision shapes
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.geometry.inertia c57c45a load on device &#39;cpu&#39; took 2468.53 ms  (compiled)
+Module newton._src.geometry.inertia c57c45a load on device &#39;cpu&#39; took 2474.00 ms  (compiled)
 Added mesh body with 6102 vertices
 </pre></div></div>
 </div>
@@ -1015,7 +1000,7 @@ Added mesh body with 6102 vertices
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module validate_and_correct_inertia_kernel_8fd4dd1e 9a64c1c load on device &#39;cpu&#39; took 2040.64 ms  (compiled)
+Module validate_and_correct_inertia_kernel_8fd4dd1e 9a64c1c load on device &#39;cpu&#39; took 2056.33 ms  (compiled)
 Model finalized for device cpu:
   Bodies: 5
   Shapes: 7
@@ -1090,7 +1075,7 @@ State, Contacts and Control objects created
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.solvers.solver 1ba2a2a load on device &#39;cpu&#39; took 2547.69 ms  (compiled)
+Module newton._src.solvers.solver 1ba2a2a load on device &#39;cpu&#39; took 2538.56 ms  (compiled)
 Solver created: SolverXPBD
 </pre></div></div>
 </div>
@@ -1230,7 +1215,7 @@ Running on CPU (no CUDA graph)
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.viewer.kernels 8ee6cf5 load on device &#39;cpu&#39; took 3039.87 ms  (compiled)
+Module newton._src.viewer.kernels 8ee6cf5 load on device &#39;cpu&#39; took 3049.79 ms  (compiled)
 </pre></div></div>
 </div>
 </section>
@@ -1273,14 +1258,14 @@ Module newton._src.viewer.kernels 8ee6cf5 load on device &#39;cpu&#39; took 3039
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.sim.collide 396ce0c load on device &#39;cpu&#39; took 2977.44 ms  (compiled)
-Module newton._src.geometry.broad_phase_nxn 99e0260 load on device &#39;cpu&#39; took 2259.68 ms  (compiled)
-Module create_narrow_phase_primitive_kernel__locals__narrow_phase_primitive_kernel_f4753415 3ee3c1a load on device &#39;cpu&#39; took 2958.31 ms  (compiled)
-Module create_narrow_phase_kernel_gjk_mpr__locals__narrow_phase_kernel_gjk_mpr_c06dcb66 6a34999 load on device &#39;cpu&#39; took 4419.02 ms  (compiled)
-Module create_narrow_phase_process_mesh_plane_contacts_kernel__locals__narrow_phase_process_mesh_plane_contacts_kernel_8ca3d011 9b9392c load on device &#39;cpu&#39; took 2195.23 ms  (compiled)
-Module newton._src.geometry.narrow_phase d5c5413 load on device &#39;cpu&#39; took 2558.33 ms  (compiled)
-Module create_narrow_phase_process_mesh_triangle_contacts_kernel__locals__narrow_phase_process_mesh_triangle_contacts_kernel_88f8b4fc 2059bbb load on device &#39;cpu&#39; took 4527.89 ms  (compiled)
-Module newton._src.solvers.xpbd.kernels 7776e59 load on device &#39;cpu&#39; took 11348.10 ms  (compiled)
+Module newton._src.sim.collide 396ce0c load on device &#39;cpu&#39; took 3014.88 ms  (compiled)
+Module newton._src.geometry.broad_phase_nxn 99e0260 load on device &#39;cpu&#39; took 2312.04 ms  (compiled)
+Module create_narrow_phase_primitive_kernel__locals__narrow_phase_primitive_kernel_f4753415 3ee3c1a load on device &#39;cpu&#39; took 2963.48 ms  (compiled)
+Module create_narrow_phase_kernel_gjk_mpr__locals__narrow_phase_kernel_gjk_mpr_c06dcb66 6a34999 load on device &#39;cpu&#39; took 4468.29 ms  (compiled)
+Module create_narrow_phase_process_mesh_plane_contacts_kernel__locals__narrow_phase_process_mesh_plane_contacts_kernel_8ca3d011 9b9392c load on device &#39;cpu&#39; took 2206.25 ms  (compiled)
+Module newton._src.geometry.narrow_phase d5c5413 load on device &#39;cpu&#39; took 2586.99 ms  (compiled)
+Module create_narrow_phase_process_mesh_triangle_contacts_kernel__locals__narrow_phase_process_mesh_triangle_contacts_kernel_88f8b4fc 2059bbb load on device &#39;cpu&#39; took 4804.26 ms  (compiled)
+Module newton._src.solvers.xpbd.kernels 7776e59 load on device &#39;cpu&#39; took 11552.67 ms  (compiled)
 
 Simulation complete! Total time: 8.33 seconds
 </pre></div></div>

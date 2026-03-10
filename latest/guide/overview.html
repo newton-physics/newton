@@ -176,15 +176,15 @@ window.addEventListener("load", () => mermaid.run());
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="development.html">
+    Development
   </a>
 </li>
 
@@ -196,13 +196,6 @@ window.addEventListener("load", () => mermaid.run());
                 </button>
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="development.html">
-    Development
-  </a>
-</li>
-
-
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
     Worlds
@@ -488,13 +481,6 @@ window.addEventListener("load", () => mermaid.run());
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="tutorials.html">
     Tutorials
   </a>
@@ -727,7 +713,6 @@ window.addEventListener("load", () => mermaid.run());
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="development.html">Development</a></li>
 </ul>
@@ -840,11 +825,13 @@ window.addEventListener("load", () => mermaid.run());
 </ul>
 <div class="tip admonition">
 <p class="admonition-title">Learn More</p>
-<p>For a deep conceptual introduction, see the <a class="reference external" href="https://deepwiki.com/newton-physics/newton">DeepWiki Newton Physics page</a>.</p>
+<p>Start with the <a class="reference internal" href="../tutorials/00_introduction.html"><span class="doc">introduction tutorial</span></a> for a
+hands-on walkthrough. For a deeper conceptual introduction, see the
+<a class="reference external" href="https://deepwiki.com/newton-physics/newton">DeepWiki Newton Physics page</a>.</p>
 </div>
 </section>
-<section id="high-level-architecture">
-<h2>High-Level Architecture<a class="headerlink" href="#high-level-architecture" title="Link to this heading">#</a></h2>
+<section id="core-concepts">
+<span id="guide-core-concepts"></span><h2>Core Concepts<a class="headerlink" href="#core-concepts" title="Link to this heading">#</a></h2>
 <pre  class="mermaid">
         ---
 config:
@@ -853,31 +840,102 @@ config:
     lineColor: '#76b900'
 
 ---
-graph TD
-A[ModelBuilder] --&gt;|builds| B[Model]
-B --&gt; C[State]
-C --&gt; D[Solver]
-D --&gt; C
-B --&gt; F[Viewer]
-C --&gt; F
-G[Importer] --&gt; A
-I[Application] --&gt; A
-F --&gt; H[Visualization]
+flowchart LR
+    subgraph Authoring[&quot;Model Authoring&quot;]
+        direction LR
+        P[Python API] --&gt; A[ModelBuilder]
+
+        subgraph Imported[&quot;Imported assets&quot;]
+            direction TB
+            U[URDF]
+            M[MJCF]
+            S[USD]
+        end
+
+        U --&gt; G[Importer]
+        M --&gt; G
+        S --&gt; G
+        G --&gt; A
+    end
+
+    B[Model]
+
+    subgraph Loop[&quot;Simulation Loop&quot;]
+        direction LR
+        C[State] --&gt; D[Solver]
+        J[Control] --&gt; D
+        E[Contacts] --&gt; D
+        D --&gt; C2[Updated state]
+    end
+
+    subgraph Outputs[&quot;Outputs&quot;]
+        direction TB
+        K[Sensors]
+        F[Viewer]
+    end
+
+    A --&gt;|builds| B
+    B --&gt; C
+    B --&gt; J
+    B --&gt; E
+    C2 --&gt; K
+    E --&gt; K
+    C2 --&gt; F
     </pre><ul class="simple">
-<li><p><strong>ModelBuilder</strong>: Constructs models from primitives or imported assets.</p></li>
-<li><p><strong>Model</strong>: Encapsulates the physical structure, parameters, and configuration.</p></li>
-<li><p><strong>State</strong>: Represents the dynamic state (positions, velocities, etc.).</p></li>
-<li><p><strong>Solver</strong>: Advances the simulation by integrating physics.</p></li>
-<li><p><strong>Viewer</strong>: Visualizes the simulation in real-time or offline.</p></li>
-<li><p><strong>Importer</strong>: Loads models from external formats (URDF, MJCF, USD).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>: The entry point for constructing
+simulation models from primitives or imported assets.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>: Encapsulates the physical structure,
+parameters, and configuration of the simulation world, including
+bodies, joints, shapes, and physical properties.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a>: Represents the dynamic state at a given time,
+including positions and velocities that solvers update each step.
+Optional <a class="reference internal" href="../concepts/extended_attributes.html"><span class="doc">extended attributes</span></a>
+store derived quantities such as rigid-body accelerations for
+sensors.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a>: Stores the active contact set produced by
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.collide</span></code></a>, with optional extended
+attributes such as contact forces for sensing and analysis.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">Control</span></code></a>: Encodes control inputs such as joint targets
+and forces applied during the simulation loop.</p></li>
+<li><p><a class="reference internal" href="../api/newton_solvers.html"><span class="doc">Solver</span></a>: Advances the simulation by
+integrating physics, handling contacts, and enforcing constraints.
+Newton provides multiple solver backends, including XPBD, VBD,
+MuJoCo, Featherstone, and SemiImplicit.</p></li>
+<li><p><a class="reference internal" href="../concepts/sensors.html"><span class="doc">Sensors</span></a>: Compute observations from
+<a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a>, sites, and shapes.
+Many sensors rely on optional <a class="reference internal" href="../concepts/extended_attributes.html"><span class="doc">extended attributes</span></a> that store derived solver outputs.</p></li>
+<li><p><strong>Importer</strong>: Loads models from external formats via
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_urdf" title="newton.ModelBuilder.add_urdf"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_urdf()</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_mjcf" title="newton.ModelBuilder.add_mjcf"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_mjcf()</span></code></a>, and
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_usd()</span></code></a>.</p></li>
+<li><p><a class="reference internal" href="visualization.html"><span class="doc">Viewer</span></a>: Visualizes the simulation in real time
+or offline.</p></li>
 </ul>
+</section>
+<section id="simulation-loop">
+<h2>Simulation Loop<a class="headerlink" href="#simulation-loop" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p>Build or import a model with <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>.</p></li>
+<li><p>Finalize the builder into a <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>.</p></li>
+<li><p>Create any sensors, then allocate one or more
+<a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a> objects plus <a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">Control</span></code></a> inputs
+and <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a>.</p></li>
+<li><p>Call <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.collide</span></code></a> to populate the
+contact set for the current state.</p></li>
+<li><p>Step a <a class="reference internal" href="../api/newton_solvers.html"><span class="doc">solver</span></a> using the current
+state, control, and contacts.</p></li>
+<li><p>Update sensors, inspect outputs, render, or export the results.</p></li>
+</ol>
 </section>
 <section id="quick-links">
 <h2>Quick Links<a class="headerlink" href="#quick-links" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a class="reference internal" href="installation.html"><span class="doc">Installation</span></a> — Setup Newton and run a first example in a couple of minutes</p></li>
+<li><p><a class="reference internal" href="tutorials.html"><span class="doc">Tutorials</span></a> — Browse the guide’s tutorial landing page</p></li>
+<li><p><a class="reference internal" href="../tutorials/00_introduction.html"><span class="doc">Introduction tutorial</span></a> — Walk through a first hands-on tutorial</p></li>
 <li><p><a class="reference internal" href="../faq.html"><span class="doc">Frequently Asked Questions (FAQ)</span></a> — Frequently asked questions</p></li>
 <li><p><a class="reference internal" href="development.html"><span class="doc">Development</span></a> — For developers and code contributors</p></li>
+<li><p><a class="reference internal" href="../api/newton.html"><span class="doc">newton</span></a> — Full API reference</p></li>
 </ul>
 <p><a class="reference internal" href="../genindex.html"><span class="std std-ref">Full Index</span></a></p>
 </section>
@@ -907,7 +965,8 @@ F --&gt; H[Visualization]
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#key-features">Key Features</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#high-level-architecture">High-Level Architecture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#core-concepts">Core Concepts</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#simulation-loop">Simulation Loop</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-links">Quick Links</a></li>
 </ul>
   </nav></div>
