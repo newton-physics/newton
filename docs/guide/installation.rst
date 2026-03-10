@@ -10,18 +10,70 @@ installing from source or using ``uv``, see the :doc:`development` guide.
 System Requirements
 -------------------
 
-- Python 3.10 or higher
-- Windows or Linux on x86-64 architecture (Linux aarch64 is supported but not as thoroughly tested)
-- NVIDIA GPU with compute capability >= 5.0 (Maxwell) and driver 545 or newer (see note below)
+Minimum Requirements
+^^^^^^^^^^^^^^^^^^^^
 
-A local installation of the `CUDA Toolkit <https://developer.nvidia.com/cuda-downloads>`__ is not required for Newton.
+.. list-table::
+   :widths: 25 30 45
+   :header-rows: 1
 
-**Note:**
-    - NVIDIA GPU driver 545+ is required for Warp kernel compilation *during* CUDA graph capture. Some examples using graph capture may fail with older drivers.
-    - Unless otherwise specified, Newton's system requirements are identical to NVIDIA's `Warp <https://developer.nvidia.com/warp>`__ requirements.
+   * - Requirement
+     - Minimum
+     - Notes
+   * - Python
+     - 3.10
+     - 3.11+ recommended
+   * - OS
+     - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
+     - macOS has no GPU acceleration; see :ref:`cpu-limitations` below
+   * - NVIDIA GPU
+     - Compute capability 5.0+ (Maxwell)
+     - Any GeForce GTX 9xx or newer
+   * - NVIDIA Driver
+     - 545 or newer (CUDA 12)
+     - 550 or newer (CUDA 12.4) recommended for best performance
+   * - CUDA
+     - 12, 13
+     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime
+
+CUDA Compatibility
+^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - CUDA Version
+     - Notes
+   * - 12.3+
+     - Required for reliable CUDA graph capture
+   * - 12.4+
+     - Recommended for best performance
+   * - 13
+     - Supported
+
+Tested Configurations
+^^^^^^^^^^^^^^^^^^^^^
+
+Newton releases are tested on the following configurations:
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Component
+     - Configuration
+   * - OS
+     - Ubuntu 22.04/24.04 (x86-64 + ARM64), Windows, macOS (CPU only)
+   * - GPU
+     - NVIDIA Ada Lovelace, Blackwell
+   * - Python
+     - 3.10, 3.12, 3.14 (import-only)
+   * - CUDA
+     - 12, 13
 
 Platform-Specific Requirements
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Linux aarch64 (ARM64)**
 
@@ -32,6 +84,22 @@ X11 development libraries to build ``imgui_bundle`` from source:
 
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+
+.. _cpu-limitations:
+
+CPU-Only Limitations
+^^^^^^^^^^^^^^^^^^^^
+
+Newton can run on CPU (including macOS), but the following features require an
+NVIDIA GPU and are unavailable in CPU-only mode:
+
+- **SDF collision** — signed-distance-field computation (:func:`compute_sdf_from_shape`) requires CUDA
+  (``wp.Volume`` is GPU-only).
+- **Mesh-mesh contacts** — SDF-based mesh-mesh collision is silently skipped on CPU.
+- **Hydroelastic contacts** — depends on the SDF system.
+- **Tiled camera sensor** — GPU-accelerated raytraced rendering.
+- **Implicit MPM solver** — designed for GPU execution with CUDA graph support.
+- **Tile-based VBD solve** — uses GPU tile API; gracefully disabled on CPU.
 
 Installing Newton
 -----------------

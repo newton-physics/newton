@@ -43,6 +43,7 @@ SEMANTIC_COLOR_CAPSULE = 0xFF00FFFF
 SEMANTIC_COLOR_BOX = 0xFF0000FF
 SEMANTIC_COLOR_MESH = 0xFF00FF00
 SEMANTIC_COLOR_ROBOT = 0xFFFF00FF
+SEMANTIC_COLOR_GAUSSIAN = 0xFFFF9900
 SEMANTIC_COLOR_GROUND_PLANE = 0xFF444444
 
 
@@ -99,7 +100,7 @@ def shape_index_to_random_rgb(
 
 
 class Example:
-    def __init__(self, viewer, args):
+    def __init__(self, viewer: ViewerGL, args):
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
@@ -108,6 +109,7 @@ class Example:
         self.time_delta = 0.005
         self.image_output = 0
         self.texture_id = 0
+        self.show_sensor_output = True
 
         self.viewer = viewer
         if isinstance(self.viewer, ViewerGL):
@@ -119,6 +121,10 @@ class Example:
         robot_asset = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf"
         robot_builder = newton.ModelBuilder()
         robot_builder.add_urdf(robot_asset, floating=False)
+
+        gaussian = None
+        if args.ply:
+            gaussian = newton.Gaussian.create_from_ply(args.ply, args.min_response)
 
         builder = newton.ModelBuilder()
 
@@ -161,7 +167,15 @@ class Example:
                     scale=(0.5, 0.5, 0.5),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_MESH)
-            builder.add_builder(robot_builder)
+
+            if gaussian is not None:
+                builder.add_shape_gaussian(
+                    body=builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.4), q=wp.quat_identity())),
+                    gaussian=gaussian,
+                )
+                semantic_colors.append(SEMANTIC_COLOR_GAUSSIAN)
+
+            builder.add_builder(robot_builder, xform=wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity()))
             semantic_colors.extend([SEMANTIC_COLOR_ROBOT] * robot_builder.shape_count)
             builder.end_world()
 
@@ -195,7 +209,6 @@ class Example:
             config=SensorTiledCamera.Config(
                 default_light=True,
                 default_light_shadows=True,
-                colors_per_shape=True,
                 checkerboard_texture=True,
                 backface_culling=True,
             ),
@@ -247,9 +260,12 @@ class Example:
         self.time += self.time_delta
 
     def render(self):
-        self.render_sensors()
+        if self.show_sensor_output:
+            self.render_sensors()
+
         self.viewer.begin_frame(0.0)
-        self.viewer.log_state(self.state)
+        if not self.show_sensor_output:
+            self.viewer.log_state(self.state)
         self.viewer.end_frame()
 
     def render_sensors(self):
@@ -403,6 +419,13 @@ class Example:
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
+        show_compile_kernel_info = False
+
+        _, self.show_sensor_output = ui.checkbox("Show Sensor Output", self.show_sensor_output)
+        self.viewer.show_gaussians = not self.show_sensor_output
+
+        ui.separator()
+
         if ui.radio_button("Show Color Output", self.image_output == 0):
             self.image_output = 0
         if ui.radio_button("Show Albedo Output", self.image_output == 1):
@@ -416,7 +439,86 @@ class Example:
         if ui.radio_button("Show Shape Index Output", self.image_output == 5):
             self.image_output = 5
 
+        ui.separator()
+        if ui.radio_button(
+            "Gaussians: Fast",
+            self.tiled_camera_sensor.render_context.config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
+        ):
+            if (
+                self.tiled_camera_sensor.render_context.config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.FAST
+            ):
+                self.tiled_camera_sensor.render_context.config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.FAST
+                )
+                show_compile_kernel_info = True
+
+        if ui.radio_button(
+            "Gaussians: Quality",
+            self.tiled_camera_sensor.render_context.config.gaussians_mode
+            == SensorTiledCamera.GaussianRenderMode.QUALITY,
+        ):
+            if (
+                self.tiled_camera_sensor.render_context.config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.QUALITY
+            ):
+                self.tiled_camera_sensor.render_context.config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.QUALITY
+                )
+                show_compile_kernel_info = True
+
+        changed, value = ui.slider_float(
+            "Min Transmittance",
+            self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance = value
+            show_compile_kernel_info = True
+
+        changed, value = ui.slider_int(
+            "Max Num Hits",
+            self.tiled_camera_sensor.render_context.config.gaussians_max_num_hits,
+            1,
+            40,
+            "%d",
+        )
+        if changed:
+            self.tiled_camera_sensor.render_context.config.gaussians_max_num_hits = value
+            show_compile_kernel_info = True
+
+        if show_compile_kernel_info:
+            display_width = self.viewer.ui.io.display_size[0]
+            display_height = self.viewer.ui.io.display_size[1]
+
+            overlay_width = 200
+            overlay_height = 100
+
+            text_width, text_height = ui.calc_text_size("Rebuilding Kernels")
+
+            ui.set_next_window_pos(
+                ui.ImVec2((display_width - overlay_width) * 0.5, (display_height - overlay_height) * 0.5)
+            )
+            ui.set_next_window_size(ui.ImVec2(overlay_width, overlay_height))
+
+            if ui.begin(
+                "Message",
+                flags=(
+                    ui.WindowFlags_.no_title_bar.value
+                    | ui.WindowFlags_.no_mouse_inputs.value
+                    | ui.WindowFlags_.no_scrollbar.value
+                ),
+            ):
+                ui.set_cursor_pos(ui.ImVec2((overlay_width - text_width) * 0.5, (overlay_height - text_height) * 0.5))
+                ui.text("Rebuilding Kernels")
+            ui.end()
+
     def display(self, imgui):
+        if not self.show_sensor_output:
+            return
+
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
 
         width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
@@ -460,8 +562,21 @@ class Example:
 
 
 if __name__ == "__main__":
+    parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--ply",
+        help="Gaussian Filename",
+    )
+    parser.add_argument(
+        "-min",
+        "--min-response",
+        type=float,
+        default=0.1,
+        help="Gaussian min response",
+    )
+
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
     example = Example(viewer, args)

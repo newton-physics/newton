@@ -16,13 +16,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import warp as wp
 
 from ..geometry import GeoType, ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderOrder
+from .warp_raytrace import ClearData, GaussianRenderMode, RenderContext, RenderLightType, RenderOrder
 
 DEFAULT_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
@@ -65,6 +66,8 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
         return True
     if shape_type == GeoType.MESH:
         return True
+    if shape_type == GeoType.GAUSSIAN:
+        return True
     wp.printf("Unsupported shape geom type: %d\n", shape_type)
     return False
 
@@ -106,6 +109,7 @@ class SensorTiledCamera:
     RenderContext = RenderContext
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
+    GaussianRenderMode = GaussianRenderMode
 
     @dataclass
     class Config:
@@ -131,11 +135,11 @@ class SensorTiledCamera:
             ),
             device=self.model.device,
         )
-        self.render_context.mesh_ids = model.shape_source_ptr
-        self.render_context.shape_mesh_indices = wp.empty(
+        self.render_context.shape_source_ptr = model.shape_source_ptr
+        self.render_context.shape_indices = wp.empty(
             self.model.shape_count, dtype=wp.int32, device=self.render_context.device
         )
-        self.render_context.mesh_bounds = wp.empty(
+        self.render_context.shape_bounds = wp.empty(
             (self.model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.render_context.device
         )
 
@@ -163,12 +167,12 @@ class SensorTiledCamera:
             dtype=wp.int32,
             device=self.render_context.device,
         )
-        self.render_context.shape_colors = wp.array(
-            np.full((self.model.shape_count, 4), fill_value=1.0, dtype=wp.float32),
-            dtype=wp.vec4f,
-            device=self.render_context.device,
-        )
+
         self.render_context.shape_world_index = self.model.shape_world
+        self.render_context.gaussians_data = self.model.gaussians_data
+
+        colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(self.model.shape_source)]
+        self.render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.render_context.device)
 
         num_enabled_shapes = wp.zeros(1, dtype=wp.int32, device=self.render_context.device)
         wp.launch(
@@ -178,7 +182,7 @@ class SensorTiledCamera:
                 model.shape_type,
                 model.shape_flags,
                 self.render_context.shape_enabled,
-                self.render_context.shape_mesh_indices,
+                self.render_context.shape_indices,
                 num_enabled_shapes,
             ],
             device=self.render_context.device,
@@ -186,7 +190,7 @@ class SensorTiledCamera:
         self.render_context.shape_count_total = self.model.shape_count
         self.render_context.shape_count_enabled = int(num_enabled_shapes.numpy()[0])
 
-        self.render_context.utils.compute_mesh_bounds()
+        self.render_context.utils.compute_shape_bounds()
 
         if config is not None:
             self.render_context.config.enable_backface_culling = config.backface_culling
@@ -489,3 +493,20 @@ class SensorTiledCamera:
             wp.array of shape (world_count, camera_count, height, width) with dtype uint32.
         """
         return self.render_context.create_albedo_image_output(width, height, camera_count)
+
+    def __get_shape_color(self, index: int, shape: Any):
+        SHAPE_COLOR_MAP = [
+            (68 / 255.0, 119 / 255.0, 170 / 255.0),  # blue
+            (102 / 255.0, 204 / 255.0, 238 / 255.0),  # cyan
+            (34 / 255.0, 136 / 255.0, 51 / 255.0),  # green
+            (204 / 255.0, 187 / 255.0, 68 / 255.0),  # yellow
+            (238 / 255.0, 102 / 255.0, 119 / 255.0),  # red
+            (170 / 255.0, 51 / 255.0, 119 / 255.0),  # magenta
+            (187 / 255.0, 187 / 255.0, 187 / 255.0),  # grey
+            (238 / 255.0, 153 / 255.0, 51 / 255.0),  # orange
+            (0 / 255.0, 153 / 255.0, 136 / 255.0),  # teal
+        ]
+
+        if color := getattr(shape, "color", None):
+            return color
+        return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]

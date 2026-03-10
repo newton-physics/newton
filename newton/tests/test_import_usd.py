@@ -25,7 +25,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.usd as usd
-from newton import JointType
+from newton import BodyFlags, JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
 from newton.math import quat_between_axes
@@ -1213,6 +1213,62 @@ class TestImportUsdPhysics(unittest.TestCase):
         # Verify inertia is also positive (not garbage).
         inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
         self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_kinematic_enabled_flag(self):
+        """USD bodies with physics:kinematicEnabled=true get BodyFlags.KINEMATIC."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Kinematic root body
+        kin_xform = UsdGeom.Xform.Define(stage, "/World/Kinematic")
+        kin_prim = kin_xform.GetPrim()
+        rb_api = UsdPhysics.RigidBodyAPI.Apply(kin_prim)
+        rb_api.CreateKinematicEnabledAttr().Set(True)
+        mass_api = UsdPhysics.MassAPI.Apply(kin_prim)
+        mass_api.CreateMassAttr().Set(1.0)
+        sphere = UsdGeom.Sphere.Define(stage, "/World/Kinematic/Sphere")
+        UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+
+        # Dynamic body
+        dyn_xform = UsdGeom.Xform.Define(stage, "/World/Dynamic")
+        dyn_prim = dyn_xform.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(dyn_prim)
+        mass_api2 = UsdPhysics.MassAPI.Apply(dyn_prim)
+        mass_api2.CreateMassAttr().Set(1.0)
+        sphere2 = UsdGeom.Sphere.Define(stage, "/World/Dynamic/Sphere")
+        UsdPhysics.CollisionAPI.Apply(sphere2.GetPrim())
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        kin_idx = builder.body_label.index("/World/Kinematic")
+        dyn_idx = builder.body_label.index("/World/Dynamic")
+        self.assertTrue(builder.body_flags[kin_idx] & int(BodyFlags.KINEMATIC))
+        self.assertEqual(builder.body_flags[dyn_idx], int(BodyFlags.DYNAMIC))
+
+        model = builder.finalize()
+        flags = model.body_flags.numpy()
+        self.assertTrue(flags[kin_idx] & int(BodyFlags.KINEMATIC))
+        self.assertEqual(flags[dyn_idx], int(BodyFlags.DYNAMIC))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_kinematic_enabled_articulation(self):
+        """Kinematic flag is parsed for articulation root bodies from USD."""
+        builder = newton.ModelBuilder()
+        builder.add_usd(os.path.join(os.path.dirname(__file__), "assets", "actuator_test.usda"))
+
+        base_idx = builder.body_label.index("/World/Robot/Base")
+        self.assertTrue(builder.body_flags[base_idx] & int(BodyFlags.KINEMATIC))
+
+        # Non-root links should be dynamic
+        link1_idx = builder.body_label.index("/World/Robot/Link1")
+        link2_idx = builder.body_label.index("/World/Robot/Link2")
+        self.assertEqual(builder.body_flags[link1_idx], int(BodyFlags.DYNAMIC))
+        self.assertEqual(builder.body_flags[link2_idx], int(BodyFlags.DYNAMIC))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_cube_cylinder_joint_count(self):

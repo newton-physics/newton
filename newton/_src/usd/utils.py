@@ -1125,7 +1125,19 @@ def get_mesh(
     if return_uv_indices and uvs is not None and uv_indices is None:
         uv_indices = faces.reshape(-1)
 
-    mesh_out = Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
+    material_props = resolve_material_properties_for_prim(prim)
+
+    mesh_out = Mesh(
+        points,
+        faces.flatten(),
+        normals=normals,
+        uvs=uvs,
+        maxhullvert=maxhullvert,
+        color=material_props.get("color"),
+        texture=material_props.get("texture"),
+        metallic=material_props.get("metallic"),
+        roughness=material_props.get("roughness"),
+    )
     if return_uv_indices:
         return mesh_out, uv_indices
     return mesh_out
