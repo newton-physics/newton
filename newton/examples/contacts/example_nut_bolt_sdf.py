@@ -132,9 +132,9 @@ class Example:
 
         main_scene = newton.ModelBuilder()
         main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
-        # Add ground plane with offset (plane equation: z = offset)
-        # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d
-        # Therefore, to get plane at z = offset, we need d = -offset
+        # Add ground plane at z = ground_plane_offset.
+        # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d.
+        # Therefore d is the negative offset, and z = offset uses d = -offset.
         main_scene.add_shape_plane(
             plane=(0.0, 0.0, 1.0, -self.ground_plane_offset),
             width=0.0,

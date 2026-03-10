@@ -1,0 +1,338 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import argparse
+import os
+
+import numpy as np
+import warp as wp
+
+import newton
+import newton.examples
+from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton._src.solvers.kamino._src.core.shapes import ShapeType
+from newton._src.solvers.kamino._src.geometry.primitive.broadphase import PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES
+from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS
+from newton._src.solvers.kamino._src.models.builders import testing
+from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.sim import SimulationLogger, Simulator, ViewerKamino
+from newton._src.solvers.kamino.examples import get_examples_output_path, run_headless
+
+###
+# Example class
+###
+
+
+class Example:
+    def __init__(
+        self,
+        device: wp.DeviceLike,
+        max_steps: int = 1000,
+        use_cuda_graph: bool = False,
+        pipeline_name: str = "primitive",
+        headless: bool = False,
+        logging: bool = False,
+        record_video: bool = False,
+        async_save: bool = False,
+    ):
+        # Initialize target frames per second and corresponding time-steps
+        self.fps = 60
+        self.sim_dt = 0.001
+        self.frame_dt = 1.0 / self.fps
+        self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
+        self.max_steps = max_steps
+
+        # Cache the device and other internal flags
+        self.device = device
+        self.use_cuda_graph: bool = use_cuda_graph
+        self.logging: bool = logging
+
+        # Define excluded shape types for broadphase / narrowphase (temporary)
+        excluded_types = [
+            ShapeType.EMPTY,  # NOTE: Need to skip empty shapes
+            ShapeType.PLANE,  # NOTE: Currently not supported well by the viewer
+            ShapeType.ELLIPSOID,  # NOTE: Currently not supported well by the viewer
+            ShapeType.MESH,  # NOTE: Currently not supported any pipeline
+            ShapeType.CONVEX,  # NOTE: Currently not supported any pipeline
+            ShapeType.HFIELD,  # NOTE: Currently not supported any pipeline
+        ]
+
+        # Generate a list of all supported shape-pair combinations for the configured pipeline
+        supported_shape_pairs: list[tuple[str, str]] = []
+        if pipeline_name == "unified":
+            supported_shape_types = [st.value for st in ShapeType]
+            for shape_bottom in supported_shape_types:
+                shape_bottom_name = ShapeType(shape_bottom).name.lower()
+                for shape_top in supported_shape_types:
+                    shape_top_name = ShapeType(shape_top).name.lower()
+                    if shape_top in excluded_types or shape_bottom in excluded_types:
+                        continue
+                    supported_shape_pairs.append((shape_top_name, shape_bottom_name))
+        elif pipeline_name == "primitive":
+            excluded_types.extend([ShapeType.CYLINDER])
+            supported_shape_types = list(PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES)
+            supported_type_pairs = list(PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS)
+            supported_type_pairs_reversed = [(b, a) for (a, b) in supported_type_pairs]
+            supported_type_pairs.extend(supported_type_pairs_reversed)
+            for shape_bottom in supported_shape_types:
+                shape_bottom_name = shape_bottom.name.lower()
+                for shape_top in supported_shape_types:
+                    shape_top_name = shape_top.name.lower()
+                    if shape_top in excluded_types or shape_bottom in excluded_types:
+                        continue
+                    if (shape_top, shape_bottom) in supported_type_pairs:
+                        supported_shape_pairs.append((shape_top_name, shape_bottom_name))
+        else:
+            raise ValueError(f"Unsupported collision pipeline type: {pipeline_name}")
+        msg.notif(f"Supported shape pairs for pipeline '{pipeline_name}': {supported_shape_pairs}")
+
+        # Construct model builder containing all shape-pair combinations supported by the configured pipeline
+        msg.info("Constructing builder using model generator ...")
+        self.builder: ModelBuilderKamino = testing.make_shape_pairs_builder(
+            shape_pairs=supported_shape_pairs,
+            distance=0.0,
+            ground_box=True,
+            ground_z=-2.0,
+        )
+
+        # Set solver config
+        config = Simulator.Config()
+        config.dt = 0.001
+        config.solver.padmm.rho_0 = 0.1
+        config.collision_detector.pipeline = pipeline_name
+
+        # Create a simulator
+        msg.info("Building the simulator...")
+        self.sim = Simulator(builder=self.builder, config=config, device=device)
+
+        # Initialize the data logger
+        self.logger: SimulationLogger | None = None
+        if self.logging:
+            msg.notif("Creating the sim data logger...")
+            self.logger = SimulationLogger(self.max_steps, self.sim, self.builder)
+
+        # Initialize the viewer
+        if not headless:
+            msg.notif("Creating the 3D viewer...")
+            # Set up video recording folder
+            video_folder = None
+            if record_video:
+                video_folder = os.path.join(get_examples_output_path(), "test_all_geoms/frames")
+                os.makedirs(video_folder, exist_ok=True)
+                msg.info(f"Frame recording enabled ({'async' if async_save else 'sync'} mode)")
+                msg.info(f"Frames will be saved to: {video_folder}")
+
+            self.viewer = ViewerKamino(
+                builder=self.builder,
+                simulator=self.sim,
+                show_contacts=True,
+                record_video=record_video,
+                video_folder=video_folder,
+                async_save=async_save,
+            )
+        else:
+            self.viewer = None
+
+        # Declare and initialize the optional computation graphs
+        # NOTE: These are used for most efficient GPU runtime
+        self.reset_graph = None
+        self.step_graph = None
+        self.simulate_graph = None
+
+        # Capture CUDA graph if requested and available
+        self.capture()
+
+        # Warm-start the simulator before rendering
+        # NOTE: This compiles and loads the warp kernels prior to execution
+        msg.notif("Warming up simulator...")
+        self.step_once()
+        self.reset()
+
+    def capture(self):
+        """Capture CUDA graph if requested and available."""
+        if self.use_cuda_graph:
+            msg.info("Running with CUDA graphs...")
+            with wp.ScopedCapture(self.device) as reset_capture:
+                self.sim.reset()
+            self.reset_graph = reset_capture.graph
+            with wp.ScopedCapture(self.device) as step_capture:
+                self.sim.step()
+            self.step_graph = step_capture.graph
+            with wp.ScopedCapture(self.device) as sim_capture:
+                self.simulate()
+            self.simulate_graph = sim_capture.graph
+        else:
+            msg.info("Running with kernels...")
+
+    def simulate(self):
+        """Run simulation substeps."""
+        for _i in range(self.sim_substeps):
+            self.sim.step()
+            if not self.use_cuda_graph and self.logging:
+                self.logger.log()
+
+    def reset(self):
+        """Reset the simulation."""
+        if self.reset_graph:
+            wp.capture_launch(self.reset_graph)
+        else:
+            self.sim.reset()
+        if not self.use_cuda_graph and self.logging:
+            self.logger.reset()
+            self.logger.log()
+
+    def step_once(self):
+        """Run the simulation for a single time-step."""
+        if self.step_graph:
+            wp.capture_launch(self.step_graph)
+        else:
+            self.sim.step()
+        if not self.use_cuda_graph and self.logging:
+            self.logger.log()
+
+    def step(self):
+        """Step the simulation."""
+        if self.simulate_graph:
+            wp.capture_launch(self.simulate_graph)
+        else:
+            self.simulate()
+
+    def render(self):
+        """Render the current frame."""
+        if self.viewer:
+            self.viewer.render_frame()
+
+    def test(self):
+        """Test function for compatibility."""
+        pass
+
+    def plot(self, path: str | None = None, show: bool = False, keep_frames: bool = False):
+        """
+        Plot logged data and generate video from recorded frames.
+
+        Args:
+            path: Output directory path (uses video_folder if None)
+            show: If True, display plots after saving
+            keep_frames: If True, keep PNG frames after video creation
+        """
+        # Optionally plot the logged simulation data
+        if self.logging:
+            self.logger.plot_solver_info(path=path, show=show)
+            self.logger.plot_joint_tracking(path=path, show=show)
+            self.logger.plot_solution_metrics(path=path, show=show)
+
+        # Optionally generate video from recorded frames
+        if self.viewer is not None and self.viewer._record_video:
+            output_dir = path if path is not None else self.viewer._video_folder
+            output_path = os.path.join(output_dir, "recording.mp4")
+            self.viewer.generate_video(output_filename=output_path, fps=self.fps, keep_frames=keep_frames)
+
+
+###
+# Main function
+###
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="A demo of all supported geometry types and CD pipelines.")
+    parser.add_argument("--num-steps", type=int, default=1000, help="Number of steps for headless mode")
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=False, help="Run in headless mode")
+    parser.add_argument("--device", type=str, help="The compute device to use")
+    parser.add_argument("--cuda-graph", action=argparse.BooleanOptionalAction, default=True, help="Use CUDA graphs")
+    parser.add_argument("--clear-cache", action=argparse.BooleanOptionalAction, default=False, help="Clear warp cache")
+    parser.add_argument(
+        "--logging", action=argparse.BooleanOptionalAction, default=True, help="Enable logging of simulation data"
+    )
+    parser.add_argument(
+        "--show-plots", action=argparse.BooleanOptionalAction, default=False, help="Show plots of logging data"
+    )
+    parser.add_argument("--test", action=argparse.BooleanOptionalAction, default=False, help="Run tests")
+    parser.add_argument(
+        "--pipeline-name",
+        type=str,
+        choices=["primitive", "unified"],
+        default="unified",
+        help="Collision detection pipeline name ('primitive' or 'unified')",
+    )
+    parser.add_argument(
+        "--record",
+        type=str,
+        choices=["sync", "async"],
+        default=None,
+        help="Enable frame recording: 'sync' for synchronous, 'async' for asynchronous (non-blocking)",
+    )
+    args = parser.parse_args()
+
+    # Set global numpy configurations
+    np.set_printoptions(linewidth=20000, precision=10, threshold=10000, suppress=True)
+
+    # Clear warp cache if requested
+    if args.clear_cache:
+        wp.clear_kernel_cache()
+        wp.clear_lto_cache()
+
+    # TODO: Make optional
+    # Set the verbosity of the global message logger
+    msg.set_log_level(msg.LogLevel.INFO)
+
+    # Set device if specified, otherwise use Warp's default
+    if args.device:
+        device = wp.get_device(args.device)
+        wp.set_device(device)
+    else:
+        device = wp.get_preferred_device()
+
+    # Determine if CUDA graphs should be used for execution
+    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+    use_cuda_graph = can_use_cuda_graph and args.cuda_graph
+    msg.info(f"can_use_cuda_graph: {can_use_cuda_graph}")
+    msg.info(f"use_cuda_graph: {use_cuda_graph}")
+    msg.info(f"device: {device}")
+
+    # Create example instance
+    example = Example(
+        device=device,
+        use_cuda_graph=use_cuda_graph,
+        max_steps=args.num_steps,
+        headless=args.headless,
+        pipeline_name=args.pipeline_name,
+        logging=args.logging,
+        record_video=args.record is not None and not args.headless,
+        async_save=args.record == "async",
+    )
+
+    # Run a brute-force simulation loop if headless
+    if args.headless:
+        msg.notif("Running in headless mode...")
+        run_headless(example, progress=True)
+
+    # Otherwise launch using a debug viewer
+    else:
+        msg.notif("Running in Viewer mode...")
+        # Set initial camera position for better view of the system
+        if hasattr(example.viewer, "set_camera"):
+            camera_pos = wp.vec3(8.7, -26.0, 1.0)
+            pitch = 2.0
+            yaw = 140.0
+            example.viewer.set_camera(camera_pos, pitch, yaw)
+
+        # Launch the example using Newton's built-in runtime
+        newton.examples.run(example, args)
+
+    # Plot logged data after the viewer is closed
+    if args.logging or args.record:
+        OUTPUT_PLOT_PATH = os.path.join(get_examples_output_path(), "test_all_geoms")
+        os.makedirs(OUTPUT_PLOT_PATH, exist_ok=True)
+        example.plot(path=OUTPUT_PLOT_PATH, show=args.show_plots)

@@ -278,6 +278,7 @@ class Example:
             normal_image=self.tiled_camera_sensor_normal_image,
             shape_index_image=self.tiled_camera_sensor_shape_index_image,
             albedo_image=self.tiled_camera_sensor_albedo_image,
+            clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
         )
         self.update_texture()
 
@@ -560,20 +561,25 @@ class Example:
 
         imgui.end()
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--ply",
+            help="Gaussian filename.",
+        )
+        parser.add_argument(
+            "-min",
+            "--min-response",
+            type=float,
+            default=0.1,
+            help="Gaussian min response.",
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument(
-        "--ply",
-        help="Gaussian Filename",
-    )
-    parser.add_argument(
-        "-min",
-        "--min-response",
-        type=float,
-        default=0.1,
-        help="Gaussian min response",
-    )
+    parser = Example.create_parser()
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
