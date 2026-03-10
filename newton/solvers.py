@@ -78,7 +78,7 @@ Supported Features
      - ❌
    * - :class:`~newton.solvers.SolverMuJoCo`
      - Explicit, Semi-implicit, Implicit
-     - ✅ (uses its own collision pipeline from MuJoCo/mujoco_warp by default, unless ``use_mujoco_contacts`` is set to False)
+     - ✅ :sup:`1`
      - ✅ generalized coordinates
      - ❌
      - ❌
@@ -116,6 +116,9 @@ Supported Features
      - 🟨 no self-collision
      - 🟨 experimental
      - ❌
+
+| :sup:`1` Uses its own collision pipeline from MuJoCo/mujoco_warp by default,
+  unless ``use_mujoco_contacts`` is set to ``False``.
 
 .. _Joint feature support:
 
@@ -316,6 +319,51 @@ constraints (AVBD). :class:`~newton.solvers.SolverStyle3D` and
 
 | :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
 | :sup:`4` Used for CABLE joints only (as stretch/bend stiffness and damping).
+
+Differentiability
+-----------------
+
+Differentiable simulation in Newton typically runs a forward rollout inside
+``wp.Tape()``, computes a scalar loss from the simulated state, and then calls
+``tape.backward(loss)`` to populate gradients on differentiable state,
+control, or model arrays. In practice, this starts by calling
+:meth:`~newton.ModelBuilder.finalize` with ``requires_grad=True``.
+
+.. doctest::
+
+    import warp as wp
+    import newton
+
+    @wp.kernel
+    def loss_kernel(particle_q: wp.array(dtype=wp.vec3), target: wp.vec3, loss: wp.array(dtype=float)):
+        delta = particle_q[0] - target
+        loss[0] = wp.dot(delta, delta)
+
+    builder = newton.ModelBuilder()
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(1.0, 0.0, 0.0), mass=1.0)
+
+    model = builder.finalize(requires_grad=True)
+    solver = newton.solvers.SolverSemiImplicit(model)
+
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    target = wp.vec3(0.25, 0.0, 0.0)
+
+    tape = wp.Tape()
+    with tape:
+        state_in.clear_forces()
+        solver.step(state_in, state_out, control, None, 1.0 / 60.0)
+        wp.launch(loss_kernel, dim=1, inputs=[state_out.particle_q, target, loss])
+
+    tape.backward(loss)
+    initial_velocity_grad = state_in.particle_qd.grad.numpy()
+    assert float(initial_velocity_grad[0, 0]) < 0.0
+
+See the `DiffSim examples on GitHub
+<https://github.com/newton-physics/newton/tree/main/newton/examples/diffsim>`_
+for the current reference workflows.
 
 .. |yes| unicode:: U+2705
 .. |no| unicode:: U+274C
