@@ -311,7 +311,7 @@ def _create_accumulate_reduced_depth_kernel():
             entry_idx = ht_active_slots[i]
 
             p1_ids = exported_ids_vec()
-            p1_count = 0
+            p1_count = int(0)
 
             for slot in range(wp.static(VALUES_PER_KEY)):
                 value = ht_values[slot * ht_capacity + entry_idx]
