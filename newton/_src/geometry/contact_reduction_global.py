@@ -433,8 +433,7 @@ def _clear_active_kernel(
                 weight_sum[entry_idx] = 0.0
                 entry_k_eff[entry_idx] = 0.0
                 total_depth_reduced[entry_idx] = 0.0
-                if total_normal_reduced.shape[0] > 0:
-                    total_normal_reduced[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
+                total_normal_reduced[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
 
         # Clear this value slot (slot-major layout)
         value_idx = local_idx * ht_capacity + entry_idx

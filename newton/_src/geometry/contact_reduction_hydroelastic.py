@@ -311,7 +311,7 @@ def _create_accumulate_reduced_depth_kernel():
             entry_idx = ht_active_slots[i]
 
             p1_ids = exported_ids_vec()
-            p1_count = int(0)
+            p1_count = 0
 
             for slot in range(wp.static(VALUES_PER_KEY)):
                 value = ht_values[slot * ht_capacity + entry_idx]
@@ -499,7 +499,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
             # Compute anchor position (center of pressure) for normal bin entries
             anchor_pos = wp.vec3(0.0, 0.0, 0.0)
-            add_anchor = int(0)
+            add_anchor = 0
             entry_weight_sum = weight_sum[entry_idx]
             if wp.static(anchor_contact) and use_aggregate_features and max_pen_depth > 1e-6:
                 if entry_weight_sum > wp.static(EPS_SMALL):
