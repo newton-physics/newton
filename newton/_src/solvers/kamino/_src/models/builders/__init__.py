@@ -13,26 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .featherstone import SolverFeatherstone
-from .flags import SolverNotifyFlags
-from .implicit_mpm import SolverImplicitMPM
-from .kamino import SolverKamino
-from .mujoco import SolverMuJoCo
-from .semi_implicit import SolverSemiImplicit
-from .solver import SolverBase
-from .style3d.solver_style3d import SolverStyle3D
-from .vbd import SolverVBD
-from .xpbd import SolverXPBD
+"""
+Model building utilities and predefined builders.
+
+This module provides a collection of model builders
+for common scenarios and testing purposes, as well
+as utility functions for composing and manipulating
+model builders.
+"""
+
+from . import basics, testing, utils
 
 __all__ = [
-    "SolverBase",
-    "SolverFeatherstone",
-    "SolverImplicitMPM",
-    "SolverKamino",
-    "SolverMuJoCo",
-    "SolverNotifyFlags",
-    "SolverSemiImplicit",
-    "SolverStyle3D",
-    "SolverVBD",
-    "SolverXPBD",
+    "basics",
+    "testing",
+    "utils",
 ]
