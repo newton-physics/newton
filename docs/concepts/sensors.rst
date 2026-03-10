@@ -66,7 +66,7 @@ SensorContact
 If no counterparts are specified, the sensor reports the total contact force for each sensing object (one column). With counterparts, you get a force matrix; use ``include_total=True`` to add a total column.
 
 Basic Usage
-~~~~~~~~~~
+~~~~~~~~~~~
 
 ``SensorContact`` requires exactly one of ``sensing_obj_bodies`` or ``sensing_obj_shapes`` to define the sensing objects. Optionally specify ``counterpart_bodies`` or ``counterpart_shapes`` to measure force per counterpart. It requires contact forces via the :doc:`extended attribute <extended_attributes>` :attr:`Contacts.force <newton.Contacts.force>`.
 
@@ -296,7 +296,7 @@ SensorRaycast
 The camera uses a right-handed frame: ``camera_direction`` (forward), ``camera_up``, and ``camera_right`` (cross of forward and up). Configure vertical field of view (``fov_radians``), resolution (``width``, ``height``), and ``max_distance`` (rays beyond this distance report no hit).
 
 Basic Usage
-~~~~~~~~~~
+~~~~~~~~~~~
 
 ``SensorRaycast`` is constructed with the model and camera parameters (position, direction, up, vertical FOV, width, height). Call :meth:`~newton.sensors.SensorRaycast.update` with the current ``state`` so body poses are used for shape raycasting. For articulated models, run :func:`newton.eval_fk` before ``update`` so that body poses (``state.body_q``) are current. Optionally pass ``include_particles=True`` to also intersect rays with particles in ``state`` (requires the model to define particle geometry).
 
