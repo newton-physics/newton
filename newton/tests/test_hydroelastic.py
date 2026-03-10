@@ -523,7 +523,7 @@ def test_reduced_vs_unreduced_contact_forces(test, device):
         # z-component (normal force) — must be positive and match within 1%
         test.assertGreater(f_unr[2], 0.0, f"pen={pen}: unreduced Fz should be positive")
         rel_z = abs(f_red[2] - f_unr[2]) / abs(f_unr[2])
-        test.assertLess(rel_z, 0.01, f"pen={pen}: Fz mismatch {rel_z*100:.2f}%")
+        test.assertLess(rel_z, 0.01, f"pen={pen}: Fz mismatch {rel_z * 100:.2f}%")
 
         # xy-components — should be small; match as fraction of Fz
         for axis, label in [(0, "Fx"), (1, "Fy")]:
