@@ -1161,7 +1161,7 @@ emitted because kinematics may diverge.</p>
 </dl>
 </section>
 <section id="kinematic-links-and-fixed-roots">
-<h2>Kinematic Links and Fixed Roots<a class="headerlink" href="#kinematic-links-and-fixed-roots" title="Link to this heading">#</a></h2>
+<span id="mujoco-kinematic-links-and-fixed-roots"></span><h2>Kinematic Links and Fixed Roots<a class="headerlink" href="#kinematic-links-and-fixed-roots" title="Link to this heading">#</a></h2>
 <p>Newton only allows <code class="docutils literal notranslate"><span class="pre">is_kinematic=True</span></code> on articulation roots, so in the
 MuJoCo exporter a “kinematic link” always means a kinematic root body. Any
 descendants of that root can still be dynamic and are exported normally.</p>
