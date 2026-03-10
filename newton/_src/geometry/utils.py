@@ -172,7 +172,7 @@ def compute_equivalent_inertia_box(
         is_solid=is_solid,
     )
 
-    if volume <= 0.0:
+    if volume < 1e-12:
         return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)
 
     inertia = np.array(inertia_tensor).reshape(3, 3)

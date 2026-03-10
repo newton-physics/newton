@@ -734,8 +734,8 @@ def parse_mjcf(
                 mesh_name = geom_attrib.get("mesh")
                 if mesh_name is None or mesh_name not in mesh_assets:
                     if verbose:
-                        print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping fit")
-                    fit_to_mesh = False
+                        print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
+                    continue
                 else:
                     stl_file = mesh_assets[mesh_name]["file"]
                     if "mesh" in geom_defaults:
