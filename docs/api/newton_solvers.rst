@@ -49,6 +49,7 @@ Supported Features
      - Particles
      - Cloth
      - Soft bodies
+     - Differentiable
    * - :class:`~newton.solvers.SolverFeatherstone`
      - Explicit
      - ✅
@@ -56,6 +57,7 @@ Supported Features
      - ✅
      - 🟨 no self-collision
      - ✅
+     - 🟨 basic diff sim only
    * - :class:`~newton.solvers.SolverImplicitMPM`
      - Implicit
      - ❌
@@ -63,10 +65,12 @@ Supported Features
      - ✅
      - ❌
      - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverMuJoCo`
      - Explicit, Semi-implicit, Implicit
      - ✅ (uses its own collision pipeline from MuJoCo/mujoco_warp by default, unless ``use_mujoco_contacts`` is set to False)
      - ✅ generalized coordinates
+     - ❌
      - ❌
      - ❌
      - ❌
@@ -77,12 +81,14 @@ Supported Features
      - ✅
      - 🟨 no self-collision
      - ✅
+     - 🟨 basic diff sim only
    * - :class:`~newton.solvers.SolverStyle3D`
      - Implicit
      - ❌
      - ❌
      - ✅
      - ✅
+     - ❌
      - ❌
    * - :class:`~newton.solvers.SolverVBD`
      - Implicit
@@ -91,6 +97,7 @@ Supported Features
      - ✅
      - ✅
      - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverXPBD`
      - Implicit
      - ✅
@@ -98,6 +105,7 @@ Supported Features
      - ✅
      - 🟨 no self-collision
      - 🟨 experimental
+     - ❌
 
 .. _Joint feature support:
 
