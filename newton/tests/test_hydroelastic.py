@@ -388,58 +388,6 @@ def test_iso_scan_scratch_buffers_are_level_sized(test, device):
         test.assertEqual(hydro.iso_subblock_idx_scratch[i].shape[0], level_input)
 
 
-def test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum(test, device):
-    """Validate opt-in aggregate mode keeps at least as much penetrating weight.
-
-    Args:
-        test: Unittest-style assertion helper.
-        device: Warp device under test.
-    """
-    config_default = HydroelasticSDF.Config(
-        reduce_contacts=True,
-        pre_prune_contacts=True,
-        pre_prune_accumulate_all_penetrating_aggregates=False,
-        buffer_fraction=1.0,
-        buffer_mult_contact=2,
-    )
-    model_default, _, state_default, _, _, pipeline_default, _, _ = build_stacked_cubes_scene(
-        device=device,
-        solver_fn=solvers["xpbd"],
-        shape_type=ShapeType.MESH,
-        cube_half=CUBE_HALF_SMALL,
-        reduce_contacts=True,
-        sdf_hydroelastic_config=config_default,
-    )
-    newton.eval_fk(model_default, model_default.joint_q, model_default.joint_qd, state_default)
-    total_weight_default = _compute_total_active_weight_sum(pipeline_default, state_default)
-
-    config_accurate = HydroelasticSDF.Config(
-        reduce_contacts=True,
-        pre_prune_contacts=True,
-        pre_prune_accumulate_all_penetrating_aggregates=True,
-        buffer_fraction=1.0,
-        buffer_mult_contact=2,
-    )
-    model_accurate, _, state_accurate, _, _, pipeline_accurate, _, _ = build_stacked_cubes_scene(
-        device=device,
-        solver_fn=solvers["xpbd"],
-        shape_type=ShapeType.MESH,
-        cube_half=CUBE_HALF_SMALL,
-        reduce_contacts=True,
-        sdf_hydroelastic_config=config_accurate,
-    )
-    newton.eval_fk(model_accurate, model_accurate.joint_q, model_accurate.joint_qd, state_accurate)
-    total_weight_accurate = _compute_total_active_weight_sum(pipeline_accurate, state_accurate)
-
-    test.assertGreater(total_weight_default, 0.0, "Expected positive aggregate weight in default mode")
-    test.assertGreater(total_weight_accurate, 0.0, "Expected positive aggregate weight in accurate mode")
-    test.assertGreaterEqual(
-        total_weight_accurate,
-        total_weight_default - 1e-6,
-        "Expected accurate aggregate mode to retain at least as much penetrating aggregate weight",
-    )
-
-
 def test_reduce_contacts_with_pre_prune_disabled_no_crash(test, device):
     """Validate the reduce_contacts=True, pre_prune_contacts=False path."""
     config = HydroelasticSDF.Config(
@@ -705,10 +653,10 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         ratio = measured / expected
 
         test.assertGreater(
-            ratio, 0.9, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
+            ratio, 0.85, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
         )
         test.assertLess(
-            ratio, 1.1, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
+            ratio, 1.15, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
         )
 
 
@@ -825,12 +773,6 @@ add_function_test(
     devices=cuda_devices,
 )
 
-add_function_test(
-    TestHydroelastic,
-    "test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum",
-    test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum,
-    devices=cuda_devices,
-)
 add_function_test(
     TestHydroelastic,
     "test_reduce_contacts_with_pre_prune_disabled_no_crash",

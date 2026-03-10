@@ -367,6 +367,17 @@ class GlobalContactReducerData:
     # Accumulates sum(area * depth) for penetrating contacts
     weight_sum: wp.array(dtype=wp.float32)
 
+    # Total depth of reduced (winning) contacts per normal bin entry.
+    # Accumulated from all winning contacts (normal bin + voxel) that map to each normal bin.
+    # Used to distribute aggregate force across all reduced contacts, not just per-entry winners.
+    total_depth_reduced: wp.array(dtype=wp.float32)
+
+    # Total depth-weighted normal of reduced (winning) contacts per normal bin entry.
+    # Accumulated as sum(|depth| * normal) from all winning contacts that map to each normal bin.
+    # Used for normal matching so the rotation is computed from all reduced contacts, not just
+    # the current entry's winners.
+    total_normal_reduced: wp.array(dtype=wp.vec3)
+
     # Hashtable arrays
     ht_keys: wp.array(dtype=wp.uint64)
     ht_values: wp.array(dtype=wp.uint64)
@@ -387,6 +398,8 @@ def _clear_active_kernel(
     weighted_pos_sum: wp.array(dtype=wp.vec3),
     weight_sum: wp.array(dtype=wp.float32),
     entry_k_eff: wp.array(dtype=wp.float32),
+    total_depth_reduced: wp.array(dtype=wp.float32),
+    total_normal_reduced: wp.array(dtype=wp.vec3),
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
@@ -424,6 +437,9 @@ def _clear_active_kernel(
                 weighted_pos_sum[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weight_sum[entry_idx] = 0.0
                 entry_k_eff[entry_idx] = 0.0
+                total_depth_reduced[entry_idx] = 0.0
+                if total_normal_reduced.shape[0] > 0:
+                    total_normal_reduced[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
 
         # Clear this value slot (slot-major layout)
         value_idx = local_idx * ht_capacity + entry_idx
@@ -548,11 +564,17 @@ class GlobalContactReducer:
             self.weight_sum = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
             # k_eff per entry (constant per shape pair, set once on first insert)
             self.entry_k_eff = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+            # Total depth of reduced contacts per normal bin (accumulated from all winning contacts)
+            self.total_depth_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+            # Total depth-weighted normal of reduced contacts per normal bin
+            self.total_normal_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
         else:
             self.agg_force = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weight_sum = wp.zeros(0, dtype=wp.float32, device=device)
             self.entry_k_eff = wp.zeros(0, dtype=wp.float32, device=device)
+            self.total_depth_reduced = wp.zeros(0, dtype=wp.float32, device=device)
+            self.total_normal_reduced = wp.zeros(0, dtype=wp.vec3, device=device)
 
     def clear(self):
         """Clear all contacts and reset the reducer (full clear)."""
@@ -582,6 +604,8 @@ class GlobalContactReducer:
                 self.weighted_pos_sum,
                 self.weight_sum,
                 self.entry_k_eff,
+                self.total_depth_reduced,
+                self.total_normal_reduced,
                 self.hashtable.capacity,
                 self.values_per_key,
                 num_threads,
@@ -619,6 +643,8 @@ class GlobalContactReducer:
         data.agg_force = self.agg_force
         data.weighted_pos_sum = self.weighted_pos_sum
         data.weight_sum = self.weight_sum
+        data.total_depth_reduced = self.total_depth_reduced
+        data.total_normal_reduced = self.total_normal_reduced
         data.ht_keys = self.hashtable.keys
         data.ht_values = self.ht_values
         data.ht_active_slots = self.hashtable.active_slots
