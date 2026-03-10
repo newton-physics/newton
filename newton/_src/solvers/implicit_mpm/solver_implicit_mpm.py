@@ -2867,6 +2867,7 @@ class SolverImplicitMPM(SolverBase):
         inv_cell_volume: float,
     ):
         if self.strain_basis in ("Q1", "S2"):
+            scratch.strain_node_particle_volume += _EPSILON
             return None
         elif self.strain_basis[:3] == "pic":
             M_diag = scratch.strain_node_particle_volume
