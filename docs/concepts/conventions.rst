@@ -107,6 +107,9 @@ Newton Conventions
 
 **Newton** follows the standard physics engine convention for most solvers,
 aligning with Isaac Lab's approach.
+Newton's public ``spatial_vector`` arrays use ``(linear, angular)`` ordering,
+unlike Warp's native ``(angular, linear)`` convention. This applies to arrays
+such as :attr:`newton.State.body_qd` and :attr:`newton.State.body_f`.
 Newton's :attr:`State.body_qd <newton.State.body_qd>` stores **both** linear and angular velocities
 in the world frame.
 
