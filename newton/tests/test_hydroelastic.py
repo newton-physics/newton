@@ -328,32 +328,6 @@ def test_buffer_fraction_no_crash(test, device):
     )
 
 
-def _compute_total_active_weight_sum(collision_pipeline, state):
-    """Compute total active aggregate weight in the hydroelastic reducer.
-
-    Args:
-        collision_pipeline: Collision pipeline configured for hydroelastic contacts.
-        state: Simulation state used for collision evaluation.
-
-    Returns:
-        Sum of active reducer ``weight_sum`` entries [unitless].
-    """
-    contacts = collision_pipeline.contacts()
-    collision_pipeline.collide(state, contacts)
-    wp.synchronize()
-
-    hydro = collision_pipeline.hydroelastic_sdf
-    reducer = hydro.contact_reduction.reducer
-    active_slots = reducer.hashtable.active_slots.numpy()
-    ht_capacity = reducer.hashtable.capacity
-    active_count = int(active_slots[ht_capacity])
-    if active_count <= 0:
-        return 0.0
-    active_indices = active_slots[:active_count]
-    weight_sum = reducer.weight_sum.numpy()
-    return float(np.sum(weight_sum[active_indices]))
-
-
 def test_iso_scan_scratch_buffers_are_level_sized(test, device):
     """Validate iso-scan scratch buffers match each level input size.
 
