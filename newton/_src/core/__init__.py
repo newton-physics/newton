@@ -20,11 +20,13 @@ from .types import (
     MAXVAL,
     Axis,
     AxisType,
+    GizmoAxes,
 )
 
 __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "GizmoAxes",
     "quat_between_axes",
 ]

@@ -904,6 +904,7 @@ def apply_joint_forces(
     body_q: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     joint_type: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -916,6 +917,8 @@ def apply_joint_forces(
 ):
     tid = wp.tid()
     type = joint_type[tid]
+    if not joint_enabled[tid]:
+        return
     if type == JointType.FIXED:
         return
 
@@ -967,7 +970,7 @@ def apply_joint_forces(
     elif type == JointType.BALL:
         t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
 
-    elif type == JointType.REVOLUTE or type == JointType.PRISMATIC or type == JointType.D6:
+    elif type == JointType.REVOLUTE or type == JointType.PRISMATIC or type == JointType.D6 or type == JointType.CABLE:
         # unroll for loop to ensure joint actions remain differentiable
         # (since differentiating through a dynamic for loop that updates a local variable is not supported)
 

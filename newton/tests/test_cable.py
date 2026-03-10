@@ -205,6 +205,23 @@ def _make_straight_cable_along_x(num_elements: int, segment_length: float, z_hei
     )
 
 
+def _make_straight_cable_along_y(num_elements: int, segment_length: float, z_height: float):
+    """Create points/quats for `ModelBuilder.add_rod()` with a straight cable along +Y.
+
+    Notes:
+        - Points are centered about y=0 (first point is at y=-0.5*cable_length).
+        - Capsules have local +Z as their axis; quaternions rotate local +Z to world +Y.
+    """
+    length = float(num_elements * segment_length)
+    start = wp.vec3(0.0, -0.5 * length, float(z_height))
+    return newton.utils.create_straight_cable_points_and_quaternions(
+        start=start,
+        direction=wp.vec3(0.0, 1.0, 0.0),
+        length=length,
+        num_segments=int(num_elements),
+    )
+
+
 # -----------------------------------------------------------------------------
 # Model builders
 # -----------------------------------------------------------------------------
@@ -318,33 +335,68 @@ def _build_cable_loop(device, num_links: int = 6):
 # -----------------------------------------------------------------------------
 
 
-def _compute_ball_joint_anchor_error(model: newton.Model, body_q: wp.array, joint_id: int) -> float:
-    """Compute BALL joint world-space anchor error (CPU float).
+def _numpy_to_transform(arr):
+    """Convert a [p(3), q(4)] numpy row (xyzw quaternion) to wp.transform."""
+    return wp.transform(wp.vec3(arr[0], arr[1], arr[2]), wp.quat(arr[3], arr[4], arr[5], arr[6]))
 
-    Returns:
-        |x_c - x_p|, where x_p and x_c are the parent/child anchor positions in world space.
-    """
+
+def _get_joint_rest_relative_rotation(model: newton.Model, joint_id: int) -> wp.quat:
+    """Return q_rel_rest = quat_inverse(q_wp_rest) * q_wc_rest for the joint's rest configuration."""
     with wp.ScopedDevice("cpu"):
         jp = model.joint_parent.numpy()[joint_id].item()
         jc = model.joint_child.numpy()[joint_id].item()
+        X_pj = _numpy_to_transform(model.joint_X_p.numpy()[joint_id])
+        X_cj = _numpy_to_transform(model.joint_X_c.numpy()[joint_id])
+        bq_rest = model.body_q.numpy()
+        if jp >= 0:
+            X_wp_rest = _numpy_to_transform(bq_rest[jp]) * X_pj
+        else:
+            X_wp_rest = X_pj
+        X_wc_rest = _numpy_to_transform(bq_rest[jc]) * X_cj
+        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        return wp.normalize(wp.mul(wp.quat_inverse(q_wp_rest), q_wc_rest))
+
+
+def _get_joint_world_frames(model: newton.Model, body_q: wp.array, joint_id: int) -> tuple[wp.transform, wp.transform]:
+    """Compute world-space joint frames (X_wp, X_wc) for a given joint."""
+    with wp.ScopedDevice("cpu"):
+        jp = model.joint_parent.numpy()[joint_id].item()
+        jc = model.joint_child.numpy()[joint_id].item()
+        # joint_X_p / joint_X_c are stored as [p(3), q(4)] with q in xyzw order
         X_p = model.joint_X_p.numpy()[joint_id]
         X_c = model.joint_X_c.numpy()[joint_id]
-
-        # wp.transform is [p(3), q(4)] in xyzw order
         X_pj = wp.transform(wp.vec3(X_p[0], X_p[1], X_p[2]), wp.quat(X_p[3], X_p[4], X_p[5], X_p[6]))
         X_cj = wp.transform(wp.vec3(X_c[0], X_c[1], X_c[2]), wp.quat(X_c[3], X_c[4], X_c[5], X_c[6]))
 
         bq = body_q.to("cpu").numpy()
-        q_p = bq[jp]
-        q_c = bq[jc]
-        T_p = wp.transform(wp.vec3(q_p[0], q_p[1], q_p[2]), wp.quat(q_p[3], q_p[4], q_p[5], q_p[6]))
-        T_c = wp.transform(wp.vec3(q_c[0], q_c[1], q_c[2]), wp.quat(q_c[3], q_c[4], q_c[5], q_c[6]))
 
-        X_wp = T_p * X_pj
-        X_wc = T_c * X_cj
-        x_p = wp.transform_get_translation(X_wp)
-        x_c = wp.transform_get_translation(X_wc)
-        return float(wp.length(x_c - x_p))
+        # World joint (parent=-1): parent frame is identity.
+        if jp >= 0:
+            q_p = bq[jp]
+            T_p = wp.transform(wp.vec3(q_p[0], q_p[1], q_p[2]), wp.quat(q_p[3], q_p[4], q_p[5], q_p[6]))
+        else:
+            T_p = wp.transform(wp.vec3(0.0), wp.quat_identity())
+
+        q_c = bq[jc]
+        T_c = wp.transform(wp.vec3(q_c[0], q_c[1], q_c[2]), wp.quat(q_c[3], q_c[4], q_c[5], q_c[6]))
+        return T_p * X_pj, T_c * X_cj
+
+
+def _get_joint_axis_local(model: newton.Model, joint_id: int) -> wp.vec3:
+    """Return the normalized joint axis in the parent joint frame."""
+    with wp.ScopedDevice("cpu"):
+        qd_start = model.joint_qd_start.numpy()[joint_id].item()
+        axis_np = model.joint_axis.numpy()[qd_start]
+        return wp.normalize(wp.vec3(axis_np[0], axis_np[1], axis_np[2]))
+
+
+def _compute_ball_joint_anchor_error(model: newton.Model, body_q: wp.array, joint_id: int) -> float:
+    """Compute BALL joint anchor coincidence error |x_c - x_p| [m]."""
+    X_wp, X_wc = _get_joint_world_frames(model, body_q, joint_id)
+    x_p = wp.transform_get_translation(X_wp)
+    x_c = wp.transform_get_translation(X_wc)
+    return float(wp.length(x_c - x_p))
 
 
 def _compute_fixed_joint_frame_error(model: newton.Model, body_q: wp.array, joint_id: int) -> tuple[float, float]:
@@ -353,41 +405,150 @@ def _compute_fixed_joint_frame_error(model: newton.Model, body_q: wp.array, join
     Returns:
         (pos_err, ang_err)
 
-        - pos_err: |x_c - x_p| where x_p/x_c are the parent/child joint-frame translations in world space.
-        - ang_err: relative rotation angle between joint-frame orientations in world space [rad].
+        - pos_err: anchor coincidence error |x_c - x_p| [m].
+        - ang_err: rotation angle relative to the rest configuration [rad].
+          Measures how much the joint has deviated from its initial
+          rest-relative orientation, not the absolute angle between frames.
     """
+    X_wp, X_wc = _get_joint_world_frames(model, body_q, joint_id)
+
+    x_p = wp.transform_get_translation(X_wp)
+    x_c = wp.transform_get_translation(X_wc)
+    pos_err = float(wp.length(x_c - x_p))
+
+    # Current relative rotation
+    q_wp = wp.transform_get_rotation(X_wp)
+    q_wc = wp.transform_get_rotation(X_wc)
+    q_rel = wp.normalize(wp.mul(wp.quat_inverse(q_wp), q_wc))
+
+    # Measure deviation from rest: q_err = q_rel * q_rel_rest^{-1}
+    q_rel_rest = _get_joint_rest_relative_rotation(model, joint_id)
+    q_err = wp.normalize(wp.mul(q_rel, wp.quat_inverse(q_rel_rest)))
+    ang_err = float(2.0 * wp.acos(wp.clamp(wp.abs(q_err[3]), 0.0, 1.0)))
+
+    return pos_err, ang_err
+
+
+def _compute_revolute_joint_error(model: newton.Model, body_q: wp.array, joint_id: int) -> tuple[float, float, float]:
+    """Compute REVOLUTE joint world-space error (CPU floats).
+
+    Returns:
+        (pos_err, ang_perp_err, rot_along_free)
+
+        - pos_err: anchor coincidence error |x_c - x_p| [m].
+        - ang_perp_err: rotation angle perpendicular to the joint axis relative to rest [rad].
+        - rot_along_free: rotation about the free (joint) axis relative to rest [rad].
+    """
+    X_wp, X_wc = _get_joint_world_frames(model, body_q, joint_id)
+    a = _get_joint_axis_local(model, joint_id)
+
+    x_p = wp.transform_get_translation(X_wp)
+    x_c = wp.transform_get_translation(X_wc)
+    pos_err = float(wp.length(x_c - x_p))
+
+    q_wp = wp.transform_get_rotation(X_wp)
+    q_wc = wp.transform_get_rotation(X_wc)
+    q_rel = wp.normalize(wp.mul(wp.quat_inverse(q_wp), q_wc))
+
+    # Measure relative to rest configuration
+    q_rel_rest = _get_joint_rest_relative_rotation(model, joint_id)
+    q_err = wp.normalize(wp.mul(q_rel, wp.quat_inverse(q_rel_rest)))
+    if q_err[3] < 0.0:
+        q_err = wp.quat(-q_err[0], -q_err[1], -q_err[2], -q_err[3])
+
+    axis_angle, angle = wp.quat_to_axis_angle(q_err)
+    rot_vec = axis_angle * angle
+    rot_perp = rot_vec - wp.dot(rot_vec, a) * a
+    ang_perp_err = float(wp.length(rot_perp))
+    rot_along_free = abs(float(wp.dot(rot_vec, a)))
+
+    return pos_err, ang_perp_err, rot_along_free
+
+
+def _compute_prismatic_joint_error(model: newton.Model, body_q: wp.array, joint_id: int) -> tuple[float, float, float]:
+    """Compute PRISMATIC joint world-space error (CPU floats).
+
+    Returns:
+        (pos_perp_err, ang_err, c_along)
+
+        - pos_perp_err: position error perpendicular to the joint axis [m].
+        - ang_err: rotation angle relative to the rest configuration [rad].
+        - c_along: signed displacement along the free (joint) axis [m].
+    """
+    X_wp, X_wc = _get_joint_world_frames(model, body_q, joint_id)
+    a_local = _get_joint_axis_local(model, joint_id)
+
+    x_p = wp.transform_get_translation(X_wp)
+    x_c = wp.transform_get_translation(X_wc)
+    C = x_c - x_p
+
+    q_wp = wp.transform_get_rotation(X_wp)
+    a_world = wp.normalize(wp.quat_rotate(q_wp, a_local))
+    C_perp = C - wp.dot(C, a_world) * a_world
+    pos_perp_err = float(wp.length(C_perp))
+    c_along = float(wp.dot(C, a_world))
+
+    q_wc = wp.transform_get_rotation(X_wc)
+    q_rel = wp.normalize(wp.mul(wp.quat_inverse(q_wp), q_wc))
+
+    # Rest relative rotation
+    q_rel_rest = _get_joint_rest_relative_rotation(model, joint_id)
+    q_err = wp.normalize(wp.mul(q_rel, wp.quat_inverse(q_rel_rest)))
+    ang_err = float(2.0 * wp.acos(wp.clamp(wp.abs(q_err[3]), 0.0, 1.0)))
+
+    return pos_perp_err, ang_err, c_along
+
+
+def _compute_d6_joint_error(model: newton.Model, body_q: wp.array, joint_id: int) -> tuple[float, float, float, float]:
+    """Compute D6 joint world-space error (CPU floats).
+
+    Assumes the D6 joint has exactly 1 linear axis (first DOF) and 1 angular axis (second DOF).
+
+    Returns:
+        (pos_perp_err, ang_perp_err, d_along, rot_along_free)
+
+        - pos_perp_err: position error perpendicular to the free linear axis [m].
+        - ang_perp_err: rotation angle perpendicular to the free angular axis relative to rest [rad].
+        - d_along: signed displacement along the free linear axis [m].
+        - rot_along_free: rotation about the free angular axis relative to rest [rad].
+    """
+    X_wp, X_wc = _get_joint_world_frames(model, body_q, joint_id)
+
     with wp.ScopedDevice("cpu"):
-        jp = model.joint_parent.numpy()[joint_id].item()
-        jc = model.joint_child.numpy()[joint_id].item()
-        X_p = model.joint_X_p.numpy()[joint_id]
-        X_c = model.joint_X_c.numpy()[joint_id]
+        qd_start = model.joint_qd_start.numpy()[joint_id].item()
+        lin_axis_np = model.joint_axis.numpy()[qd_start]
+        ang_axis_np = model.joint_axis.numpy()[qd_start + 1]
+        lin_a = wp.normalize(wp.vec3(lin_axis_np[0], lin_axis_np[1], lin_axis_np[2]))
+        ang_a = wp.normalize(wp.vec3(ang_axis_np[0], ang_axis_np[1], ang_axis_np[2]))
 
-        # wp.transform is [p(3), q(4)] in xyzw order
-        X_pj = wp.transform(wp.vec3(X_p[0], X_p[1], X_p[2]), wp.quat(X_p[3], X_p[4], X_p[5], X_p[6]))
-        X_cj = wp.transform(wp.vec3(X_c[0], X_c[1], X_c[2]), wp.quat(X_c[3], X_c[4], X_c[5], X_c[6]))
+    # --- Linear: perpendicular position error + along-axis displacement ---
+    x_p = wp.transform_get_translation(X_wp)
+    x_c = wp.transform_get_translation(X_wc)
+    C = x_c - x_p
 
-        bq = body_q.to("cpu").numpy()
-        q_p = bq[jp]
-        q_c = bq[jc]
-        T_p = wp.transform(wp.vec3(q_p[0], q_p[1], q_p[2]), wp.quat(q_p[3], q_p[4], q_p[5], q_p[6]))
-        T_c = wp.transform(wp.vec3(q_c[0], q_c[1], q_c[2]), wp.quat(q_c[3], q_c[4], q_c[5], q_c[6]))
+    q_wp = wp.transform_get_rotation(X_wp)
+    lin_a_world = wp.normalize(wp.quat_rotate(q_wp, lin_a))
+    d_along = float(wp.dot(C, lin_a_world))
+    C_perp = C - d_along * lin_a_world
+    pos_perp_err = float(wp.length(C_perp))
 
-        X_wp = T_p * X_pj
-        X_wc = T_c * X_cj
+    # --- Angular: perpendicular angle error + free-axis rotation ---
+    q_wc = wp.transform_get_rotation(X_wc)
+    q_rel = wp.normalize(wp.mul(wp.quat_inverse(q_wp), q_wc))
 
-        x_p = wp.transform_get_translation(X_wp)
-        x_c = wp.transform_get_translation(X_wc)
-        pos_err = float(wp.length(x_c - x_p))
+    # Measure relative to rest configuration
+    q_rel_rest = _get_joint_rest_relative_rotation(model, joint_id)
+    q_err = wp.normalize(wp.mul(q_rel, wp.quat_inverse(q_rel_rest)))
+    if q_err[3] < 0.0:
+        q_err = wp.quat(-q_err[0], -q_err[1], -q_err[2], -q_err[3])
 
-        q_wp = wp.transform_get_rotation(X_wp)
-        q_wc = wp.transform_get_rotation(X_wc)
-        q_rel = wp.mul(wp.quat_inverse(q_wp), q_wc)
-        q_rel = wp.normalize(q_rel)
-        # Quaternion sign is arbitrary; enforce shortest-path angle for robustness.
-        w = wp.clamp(wp.abs(q_rel[3]), 0.0, 1.0)
-        ang_err = float(2.0 * wp.acos(w))
+    axis_angle, angle = wp.quat_to_axis_angle(q_err)
+    rot_vec = axis_angle * angle
+    rot_perp = rot_vec - wp.dot(rot_vec, ang_a) * ang_a
+    ang_perp_err = float(wp.length(rot_perp))
+    rot_along_free = abs(float(wp.dot(rot_vec, ang_a)))
 
-        return pos_err, ang_err
+    return pos_perp_err, ang_perp_err, d_along, rot_along_free
 
 
 # -----------------------------------------------------------------------------
@@ -953,11 +1114,13 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     # Kinematic anchor body at the rod start point.
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
-    builder.body_mass[anchor] = 0.0
-    builder.body_inv_mass[anchor] = 0.0
     # Anchor marker sphere.
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
 
     # Build a straight cable (rod) and attach its start endpoint to the anchor with a BALL joint.
     num_elements = 20
@@ -1067,9 +1230,26 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         context="Cable BALL joint attachment",
     )
 
+    # Angular freedom check: gravity sags the horizontal cable, so the child body's
+    # orientation should differ from the parent's without any explicit rotation driving.
+    q_parent = final_q[anchor][3:7]  # xyzw quaternion
+    q_child = final_q[rod_bodies[0]][3:7]
+    dot_val = float(np.clip(np.abs(np.dot(q_parent, q_child)), 0.0, 1.0))
+    rel_angle = 2.0 * float(np.arccos(dot_val))
+    test.assertGreater(
+        rel_angle,
+        0.1,
+        f"BALL joint angular freedom not exercised: relative rotation {rel_angle:.4f} rad < 0.1 rad",
+    )
+
 
 def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
-    """Cable VBD: FIXED joint should keep rod start frame welded to a kinematic anchor."""
+    """Cable VBD: FIXED joint should keep rod start frame welded to a kinematic anchor.
+
+    Two cables (+X and +Y) are attached to the same anchor sphere with fixed joints.
+    This tests that both translation and rotation are locked in all directions -- a single
+    cable along one axis can't fully demonstrate this because gravity only tests one orientation.
+    """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
     builder.default_shape_cfg.kd = 1.0e1
@@ -1077,30 +1257,657 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
-    # Build a straight cable along +X and use its segment orientation for the kinematic anchor.
+    # Kinematic anchor body with identity rotation (can't match rotation to two different cables).
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+    cable_width = 2.0 * rod_radius
+    attach_offset = wp.float32(anchor_radius + rod_radius)
+    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+
+    # --- Cable X (+X direction) ---
+    points_x, edge_q_x = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
+    parent_anchor_local_x = wp.vec3(attach_offset, 0.0, 0.0)
+    anchor_world_attach_x = anchor_pos + wp.vec3(attach_offset, 0.0, 0.0)
+    p0_x = points_x[0]
+    offset_x = anchor_world_attach_x - p0_x
+    points_x = [p + offset_x for p in points_x]
+
+    rod_bodies_x, rod_joints_x = builder.add_rod(
+        positions=points_x,
+        quaternions=edge_q_x,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_fixed_joint_attach_x",
+    )
+
+    j_fixed_x = builder.add_joint_fixed(
+        parent=anchor,
+        child=rod_bodies_x[0],
+        parent_xform=wp.transform(parent_anchor_local_x, edge_q_x[0]),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+    )
+    builder.add_articulation([*rod_joints_x, j_fixed_x])
+
+    # --- Cable Y (+Y direction) ---
+    points_y, edge_q_y = _make_straight_cable_along_y(num_elements, segment_length, z_height=anchor_pos[2])
+    parent_anchor_local_y = wp.vec3(0.0, attach_offset, 0.0)
+    anchor_world_attach_y = anchor_pos + wp.vec3(0.0, attach_offset, 0.0)
+    p0_y = points_y[0]
+    offset_y = anchor_world_attach_y - p0_y
+    points_y = [p + offset_y for p in points_y]
+
+    rod_bodies_y, rod_joints_y = builder.add_rod(
+        positions=points_y,
+        quaternions=edge_q_y,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_fixed_joint_attach_y",
+    )
+
+    j_fixed_y = builder.add_joint_fixed(
+        parent=anchor,
+        child=rod_bodies_y[0],
+        parent_xform=wp.transform(parent_anchor_local_y, edge_q_y[0]),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+    )
+    builder.add_articulation([*rod_joints_y, j_fixed_y])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+    )
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            t = (_step * sim_substeps + _substep) * sim_dt
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
+
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), wp.quat_identity())
+            wp.launch(
+                _set_kinematic_body_pose,
+                dim=1,
+                inputs=[wp.int32(anchor), pose, state0.body_q, state0.body_qd],
+                device=device,
+            )
+
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+            pos_err_x, ang_err_x = _compute_fixed_joint_frame_error(model, state0.body_q, j_fixed_x)
+            test.assertLess(pos_err_x, 1.0e-3)
+            test.assertLess(ang_err_x, 2.0e-2)
+
+            pos_err_y, ang_err_y = _compute_fixed_joint_frame_error(model, state0.body_q, j_fixed_y)
+            test.assertLess(pos_err_y, 1.0e-3)
+            test.assertLess(ang_err_y, 2.0e-2)
+
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in FIXED joint test")
+    _assert_surface_attachment(
+        test,
+        body_q=final_q,
+        anchor_body=anchor,
+        child_body=rod_bodies_x[0],
+        context="Cable FIXED joint attachment (X cable)",
+        parent_anchor_local=parent_anchor_local_x,
+    )
+    _assert_surface_attachment(
+        test,
+        body_q=final_q,
+        anchor_body=anchor,
+        child_body=rod_bodies_y[0],
+        context="Cable FIXED joint attachment (Y cable)",
+        parent_anchor_local=parent_anchor_local_y,
+    )
+
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies_x,
+        margin=0.25 * cable_width,
+        context="Cable FIXED joint attachment (X cable)",
+    )
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies_y,
+        margin=0.25 * cable_width,
+        context="Cable FIXED joint attachment (Y cable)",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies_x,
+        segment_length=segment_length,
+        context="Cable FIXED joint attachment (X cable)",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies_y,
+        segment_length=segment_length,
+        context="Cable FIXED joint attachment (Y cable)",
+    )
+
+
+def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
+    """Cable VBD: REVOLUTE joint should keep rod start endpoint attached and perpendicular axes aligned.
+
+    Two cables (+X and +Y) are attached to the same anchor sphere with revolute joints.
+    Both have world Y as the free axis. For cable X, gravity creates torque about Y (free),
+    so it sags. For cable Y, gravity creates torque about X (constrained), so it stays rigid.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+
+    # Kinematic anchor body with identity rotation.
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+    cable_width = 2.0 * rod_radius
+    attach_offset = wp.float32(anchor_radius + rod_radius)
+    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+
+    # --- Cable X (+X direction) ---
+    points_x, edge_q_x = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
+    parent_anchor_local_x = wp.vec3(attach_offset, 0.0, 0.0)
+    anchor_world_attach_x = anchor_pos + wp.vec3(attach_offset, 0.0, 0.0)
+    p0_x = points_x[0]
+    offset_x = anchor_world_attach_x - p0_x
+    points_x = [p + offset_x for p in points_x]
+
+    rod_bodies_x, rod_joints_x = builder.add_rod(
+        positions=points_x,
+        quaternions=edge_q_x,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_revolute_joint_attach_x",
+    )
+
+    # Revolute axis: Y in joint frame -> world Y free (edge_q_x[0] maps local Z->world X,
+    # so local Y stays world Y).
+    j_revolute_x = builder.add_joint_revolute(
+        parent=anchor,
+        child=rod_bodies_x[0],
+        parent_xform=wp.transform(parent_anchor_local_x, edge_q_x[0]),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+        axis=(0.0, 1.0, 0.0),
+    )
+    builder.add_articulation([*rod_joints_x, j_revolute_x])
+
+    # --- Cable Y (+Y direction) ---
+    points_y, edge_q_y = _make_straight_cable_along_y(num_elements, segment_length, z_height=anchor_pos[2])
+    parent_anchor_local_y = wp.vec3(0.0, attach_offset, 0.0)
+    anchor_world_attach_y = anchor_pos + wp.vec3(0.0, attach_offset, 0.0)
+    p0_y = points_y[0]
+    offset_y = anchor_world_attach_y - p0_y
+    points_y = [p + offset_y for p in points_y]
+
+    rod_bodies_y, rod_joints_y = builder.add_rod(
+        positions=points_y,
+        quaternions=edge_q_y,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_revolute_joint_attach_y",
+    )
+
+    # Revolute axis: Z in joint frame -> world Y free.
+    # Derivation: edge_q_y[0] maps local +Z->world +Y (rotation about X by 90 deg).
+    # Its inverse maps world Y->local Z. So to get world Y as free axis, use local (0,0,1).
+    j_revolute_y = builder.add_joint_revolute(
+        parent=anchor,
+        child=rod_bodies_y[0],
+        parent_xform=wp.transform(parent_anchor_local_y, edge_q_y[0]),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+        axis=(0.0, 0.0, 1.0),
+    )
+    builder.add_articulation([*rod_joints_y, j_revolute_y])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+    )
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            t = (_step * sim_substeps + _substep) * sim_dt
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
+
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), wp.quat_identity())
+            wp.launch(
+                _set_kinematic_body_pose,
+                dim=1,
+                inputs=[wp.int32(anchor), pose, state0.body_q, state0.body_qd],
+                device=device,
+            )
+
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+            pos_err_x, ang_perp_err_x, _rot_free_x = _compute_revolute_joint_error(model, state0.body_q, j_revolute_x)
+            test.assertLess(pos_err_x, 1.0e-3)
+            test.assertLess(ang_perp_err_x, 2.0e-2)
+
+            pos_err_y, ang_perp_err_y, _rot_free_y = _compute_revolute_joint_error(model, state0.body_q, j_revolute_y)
+            test.assertLess(pos_err_y, 1.0e-3)
+            test.assertLess(ang_perp_err_y, 2.0e-2)
+
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in REVOLUTE joint test")
+    _assert_surface_attachment(
+        test,
+        body_q=final_q,
+        anchor_body=anchor,
+        child_body=rod_bodies_x[0],
+        context="Cable REVOLUTE joint attachment (X cable)",
+        parent_anchor_local=parent_anchor_local_x,
+    )
+    _assert_surface_attachment(
+        test,
+        body_q=final_q,
+        anchor_body=anchor,
+        child_body=rod_bodies_y[0],
+        context="Cable REVOLUTE joint attachment (Y cable)",
+        parent_anchor_local=parent_anchor_local_y,
+    )
+
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies_x,
+        margin=0.25 * cable_width,
+        context="Cable REVOLUTE joint attachment (X cable)",
+    )
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies_y,
+        margin=0.25 * cable_width,
+        context="Cable REVOLUTE joint attachment (Y cable)",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies_x,
+        segment_length=segment_length,
+        context="Cable REVOLUTE joint attachment (X cable)",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies_y,
+        segment_length=segment_length,
+        context="Cable REVOLUTE joint attachment (Y cable)",
+    )
+
+    # Angular freedom check: gravity sags cable X (torque about Y = free axis).
+    _pos_err, _ang_perp_err, rot_free_x = _compute_revolute_joint_error(model, state0.body_q, j_revolute_x)
+    test.assertGreater(
+        rot_free_x,
+        0.1,
+        f"REVOLUTE joint angular freedom not exercised: X cable free-axis rotation {rot_free_x:.4f} rad < 0.1 rad",
+    )
+
+
+def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
+    """Cable VBD: revolute drive (target_ke/kd + target_pos) should track target angle on a cable.
+
+    A single cable hangs from a kinematic sphere anchor via a revolute joint (Y-axis)
+    with drive parameters. A static target angle is set, and the cable should converge
+    toward it despite gravity.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    # Kinematic anchor body.
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_revolute_drive",
+    )
+
+    target_angle = 0.4  # rad
+    drive_ke = 2000.0
+    drive_kd = 0.05
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    j_revolute = builder.add_joint_revolute(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        axis=(0.0, 1.0, 0.0),
+        target_ke=drive_ke,
+        target_kd=drive_kd,
+    )
+    builder.add_articulation([*rod_joints, j_revolute])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    # Find the revolute joint and its DOF index after finalize().
+    joint_types = model.joint_type.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    rev_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.REVOLUTE))
+    dof_idx = int(joint_qd_start[rev_idx])
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    # Set drive target position.
+    tp = control.joint_target_pos.numpy()
+    tp[dof_idx] = target_angle
+    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 30
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+    # Joint constraint checks.
+    pos_err, ang_perp_err, rot_free = _compute_revolute_joint_error(model, state0.body_q, rev_idx)
+    test.assertLess(pos_err, 1.0e-3, f"Revolute drive: position error {pos_err:.6f}")
+    test.assertLess(ang_perp_err, 2.0e-2, f"Revolute drive: perpendicular angle error {ang_perp_err:.4f}")
+
+    # Drive convergence: free-axis rotation should be near target.
+    test.assertAlmostEqual(
+        rot_free,
+        target_angle,
+        delta=0.15,
+        msg=f"Revolute drive not tracking: rot_free={rot_free:.4f}, target={target_angle}",
+    )
+
+    # Cable integrity.
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in revolute drive test")
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable revolute drive",
+    )
+
+
+def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
+    """Cable VBD: revolute drive with limits should clamp rotation within bounds.
+
+    Vertical cable hanging -Z from a static kinematic anchor. Revolute joint (Y-axis)
+    with drive and limits. Drive target is set beyond the limit bounds. After convergence
+    the cable should reach the limit bound, not the drive target.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_revolute_drive_limit",
+    )
+
+    target_angle = 1.5  # rad -- beyond limits
+    ang_limit = 0.3
+    drive_ke = 2000.0
+    drive_kd = 0.05
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    j_revolute = builder.add_joint_revolute(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        axis=(0.0, 1.0, 0.0),
+        target_ke=drive_ke,
+        target_kd=drive_kd,
+        limit_lower=-ang_limit,
+        limit_upper=ang_limit,
+        limit_ke=1.0e5,
+        limit_kd=1.0e-4,
+    )
+    builder.add_articulation([*rod_joints, j_revolute])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    joint_types = model.joint_type.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    rev_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.REVOLUTE))
+    dof_idx = int(joint_qd_start[rev_idx])
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    tp = control.joint_target_pos.numpy()
+    tp[dof_idx] = target_angle
+    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 30
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+    # Joint constraint checks.
+    pos_err, ang_perp_err, rot_free = _compute_revolute_joint_error(model, state0.body_q, rev_idx)
+    test.assertLess(pos_err, 2.0e-3, f"Revolute drive limit: position error {pos_err:.6f}")
+    test.assertLess(ang_perp_err, 5.0e-2, f"Revolute drive limit: perpendicular angle error {ang_perp_err:.4f}")
+
+    # Limit enforcement: rotation should be near the limit bound.
+    ang_tolerance = 0.05
+    test.assertLessEqual(
+        rot_free,
+        ang_limit + ang_tolerance,
+        msg=f"Revolute limit violated: rot={rot_free:.4f} > bound {ang_limit} + tol {ang_tolerance}",
+    )
+    test.assertLess(
+        rot_free,
+        target_angle * 0.5,
+        msg=f"Revolute limit not effective: rot={rot_free:.4f} too close to target {target_angle}",
+    )
+
+    # Cable integrity.
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in revolute drive limit test")
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable revolute drive limit",
+    )
+
+
+def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
+    """Cable VBD: PRISMATIC joint should keep perpendicular position constrained and rotation locked.
+
+    Single cable along world +X. The prismatic free axis is world Y (perpendicular to
+    both the cable and gravity). The anchor oscillates in both X and Y. The locked DOFs
+    (X, Z, rotation) are tested under load, while the free Y axis allows sliding.
+
+    Note: unlike fixed/revolute, prismatic uses a single cable because a second cable
+    along the free axis is a degenerate configuration (it can slide away from the anchor).
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+
+    # Kinematic anchor body with identity rotation (matching ball/fixed/revolute).
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
     num_elements = 20
     segment_length = 0.05
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
-    anchor_rot = edge_q[0]
-
-    # Kinematic anchor body at the rod start point (match rod orientation).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, anchor_rot))
-    builder.body_mass[anchor] = 0.0
-    builder.body_inv_mass[anchor] = 0.0
-    # Anchor marker sphere.
-    anchor_radius = 0.1
-    builder.add_shape_sphere(anchor, radius=anchor_radius)
-
     rod_radius = 0.01
     cable_width = 2.0 * rod_radius
-    # Attach the cable endpoint to the sphere surface (not the center), accounting for cable radius so the
-    # capsule endcap surface and the sphere surface are coincident along the rod axis (+X).
-    # The rod axis is world +X, and anchor_rot maps parent-local +Z -> world +X, so use +Z in parent local.
     attach_offset = wp.float32(anchor_radius + rod_radius)
-    parent_anchor_local = wp.vec3(0.0, 0.0, attach_offset)
-    anchor_world_attach = anchor_pos + wp.quat_rotate(anchor_rot, parent_anchor_local)
+    parent_anchor_local = wp.vec3(attach_offset, 0.0, 0.0)
+    anchor_world_attach = anchor_pos + wp.vec3(attach_offset, 0.0, 0.0)
 
-    # Reposition the generated cable so its first point coincides with the sphere-surface attach point.
     p0 = points[0]
     offset = anchor_world_attach - p0
     points = [p + offset for p in points]
@@ -1114,17 +1921,21 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
-        label="test_cable_fixed_joint_attach",
+        label="test_cable_prismatic_joint_attach",
     )
 
+    # Prismatic axis: Y in joint frame. edge_q[0] maps local Z->world X and
+    # preserves local Y->world Y. So axis (0,1,0) gives free sliding along world Y
+    # -- perpendicular to both the cable (+X) and gravity (-Z).
     child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
-    j_fixed = builder.add_joint_fixed(
+    j_prismatic = builder.add_joint_prismatic(
         parent=anchor,
         child=rod_bodies[0],
-        parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
+        parent_xform=wp.transform(parent_anchor_local, edge_q[0]),
         child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+        axis=(0.0, 1.0, 0.0),
     )
-    builder.add_articulation([*rod_joints, j_fixed])
+    builder.add_articulation([*rod_joints, j_prismatic])
 
     builder.add_ground_plane()
     builder.color()
@@ -1136,14 +1947,9 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     control = model.control()
     contacts = model.contacts()
 
-    # Stiffen both linear and angular caps for non-cable joints so FIXED behaves near-hard.
     solver = newton.solvers.SolverVBD(
         model,
         iterations=10,
-        rigid_joint_linear_ke=1.0e9,
-        rigid_joint_angular_ke=1.0e9,
-        rigid_joint_linear_k_start=1.0e7,
-        rigid_joint_angular_k_start=1.0e7,
     )
 
     frame_dt = 1.0 / 60.0
@@ -1154,13 +1960,10 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             t = (_step * sim_substeps + _substep) * sim_dt
-            # Use wp.float32 so Warp builtins match expected scalar types (avoid numpy.float64).
             dx = wp.float32(0.05 * np.sin(1.5 * t))
-            ang = wp.float32(0.4 * np.sin(1.5 * t + 0.7))
-            q_drive = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang)
-            q = wp.mul(q_drive, anchor_rot)
+            dy = wp.float32(0.04 * np.sin(2.0 * t))
 
-            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), q)
+            pose = wp.transform(wp.vec3(dx, dy, anchor_pos[2]), wp.quat_identity())
             wp.launch(
                 _set_kinematic_body_pose,
                 dim=1,
@@ -1172,34 +1975,1005 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
             solver.step(state0, state1, control, contacts, dt=sim_dt)
             state0, state1 = state1, state0
 
-            pos_err, ang_err = _compute_fixed_joint_frame_error(model, state0.body_q, j_fixed)
-            test.assertLess(pos_err, 1.0e-3)
+            pos_perp_err, ang_err, _c_along = _compute_prismatic_joint_error(model, state0.body_q, j_prismatic)
+            test.assertLess(pos_perp_err, 1.0e-3)
             test.assertLess(ang_err, 2.0e-2)
 
     final_q = state0.body_q.numpy()
-    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in FIXED joint test")
-    _assert_surface_attachment(
-        test,
-        body_q=final_q,
-        anchor_body=anchor,
-        child_body=rod_bodies[0],
-        context="Cable FIXED joint attachment",
-        parent_anchor_local=parent_anchor_local,
-    )
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in PRISMATIC joint test")
 
     _assert_bodies_above_ground(
         test,
         body_q=final_q,
         body_ids=rod_bodies,
         margin=0.25 * cable_width,
-        context="Cable FIXED joint attachment",
+        context="Cable PRISMATIC joint attachment",
     )
     _assert_capsule_attachments(
         test,
         body_q=final_q,
         body_ids=rod_bodies,
         segment_length=segment_length,
-        context="Cable FIXED joint attachment",
+        context="Cable PRISMATIC joint attachment",
+    )
+
+    # Free DOF freedom: anchor oscillates in Y (free axis), cable should slide freely.
+    _pos_perp_err, _ang_err, c_along = _compute_prismatic_joint_error(model, state0.body_q, j_prismatic)
+    test.assertGreater(
+        abs(c_along),
+        0.005,
+        f"PRISMATIC joint linear freedom not exercised: |c_along|={abs(c_along):.4f} m < 0.005 m",
+    )
+
+
+def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
+    """Cable VBD: prismatic drive (target_ke/kd + target_pos) should track target displacement on a cable.
+
+    A single cable hangs from a kinematic sphere anchor via a prismatic joint (X-axis)
+    with drive parameters. A static target displacement is set, and the cable should
+    converge toward it despite gravity.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    # Kinematic anchor body.
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_prismatic_drive",
+    )
+
+    target_displacement = 0.1  # m
+    drive_ke = 5000.0
+    drive_kd = 0.04
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    j_prismatic = builder.add_joint_prismatic(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        axis=(1.0, 0.0, 0.0),
+        target_ke=drive_ke,
+        target_kd=drive_kd,
+    )
+    builder.add_articulation([*rod_joints, j_prismatic])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    # Find the prismatic joint and its DOF index after finalize().
+    joint_types = model.joint_type.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    prismatic_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC))
+    dof_idx = int(joint_qd_start[prismatic_idx])
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    # Set drive target position.
+    tp = control.joint_target_pos.numpy()
+    tp[dof_idx] = target_displacement
+    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 30
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+    # Joint constraint checks.
+    pos_perp_err, ang_err, c_along = _compute_prismatic_joint_error(model, state0.body_q, prismatic_idx)
+    test.assertLess(pos_perp_err, 2.0e-3, f"Prismatic drive: perpendicular position error {pos_perp_err:.6f}")
+    test.assertLess(ang_err, 5.0e-2, f"Prismatic drive: angular error {ang_err:.4f}")
+
+    # Drive convergence: signed free-axis displacement should be near target.
+    test.assertAlmostEqual(
+        c_along,
+        target_displacement,
+        delta=0.03,
+        msg=f"Prismatic drive not tracking: d={c_along:.4f}, target={target_displacement}",
+    )
+
+    # Cable integrity.
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in prismatic drive test")
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable prismatic drive",
+    )
+
+
+def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
+    """Cable VBD: prismatic drive with limits should clamp displacement within bounds.
+
+    Vertical cable hanging -Z from a static kinematic anchor. Prismatic joint (X-axis)
+    with drive and limits. Drive target is set beyond the limit bounds. After convergence
+    the cable should reach the limit bound, not the drive target.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_prismatic_drive_limit",
+    )
+
+    target_displacement = 0.5  # m -- beyond limits
+    lin_limit = 0.05
+    drive_ke = 5000.0
+    drive_kd = 0.04
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    j_prismatic = builder.add_joint_prismatic(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        axis=(1.0, 0.0, 0.0),
+        target_ke=drive_ke,
+        target_kd=drive_kd,
+        limit_lower=-lin_limit,
+        limit_upper=lin_limit,
+        limit_ke=1.0e5,
+        limit_kd=1.0e-3,
+    )
+    builder.add_articulation([*rod_joints, j_prismatic])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    joint_types = model.joint_type.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    prismatic_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC))
+    dof_idx = int(joint_qd_start[prismatic_idx])
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    tp = control.joint_target_pos.numpy()
+    tp[dof_idx] = target_displacement
+    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 30
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+    # Joint constraint checks.
+    pos_perp_err, ang_err, c_along = _compute_prismatic_joint_error(model, state0.body_q, prismatic_idx)
+    test.assertLess(pos_perp_err, 2.0e-3, f"Prismatic drive limit: perp pos error {pos_perp_err:.6f}")
+    test.assertLess(ang_err, 5.0e-2, f"Prismatic drive limit: angular error {ang_err:.4f}")
+
+    # Limit enforcement: displacement should be near the limit bound.
+    lin_tolerance = 0.02
+    test.assertLessEqual(
+        abs(c_along),
+        lin_limit + lin_tolerance,
+        msg=f"Prismatic limit violated: |d|={abs(c_along):.4f} > bound {lin_limit} + tol {lin_tolerance}",
+    )
+    test.assertLess(
+        abs(c_along),
+        target_displacement * 0.5,
+        msg=f"Prismatic limit not effective: |d|={abs(c_along):.4f} too close to target {target_displacement}",
+    )
+
+    # Cable integrity.
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in prismatic drive limit test")
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable prismatic drive limit",
+    )
+
+
+def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
+    """Cable VBD: D6 joint (free linear X + free angular Y) should keep constrained DOFs locked.
+
+    Vertical cable hanging -Z from a kinematic anchor. D6 joint with 1 free linear
+    axis (X) and 1 free angular axis (Y) in the joint parent anchor frame.
+    For -Z cables the parent frame rotates +Z to -Z (180 deg about Y), so
+    joint-frame X maps to world -X and Y stays world Y.
+
+    Anchor oscillates in X and rotates around Y. The free linear axis
+    allows the cable to slide (not follow the X motion). Gravity in -Z
+    stresses the locked Z linear constraint. The anchor rotation around Y
+    directly exercises the free angular Y axis — the cable should not
+    follow the rotation.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+    cable_width = 2.0 * rod_radius
+
+    JointDofConfig = newton.ModelBuilder.JointDofConfig
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_d6_joint_attach",
+    )
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    j_d6 = builder.add_joint_d6(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        linear_axes=[JointDofConfig(axis=(1, 0, 0))],
+        angular_axes=[JointDofConfig(axis=(0, 1, 0))],
+    )
+    builder.add_articulation([*rod_joints, j_d6])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            t = (_step * sim_substeps + _substep) * sim_dt
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
+            # Rotate anchor around Y to exercise the free angular Y DOF
+            ang_y = wp.float32(0.2 * np.sin(2.0 * t))
+            q_anchor = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang_y)
+
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), q_anchor)
+            wp.launch(
+                _set_kinematic_body_pose,
+                dim=1,
+                inputs=[wp.int32(anchor), pose, state0.body_q, state0.body_qd],
+                device=device,
+            )
+
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+            pos_perp_err, ang_perp_err, _d_along, _rot_free = _compute_d6_joint_error(model, state0.body_q, j_d6)
+            test.assertLess(pos_perp_err, 1.0e-3)
+            test.assertLess(ang_perp_err, 2.0e-2)
+
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in D6 joint test")
+
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        margin=0.25 * cable_width,
+        context="Cable D6 joint attachment",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable D6 joint attachment",
+    )
+
+    # Free DOF freedom: a D6 that secretly locks all DOFs must not pass.
+    _, _, d_along, rot_free = _compute_d6_joint_error(model, state0.body_q, j_d6)
+    test.assertGreater(
+        abs(d_along),
+        0.005,
+        msg=f"D6 free linear X not exercised: |d_along|={abs(d_along):.4f} m",
+    )
+    test.assertGreater(
+        rot_free,
+        0.005,
+        msg=f"D6 free angular Y not exercised: rot_free={rot_free:.4f} rad",
+    )
+
+
+def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
+    """Cable VBD: D6 joint with all DOFs locked should behave like a fixed joint.
+
+    Vertical cable hanging -Z from a kinematic anchor. D6 joint with no free axes
+    (lin_axes=[], ang_axes=[]). Anchor oscillates in X; the cable endpoint must
+    follow exactly, matching the lock_xyz config in example_cable_d6_joints.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+    cable_width = 2.0 * rod_radius
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_d6_all_locked",
+    )
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    j_d6 = builder.add_joint_d6(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        linear_axes=[],
+        angular_axes=[],
+    )
+    builder.add_articulation([*rod_joints, j_d6])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            t = (_step * sim_substeps + _substep) * sim_dt
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
+
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), wp.quat_identity())
+            wp.launch(
+                _set_kinematic_body_pose,
+                dim=1,
+                inputs=[wp.int32(anchor), pose, state0.body_q, state0.body_qd],
+                device=device,
+            )
+
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+            pos_err, ang_err = _compute_fixed_joint_frame_error(model, state0.body_q, j_d6)
+            test.assertLess(pos_err, 1.0e-3)
+            test.assertLess(ang_err, 2.0e-2)
+
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in D6 all-locked test")
+
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        margin=0.25 * cable_width,
+        context="Cable D6 all-locked",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable D6 all-locked",
+    )
+
+
+def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
+    """Cable VBD: D6 joint with X linear locked, Y/Z free, all angular locked.
+
+    Vertical cable hanging -Z from a kinematic anchor. D6 joint with
+    lin_axes=[(0,1,0), (0,0,1)] (free Y and Z in joint frame; X locked).
+    All angular DOFs locked. Anchor oscillates in X. The cable must follow the
+    X motion (locked) while being free to sag under gravity (Z free).
+    Matches the lock_x config in example_cable_d6_joints.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+    cable_width = 2.0 * rod_radius
+
+    JointDofConfig = newton.ModelBuilder.JointDofConfig
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_d6_locked_x",
+    )
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    # Free Y and Z linear (in joint frame), locked X. All angular locked.
+    # For -Z cable: joint-frame X = world -X, Y = world Y, Z = world -Z.
+    j_d6 = builder.add_joint_d6(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        linear_axes=[JointDofConfig(axis=(0, 1, 0)), JointDofConfig(axis=(0, 0, 1))],
+        angular_axes=[],
+    )
+    builder.add_articulation([*rod_joints, j_d6])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    locked_axis_local = wp.vec3(1.0, 0.0, 0.0)
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            t = (_step * sim_substeps + _substep) * sim_dt
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
+
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), wp.quat_identity())
+            wp.launch(
+                _set_kinematic_body_pose,
+                dim=1,
+                inputs=[wp.int32(anchor), pose, state0.body_q, state0.body_qd],
+                device=device,
+            )
+
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+            # Position error along the locked X axis.
+            X_wp, X_wc = _get_joint_world_frames(model, state0.body_q, j_d6)
+            x_p = wp.transform_get_translation(X_wp)
+            x_c = wp.transform_get_translation(X_wc)
+            q_wp = wp.transform_get_rotation(X_wp)
+            axis_world = wp.normalize(wp.quat_rotate(q_wp, locked_axis_local))
+            d_locked = abs(float(wp.dot(x_c - x_p, axis_world)))
+            test.assertLess(d_locked, 1.0e-3, "D6 locked X: position error along locked axis")
+
+            # Angular error (all angular locked).
+            q_wc = wp.transform_get_rotation(X_wc)
+            q_rel = wp.normalize(wp.mul(wp.quat_inverse(q_wp), q_wc))
+            q_rest = _get_joint_rest_relative_rotation(model, j_d6)
+            q_err = wp.normalize(wp.mul(q_rel, wp.quat_inverse(q_rest)))
+            ang_err = float(2.0 * wp.acos(wp.clamp(wp.abs(q_err[3]), 0.0, 1.0)))
+            test.assertLess(ang_err, 2.0e-2, "D6 locked X: angular error")
+
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in D6 locked-X test")
+
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        margin=0.25 * cable_width,
+        context="Cable D6 locked-X",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable D6 locked-X",
+    )
+
+    # Freedom: displacement in free directions should be non-zero (gravity sag in Z).
+    X_wp, X_wc = _get_joint_world_frames(model, state0.body_q, j_d6)
+    x_p = wp.transform_get_translation(X_wp)
+    x_c = wp.transform_get_translation(X_wc)
+    C = x_c - x_p
+    q_wp = wp.transform_get_rotation(X_wp)
+    axis_world = wp.normalize(wp.quat_rotate(q_wp, locked_axis_local))
+    d_locked_val = float(wp.dot(C, axis_world))
+    C_free = C - d_locked_val * axis_world
+    free_displacement = float(wp.length(C_free))
+    test.assertGreater(
+        free_displacement,
+        0.005,
+        msg=f"D6 free Y/Z displacement not exercised: {free_displacement:.4f} m",
+    )
+
+
+def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
+    """Cable VBD: D6 drive (target_ke/kd + target_pos) should track targets on a cable.
+
+    A single cable hangs from a kinematic sphere anchor via a D6 joint (1 linear X + 1 angular Y)
+    with drive parameters. Static targets are set for both DOFs, and the cable should converge
+    toward them despite gravity.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    # Kinematic anchor body.
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_d6_drive",
+    )
+
+    target_displacement = 0.1  # m
+    target_angle = 0.4  # rad
+    lin_drive_ke = 5000.0
+    lin_drive_kd = 0.04
+    ang_drive_ke = 2000.0
+    ang_drive_kd = 0.05
+
+    JointDofConfig = newton.ModelBuilder.JointDofConfig
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    j_d6 = builder.add_joint_d6(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        linear_axes=[JointDofConfig(axis=(1, 0, 0), target_ke=lin_drive_ke, target_kd=lin_drive_kd)],
+        angular_axes=[JointDofConfig(axis=(0, 1, 0), target_ke=ang_drive_ke, target_kd=ang_drive_kd)],
+    )
+    builder.add_articulation([*rod_joints, j_d6])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    # Find the D6 joint and its DOF indices after finalize().
+    joint_types = model.joint_type.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    d6_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.D6))
+    qd_s = int(joint_qd_start[d6_idx])
+    lin_dof_idx = qd_s
+    ang_dof_idx = qd_s + 1
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    # Set drive target positions.
+    tp = control.joint_target_pos.numpy()
+    tp[lin_dof_idx] = target_displacement
+    tp[ang_dof_idx] = target_angle
+    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 30
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+    # Joint constraint checks.
+    pos_perp_err, ang_perp_err, c_along, rot_free = _compute_d6_joint_error(model, state0.body_q, d6_idx)
+    test.assertLess(pos_perp_err, 2.0e-3, f"D6 drive: perpendicular position error {pos_perp_err:.6f}")
+    test.assertLess(ang_perp_err, 5.0e-2, f"D6 drive: perpendicular angle error {ang_perp_err:.4f}")
+
+    # Drive convergence: linear displacement should be near target.
+    test.assertAlmostEqual(
+        c_along,
+        target_displacement,
+        delta=0.03,
+        msg=f"D6 linear drive not tracking: d={c_along:.4f}, target={target_displacement}",
+    )
+
+    # Drive convergence: angular rotation should be near target.
+    test.assertAlmostEqual(
+        rot_free,
+        target_angle,
+        delta=0.15,
+        msg=f"D6 angular drive not tracking: rot_free={rot_free:.4f}, target={target_angle}",
+    )
+
+    # Cable integrity.
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in D6 drive test")
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable D6 drive",
+    )
+
+
+def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
+    """Cable VBD: D6 drive with limits should clamp DOFs within bounds.
+
+    Vertical cable hanging -Z from a static kinematic anchor. D6 joint with
+    1 free linear axis (X) and 1 free angular axis (Y), both with drives and limits.
+    Drive targets are set well beyond the limit bounds. After convergence the
+    cable should reach the limit bounds, not the drive targets.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor_radius = 0.1
+
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    num_elements = 20
+    segment_length = 0.05
+    rod_radius = 0.01
+
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements * segment_length),
+        num_segments=num_elements,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="test_cable_d6_drive_limit",
+    )
+
+    # Drive targets are intentionally beyond the limit bounds.
+    target_displacement = 0.5
+    target_angle = 1.5
+    lin_limit = 0.05
+    ang_limit = 0.3
+
+    JointDofConfig = newton.ModelBuilder.JointDofConfig
+
+    parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    j_d6 = builder.add_joint_d6(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        linear_axes=[
+            JointDofConfig(
+                axis=(1, 0, 0),
+                target_ke=5000.0,
+                target_kd=0.04,
+                limit_lower=-lin_limit,
+                limit_upper=lin_limit,
+                limit_ke=1.0e5,
+                limit_kd=1.0e-3,
+            )
+        ],
+        angular_axes=[
+            JointDofConfig(
+                axis=(0, 1, 0),
+                target_ke=2000.0,
+                target_kd=0.05,
+                limit_lower=-ang_limit,
+                limit_upper=ang_limit,
+                limit_ke=1.0e5,
+                limit_kd=1.0e-4,
+            )
+        ],
+    )
+    builder.add_articulation([*rod_joints, j_d6])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    joint_types = model.joint_type.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    d6_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.D6))
+    qd_s = int(joint_qd_start[d6_idx])
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    tp = control.joint_target_pos.numpy()
+    tp[qd_s] = target_displacement
+    tp[qd_s + 1] = target_angle
+    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 30
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+    # Locked DOF checks.
+    pos_perp_err, ang_perp_err, c_along, rot_free = _compute_d6_joint_error(model, state0.body_q, d6_idx)
+    test.assertLess(pos_perp_err, 2.0e-3, f"D6 drive limit: perp pos error {pos_perp_err:.6f}")
+    test.assertLess(ang_perp_err, 5.0e-2, f"D6 drive limit: perp ang error {ang_perp_err:.4f}")
+
+    # Linear limit: displacement should be near the limit bound, not the drive target.
+    lin_tolerance = 0.02
+    test.assertLessEqual(
+        abs(c_along),
+        lin_limit + lin_tolerance,
+        msg=f"D6 linear limit violated: |d|={abs(c_along):.4f} > bound {lin_limit} + tol {lin_tolerance}",
+    )
+    test.assertLess(
+        abs(c_along),
+        target_displacement * 0.5,
+        msg=f"D6 linear limit not effective: |d|={abs(c_along):.4f} too close to target {target_displacement}",
+    )
+
+    # Angular limit: rotation should be near the limit bound, not the drive target.
+    ang_tolerance = 0.05
+    test.assertLessEqual(
+        rot_free,
+        ang_limit + ang_tolerance,
+        msg=f"D6 angular limit violated: rot={rot_free:.4f} > bound {ang_limit} + tol {ang_tolerance}",
+    )
+    test.assertLess(
+        rot_free,
+        target_angle * 0.5,
+        msg=f"D6 angular limit not effective: rot={rot_free:.4f} too close to target {target_angle}",
+    )
+
+    # Cable integrity.
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in D6 drive limit test")
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable D6 drive limit",
     )
 
 
@@ -1733,10 +3507,298 @@ def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
     test.assertTrue(np.any(force_norms > 1.0e-8), msg="Expected at least one non-zero rigid contact force")
 
 
+def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
+    """Cable VBD: joints with parent=-1 (world) should anchor rod start to a fixed world frame.
+
+    Builds a short cable rod for each joint type (BALL, FIXED, REVOLUTE, PRISMATIC), attaches
+    the first capsule to the world with parent=-1, and verifies that the joint constraint
+    error stays small under gravity.
+    """
+    num_elements = 10
+    segment_length = 0.05
+    rod_radius = 0.01
+    z_height = 3.0
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 15
+
+    # World-space attach point for the rod start.
+    attach_pos = wp.vec3(0.0, 0.0, z_height)
+
+    joint_configs = [
+        ("BALL", "ball"),
+        ("FIXED", "fixed"),
+        ("REVOLUTE", "revolute"),
+        ("PRISMATIC", "prismatic"),
+        ("D6", "d6"),
+    ]
+
+    for joint_label, joint_kind in joint_configs:
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1.0e2
+        builder.default_shape_cfg.kd = 1.0e1
+        builder.default_shape_cfg.mu = 1.0
+
+        points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=z_height)
+        # Shift cable so its first point starts at the attach position.
+        offset = attach_pos - points[0]
+        points = [p + offset for p in points]
+
+        rod_bodies, rod_joints = builder.add_rod(
+            positions=points,
+            quaternions=edge_q,
+            radius=rod_radius,
+            bend_stiffness=1.0e-1,
+            bend_damping=1.0e-2,
+            stretch_stiffness=1.0e9,
+            stretch_damping=0.0,
+            wrap_in_articulation=False,
+            label=f"test_cable_world_{joint_kind}",
+        )
+
+        child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+        parent_xform = wp.transform(attach_pos, wp.quat_identity())
+        child_xform = wp.transform(child_anchor_local, wp.quat_identity())
+
+        if joint_kind == "ball":
+            j = builder.add_joint_ball(
+                parent=-1,
+                child=rod_bodies[0],
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+            )
+        elif joint_kind == "fixed":
+            j = builder.add_joint_fixed(
+                parent=-1,
+                child=rod_bodies[0],
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+            )
+        elif joint_kind == "revolute":
+            j = builder.add_joint_revolute(
+                parent=-1,
+                child=rod_bodies[0],
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                axis=wp.vec3(0.0, 1.0, 0.0),
+            )
+        elif joint_kind == "prismatic":
+            j = builder.add_joint_prismatic(
+                parent=-1,
+                child=rod_bodies[0],
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                axis=wp.vec3(1.0, 0.0, 0.0),
+            )
+        elif joint_kind == "d6":
+            JointDofConfig = newton.ModelBuilder.JointDofConfig
+            j = builder.add_joint_d6(
+                parent=-1,
+                child=rod_bodies[0],
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                linear_axes=[JointDofConfig(axis=(1, 0, 0))],
+                angular_axes=[JointDofConfig(axis=(0, 1, 0))],
+            )
+
+        builder.add_articulation([*rod_joints, j])
+        builder.add_ground_plane()
+        builder.color()
+        model = builder.finalize(device=device)
+        model.set_gravity((0.0, 0.0, -9.81))
+
+        state0 = model.state()
+        state1 = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        solver = newton.solvers.SolverVBD(model, iterations=10)
+
+        for _step in range(num_steps):
+            for _substep in range(sim_substeps):
+                model.collide(state0, contacts)
+                solver.step(state0, state1, control, contacts, dt=sim_dt)
+                state0, state1 = state1, state0
+
+        final_q = state0.body_q.numpy()
+        test.assertTrue(
+            np.isfinite(final_q).all(),
+            msg=f"{joint_label} world joint: non-finite body transforms",
+        )
+
+        if joint_kind == "ball":
+            err = _compute_ball_joint_anchor_error(model, state0.body_q, j)
+            test.assertLess(
+                err,
+                1.0e-3,
+                msg=f"{joint_label} world joint: anchor error {err:.6f} m > 1e-3 m",
+            )
+        elif joint_kind == "fixed":
+            pos_err, ang_err = _compute_fixed_joint_frame_error(model, state0.body_q, j)
+            test.assertLess(
+                pos_err,
+                1.0e-3,
+                msg=f"{joint_label} world joint: pos error {pos_err:.6f} m > 1e-3 m",
+            )
+            test.assertLess(
+                ang_err,
+                2.0e-2,
+                msg=f"{joint_label} world joint: ang error {ang_err:.4f} rad > 2e-2 rad",
+            )
+        elif joint_kind == "revolute":
+            pos_err, ang_perp_err, _ = _compute_revolute_joint_error(model, state0.body_q, j)
+            test.assertLess(
+                pos_err,
+                1.0e-3,
+                msg=f"{joint_label} world joint: pos error {pos_err:.6f} m > 1e-3 m",
+            )
+            test.assertLess(
+                ang_perp_err,
+                2.0e-2,
+                msg=f"{joint_label} world joint: perp ang error {ang_perp_err:.4f} rad > 2e-2 rad",
+            )
+        elif joint_kind == "prismatic":
+            pos_perp_err, ang_err, _ = _compute_prismatic_joint_error(model, state0.body_q, j)
+            test.assertLess(
+                pos_perp_err,
+                1.0e-3,
+                msg=f"{joint_label} world joint: perp pos error {pos_perp_err:.6f} m > 1e-3 m",
+            )
+            test.assertLess(
+                ang_err,
+                2.0e-2,
+                msg=f"{joint_label} world joint: ang error {ang_err:.4f} rad > 2e-2 rad",
+            )
+        elif joint_kind == "d6":
+            pos_perp_err, ang_perp_err, _, _ = _compute_d6_joint_error(model, state0.body_q, j)
+            test.assertLess(
+                pos_perp_err,
+                1.0e-3,
+                msg=f"{joint_label} world joint: perp pos error {pos_perp_err:.6f} m > 1e-3 m",
+            )
+            test.assertLess(
+                ang_perp_err,
+                2.0e-2,
+                msg=f"{joint_label} world joint: perp ang error {ang_perp_err:.4f} rad > 2e-2 rad",
+            )
+
+
+def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
+    """VBD: disabling a joint lets the cable detach; re-enabling pulls it back.
+
+    Uses a BALL joint between a kinematic anchor sphere and a short cable (rod).
+    The early-return guard in evaluate_joint_force_hessian / update_duals_joint
+    is joint-type-agnostic, so one joint type covers all.
+    """
+    builder = newton.ModelBuilder()
+
+    # Kinematic anchor sphere at height.
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    builder.body_inertia[anchor] = wp.mat33(0.0)
+    builder.body_inv_inertia[anchor] = wp.mat33(0.0)
+
+    # Short cable (rod) hanging below the anchor.
+    num_elements = 6
+    segment_length = 0.05
+    rod_radius = 0.01
+    attach_offset = anchor_radius + rod_radius
+    cable_start = anchor_pos + wp.vec3(0.0, 0.0, -attach_offset)
+
+    rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=cable_start,
+        direction=wp.vec3(0.0, 0.0, -1.0),
+        length=float(num_elements) * segment_length,
+        num_segments=num_elements,
+        twist_total=0.0,
+    )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=rod_points,
+        quaternions=rod_quats,
+        radius=rod_radius,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e6,
+        stretch_damping=1.0e-2,
+        wrap_in_articulation=False,
+        label="test_joint_enabled_cable",
+    )
+
+    # BALL joint: anchor sphere → first rod body.
+    parent_anchor_local = wp.vec3(0.0, 0.0, -attach_offset)
+    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    j = builder.add_joint_ball(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+    )
+    builder.add_articulation([*rod_joints, j])
+
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    sim_dt = 1.0 / 60.0 / 4
+
+    def step_n(n):
+        nonlocal state0, state1
+        for _ in range(n):
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+    # Phase 1: joint enabled (default) — cable stays attached to anchor.
+    step_n(10)
+    err_connected = _compute_ball_joint_anchor_error(model, state0.body_q, j)
+    test.assertLess(err_connected, 1.0e-3, f"Phase 1 (enabled): pos error {err_connected:.6f} m > 1e-3")
+
+    # Phase 2: disable joint — cable detaches and falls under gravity.
+    enabled_np = model.joint_enabled.numpy()
+    enabled_np[j] = False
+    model.joint_enabled.assign(wp.array(enabled_np, dtype=bool, device=device))
+    step_n(10)
+    err_disabled = _compute_ball_joint_anchor_error(model, state0.body_q, j)
+    test.assertGreater(
+        err_disabled, 5.0e-3, f"Phase 2 (disabled): pos error {err_disabled:.6f} m — cable did not separate"
+    )
+
+    # Phase 3: re-enable joint — solver pulls cable back toward anchor.
+    enabled_np[j] = True
+    model.joint_enabled.assign(wp.array(enabled_np, dtype=bool, device=device))
+    step_n(10)
+    err_reenabled = _compute_ball_joint_anchor_error(model, state0.body_q, j)
+    test.assertLess(
+        err_reenabled,
+        err_disabled,
+        f"Phase 3 (re-enabled): pos error {err_reenabled:.6f} m did not decrease from {err_disabled:.6f} m",
+    )
+
+
 class TestCable(unittest.TestCase):
     pass
 
 
+add_function_test(
+    TestCable,
+    "test_joint_enabled_toggle",
+    _joint_enabled_toggle_impl,
+    devices=devices,
+)
 add_function_test(
     TestCable,
     "test_cable_chain_connectivity",
@@ -1787,6 +3849,72 @@ add_function_test(
 )
 add_function_test(
     TestCable,
+    "test_cable_revolute_joint_attaches_rod_endpoint",
+    _cable_revolute_joint_attaches_rod_endpoint_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_revolute_drive_tracks_target",
+    _cable_revolute_drive_tracks_target_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_revolute_drive_limit",
+    _cable_revolute_drive_limit_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_prismatic_joint_attaches_rod_endpoint",
+    _cable_prismatic_joint_attaches_rod_endpoint_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_prismatic_drive_tracks_target",
+    _cable_prismatic_drive_tracks_target_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_prismatic_drive_limit",
+    _cable_prismatic_drive_limit_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_d6_joint_attaches_rod_endpoint",
+    _cable_d6_joint_attaches_rod_endpoint_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_d6_joint_all_locked",
+    _cable_d6_joint_all_locked_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_d6_joint_locked_x",
+    _cable_d6_joint_locked_x_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_d6_drive_tracks_target",
+    _cable_d6_drive_tracks_target_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_d6_drive_limit",
+    _cable_d6_drive_limit_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
     "test_cable_kinematic_gripper_picks_capsule",
     _cable_kinematic_gripper_picks_capsule_impl,
     devices=devices,
@@ -1819,6 +3947,12 @@ add_function_test(
     TestCable,
     "test_collect_rigid_body_contact_forces",
     _collect_rigid_body_contact_forces_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_world_joint_attaches_rod_endpoint",
+    _cable_world_joint_attaches_rod_endpoint_impl,
     devices=devices,
 )
 

@@ -45,6 +45,7 @@ newton
    EqType
    Gaussian
    GeoType
+   GizmoAxes
    Heightfield
    JointTargetMode
    JointType
