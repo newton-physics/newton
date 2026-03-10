@@ -979,7 +979,7 @@ and the linear velocity reference point conversion (CoM ↔ body frame origin).<
 <td><p>World frame</p></td>
 <td><p>Not named “twist”; typically treated as <span class="math notranslate nohighlight">\([\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]\)</span></p></td>
 </tr>
-<tr class="row-even"><td><p><strong>Newton</strong> (except Featherstone solver, see below)</p></td>
+<tr class="row-even"><td><p><strong>Newton</strong> (except the Featherstone solver; see below)</p></td>
 <td><p>COM, world frame</p></td>
 <td><p>World frame</p></td>
 <td><p><a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_qd</span></code></a></p></td>
@@ -992,7 +992,7 @@ and the linear velocity reference point conversion (CoM ↔ body frame origin).<
 <p><a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a> does not correctly handle angular velocity
 for free-floating bodies with <strong>non-zero center of mass offsets</strong>. The body may not
 rotate purely about its CoM.</p>
-<p>We will fix this issue with <a class="github reference external" href="https://github.com/newton-physics/newton/issues/1366">newton-physics/newton#1366</a>.</p>
+<p>This issue is tracked at <a class="github reference external" href="https://github.com/newton-physics/newton/issues/1366">newton-physics/newton#1366</a>.</p>
 </div>
 </section>
 <section id="mapping-between-representations">
@@ -1059,13 +1059,13 @@ world coordinates. The reference point matters for the moment term, so shifting
 the wrench to a point offset by <span class="math notranslate nohighlight">\(\mathbf{r}\)</span> changes the torque as:</p>
 <div class="math notranslate nohighlight">
 \[\boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}.\]</div>
-<p>This convention is used in all Newton solvers, except for <a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a> which does not correctly handle torque application for free-floating bodies with <strong>non-zero center of mass offsets</strong>.</p>
+<p>This convention is used in all Newton solvers, except for <a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>, which does not correctly handle torque application for free-floating bodies with <strong>non-zero center of mass offsets</strong>.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p><a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a> does not correctly handle torque application
 for free-floating bodies with <strong>non-zero center of mass offsets</strong>. A pure torque will
 incorrectly cause the CoM to translate instead of remaining stationary.</p>
-<p>We will fix this issue with <a class="github reference external" href="https://github.com/newton-physics/newton/issues/1366">newton-physics/newton#1366</a>.</p>
+<p>This issue is tracked at <a class="github reference external" href="https://github.com/newton-physics/newton/issues/1366">newton-physics/newton#1366</a>.</p>
 </div>
 <p>The array of joint forces (torques) in generalized coordinates is stored in <a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Control.joint_f</span></code></a>.
 For free joints, the corresponding 6 dimensions in this array are the spatial wrench applied at the body’s center of mass (COM)
