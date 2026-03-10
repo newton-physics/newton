@@ -240,6 +240,81 @@ def Xform "Root" (
         self.assertEqual(model.body_count, 4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_body_to_world_fixed_joint(self):
+        """A body connected to the world via a PhysicsFixedJoint must be imported
+        with a FIXED joint (not FREE) and placed in its own articulation."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Main articulation: two bodies with a revolute joint.
+        arm = UsdGeom.Xform.Define(stage, "/World/Arm")
+        UsdPhysics.ArticulationRootAPI.Apply(arm.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/Arm/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        base.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+        col_base = UsdGeom.Cube.Define(stage, "/World/Arm/Base/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_base.GetPrim())
+
+        link1 = UsdGeom.Xform.Define(stage, "/World/Arm/Link1")
+        UsdPhysics.RigidBodyAPI.Apply(link1.GetPrim())
+        link1.AddTranslateOp().Set(Gf.Vec3d(1, 0, 0))
+        col_link1 = UsdGeom.Cube.Define(stage, "/World/Arm/Link1/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_link1.GetPrim())
+
+        rev = UsdPhysics.RevoluteJoint.Define(stage, "/World/Arm/RevJoint")
+        rev.CreateBody0Rel().SetTargets([base.GetPath()])
+        rev.CreateBody1Rel().SetTargets([link1.GetPath()])
+        rev.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev.CreateAxisAttr().Set("Z")
+
+        # world_link: a rigid body fixed-jointed to the world (body0 unset = world).
+        wl = UsdGeom.Xform.Define(stage, "/World/WorldLink")
+        UsdPhysics.RigidBodyAPI.Apply(wl.GetPrim())
+        wl.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+        col_wl = UsdGeom.Cube.Define(stage, "/World/WorldLink/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_wl.GetPrim())
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/WorldLink/FixedJoint")
+        fixed.CreateBody1Rel().SetTargets([wl.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        # 3 bodies: Base, Link1, WorldLink.
+        self.assertEqual(builder.body_count, 3)
+
+        wl_body_idx = builder.body_label.index("/World/WorldLink")
+        wl_joint_idx = next(i for i in range(builder.joint_count) if builder.joint_child[i] == wl_body_idx)
+
+        # world_link must have a FIXED joint, not a FREE joint.
+        self.assertEqual(builder.joint_type[wl_joint_idx], newton.JointType.FIXED)
+        # Parent is -1 (world).
+        self.assertEqual(builder.joint_parent[wl_joint_idx], -1)
+        # world_link's FIXED joint must belong to its own articulation,
+        # separate from the main arm articulation.
+        wl_art = builder.joint_articulation[wl_joint_idx]
+        self.assertNotEqual(wl_art, -1)
+
+        rev_joint_idx = builder.joint_label.index("/World/Arm/RevJoint")
+        arm_art = builder.joint_articulation[rev_joint_idx]
+        self.assertNotEqual(wl_art, arm_art)
+
+        # Model must finalize without errors (no orphan joint issues).
+        model = builder.finalize()
+        self.assertEqual(model.body_count, 3)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):
         """collapse_fixed_joints must not drop orphan joints or their bodies."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
