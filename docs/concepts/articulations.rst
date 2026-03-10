@@ -410,7 +410,7 @@ Common articulation workflows
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Center ``joint_q`` between joint limits with Warp kernels
-""""""""""""""""""""""""""""""""""""""""""""""""""""
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
 Joint limits are stored in DOF order (``joint_qd`` layout), while ``joint_q`` stores generalized
 joint coordinates (which may include quaternion coordinates for free/ball joints).
