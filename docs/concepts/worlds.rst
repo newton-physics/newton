@@ -29,11 +29,15 @@ Lastly, world-based grouping also enables selectively operating on only the enti
 World Assignment
 ----------------
 
-World assignment occurs when entities are added to an instance of :class:`~newton.ModelBuilder`, using one of the entity-specific methods such as :meth:`~newton.ModelBuilder.add_body`,
-:meth:`~newton.ModelBuilder.add_joint`, :meth:`~newton.ModelBuilder.add_shape` etc, and this can either be global (world index ``-1``) or specific to a particular world (world index ``0, 1, 2, ...``).
-When entities are added before the first call to :meth:`~newton.ModelBuilder.begin_world`, or the last call to :meth:`~newton.ModelBuilder.end_world`, they are assigned to the global world (index ``-1``).
-Conversely, entities can be assigned to specific worlds when added between calls to :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.end_world`.
-Each entity added between these calls is assigned the current world index. The following example illustrates how to create two different worlds within a single model:
+World assignment is managed by :class:`~newton.ModelBuilder` when entities are added through methods such as :meth:`~newton.ModelBuilder.add_body`,
+:meth:`~newton.ModelBuilder.add_joint`, and :meth:`~newton.ModelBuilder.add_shape`.
+The supported workflows are:
+
+* Add entities directly before or after a world scope to place them in the global world (index ``-1``), or between :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.end_world` to place them in a specific world (indices ``0, 1, 2, ...``).
+* Create worlds from a sub-builder with :meth:`~newton.ModelBuilder.add_world` or :meth:`~newton.ModelBuilder.replicate`.
+
+The :attr:`~newton.ModelBuilder.current_world` attribute is a read-only property that reflects the active builder context and should not be set directly.
+The following example illustrates how to create two different worlds within a single model:
 
 .. code-block::
 
@@ -68,6 +72,8 @@ Each entity added between these calls is assigned the current world index. The f
    model = builder.finalize()
 
 In this example, we are creating a model with two worlds (world ``0`` and world ``1``) containing different bodies, shapes and joints, as well as the global ground plane entity (with world index ``-1``).
+
+For homogeneous multi-world scenes, prefer :meth:`~newton.ModelBuilder.add_world` or :meth:`~newton.ModelBuilder.replicate` instead of manually repeating world scopes for each copy.
 
 
 .. _World grouping:

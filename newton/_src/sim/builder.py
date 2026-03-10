@@ -137,24 +137,31 @@ class ModelBuilder:
     - Index -1: Global entities shared across all worlds (e.g., ground plane)
     - Index 0, 1, 2, ...: World-specific entities
 
-    There are two ways to assign world indices:
+    There are two supported workflows for assigning world indices:
 
-    1. **Direct entity creation**: Entities inherit the builder's `current_world` value::
+    1. **Using begin_world()/end_world()**: :class:`ModelBuilder` manages
+       ``current_world`` while a world context is active::
 
            builder = ModelBuilder()
-           builder.current_world = -1  # Following entities will be global
            builder.add_ground_plane()
-           builder.current_world = 0  # Following entities will be in world 0
-           builder.add_body(...)
 
-    2. **Using add_world()**: ALL entities from the sub-builder are assigned to a new world::
+           builder.begin_world(label="robot_0")
+           builder.add_body(...)
+           builder.end_world()
+
+    2. **Using add_world()/replicate()**: All entities from the sub-builder are
+       assigned to a new world::
 
            robot = ModelBuilder()
            robot.add_body(...)  # World assignments here will be overridden
 
            main = ModelBuilder()
            main.add_world(robot)  # All robot entities -> world 0
-           main.add_world(robot)  # All robot entities -> world 1
+           main.replicate(robot, world_count=2)  # Add more worlds from the same source
+
+    ``current_world`` is builder-managed state. Use :meth:`begin_world`,
+    :meth:`end_world`, :meth:`add_world`, or :meth:`replicate` instead of
+    setting :attr:`current_world` directly.
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -481,14 +488,15 @@ class ModelBuilder:
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
 
         references: str | None = None
-        """For attributes containing entity indices, specifies how values are transformed during add_world/add_builder merging.
+        """For attributes containing entity indices, specifies how values are transformed during add_builder/add_world/replicate merging.
 
         Built-in entity types (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``,
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
-            - ``"world"``: Values are replaced with ``current_world`` (not offset)
+            - ``"world"``: Values are replaced with the builder-managed
+              :attr:`ModelBuilder.current_world` context (not offset)
 
         Custom frequencies (values are offset by that frequency's count):
             - Any custom frequency string, e.g., ``"mujoco:pair"``
@@ -1073,8 +1081,8 @@ class ModelBuilder:
         self.joint_constraint_count: int = 0
         """Total joint constraint count propagated to :attr:`Model.joint_constraint_count`."""
 
-        self.current_world: int = -1
-        """World index assigned to subsequently added entities; ``-1`` means global."""
+        self._current_world: int = -1
+        """Internal world context backing the read-only :attr:`current_world` property."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         """Up axis used when expanding scalar gravity into per-world gravity vectors."""
@@ -1783,6 +1791,29 @@ class ModelBuilder:
         raise AttributeError(
             "The 'up_vector' property is read-only and cannot be set. Instead, use 'up_axis' to set the up axis."
         )
+
+    @property
+    def current_world(self) -> int:
+        """Returns the builder-managed world context for subsequently added entities.
+
+        A value of ``-1`` means newly added entities are global. Use
+        :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
+        :meth:`replicate` to manage world assignment instead of setting this
+        property directly.
+
+        Returns:
+            The current world index for newly added entities.
+        """
+        return self._current_world
+
+    @current_world.setter
+    def current_world(self, _):
+        message = (
+            "The 'current_world' property is read-only and cannot be set. "
+            + "Use 'begin_world()', 'end_world()', 'add_world()', or "
+            + "'replicate()' to manage worlds."
+        )
+        raise AttributeError(message)
 
     # region counts
     @property
@@ -2604,7 +2635,7 @@ class ModelBuilder:
             )
 
         # Set the current world to the next available world index
-        self.current_world = self.world_count
+        self._current_world = self.world_count
         self.world_count += 1
 
         # Store world metadata if needed (for future use)
@@ -2641,7 +2672,7 @@ class ModelBuilder:
             raise RuntimeError("Cannot end world: not currently in a world context (current_world is already -1).")
 
         # Reset to global world
-        self.current_world = -1
+        self._current_world = -1
 
     def add_world(
         self,
@@ -2698,7 +2729,11 @@ class ModelBuilder:
 
         All entities from the source builder are added to this builder's current world context
         (the value of `self.current_world`). Any world assignments that existed in the source
-        builder are overwritten - all entities will be assigned to the current world.
+        builder are overwritten - all entities will be assigned to the active world context.
+
+        Use :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
+        :meth:`replicate` to manage world assignment. :attr:`current_world`
+        is read-only and should not be set directly.
 
         Example::
 
@@ -2707,7 +2742,8 @@ class ModelBuilder:
             sub_builder.add_body(...)
             sub_builder.add_shape_box(...)
 
-            # Adds all entities from sub_builder to main_builder's current world (-1 by default)
+            # Adds all entities from sub_builder to main_builder's active
+            # world context (-1 by default)
             main_builder.add_builder(sub_builder)
 
             # With transform and label prefix
