@@ -211,6 +211,13 @@ html_theme_options = {
         "text": f"Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>",
         "alt_text": "Newton Physics Logo",
     },
+    # Keep the right-hand page TOC on by default, but remove it on the
+    # solver API page where several wide comparison tables benefit from the
+    # extra content width.
+    "secondary_sidebar_items": {
+        "**": ["page-toc", "edit-this-page", "sourcelink"],
+        "api/newton_solvers": [],
+    },
     # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
 }
 
