@@ -150,8 +150,8 @@ class Example:
                 continue
 
             # color newly touched plate
-            plate = self.plate_contact_sensor.sensing_objs[i][0]
-            obj = self.plate_contact_sensor.counterparts[i][0]
+            plate = self.plate_contact_sensor.sensing_objs[0][i][0]
+            obj = self.plate_contact_sensor.counterparts[0][i][0]
             obj_key = self.model.shape_label[obj]
             self.plates_touched[i] = True
             print(f"Plate {self.model.shape_label[plate]} was touched by counterpart {obj_key}")

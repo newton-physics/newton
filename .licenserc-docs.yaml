@@ -8,7 +8,7 @@ header:
       SPDX-License-Identifier: CC-BY-4.0
 
     pattern: |
-      spdx-filecopyrighttext: copyright \(c\) \d{4} the newton developers
+      spdx-filecopyrighttext: copyright copyright \d{4} the newton developers
       spdx-license-identifier: cc-by-4\.0
 
   paths:
