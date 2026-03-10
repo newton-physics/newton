@@ -413,6 +413,128 @@ def test_reduce_contacts_with_pre_prune_disabled_no_crash(test, device):
     test.assertGreater(rigid_count, 0, "Expected non-zero contacts with pre_prune_contacts=False")
 
 
+@wp.kernel
+def _set_body_z_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    body_idx: int,
+    z: float,
+):
+    cur = body_q[body_idx]
+    p = wp.transform_get_translation(cur)
+    body_q[body_idx] = wp.transform(wp.vec3(p[0], p[1], z), wp.transform_get_rotation(cur))
+
+
+def _compute_net_force(contacts, model, state):
+    """Compute net contact force from a contacts buffer."""
+    n = int(contacts.rigid_contact_count.numpy()[0])
+    if n == 0 or contacts.rigid_contact_stiffness is None:
+        return np.zeros(3)
+
+    normals = contacts.rigid_contact_normal.numpy()[:n]
+    p0 = contacts.rigid_contact_point0.numpy()[:n]
+    p1 = contacts.rigid_contact_point1.numpy()[:n]
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:n]
+    shape0 = contacts.rigid_contact_shape0.numpy()[:n]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:n]
+    shape_body = model.shape_body.numpy()
+    body_q = state.body_q.numpy()
+
+    b0 = shape_body[shape0]
+    b1 = shape_body[shape1]
+    # Translate contact points to world frame (body == -1 means world already)
+    off0 = np.where((b0 != -1)[:, None], body_q[np.maximum(b0, 0), :3], 0.0)
+    off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
+    p0w = p0 + off0
+    p1w = p1 + off1
+    depth = np.einsum("ij,ij->i", p0w - p1w, normals) / 2.0
+    mask = (stiffness > 0) & (depth < 0)
+    force_mag = stiffness[mask] * (-depth[mask])
+    return np.sum(force_mag[:, None] * normals[mask], axis=0)
+
+
+def test_reduced_vs_unreduced_contact_forces(test, device):
+    """Reduced and unreduced hydroelastic forces must agree within 1%."""
+    cube_half = 0.1
+    sphere_radius = 0.1
+    narrow_band = cube_half * 0.4
+    contact_margin = cube_half * 0.4
+
+    shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=64,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        gap=contact_margin,
+        kh=1e9,
+    )
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = shape_cfg
+    builder.add_ground_plane()
+
+    cube_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half), wp.quat_identity()),
+        label="cube",
+    )
+    builder.add_shape_box(body=cube_body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    rest_z = 2 * cube_half + sphere_radius
+    sphere_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, rest_z), wp.quat_identity()),
+        label="sphere",
+    )
+    builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    cfg_reduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=False,
+    )
+    cfg_unreduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    pipe_red = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_reduced)
+    pipe_unr = newton.CollisionPipeline(model, rigid_contact_max=15000, sdf_hydroelastic_config=cfg_unreduced)
+    contacts_red = pipe_red.contacts()
+    contacts_unr = pipe_unr.contacts()
+
+    penetrations = [0.0, 1e-4, 1e-3, 1e-2]
+
+    for pen in penetrations:
+        sphere_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
+
+        pipe_red.collide(state, contacts_red)
+        pipe_unr.collide(state, contacts_unr)
+
+        f_red = _compute_net_force(contacts_red, model, state)
+        f_unr = _compute_net_force(contacts_unr, model, state)
+
+        if pen == 0.0:
+            # No penetration — both forces should be near zero
+            test.assertLess(np.linalg.norm(f_red), 1e-3, f"pen={pen}: reduced force should be ~0")
+            test.assertLess(np.linalg.norm(f_unr), 1e-3, f"pen={pen}: unreduced force should be ~0")
+            continue
+
+        # z-component (normal force) — must be positive and match within 1%
+        test.assertGreater(f_unr[2], 0.0, f"pen={pen}: unreduced Fz should be positive")
+        rel_z = abs(f_red[2] - f_unr[2]) / abs(f_unr[2])
+        test.assertLess(rel_z, 0.01, f"pen={pen}: Fz mismatch {rel_z*100:.2f}%")
+
+        # xy-components — should be small; match as fraction of Fz
+        for axis, label in [(0, "Fx"), (1, "Fy")]:
+            abs_diff = abs(f_red[axis] - f_unr[axis])
+            test.assertLess(
+                abs_diff / abs(f_unr[2]),
+                0.01,
+                f"pen={pen}: {label} diff {abs_diff:.4f} > 1% of Fz {f_unr[2]:.4f}",
+            )
+
+
 def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
     """Validate entry_k_eff uses the pairwise harmonic-mean stiffness formula."""
     expected_k_eff = 0.5 * 1.0e10  # k_a == k_b == default kh for these shapes
@@ -652,8 +774,9 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         expected /= effective_mass
         ratio = measured / expected
 
+        # We expect a ratio slightly > 1 due to non-uniform pressure distribution.
         test.assertGreater(
-            ratio, 0.85, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
+            ratio, 1.05, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
         )
         test.assertLess(
             ratio, 1.15, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
@@ -785,6 +908,14 @@ add_function_test(
     "test_entry_k_eff_matches_shape_harmonic_mean",
     test_entry_k_eff_matches_shape_harmonic_mean,
     devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_forces",
+    test_reduced_vs_unreduced_contact_forces,
+    devices=cuda_devices,
+    check_output=False,
 )
 
 
