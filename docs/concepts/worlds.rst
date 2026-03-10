@@ -61,8 +61,6 @@ The following example creates two different worlds within a single model:
    builder.add_articulation(joints=[j0, j1])
    builder.add_shape_box(body=link0, hx=0.1, hy=0.1, hz=0.1)
    builder.add_shape_box(body=link1, hx=0.1, hy=0.1, hz=0.1)
-   joints = [j0, j1]
-   builder.add_articulation(joints)
    builder.end_world()
 
    # Global entity at back (world -1)
