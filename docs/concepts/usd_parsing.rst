@@ -40,6 +40,11 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 Mass and Inertia Precedence
 ---------------------------
 
+.. seealso::
+
+   :ref:`Mass and Inertia` for general concepts: the programmatic API,
+   density-based inference, and finalize-time validation.
+
 For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inertial property
 (mass, inertia, center of mass) independently.  Authored attributes take precedence;
 ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` provides baseline values for the rest.
