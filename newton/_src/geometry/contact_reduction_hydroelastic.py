@@ -18,11 +18,6 @@
 This module provides hydroelastic-specific contact reduction functionality,
 building on the core ``GlobalContactReducer`` from ``contact_reduction_global.py``.
 
-**Sign Convention:**
-
-Uses standard SDF sign convention: negative depth = penetrating, positive = separated.
-This matches the global contact reducer and other contact systems.
-
 **Hydroelastic Contact Features:**
 
 - Aggregate stiffness calculation: ``c_stiffness = k_eff * |agg_force| / total_depth``
@@ -416,13 +411,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         # Grid stride parameters
         total_num_threads: int,
     ):
-        """Export reduced hydroelastic contacts to the writer with aggregate stiffness.
-
-        Features:
-        - Aggregate stiffness: c_stiffness = k_eff * |agg_force| / total_depth_reduced
-        - Normal matching: rotates normals so weighted sum aligns with agg_force direction
-        - Anchor contact: adds synthetic contact at center of pressure
-        - Voxel contacts: look up the normal bin they fall in and use its aggregate stiffness
+        """
+        Export reduced hydroelastic contacts to the writer with aggregate stiffness.
         """
         tid = wp.tid()
 
@@ -481,7 +471,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
                 # Track max penetration and normal matching (depth < 0 = penetrating)
                 if depth < 0.0:
-                    pen_magnitude = -depth  # Convert to positive magnitude
+                    pen_magnitude = -depth
                     max_pen_depth = wp.max(max_pen_depth, pen_magnitude)
 
                 # Store first contact's shape pair (same for all contacts in the entry)
@@ -518,14 +508,14 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     add_anchor = 1
 
             # Compute total_depth including anchor contribution
-            # Use pre-accumulated total_depth_reduced which includes ALL winning contacts
+            # Use pre-accumulated total_depth_reduced which includes all winning contacts
             # (both normal bin and voxel bin) that map to this normal bin.
             anchor_depth = max_pen_depth  # Anchor uses max penetration depth (positive magnitude)
             entry_total_depth = total_depth_reduced[entry_idx]
             total_depth_with_anchor = entry_total_depth + wp.float32(add_anchor) * anchor_depth
 
             # Compute shared stiffness for normal bin entries.
-            # c_stiffness = k_eff * |agg_force| / total_depth (matches original hydroelastic system)
+            # c_stiffness = k_eff * |agg_force| / total_depth
             # Use the aggregate formula whenever numerator and denominator are
             # both positive, even when agg_force_mag is below EPS_LARGE.  This
             # avoids falling back to margin_contact_area at shallow penetration
@@ -536,8 +526,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 shared_stiffness = k_eff_first * agg_force_mag / (total_depth_with_anchor + wp.static(EPS_SMALL))
 
             # Compute normal matching rotation quaternion from pre-accumulated
-            # total_normal_reduced (covers ALL winning contacts across all entries
-            # that map to this normal bin, not just this entry's local winners).
             rotation_q = wp.quat_identity()
             if wp.static(normal_matching) and use_aggregate_features:
                 nbin_normal_sum = total_normal_reduced[entry_idx]
@@ -556,7 +544,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_id = exported_ids[idx]
                 depth = exported_depths[idx]
 
-                # Read position from buffer; use cached decoded normal (no re-decode)
+                # Read position from buffer; use cached decoded normal
                 pd = position_depth[contact_id]
                 position = wp.vec3(pd[0], pd[1], pd[2])
                 contact_normal = wp.vec3(cached_nx[idx], cached_ny[idx], cached_nz[idx])

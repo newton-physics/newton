@@ -368,14 +368,9 @@ class GlobalContactReducerData:
     weight_sum: wp.array(dtype=wp.float32)
 
     # Total depth of reduced (winning) contacts per normal bin entry.
-    # Accumulated from all winning contacts (normal bin + voxel) that map to each normal bin.
-    # Used to distribute aggregate force across all reduced contacts, not just per-entry winners.
     total_depth_reduced: wp.array(dtype=wp.float32)
 
     # Total depth-weighted normal of reduced (winning) contacts per normal bin entry.
-    # Accumulated as sum(|depth| * normal) from all winning contacts that map to each normal bin.
-    # Used for normal matching so the rotation is computed from all reduced contacts, not just
-    # the current entry's winners.
     total_normal_reduced: wp.array(dtype=wp.vec3)
 
     # Hashtable arrays
