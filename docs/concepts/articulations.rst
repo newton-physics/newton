@@ -493,7 +493,7 @@ stored in the same per-axis order.
 
 The :attr:`newton.Model.joint_dof_dim` array can be used to query the number of linear and angular DOFs.
 All axis-related quantities are stored in consecutive order for every joint. The linear DOFs are stored first, followed by the angular DOFs.
-For a given joint, the linear and angular DOFs are indexed as follows
+For a given joint, the linear and angular DOFs are indexed as follows:
 
 .. code-block:: python
 

@@ -127,8 +127,8 @@ Joint entities can vary in the number of DOFs, coordinates, and constraints. To 
 - Joint Coordinates: :attr:`~newton.Model.joint_coord_world_start`
 - Joint Constraints: :attr:`~newton.Model.joint_constraint_world_start`
 
-All :attr:`~newton.Model.world_*_start` arrays use a special format. This format makes it easy to keep track of how many entities belong to each world, as well as how many belong to the global world (index ``-1``).
-Specifically, each :attr:`~newton.Model.world_*_start` array contains ``world_count + 2`` entries.  The first ``world_count`` entries correspond to the starting indices of each ``world >= 0`` world. The second last entry corresponds to the starting index of the global entities (world index ``-1``). The last entry corresponds to the total number of entities or dimensions in the model.
+All ``*_world_start`` arrays use a special format. This format makes it easy to keep track of how many entities belong to each world, as well as how many belong to the global world (index ``-1``).
+Specifically, each ``*_world_start`` array contains ``world_count + 2`` entries.  The first ``world_count`` entries correspond to the starting indices of each ``world >= 0`` world. The second last entry corresponds to the starting index of the global entities (world index ``-1``). The last entry corresponds to the total number of entities or dimensions in the model.
 
 With this format, we can easily obtain the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
 as well as the total number of global entities by summing the first entry with the difference of the last two.
