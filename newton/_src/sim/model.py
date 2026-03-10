@@ -625,7 +625,7 @@ class Model:
         self.equality_constraint_joint2: wp.array(dtype=wp.int32) | None = None
         """Second joint index, shape [equality_constraint_count], int."""
         self.equality_constraint_polycoef: wp.array(dtype=wp.float32, ndim=2) | None = None
-        """Polynomial coefficients, shape [equality_constraint_count, 2], float."""
+        """Polynomial coefficients, shape [equality_constraint_count, 5], float."""
         self.equality_constraint_label: list[str] = []
         """Constraint name/label, shape [equality_constraint_count], str."""
         self.equality_constraint_enabled: wp.array(dtype=wp.bool) | None = None

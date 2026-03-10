@@ -37,7 +37,6 @@ from ..core.types import (
     Mat22,
     Mat33,
     Quat,
-    Sequence,
     Transform,
     Vec3,
     Vec4,
@@ -138,16 +137,22 @@ class ModelBuilder:
     - Index -1: Global entities shared across all worlds (e.g., ground plane)
     - Index 0, 1, 2, ...: World-specific entities
 
+    See :doc:`Worlds </concepts/worlds>` for a full overview of world semantics,
+    layout, and supported workflows.
+
     There are two supported workflows for assigning world indices:
 
-    1. **Using begin_world()/end_world()**: :class:`ModelBuilder` manages
-       ``current_world`` while a world context is active::
+    1. **Using begin_world()/end_world()**: Entities added outside any world
+       context, before the first :meth:`begin_world` or after the matching
+       :meth:`end_world`, are assigned to the global world (index ``-1``).
+       :class:`ModelBuilder` manages ``current_world`` while a world context is
+       active::
 
            builder = ModelBuilder()
-           builder.add_ground_plane()
+           builder.add_ground_plane()  # global (world -1)
 
            builder.begin_world(label="robot_0")
-           builder.add_body(...)
+           builder.add_body(...)  # world 0
            builder.end_world()
 
     2. **Using add_world()/replicate()**: All entities from the sub-builder are
@@ -160,9 +165,9 @@ class ModelBuilder:
            main.add_world(robot)  # All robot entities -> world 0
            main.replicate(robot, world_count=2)  # Add more worlds from the same source
 
-    ``current_world`` is builder-managed state. Use :meth:`begin_world`,
-    :meth:`end_world`, :meth:`add_world`, or :meth:`replicate` instead of
-    setting :attr:`current_world` directly.
+    ``current_world`` is builder-managed state. Prefer :meth:`begin_world`,
+    :meth:`end_world`, :meth:`add_world`, or :meth:`replicate`. Direct
+    assignment is deprecated and retained only for backward compatibility.
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -1138,7 +1143,7 @@ class ModelBuilder:
         """Scale coefficients accumulated for :attr:`Model.constraint_mimic_coef1`."""
         self.constraint_mimic_enabled: list[bool] = []
         """Enabled flags accumulated for :attr:`Model.constraint_mimic_enabled`."""
-        self.constraint_mimic_label: list[Any] = []
+        self.constraint_mimic_label: list[str] = []
         """Mimic constraint labels accumulated for :attr:`Model.constraint_mimic_label`."""
         self.constraint_mimic_world: list[int] = []
         """World indices accumulated for :attr:`Model.constraint_mimic_world`."""
@@ -1799,8 +1804,7 @@ class ModelBuilder:
 
         A value of ``-1`` means newly added entities are global. Use
         :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
-        :meth:`replicate` to manage world assignment instead of setting this
-        property directly.
+        :meth:`replicate` to manage world assignment.
 
         Returns:
             The current world index for newly added entities.
@@ -4152,7 +4156,9 @@ class ModelBuilder:
         """Generic method to add any type of equality constraint to this ModelBuilder.
 
         Args:
-            constraint_type: Type of constraint ('connect', 'weld', 'joint')
+            constraint_type: Equality constraint type. Use ``EqType.CONNECT`` to
+                pin a point to another body or the world, ``EqType.WELD`` to
+                constrain relative pose, or ``EqType.JOINT`` to couple two joints.
             body1: Index of the first body participating in the constraint (-1 for world)
             body2: Index of the second body participating in the constraint (-1 for world)
             anchor: Anchor point on body1
@@ -4160,7 +4166,7 @@ class ModelBuilder:
             relpose: Relative pose of body2 for weld. If None, the identity transform is used.
             joint1: Index of the first joint for joint coupling
             joint2: Index of the second joint for joint coupling
-            polycoef: Polynomial coefficients for joint coupling
+            polycoef: Five polynomial coefficients for ``EqType.JOINT`` coupling
             label: Optional constraint label
             enabled: Whether constraint is active
             custom_attributes: Custom attributes to set on the constraint
@@ -4191,7 +4197,7 @@ class ModelBuilder:
         self.equality_constraint_joint1.append(joint1)
         self.equality_constraint_joint2.append(joint2)
         self.equality_constraint_polycoef.append(polycoef or [0.0, 0.0, 0.0, 0.0, 0.0])
-        self.equality_constraint_label.append(label)
+        self.equality_constraint_label.append(label or "")
         self.equality_constraint_enabled.append(enabled)
         self.equality_constraint_world.append(self.current_world)
 
@@ -4361,7 +4367,7 @@ class ModelBuilder:
         self.constraint_mimic_coef0.append(coef0)
         self.constraint_mimic_coef1.append(coef1)
         self.constraint_mimic_enabled.append(enabled)
-        self.constraint_mimic_label.append(label)
+        self.constraint_mimic_label.append(label or "")
         self.constraint_mimic_world.append(self.current_world)
 
         constraint_idx = len(self.constraint_mimic_joint0) - 1
@@ -5180,9 +5186,9 @@ class ModelBuilder:
                     self.add_shape_collision_filter_pair(shape, child_shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
-            (m, c, I) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+            (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
             com_body = wp.transform_point(xform, c)
-            self._update_body_mass(body, m, I, com_body, xform.q)
+            self._update_body_mass(body, m, inertia, com_body, xform.q)
 
         # Process custom attributes
         if custom_attributes:
@@ -7974,7 +7980,7 @@ class ModelBuilder:
                         self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
-    def _update_body_mass(self, i: int, m: float, I: Mat33, p: Vec3, q: Quat):
+    def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
         if i == -1:
             return
 
@@ -7992,7 +7998,7 @@ class ModelBuilder:
 
         new_inertia = transform_inertia(
             self.body_mass[i], self.body_inertia[i], com_offset, wp.quat_identity()
-        ) + transform_inertia(m, I, shape_offset, q)
+        ) + transform_inertia(m, inertia, shape_offset, q)
 
         self.body_mass[i] = new_mass
         self.body_inertia[i] = new_inertia
