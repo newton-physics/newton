@@ -8145,19 +8145,19 @@ class TestUpdateContactsPointPositions(unittest.TestCase):
                 point0 = contacts.rigid_contact_point0.numpy()[:n]
                 point1 = contacts.rigid_contact_point1.numpy()[:n]
 
-                self.assertFalse(
-                    np.allclose(point0, 0.0),
-                    "rigid_contact_point0 is all zeros — update_contacts did not populate contact positions",
-                )
-                self.assertFalse(
-                    np.allclose(point1, 0.0),
-                    "rigid_contact_point1 is all zeros — update_contacts did not populate contact positions",
-                )
-
-                # Box half-height is 0.25, contact z should be near ground level
-                # point1 is in box body frame, so z should be near -0.25 (bottom face)
+                hx, hy, hz = 0.25, 0.25, 0.25
                 for i in range(n):
-                    self.assertAlmostEqual(point1[i][2], -0.25, delta=0.02)
+                    # point0 is on the ground plane (body-local = world for static body).
+                    # z should be near 0 (ground surface), x/y within box footprint.
+                    self.assertAlmostEqual(point0[i][2], 0.0, delta=0.02)
+                    self.assertLessEqual(abs(float(point0[i][0])), hx + 0.01)
+                    self.assertLessEqual(abs(float(point0[i][1])), hy + 0.01)
+
+                    # point1 is in box body frame.
+                    # z should be near -hz (bottom face), x/y within box half-extents.
+                    self.assertAlmostEqual(point1[i][2], -hz, delta=0.02)
+                    self.assertLessEqual(abs(float(point1[i][0])), hx + 0.01)
+                    self.assertLessEqual(abs(float(point1[i][1])), hy + 0.01)
                 break
 
         self.assertTrue(found_contacts, "No contacts detected after 200 steps")
