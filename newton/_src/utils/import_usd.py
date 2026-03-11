@@ -35,7 +35,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
+from ..geometry import Gaussian, GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
@@ -599,6 +599,16 @@ def parse_usd(
                     xform,
                     scale=scale,
                     mesh=mesh,
+                    cfg=visual_shape_cfg,
+                    label=path_name,
+                )
+            elif type_name == "particlefield3dgaussiansplat":
+                gaussian = Gaussian.create_from_usd(prim)
+                shape_id = builder.add_shape_gaussian(
+                    parent_body_id,
+                    gaussian=gaussian,
+                    xform=xform,
+                    scale=scale,
                     cfg=visual_shape_cfg,
                     label=path_name,
                 )
@@ -2320,6 +2330,38 @@ def parse_usd(
                 for shape1 in builder.body_shapes[body1]:
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
+
+    # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
+    if load_visual_shapes:
+        for gaussian_prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            if str(gaussian_prim.GetTypeName()) != "ParticleField3DGaussianSplat":
+                continue
+            gaussian_path = str(gaussian_prim.GetPath())
+            if gaussian_path in path_shape_map:
+                continue
+            if any(re.match(p, gaussian_path) for p in ignore_paths):
+                continue
+
+            body_id = -1
+
+            prim_world_mat = usd.get_transform_matrix(gaussian_prim, local=False, xform_cache=xform_cache)
+            if incoming_world_xform is not None:
+                prim_world_mat = _xform_to_mat44(incoming_world_xform) @ prim_world_mat
+
+            g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
+            gaussian = Gaussian.create_from_usd(gaussian_prim)
+            shape_id = builder.add_shape_gaussian(
+                body_id,
+                gaussian=gaussian,
+                xform=wp.transform(g_pos, g_rot),
+                scale=g_scale,
+                cfg=visual_shape_cfg,
+                label=gaussian_path,
+            )
+            path_shape_map[gaussian_path] = shape_id
+            path_shape_scale[gaussian_path] = g_scale
+            if verbose:
+                print(f"Added Gaussian splat shape {gaussian_path} with id {shape_id}.")
 
     def _zero_mass_information():
         """Create a reusable zero-contribution collider mass payload for callback fallback."""
