@@ -2411,13 +2411,11 @@ class TestImportMjcfGeometry(unittest.TestCase):
             # The transform quaternion should encode a ~45 deg Z rotation.
             t = builder.shape_transform[0]
             q = t.q
-            # Extract the Z-rotation angle from the quaternion.
-            # For a pure Z rotation: q = (cos(a/2), 0, 0, sin(a/2))
-            # but the quaternion may also encode axis reordering, so check
-            # that the rotation is non-trivial (not identity).
+            # Warp quaternions are XYZW: identity = [0, 0, 0, 1].
+            # Verify the rotation is non-trivial (not identity).
             q_np = np.array([q[0], q[1], q[2], q[3]])
             self.assertFalse(
-                np.allclose(np.abs(q_np), [1, 0, 0, 0], atol=0.1),
+                np.allclose(np.abs(q_np), [0, 0, 0, 1], atol=0.1),
                 "Expected non-identity rotation for rotated mesh",
             )
 
