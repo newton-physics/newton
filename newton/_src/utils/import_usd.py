@@ -2347,7 +2347,6 @@ def parse_usd(
             if has_rigid_body_ancestor:
                 continue
 
-
             gaussian_path = str(gaussian_prim.GetPath())
             if gaussian_path in path_shape_map:
                 continue
