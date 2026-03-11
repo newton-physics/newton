@@ -111,7 +111,10 @@ class TestSensorTiledCamera(unittest.TestCase):
         tiled_camera_sensor = SensorTiledCamera(
             model=model,
             config=SensorTiledCamera.Config(
-                default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
+                default_light=True,
+                default_light_shadows=True,
+                color_mode=SensorTiledCamera.Config.ColorMode.RANDOM_PER_SHAPE,
+                checkerboard_texture=True,
             ),
         )
         camera_rays = tiled_camera_sensor.compute_pinhole_camera_rays(width, height, math.radians(45.0))

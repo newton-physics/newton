@@ -61,7 +61,11 @@ class SensorTiledCameraBenchmark:
 
         self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
-            config=SensorTiledCamera.Config(default_light=True, colors_per_shape=True, checkerboard_texture=True),
+            config=SensorTiledCamera.Config(
+                default_light=True,
+                color_mode=SensorTiledCamera.Config.ColorMode.RANDOM_PER_SHAPE,
+                checkerboard_texture=True,
+            ),
         )
         self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
             resolution, resolution, math.radians(45.0)

@@ -331,6 +331,13 @@ class Utils:
         colors[:, -1] = 1.0
         self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.__render_context.device)
 
+    def assign_constant_color(self, color: tuple[float, float, float, float]):
+        self.__render_context.shape_colors = wp.array(
+            np.full((self.__render_context.shape_count_total, 4), fill_value=color, dtype=wp.float32),
+            dtype=wp.vec4f,
+            device=self.__render_context.device,
+        )
+
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
         self.__render_context.config.enable_shadows = enable_shadows
         self.__render_context.lights_active = wp.array([True], dtype=wp.bool, device=self.__render_context.device)

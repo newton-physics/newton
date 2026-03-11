@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
 from typing import Any
 
@@ -133,6 +134,19 @@ class SensorTiledCamera:
 
     @dataclass
     class Config:
+        class ColorMode(enum.IntEnum):
+            MODEL_COLOR = 0
+            """Assign a colors from model."""
+
+            CONSTANT_COLOR = 1
+            """Assign a constant color to all shapes."""
+
+            RANDOM_PER_SHAPE = 2
+            """Assign a random color per shape."""
+
+            RANDOM_PER_WORLD = 3
+            """Assign a random color palette per world."""
+
         """Rendering configuration."""
 
         checkerboard_texture: bool = False
@@ -144,11 +158,8 @@ class SensorTiledCamera:
         default_light_shadows: bool = False
         """Enable shadows for the default light (requires ``default_light``)."""
 
-        colors_per_world: bool = False
-        """Assign a random color palette per world."""
-
-        colors_per_shape: bool = False
-        """Assign a random color per shape (ignored when ``colors_per_world`` is True)."""
+        color_mode: ColorMode = ColorMode.MODEL_COLOR
+        """Color mode."""
 
         backface_culling: bool = True
         """Cull back-facing triangles."""
@@ -204,9 +215,6 @@ class SensorTiledCamera:
         self.render_context.shape_world_index = self.model.shape_world
         self.render_context.gaussians_data = self.model.gaussians_data
 
-        colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(self.model.shape_source)]
-        self.render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.render_context.device)
-
         num_enabled_shapes = wp.zeros(1, dtype=wp.int32, device=self.render_context.device)
         wp.launch(
             kernel=compute_enabled_shapes,
@@ -231,10 +239,15 @@ class SensorTiledCamera:
                 self.assign_checkerboard_material_to_all_shapes()
             if config.default_light:
                 self.create_default_light(config.default_light_shadows)
-            if config.colors_per_world:
-                self.assign_random_colors_per_world()
-            elif config.colors_per_shape:
-                self.assign_random_colors_per_shape()
+
+        if config is None or config.color_mode == SensorTiledCamera.Config.ColorMode.MODEL_COLOR:
+            self.assign_colors_from_model()
+        elif config.color_mode == SensorTiledCamera.Config.ColorMode.RANDOM_PER_WORLD:
+            self.assign_random_colors_per_world()
+        elif config.color_mode == SensorTiledCamera.Config.ColorMode.RANDOM_PER_SHAPE:
+            self.assign_random_colors_per_shape()
+        elif config.color_mode == SensorTiledCamera.Config.ColorMode.CONSTANT_COLOR:
+            self.assign_constant_color((1.0, 1.0, 1.0, 1.0))
 
     def sync_transforms(self, state: State):
         """Synchronize shape transforms from the simulation state.
@@ -408,6 +421,19 @@ class SensorTiledCamera:
             seed: Random seed.
         """
         self.render_context.utils.assign_random_colors_per_shape(seed)
+
+    def assign_constant_color(self, color: tuple[float, float, float, float]):
+        """Assign a constant to all shapes.
+
+        Args:
+            color: rgba color values.
+        """
+        self.render_context.utils.assign_constant_color(color)
+
+    def assign_colors_from_model(self):
+        """Assign a colors from model."""
+        colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(self.model.shape_source)]
+        self.render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.render_context.device)
 
     def create_default_light(self, enable_shadows: bool = True):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
