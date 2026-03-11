@@ -449,7 +449,7 @@ def parse_mjcf(
                 mesh_class = mesh.attrib.get("class", "__all__")
                 mesh_defaults = class_defaults.get(mesh_class, {}).get("mesh", {})
                 mesh_attrib = merge_attrib(mesh_defaults, mesh.attrib)
-                name = mesh_attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
+                name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
                 s = mesh_attrib.get("scale", "1.0 1.0 1.0")
                 s = np.fromstring(s, sep=" ", dtype=np.float32)
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
