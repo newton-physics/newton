@@ -52,7 +52,7 @@ def Xform "cartPole" (
         float3 xformOp:scale = (0.2, 0.25, 0.2)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
 
-		float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+		float3 physics:diagonalInertia = (0.0085, 0.0067, 0.0085)
 		float physics:mass = 1
 		quatf physics:principalAxes = (1, 0, 0, 0)
 
@@ -73,7 +73,7 @@ def Xform "cartPole" (
         float3 xformOp:scale = (0.04, 0.06, 1)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
 
-        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        float3 physics:diagonalInertia = (0.0209, 0.0209, 0.0001)
         float physics:mass = 0.25
         quatf physics:principalAxes = (1, 0, 0, 0)
         point3f physics:centerOfMass = (0, 0, 0)
@@ -96,7 +96,7 @@ def Xform "cartPole" (
         float3 xformOp:scale = (0.04, 0.06, 1)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
 
-        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        float3 physics:diagonalInertia = (0.0209, 0.0209, 0.0001)
         float physics:mass = 0.25
         quatf physics:principalAxes = (1, 0, 0, 0)
         point3f physics:centerOfMass = (0, 0, 0)

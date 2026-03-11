@@ -20,6 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sensors.sensor_contact import _bucket_indices_by_world
 from newton.sensors import SensorContact
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
@@ -30,6 +31,10 @@ class MockModel:
 
     def __init__(self, device=None):
         self.device = device or wp.get_device()
+        self.world_count = 1
+        self.shape_world_start = None
+        self.body_world_start = None
+        self.shape_contact_pairs = None
 
     def request_contact_attributes(self, *args):
         pass
@@ -83,6 +88,8 @@ class TestSensorContact(unittest.TestCase):
         model.body_shapes = [entity_A, entity_B]
         model.shape_body = wp.array([0, 0, 1], dtype=wp.int32, device=device)
         model.shape_transform = wp.zeros(3, dtype=wp.transform, device=device)
+        model.shape_world_start = wp.array([0, 3, 3], dtype=wp.int32, device=device)
+        model.body_world_start = wp.array([0, 2, 2], dtype=wp.int32, device=device)
 
         contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
@@ -185,6 +192,8 @@ class TestSensorContact(unittest.TestCase):
         model.shape_transform = wp.array(
             [wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device
         )
+        model.shape_world_start = wp.array([0, 2, 2], dtype=wp.int32, device=device)
+        model.body_world_start = wp.array([0, 2, 2], dtype=wp.int32, device=device)
 
         sensor = SensorContact(model, sensing_obj_bodies="*")
 
@@ -215,6 +224,8 @@ class TestSensorContact(unittest.TestCase):
         model.shape_label = ["s0", "s1"]
         # shape 0 belongs to body 0, shape 1 is a ground shape (body -1)
         model.shape_body = wp.array([0, -1], dtype=wp.int32, device=device)
+        model.shape_world_start = wp.array([0, 1, 1, 2], dtype=wp.int32, device=device)
+        model.body_world_start = wp.array([0, 1, 1, 1], dtype=wp.int32, device=device)
 
         shape0_local = wp.transform(wp.vec3(0.5, 0.25, 0.125), wp.quat_identity())
         shape1_local = wp.transform(wp.vec3(10.0, 20.0, 30.0), wp.quat_identity())
@@ -238,6 +249,168 @@ class TestSensorContact(unittest.TestCase):
         assert_np_equal(transforms[0][:3], [1.5, 2.25, 3.125])
         # ground shape (body_idx == -1): shape_transform only -> (10, 20, 30)
         assert_np_equal(transforms[1][:3], [10.0, 20.0, 30.0])
+
+    def test_bucket_indices_by_world(self):
+        """Indices are correctly bucketed by world using world_start."""
+
+        # world_start layout: [start_w0, start_w1, start_global_tail, total]
+        # world 0: shapes [0,1,2], world 1: shapes [3,4,5], global tail: shapes [6,7]
+        world_count = 2
+        shape_world_start = [0, 3, 6, 8]
+
+        indices = [0, 1, 4, 5, 7]
+        buckets, global_indices = _bucket_indices_by_world(indices, shape_world_start, world_count)
+
+        self.assertEqual(len(buckets), 2)
+        self.assertEqual(buckets[0], [0, 1])
+        self.assertEqual(buckets[1], [4, 5])
+        self.assertEqual(global_indices, [7])
+
+    def test_bucket_indices_global_front(self):
+        """Global indices at the front of the array are correctly identified."""
+
+        # Front globals: [0,1], world 0: [2,3,4], world 1: [5,6,7], tail globals: [8,9]
+        world_count = 2
+        shape_world_start = [2, 5, 8, 10]
+
+        indices = [0, 3, 8]
+        buckets, global_indices = _bucket_indices_by_world(indices, shape_world_start, world_count)
+
+        self.assertEqual(buckets[0], [3])
+        self.assertEqual(buckets[1], [])
+        self.assertEqual(sorted(global_indices), [0, 8])
+
+    def test_per_world_attributes(self):
+        """sensing_objs, counterparts, reading_indices are nested per-world."""
+        device = wp.get_device()
+
+        model = MockModel()
+        model.body_label = ["A", "B"]
+        model.body_shapes = {-1: [], 0: (0,), 1: (1,)}
+        model.shape_label = ["s0", "s1"]
+        model.shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_transform = wp.zeros(2, dtype=wp.transform, device=device)
+        model.world_count = 2
+        model.body_world = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_world = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+        model.body_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+
+        sensor = SensorContact(model, sensing_obj_bodies="*")
+
+        self.assertIsInstance(sensor.sensing_objs, list)
+        self.assertEqual(len(sensor.sensing_objs), 2)  # 2 worlds
+        self.assertIsInstance(sensor.sensing_objs[0], list)
+
+        self.assertEqual(len(sensor.sensing_objs[0]), 1)
+        self.assertEqual(sensor.sensing_objs[0][0], (0, SensorContact.ObjectType.BODY))
+
+        self.assertEqual(len(sensor.sensing_objs[1]), 1)
+        self.assertEqual(sensor.sensing_objs[1][0], (1, SensorContact.ObjectType.BODY))
+
+    def test_multi_world_no_cross_world_pairs(self):
+        """Per-world construction produces no cross-world shape pairs."""
+        device = wp.get_device()
+
+        model = MockModel()
+        model.body_label = ["A", "B"]
+        model.body_shapes = {-1: [2], 0: (0,), 1: (1,)}
+        model.shape_label = ["s0", "s1", "ground"]
+        model.shape_body = wp.array([0, 1, -1], dtype=wp.int32, device=device)
+        model.shape_transform = wp.zeros(3, dtype=wp.transform, device=device)
+        model.world_count = 2
+        model.body_world = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_world = wp.array([0, 1, -1], dtype=wp.int32, device=device)
+        model.shape_world_start = wp.array([0, 1, 2, 3], dtype=wp.int32, device=device)
+        model.body_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+
+        sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_shapes="*")
+
+        sp_sorted = sensor._sp_sorted.numpy()
+        for pair in sp_sorted:
+            s0, s1 = int(pair[0]), int(pair[1])
+            self.assertFalse(
+                s0 >= 0 and s1 >= 0 and {s0, s1} == {0, 1},
+                f"Cross-world pair found: ({s0}, {s1})",
+            )
+
+        sp_set = {tuple(int(x) for x in p) for p in sp_sorted if int(p[1]) >= 0}
+        # Each body's shape should pair with global ground shape (2),
+        # but not with shapes from other worlds
+        self.assertIn((0, 2), sp_set)
+        self.assertIn((1, 2), sp_set)
+
+    def test_multi_world_total_force(self):
+        """Total force accumulates correctly with per-world pair tables."""
+        device = wp.get_device()
+
+        model = MockModel()
+        model.body_label = ["A", "B"]
+        model.body_shapes = {-1: [], 0: (0,), 1: (1,)}
+        model.shape_label = ["s0", "s1"]
+        model.shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_transform = wp.zeros(2, dtype=wp.transform, device=device)
+        model.world_count = 2
+        model.body_world = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_world = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+        model.body_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+
+        sensor = SensorContact(model, sensing_obj_bodies="*")
+
+        contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[3.0])
+        sensor.update(None, contacts)
+
+        forces = sensor.net_force.numpy()
+        np.testing.assert_allclose(forces[0, 0], [0, 0, 3.0], atol=1e-5)
+        np.testing.assert_allclose(forces[1, 0], [0, 0, -3.0], atol=1e-5)
+
+    def test_global_sensing_object_raises(self):
+        """Global entities as sensing objects raise ValueError."""
+        device = wp.get_device()
+
+        model = MockModel()
+        model.body_label = ["A"]
+        model.body_shapes = {-1: [1], 0: (0,)}
+        model.shape_label = ["s0", "ground"]
+        model.shape_body = wp.array([0, -1], dtype=wp.int32, device=device)
+        model.shape_transform = wp.zeros(2, dtype=wp.transform, device=device)
+        model.world_count = 2
+        model.body_world = wp.array([0], dtype=wp.int32, device=device)
+        model.shape_world = wp.array([0, -1], dtype=wp.int32, device=device)
+        model.shape_world_start = wp.array([0, 1, 1, 2], dtype=wp.int32, device=device)
+        model.body_world_start = wp.array([0, 1, 1, 1], dtype=wp.int32, device=device)
+
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_shapes="*")  # "*" matches ground too
+
+    def test_global_counterpart_in_all_worlds(self):
+        """Global counterparts (e.g., ground) appear in every world's counterpart bucket."""
+        device = wp.get_device()
+
+        model = MockModel()
+        model.body_label = ["A", "B"]
+        model.body_shapes = {-1: [2], 0: (0,), 1: (1,)}
+        model.shape_label = ["s0", "s1", "ground"]
+        model.shape_body = wp.array([0, 1, -1], dtype=wp.int32, device=device)
+        model.shape_transform = wp.zeros(3, dtype=wp.transform, device=device)
+        model.world_count = 2
+        model.body_world = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_world = wp.array([0, 1, -1], dtype=wp.int32, device=device)
+        model.shape_world_start = wp.array([0, 1, 2, 3], dtype=wp.int32, device=device)
+        model.body_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+
+        sensor = SensorContact(
+            model,
+            sensing_obj_bodies="*",
+            counterpart_shapes=["ground"],
+            include_total=False,
+        )
+
+        # Both worlds should have the ground as a counterpart
+        for w in range(2):
+            counterpart_indices = [idx for idx, _ in sensor.counterparts[w]]
+            self.assertIn(2, counterpart_indices, f"World {w} missing ground counterpart")
 
 
 class TestSensorContactMuJoCo(unittest.TestCase):

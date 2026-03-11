@@ -95,6 +95,9 @@ class SchemaResolverNewton(SchemaResolver):
             # Collisions: newton margin == newton:contactMargin, newton gap == newton:contactGap
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
             "gap": SchemaAttribute("newton:contactGap", float("-inf")),
+            # Contact stiffness/damping
+            "ke": SchemaAttribute("newton:contact_ke", None),
+            "kd": SchemaAttribute("newton:contact_kd", None),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
@@ -331,6 +334,9 @@ class SchemaResolverMjc(SchemaResolver):
                 attribute_names=("mjc:margin", "mjc:gap"),
             ),
             "gap": SchemaAttribute("mjc:gap", 0.0),
+            # Contact stiffness/damping from per-geom solref
+            "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
         PrimType.MATERIAL: {
             # Materials

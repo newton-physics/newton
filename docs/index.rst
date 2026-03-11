@@ -17,7 +17,6 @@ Newton Physics
    Overview <guide/overview>
    guide/installation
    guide/visualization
-   guide/key-concepts
    guide/tutorials
    Development <guide/development>
 
@@ -28,6 +27,7 @@ Newton Physics
    
    Worlds <concepts/worlds>
    Articulations <concepts/articulations>
+   Mass and Inertia <concepts/mass_inertia>
    Sites <concepts/sites>
    Sensors <concepts/sensors>
    Conventions <concepts/conventions>

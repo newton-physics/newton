@@ -347,10 +347,16 @@ class Example:
             indices=[0],
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_mujoco_contacts_arg(parser)
+        return parser
+
 
 if __name__ == "__main__":
-    # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
 
     example = Example(viewer, args)
 

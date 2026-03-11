@@ -22,6 +22,8 @@ import numpy as np
 import warp as wp
 
 from ...core import MAXVAL
+from ...geometry import Gaussian, GeoType
+from . import gaussians
 from .types import RenderLightType
 
 if TYPE_CHECKING:
@@ -29,17 +31,29 @@ if TYPE_CHECKING:
 
 
 @wp.kernel(enable_backward=False)
-def compute_mesh_bounds(in_meshes: wp.array(dtype=wp.uint64), out_bounds: wp.array2d(dtype=wp.vec3f)):
+def compute_shape_bounds(
+    in_shape_type: wp.array(dtype=wp.int32),
+    in_shape_ptr: wp.array(dtype=wp.uint64),
+    in_gaussians: wp.array(dtype=Gaussian.Data),
+    out_bounds: wp.array2d(dtype=wp.vec3f),
+):
     tid = wp.tid()
 
     min_point = wp.vec3(MAXVAL)
     max_point = wp.vec3(-MAXVAL)
 
-    if in_meshes[tid] != 0:
-        mesh = wp.mesh_get(in_meshes[tid])
+    if in_shape_type[tid] == GeoType.MESH:
+        mesh = wp.mesh_get(in_shape_ptr[tid])
         for i in range(mesh.points.shape[0]):
             min_point = wp.min(min_point, mesh.points[i])
             max_point = wp.max(max_point, mesh.points[i])
+
+    elif in_shape_type[tid] == GeoType.GAUSSIAN:
+        gaussian_id = in_shape_ptr[tid]
+        for i in range(in_gaussians[gaussian_id].num_points):
+            lower, upper = gaussians.compute_gaussian_bounds(in_gaussians[gaussian_id], i)
+            min_point = wp.min(min_point, lower)
+            max_point = wp.max(max_point, upper)
 
     out_bounds[tid, 0] = min_point
     out_bounds[tid, 1] = max_point
@@ -159,11 +173,16 @@ class Utils:
     def __init__(self, render_context: RenderContext):
         self.__render_context = render_context
 
-    def compute_mesh_bounds(self):
+    def compute_shape_bounds(self):
         wp.launch(
-            kernel=compute_mesh_bounds,
-            dim=self.__render_context.mesh_ids.size,
-            inputs=[self.__render_context.mesh_ids, self.__render_context.mesh_bounds],
+            kernel=compute_shape_bounds,
+            dim=self.__render_context.shape_source_ptr.size,
+            inputs=[
+                self.__render_context.shape_types,
+                self.__render_context.shape_source_ptr,
+                self.__render_context.gaussians_data,
+                self.__render_context.shape_bounds,
+            ],
             device=self.__render_context.device,
         )
 

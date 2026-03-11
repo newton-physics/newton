@@ -185,13 +185,14 @@ class Example:
             self.model,
             self.state_0,
             "pole2 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel, atol=1e-6),
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=100)
         return parser
 
