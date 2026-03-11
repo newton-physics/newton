@@ -138,7 +138,7 @@ def compute_equivalent_inertia_box(
     vertices: nparray,
     indices: nparray,
     is_solid: bool = True,
-) -> tuple[wp.vec3, wp.vec3]:
+) -> tuple[wp.vec3, wp.vec3, wp.quat]:
     """Compute the equivalent inertia box of a triangular mesh.
 
     The equivalent inertia box is the box whose inertia tensor matches that of
@@ -161,9 +161,10 @@ def compute_equivalent_inertia_box(
             shell (see :func:`compute_inertia_mesh`).
 
     Returns:
-        Tuple of ``(center, half_extents)`` where *center* is the center of
-        mass and *half_extents* are the box half-sizes derived from the
-        principal inertia eigenvalues (not necessarily sorted).
+        Tuple of ``(center, half_extents, rotation)`` where *center* is the
+        center of mass, *half_extents* are the box half-sizes along the
+        principal axes (not necessarily sorted), and *rotation* is the
+        quaternion rotating from the principal-axis frame to the mesh frame.
     """
     _mass, com, inertia_tensor, volume = compute_inertia_mesh(
         density=1.0,
@@ -173,13 +174,19 @@ def compute_equivalent_inertia_box(
     )
 
     if volume < 1e-12:
-        return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)
+        return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()
 
     inertia = np.array(inertia_tensor).reshape(3, 3)
-    eigvals, _eigvecs = np.linalg.eigh(inertia)
+    eigvals, eigvecs = np.linalg.eigh(inertia)
 
-    # Sort eigenvalues in ascending order.
-    eigvals = np.sort(eigvals)
+    # Sort eigenvalues (and eigenvectors) in ascending order.
+    order = np.argsort(eigvals)
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+
+    # Ensure right-handed frame.
+    if np.linalg.det(eigvecs) < 0:
+        eigvecs[:, 0] = -eigvecs[:, 0]
 
     # Derive equivalent box half-sizes from principal inertia eigenvalues.
     half_extents = np.zeros(3)
@@ -188,7 +195,11 @@ def compute_equivalent_inertia_box(
         arg = 6.0 * (eigvals[j] + eigvals[k] - eigvals[i]) / volume
         half_extents[i] = 0.5 * np.sqrt(max(arg, 0.0))
 
-    return wp.vec3(*np.array(com)), wp.vec3(*half_extents)
+    # Convert the eigenvector matrix (columns = principal axes in mesh frame)
+    # to a quaternion.
+    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.T.flatten().tolist()))
+
+    return wp.vec3(*np.array(com)), wp.vec3(*half_extents), rotation
 
 
 def compute_pca_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:

@@ -795,10 +795,12 @@ def parse_mjcf(
                             axis=0,
                         ).flatten()
 
-                        com, half_extents = compute_equivalent_inertia_box(all_vertices, all_indices)
+                        com, half_extents, principal_rot = compute_equivalent_inertia_box(all_vertices, all_indices)
                         # Sort half-extents so the largest is last (Z), matching MuJoCo's
                         # convention where capsule/cylinder axis aligns with Z.
-                        he = np.sort(np.array([*half_extents]))
+                        he_arr = np.array([*half_extents])
+                        sort_order = np.argsort(he_arr)
+                        he = he_arr[sort_order]
 
                         if geom_type == "sphere":
                             geom_size = np.array([np.mean(he)]) * fitscale
@@ -817,9 +819,23 @@ def parse_mjcf(
                             fit_to_mesh = False
 
                         if fit_to_mesh:
-                            # Shift the geom origin to the mesh center of mass.
+                            # Build a rotation that maps the sorted principal axes
+                            # to the standard frame (X, Y, Z).  The eigenvectors in
+                            # principal_rot are in the original eigenvalue order; we
+                            # need to reorder columns to match the sorted half-extents.
+                            # Rows of warp mat33 = basis vectors of the rotated frame.
+                            rot_mat = np.array(wp.quat_to_matrix(principal_rot)).reshape(3, 3)
+                            # rot_mat rows are the principal axes; reorder them so
+                            # the axis with the largest half-extent becomes row 2 (Z).
+                            sorted_mat = rot_mat[sort_order, :]
+                            if np.linalg.det(sorted_mat) < 0:
+                                sorted_mat[0, :] = -sorted_mat[0, :]
+                            fit_rot = wp.quat_from_matrix(wp.mat33(*sorted_mat.flatten().tolist()))
+
+                            # Shift the geom origin to the mesh COM and rotate to
+                            # the principal-axis frame.
                             center_offset = wp.vec3(*com)
-                            tf = tf * wp.transform(center_offset, wp.quat_identity())
+                            tf = tf * wp.transform(center_offset, fit_rot)
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
