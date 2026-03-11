@@ -171,7 +171,7 @@ to check the supported CUDA version (shown in the top-right corner of the output
 
 .. code-block:: console
 
-    pip install --pre newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128
+    pip install newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128
     python -m newton.examples robot_anymal_c_walk
 
 See a list of all available examples:
