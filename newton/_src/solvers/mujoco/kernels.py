@@ -736,8 +736,12 @@ def convert_mjw_contacts_to_newton_kernel(
     if body_b > 0:
         X_wb_b = wp.transform(mj_xpos[world, body_b], quat_wxyz_to_xyzw(mj_xquat[world, body_b]))
 
-    rigid_contact_point0[contact_idx] = wp.transform_point(wp.transform_inverse(X_wb_a), pos_world)
-    rigid_contact_point1[contact_idx] = wp.transform_point(wp.transform_inverse(X_wb_b), pos_world)
+    dist = mj_contact_dist[contact_idx]
+    point0_world = pos_world - 0.5 * dist * normal
+    point1_world = pos_world + 0.5 * dist * normal
+
+    rigid_contact_point0[contact_idx] = wp.transform_point(wp.transform_inverse(X_wb_a), point0_world)
+    rigid_contact_point1[contact_idx] = wp.transform_point(wp.transform_inverse(X_wb_b), point1_world)
 
     if contact_force:
         efc_address0 = mj_contact_efc_address[contact_idx, 0]
