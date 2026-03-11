@@ -21,14 +21,19 @@ import warp as wp
 from newton._src.solvers.implicit_mpm.solve_rheology import (
     YieldParamVec,
     get_dilatancy,
+    make_solve_flow_rule,
     normal_yield_bounds,
     shear_yield_stress,
     shear_yield_stress_camclay,
-    solve_flow_rule_aniso,
-    solve_flow_rule_aniso_impl,
     solve_flow_rule_camclay,
     vec6,
 )
+
+# Base flow rule solver (no viscosity); used by most tests.
+solve_flow_rule = make_solve_flow_rule(has_viscosity=False, has_dilatancy=True)
+# Viscosity-aware variant; used by the dispatch/viscosity tests.
+solve_flow_rule_viscous = make_solve_flow_rule(has_viscosity=True, has_dilatancy=True)
+
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
@@ -48,7 +53,7 @@ def test_flow_rule_impl_kernel(
     u_out: wp.array(dtype=vec6),
 ):
     i = wp.tid()
-    u_out[i] = solve_flow_rule_aniso_impl(D[i], b[i], r[i], yp[i])
+    u_out[i] = solve_flow_rule(D[i], b[i], r[i], yp[i], 1.0)
 
 
 @wp.kernel
@@ -73,7 +78,7 @@ def test_flow_rule_dispatch_kernel(
     u_out: wp.array(dtype=vec6),
 ):
     i = wp.tid()
-    u_out[i] = solve_flow_rule_aniso(D[i], b[i], r[i], yp[i], volume[i])
+    u_out[i] = solve_flow_rule_viscous(D[i], b[i], r[i], yp[i], volume[i])
 
 
 @wp.kernel
@@ -296,7 +301,7 @@ def check_flow_rule_invariants(test, u, D, b, yp, shear_yield_fn, device, tol=1.
 
 
 # ---------------------------------------------------------------------------
-# Test scenarios — solve_flow_rule_aniso_impl
+# Test scenarios — solve_flow_rule
 # ---------------------------------------------------------------------------
 
 
@@ -551,7 +556,7 @@ def test_flow_rule_camclay_dilatancy_orthogonal_aniso(test, device):
 
 
 # ---------------------------------------------------------------------------
-# Test scenario — solve_flow_rule_aniso dispatcher (viscosity)
+# Test scenario — solve_flow_rule_viscous dispatcher (viscosity)
 # ---------------------------------------------------------------------------
 
 
@@ -663,13 +668,13 @@ def test_random_flow_rule_impl_kernel(errors: wp.array(dtype=float)):
     yield_params = YieldParamVec.from_values(mu, yp, tyr, ys, dilatancy, 0.0)
 
     r = vec6(0.0)
-    u = solve_flow_rule_aniso_impl(D, b, r, yield_params)
+    u = solve_flow_rule(D, b, r, yield_params, 1.0)
 
     errors[tid] = eval_flow_rule_residual(D, b, yield_params, u)
 
 
 def test_flow_rule_impl_random(test, device):
-    """Bipotential residual check over random inputs for solve_flow_rule_aniso_impl."""
+    """Bipotential residual check over random inputs for solve_flow_rule."""
     n = 4096
     errors = wp.zeros(n, dtype=float, device=device)
     wp.launch(test_random_flow_rule_impl_kernel, dim=n, inputs=[], outputs=[errors], device=device)
@@ -688,7 +693,7 @@ class TestSolveFlowRule(unittest.TestCase):
     pass
 
 
-# solve_flow_rule_aniso_impl tests
+# solve_flow_rule tests
 add_function_test(TestSolveFlowRule, "test_flow_rule_impl_elastic", test_flow_rule_impl_elastic, devices=devices)
 add_function_test(TestSolveFlowRule, "test_flow_rule_impl_sliding", test_flow_rule_impl_sliding, devices=devices)
 add_function_test(

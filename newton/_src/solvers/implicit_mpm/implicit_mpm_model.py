@@ -326,6 +326,16 @@ class ImplicitMPMModel:
         else:
             self.max_hardening = 0.0
 
+        if mpm_ns is not None and hasattr(mpm_ns, "viscosity"):
+            self.has_viscosity = bool(np.any(mpm_ns.viscosity.numpy() > 0))
+        else:
+            self.has_viscosity = False
+
+        if mpm_ns is not None and hasattr(mpm_ns, "dilatancy"):
+            self.has_dilatancy = bool(np.any(mpm_ns.dilatancy.numpy() > 0))
+        else:
+            self.has_dilatancy = False
+
     def notify_collider_changed(self):
         """Refresh cached extrema for collider parameters.
 

@@ -304,19 +304,6 @@ def average_elastic_parameters(
     elastic_parameters_avg[i] = elastic_parameters_int[i] / wp.max(pvol, _EPSILON)
 
 
-@wp.kernel
-def average_elastic_strain_delta(
-    elastic_strain_delta_int: wp.array(dtype=vec6),
-    particle_volume: wp.array(dtype=float),
-    elastic_strain_delta_avg: wp.array(dtype=vec6),
-):
-    i = wp.tid()
-    pvol = particle_volume[i]
-
-    # The 2 factor is due to the SymTensorMapping being orthonormal with (tau:sig)/2
-    elastic_strain_delta_avg[i] = elastic_strain_delta_int[i] / wp.max(2.0 * pvol, _EPSILON)
-
-
 @fem.integrand
 def advect_particles(
     s: fem.Sample,
@@ -3051,6 +3038,9 @@ class SolverImplicitMPM(SolverBase):
                 elastic_strain_delta=scratch.elastic_strain_delta_field.dof_values,
                 plastic_strain_delta=scratch.plastic_strain_delta_field.dof_values,
                 stress=scratch.stress_field.dof_values,
+                has_viscosity=self._mpm_model.has_viscosity,
+                has_dilatancy=self._mpm_model.has_dilatancy,
+                max_velocity_node_count=self._max_velocity_nodes_per_strain_sample(),
             )
             collision_data = CollisionData(
                 collider_mat=scratch.collider_matrix,
@@ -3310,10 +3300,11 @@ class SolverImplicitMPM(SolverBase):
                     dest=last_step_data.ws_stress_field,
                 )
 
-    def _max_colors(self):
-        if not self.coloring:
-            return 0
+    def _max_velocity_nodes_per_strain_sample(self):
         return 27 if self.strain_basis == "Q1" else self._scratchpad.velocity_nodes_per_element
+
+    def _max_colors(self):
+        return self._max_velocity_nodes_per_strain_sample() if self.coloring else 0
 
     def _compute_coloring(
         self,
