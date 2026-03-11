@@ -37,9 +37,6 @@ def Xform "env" (
         double3 xformOp:translate = (0, 0, 0.01)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
 
-        float3 physics:diagonalInertia = (10, 10, 10)
-        float physics:mass = 100
-
     }
 
     def Cube "Flap" (
