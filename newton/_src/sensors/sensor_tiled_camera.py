@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import warp as wp
@@ -134,9 +133,13 @@ class SensorTiledCamera:
 
     @dataclass
     class Config:
+        """Rendering configuration."""
+
         class ColorMode(enum.IntEnum):
+            """Color Modes for Config.color_mode."""
+
             MODEL_COLOR = 0
-            """Assign a colors from model."""
+            """Assign colors from model."""
 
             CONSTANT_COLOR = 1
             """Assign a constant color to all shapes."""
@@ -147,7 +150,8 @@ class SensorTiledCamera:
             RANDOM_PER_WORLD = 3
             """Assign a random color palette per world."""
 
-        """Rendering configuration."""
+            VIEWER_COLOR = 4
+            """Assign colors from model and fall back on viewer if none is defined."""
 
         checkerboard_texture: bool = False
         """Apply a checkerboard texture to all shapes."""
@@ -159,7 +163,10 @@ class SensorTiledCamera:
         """Enable shadows for the default light (requires ``default_light``)."""
 
         color_mode: ColorMode = ColorMode.MODEL_COLOR
-        """Color mode."""
+        """Color mode for color and albedo image outputs."""
+
+        constant_color: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+        """Color for constant color mode."""
 
         backface_culling: bool = True
         """Cull back-facing triangles."""
@@ -241,13 +248,15 @@ class SensorTiledCamera:
                 self.create_default_light(config.default_light_shadows)
 
         if config is None or config.color_mode == SensorTiledCamera.Config.ColorMode.MODEL_COLOR:
-            self.assign_colors_from_model()
+            self.assign_colors_from_model(False, config.constant_color)
+        elif config.color_mode == SensorTiledCamera.Config.ColorMode.VIEWER_COLOR:
+            self.assign_colors_from_model(True, config.constant_color)
         elif config.color_mode == SensorTiledCamera.Config.ColorMode.RANDOM_PER_WORLD:
             self.assign_random_colors_per_world()
         elif config.color_mode == SensorTiledCamera.Config.ColorMode.RANDOM_PER_SHAPE:
             self.assign_random_colors_per_shape()
         elif config.color_mode == SensorTiledCamera.Config.ColorMode.CONSTANT_COLOR:
-            self.assign_constant_color((1.0, 1.0, 1.0, 1.0))
+            self.assign_constant_color(config.constant_color)
         else:
             raise ValueError(f"Unsupported color_mode: {config.color_mode!r}")
 
@@ -432,9 +441,30 @@ class SensorTiledCamera:
         """
         self.render_context.utils.assign_constant_color(color)
 
-    def assign_colors_from_model(self):
-        """Assign a colors from model."""
-        colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(self.model.shape_source)]
+    def assign_colors_from_model(
+        self, use_viewer_color: bool = False, fallback_color: tuple[float, float, float, float] | None = None
+    ):
+        """Assign a colors from model.
+
+        Args:
+            use_viewer_color: use color from viewer if none is defined in the model.
+        """
+
+        colors = []
+        for i, shape in enumerate(self.model.shape_source):
+            color = getattr(shape, "color", None)
+            if color is not None:
+                colors.append((*color, 1.0))
+            elif use_viewer_color:
+                from newton.viewer import ViewerNull  # noqa: PLC0415
+
+                viewer_color = ViewerNull._shape_color_map(i)
+                colors.append((*viewer_color, 1.0))
+            elif fallback_color is not None:
+                colors.append(fallback_color)
+            else:
+                colors.append((1.0, 1.0, 1.0, 1.0))
+
         self.render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.render_context.device)
 
     def create_default_light(self, enable_shadows: bool = True):
@@ -530,20 +560,3 @@ class SensorTiledCamera:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
         """
         return self.render_context.create_albedo_image_output(width, height, camera_count)
-
-    def __get_shape_color(self, index: int, shape: Any):
-        SHAPE_COLOR_MAP = [
-            (68 / 255.0, 119 / 255.0, 170 / 255.0),  # blue
-            (102 / 255.0, 204 / 255.0, 238 / 255.0),  # cyan
-            (34 / 255.0, 136 / 255.0, 51 / 255.0),  # green
-            (204 / 255.0, 187 / 255.0, 68 / 255.0),  # yellow
-            (238 / 255.0, 102 / 255.0, 119 / 255.0),  # red
-            (170 / 255.0, 51 / 255.0, 119 / 255.0),  # magenta
-            (187 / 255.0, 187 / 255.0, 187 / 255.0),  # grey
-            (238 / 255.0, 153 / 255.0, 51 / 255.0),  # orange
-            (0 / 255.0, 153 / 255.0, 136 / 255.0),  # teal
-        ]
-
-        if color := getattr(shape, "color", None):
-            return color
-        return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]

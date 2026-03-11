@@ -211,7 +211,7 @@ class Example:
                 default_light_shadows=True,
                 checkerboard_texture=True,
                 backface_culling=True,
-                color_mode=SensorTiledCamera.Config.ColorMode.MODEL_COLOR,
+                color_mode=SensorTiledCamera.Config.ColorMode.VIEWER_COLOR,
             ),
         )
 
