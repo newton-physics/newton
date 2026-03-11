@@ -162,8 +162,8 @@ def compute_equivalent_inertia_box(
 
     Returns:
         Tuple of ``(center, half_extents)`` where *center* is the center of
-        mass and *half_extents* are the box half-sizes along the principal axes
-        sorted in ascending order.
+        mass and *half_extents* are the box half-sizes derived from the
+        principal inertia eigenvalues (not necessarily sorted).
     """
     _mass, com, inertia_tensor, volume = compute_inertia_mesh(
         density=1.0,
