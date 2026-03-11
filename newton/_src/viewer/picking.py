@@ -62,7 +62,7 @@ class Picking:
 
         # picking state
         if model and model.device.is_cuda:
-            self.pick_body = wp.array([-1], dtype=int, pinned=True)
+            self.pick_body = wp.array([-1], dtype=int, pinned=True, device=model.device)
         else:
             self.pick_body = wp.array([-1], dtype=int, device="cpu")
 

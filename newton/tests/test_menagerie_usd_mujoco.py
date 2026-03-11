@@ -68,7 +68,6 @@ def create_newton_model_from_usd(
     *,
     num_worlds: int = 1,
     add_ground: bool = True,
-    ignore_paths: list[str] | None = None,
 ) -> newton.Model:
     """Create a Newton model from a USD file (converted from MuJoCo Menagerie MJCF).
 
@@ -76,7 +75,6 @@ def create_newton_model_from_usd(
         usd_path: Path to the USD scene file.
         num_worlds: Number of world instances to create.
         add_ground: Whether to add a ground plane.
-        ignore_paths: Regex patterns for USD prim paths to skip during import.
 
     Returns:
         Finalized Newton Model.
@@ -89,7 +87,6 @@ def create_newton_model_from_usd(
         collapse_fixed_joints=False,
         enable_self_collisions=False,
         schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
-        ignore_paths=ignore_paths,
     )
 
     builder = newton.ModelBuilder()
@@ -210,7 +207,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
     def test_import_apptronik_apollo(self):
         builder, model = self._load_robot("apptronik_apollo")
         self.assertEqual(builder.body_count, 36)
-        self.assertEqual(builder.joint_count, 35)
+        self.assertEqual(builder.joint_count, 36)
         self.assertEqual(builder.shape_count, 87)
         self._assert_no_nan(model, "apptronik_apollo")
 
@@ -1117,20 +1114,6 @@ class TestMenagerieUSD(TestMenagerieBase):
         "actuator_lengthrange",
     }
 
-    # Regex patterns for USD prim paths to skip during import.
-    usd_ignore_paths: ClassVar[list[str]] = []
-
-    # Body names to strip from the MJCF XML before creating the native model.
-    # Used when the USD omits or cannot represent certain MJCF bodies.
-    mjcf_strip_bodies: ClassVar[list[str]] = []
-
-    def _get_mjcf_xml(self) -> str:
-        xml_content = super()._get_mjcf_xml()
-        if self.mjcf_strip_bodies:
-            for body_name in self.mjcf_strip_bodies:
-                xml_content = re.sub(rf'<body\s+name="{re.escape(body_name)}"[^/]*/>', "", xml_content)
-        return xml_content
-
     def _create_newton_model(self) -> newton.Model:
         """Create Newton model from pre-converted USD file."""
         if not self.usd_path:
@@ -1139,7 +1122,6 @@ class TestMenagerieUSD(TestMenagerieBase):
             Path(self.usd_path),
             num_worlds=self.num_worlds,
             add_ground=False,  # scene.xml includes ground plane
-            ignore_paths=self.usd_ignore_paths or None,
         )
 
     def test_fk_initial_xforms(self):
@@ -1330,13 +1312,6 @@ class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
         "nmaxcondim",
         "nmaxpyramid",
     }
-
-    # world_link is an empty static body in MJCF (child of worldbody, no joint,
-    # no geoms). Its USD representation uses a PhysicsFixedJoint to the world
-    # root, but the importer doesn't yet handle orphan body-to-world fixed
-    # joints (they fall outside the articulation). Strip from both sides.
-    mjcf_strip_bodies: ClassVar[list[str]] = ["world_link"]
-    usd_ignore_paths: ClassVar[list[str]] = [".*/world_link.*"]
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

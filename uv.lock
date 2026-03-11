@@ -2678,6 +2678,7 @@ dev = [
     { name = "mujoco-warp", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "newton-usd-schemas" },
     { name = "pillow" },
+    { name = "plyfile" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2698,6 +2699,7 @@ docs = [
     { name = "myst-parser" },
     { name = "nbsphinx" },
     { name = "newton-usd-schemas" },
+    { name = "plyfile" },
     { name = "pycollada" },
     { name = "pydata-sphinx-theme" },
     { name = "pypandoc" },
@@ -2729,6 +2731,7 @@ examples = [
     { name = "mujoco-warp", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "newton-usd-schemas" },
     { name = "pillow" },
+    { name = "plyfile" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2746,6 +2749,7 @@ importers = [
     { name = "fast-simplification" },
     { name = "meshio" },
     { name = "newton-usd-schemas" },
+    { name = "plyfile" },
     { name = "pycollada" },
     { name = "requests" },
     { name = "resolve-robotics-uri-py" },
@@ -2768,6 +2772,7 @@ notebook = [
     { name = "mujoco-warp", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "newton-usd-schemas" },
     { name = "pillow" },
+    { name = "plyfile" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2800,6 +2805,7 @@ torch-cu12 = [
     { name = "mujoco-warp", marker = "python_full_version < '3.14'" },
     { name = "newton-usd-schemas" },
     { name = "pillow" },
+    { name = "plyfile" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2824,6 +2830,7 @@ torch-cu13 = [
     { name = "mujoco-warp", marker = "python_full_version < '3.14'" },
     { name = "newton-usd-schemas" },
     { name = "pillow" },
+    { name = "plyfile" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2905,19 +2912,26 @@ requires-dist = [
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
     { name = "newton-actuators" },
-    { name = "newton-usd-schemas", marker = "extra == 'dev'", specifier = ">=0.1.0rc3" },
-    { name = "newton-usd-schemas", marker = "extra == 'docs'", specifier = ">=0.1.0rc3" },
-    { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0rc3" },
-    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.1.0rc3" },
-    { name = "newton-usd-schemas", marker = "extra == 'notebook'", specifier = ">=0.1.0rc3" },
-    { name = "newton-usd-schemas", marker = "extra == 'torch-cu12'", specifier = ">=0.1.0rc3" },
-    { name = "newton-usd-schemas", marker = "extra == 'torch-cu13'", specifier = ">=0.1.0rc3" },
+    { name = "newton-usd-schemas", marker = "extra == 'dev'", specifier = ">=0.1.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'docs'", specifier = ">=0.1.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.1.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'notebook'", specifier = ">=0.1.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'torch-cu12'", specifier = ">=0.1.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'torch-cu13'", specifier = ">=0.1.0" },
     { name = "open3d", marker = "python_full_version < '3.14' and extra == 'remesh'", specifier = ">=0.18.0" },
     { name = "pillow", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "pillow", marker = "extra == 'examples'", specifier = ">=9.0.0" },
     { name = "pillow", marker = "extra == 'notebook'", specifier = ">=9.0.0" },
     { name = "pillow", marker = "extra == 'torch-cu12'", specifier = ">=9.0.0" },
     { name = "pillow", marker = "extra == 'torch-cu13'", specifier = ">=9.0.0" },
+    { name = "plyfile", marker = "extra == 'dev'", specifier = ">=1.1.3" },
+    { name = "plyfile", marker = "extra == 'docs'", specifier = ">=1.1.3" },
+    { name = "plyfile", marker = "extra == 'examples'", specifier = ">=1.1.3" },
+    { name = "plyfile", marker = "extra == 'importers'", specifier = ">=1.1.3" },
+    { name = "plyfile", marker = "extra == 'notebook'", specifier = ">=1.1.3" },
+    { name = "plyfile", marker = "extra == 'torch-cu12'", specifier = ">=1.1.3" },
+    { name = "plyfile", marker = "extra == 'torch-cu13'", specifier = ">=1.1.3" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'docs'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'examples'", specifier = ">=0.9" },
@@ -2990,7 +3004,7 @@ requires-dist = [
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'torch-cu12'", specifier = ">=2.2.0" },
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'torch-cu13'", specifier = ">=2.2.0" },
     { name = "viser", marker = "extra == 'docs'", specifier = ">=1.0.16" },
-    { name = "warp-lang", specifier = ">=1.11.0", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", specifier = ">=1.12.0", index = "https://pypi.nvidia.com/" },
 ]
 provides-extras = ["dev", "docs", "examples", "importers", "notebook", "remesh", "sim", "torch-cu12", "torch-cu13"]
 
@@ -3010,11 +3024,11 @@ wheels = [
 
 [[package]]
 name = "newton-usd-schemas"
-version = "0.1.0rc3"
+version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e7/3b/702d7abec081b7c183feee38747bc358f262ceb67d9c8f7542edea6a8903/newton_usd_schemas-0.1.0rc3.tar.gz", hash = "sha256:a613e89f4de1ea0c3429093e798ee752c6701879353d4440eb5fe7b8c13bfc04", size = 61041, upload-time = "2026-02-24T20:52:19.099Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/5e/95a2c4872ca9bc0e6e31344ab7df5f6dceedacc5ea39d5832d352c98cdf4/newton_usd_schemas-0.1.0.tar.gz", hash = "sha256:07420c425abd6282e1e9ac0dce4ef2d87bc6e08639f0b00db694de63684ef341", size = 61275, upload-time = "2026-03-09T19:08:06.437Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/95/9f/541d01f136db03f9ac4f92ea01c0ba086178b64e0d82e088c7bfefaff25e/newton_usd_schemas-0.1.0rc3-py3-none-any.whl", hash = "sha256:ee4070b20a6f143fc25af15f6713302964a5d5a596616b4443657394ed95d54b", size = 12628, upload-time = "2026-02-24T20:52:17.65Z" },
+    { url = "https://files.pythonhosted.org/packages/08/d1/3c16c963f8026e6e813c442db724abc1293fc67442f9620caa0d295a5d7a/newton_usd_schemas-0.1.0-py3-none-any.whl", hash = "sha256:da83ba6a571cf7a3acec449d83477c8273bf37260314aa135a74f85b64256583", size = 12599, upload-time = "2026-03-09T19:08:04.633Z" },
 ]
 
 [[package]]
@@ -3850,6 +3864,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e3/4f/8a10a9b9f5192cb6fdef62f1d77fa7d834190b2c50c0cd256bd62879212b/plotly-6.5.2.tar.gz", hash = "sha256:7478555be0198562d1435dee4c308268187553cc15516a2f4dd034453699e393", size = 7015695, upload-time = "2026-01-14T21:26:51.222Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8a/67/f95b5460f127840310d2187f916cf0023b5875c0717fdf893f71e1325e87/plotly-6.5.2-py3-none-any.whl", hash = "sha256:91757653bd9c550eeea2fa2404dba6b85d1e366d54804c340b2c874e5a7eb4a4", size = 9895973, upload-time = "2026-01-14T21:26:47.135Z" },
+]
+
+[[package]]
+name = "plyfile"
+version = "1.1.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/78/d8/f68ec9a54568236ba4c00fc0b002f74d2a559841c1fce86ab356599da032/plyfile-1.1.3.tar.gz", hash = "sha256:1c37720cb0470b762cec2dfef573ee7996a616c359c0ec34fdd766ace3ea0634", size = 36163, upload-time = "2025-10-22T01:58:40.06Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/22/22/1755bb4c7db15bb1ed63b4eb7a7fc133bf42a3f9cc806c0d5941e107ba90/plyfile-1.1.3-py3-none-any.whl", hash = "sha256:581302f07b1c298431dcaa9038bba2ae80f3f7868b29ccb826a07bc4488ff38a", size = 36455, upload-time = "2025-10-22T01:58:38.614Z" },
 ]
 
 [[package]]
@@ -5800,17 +5827,17 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.12.0rc2"
+version = "1.12.0"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc2-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9974c01ee9cf32bf1e9b0db2641e0e102bed89f09b4e32ccc36ede286719b7b7" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:42555f41bc1e39ff34c13ab13ebd1d13032d2e9359d687bec6928ed4b5ee4eba" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc2-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:b098986f0d14900d6410baba72d9af085531a45a06558f598a2b4870776d461b" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0rc2-py3-none-win_amd64.whl", hash = "sha256:1ff17cd177ffec372f1c7801dcc47fe8591493a48ea2f722e2303802a74ffe42" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:c78c3701d5cad86c30ef5017410d294ec46a396bb0d502ee1c98743494f3a62f" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:a1436f60a1881cd94f787e751a83fc0987626be2d3e2b4e74c64a6947c6d1266" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:a2d6decba693aba5b828573c4414fd6a3f4c4a934db9c322736ef2b3fa99fe76" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.0-py3-none-win_amd64.whl", hash = "sha256:697248edd2f1e2952f50e3db33b214af76173641a8894aacc467bed6dc247f8a" },
 ]
 
 [[package]]

@@ -59,6 +59,16 @@ def map_ray_to_local(
 
 
 @wp.func
+def map_ray_to_local_scaled(
+    transform: wp.transformf, scale: wp.vec3f, ray_origin: wp.vec3f, ray_direction: wp.vec3f
+) -> tuple[wp.vec3f, wp.vec3f]:
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction)
+
+    inv_size = safe_div_vec3(wp.vec3f(1.0), scale)
+    return wp.cw_mul(ray_origin_local, inv_size), wp.cw_mul(ray_direction_local, inv_size)
+
+
+@wp.func
 def ray_intersect_plane(
     transform: wp.transformf,
     size: wp.vec3f,
@@ -300,7 +310,7 @@ def ray_intersect_mesh_no_transform(
 @wp.func
 def ray_intersect_mesh(
     transform: wp.transformf,
-    size: wp.vec3f,
+    scale: wp.vec3f,
     ray_origin: wp.vec3f,
     ray_direction: wp.vec3f,
     mesh_id: wp.uint64,
@@ -314,11 +324,7 @@ def ray_intersect_mesh(
     geom_hit = GeomHit()
     geom_hit.hit = False
 
-    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction)
-
-    inv_size = safe_div_vec3(wp.vec3f(1.0), size)
-    ray_origin_local = wp.cw_mul(ray_origin_local, inv_size)
-    ray_direction_local = wp.cw_mul(ray_direction_local, inv_size)
+    ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
 
     query = wp.mesh_query_ray(mesh_id, ray_origin_local, ray_direction_local, max_t)
 
@@ -326,7 +332,7 @@ def ray_intersect_mesh(
         if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
             geom_hit.hit = True
             geom_hit.distance = query.t
-            geom_hit.normal = wp.transform_vector(transform, wp.cw_mul(inv_size, query.normal))
+            geom_hit.normal = wp.transform_vector(transform, safe_div_vec3(query.normal, scale))
             geom_hit.normal = wp.normalize(geom_hit.normal)
             return geom_hit, query.u, query.v, query.face
 

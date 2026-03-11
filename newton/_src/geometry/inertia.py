@@ -563,8 +563,8 @@ def compute_inertia_shape(
                 density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness
             )
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
-    elif type == GeoType.HFIELD:
-        # Heightfields are always static terrain (zero mass, zero inertia)
+    elif type == GeoType.HFIELD or type == GeoType.GAUSSIAN:
+        # Heightfields are always static terrain; Gaussians are render-only (zero mass, zero inertia)
         return 0.0, wp.vec3(), wp.mat33()
     elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
         assert src is not None, "src must be provided for mesh or convex hull shapes"

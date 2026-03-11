@@ -16,8 +16,10 @@
 from __future__ import annotations
 
 import ctypes
+import re
 import time
 from collections.abc import Callable
+from importlib import metadata
 from typing import Any, Literal
 
 import numpy as np
@@ -34,6 +36,23 @@ from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind
+
+
+def _parse_version_tuple(version: str) -> tuple[int, ...]:
+    parts = re.findall(r"\d+", version)
+    return tuple(int(part) for part in parts[:3])
+
+
+def _imgui_uses_imvec4_color_edit3() -> bool:
+    """Return True when installed imgui_bundle expects ImVec4 in color_edit3."""
+    try:
+        version = metadata.version("imgui_bundle")
+    except metadata.PackageNotFoundError:
+        return False
+    return _parse_version_tuple(version) >= (1, 92, 6)
+
+
+_IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
 
 
 @wp.kernel
@@ -256,6 +275,12 @@ class ViewerGL(ViewerBase):
 
         # a low resolution sphere mesh for point rendering
         self._point_mesh = None
+
+        # Very low-poly sphere mesh dedicated to Gaussian splat rendering.
+        self._gaussian_mesh: MeshGL | None = None
+
+        # Per-name cache of numpy arrays for Gaussian point cloud rendering.
+        self._gaussian_cache: dict[str, dict] = {}
 
         # UI visibility toggle
         self.show_ui = True
@@ -813,6 +838,151 @@ class ViewerGL(ViewerBase):
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
+    _SH_C0 = 0.28209479177387814
+
+    def _create_gaussian_mesh(self):
+        """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
+        mesh = nt.Mesh.create_sphere(1.0, num_latitudes=3, num_longitudes=4, compute_inertia=False)
+        self._gaussian_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
+        points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+        normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+        uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+        indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
+        self._gaussian_mesh.update(points, indices, normals, uvs)
+
+    @override
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: nt.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """Log a :class:`newton.Gaussian` as a point cloud of spheres.
+
+        Args:
+            name: Unique path/name for the Gaussian point cloud.
+            gaussian: The :class:`newton.Gaussian` asset to visualize.
+            xform: Optional world-space transform applied to all splat centers.
+            hidden: Whether the point cloud should be hidden.
+        """
+        if hidden:
+            if name in self.objects:
+                self.objects[name].hidden = True
+            return
+
+        if self._gaussian_mesh is None:
+            self._create_gaussian_mesh()
+
+        gaussian_cache_key = (id(gaussian), gaussian.count)
+        cache = self._gaussian_cache.get(name)
+        if cache is not None and cache.get("gaussian_cache_key") != gaussian_cache_key:
+            cache = None
+
+        if cache is None:
+            n = gaussian.count
+
+            # Subsample large Gaussians to keep rendering interactive.
+            max_pts = self.gaussians_max_points
+            if n > max_pts:
+                idx = np.linspace(0, n - 1, max_pts, dtype=np.intp)
+                positions = np.ascontiguousarray(gaussian.positions[idx], dtype=np.float32)
+                scales = gaussian.scales[idx]
+                sh = gaussian.sh_coeffs[idx] if gaussian.sh_coeffs is not None else None
+                n = max_pts
+            else:
+                idx = None
+                positions = np.ascontiguousarray(gaussian.positions, dtype=np.float32)
+                scales = gaussian.scales
+                sh = gaussian.sh_coeffs
+
+            radii = np.average(scales, axis=1).astype(np.float32)
+
+            # Pre-build the VBO mat44 buffer: diagonal = radii, [15] = 1.0.
+            vbo = np.zeros((n, 16), dtype=np.float32)
+            vbo[:, 0] = radii
+            vbo[:, 5] = radii
+            vbo[:, 10] = radii
+            vbo[:, 15] = 1.0
+
+            if sh is not None and sh.shape[1] >= 3:
+                colors = np.ascontiguousarray((self._SH_C0 * sh[:, :3] + 0.5).clip(0.0, 1.0).astype(np.float32))
+            else:
+                colors = np.ones((n, 3), dtype=np.float32)
+
+            cache = {
+                "gaussian_cache_key": gaussian_cache_key,
+                "local_pos": positions,
+                "vbo": vbo,
+                "colors": colors,
+                "colors_uploaded": False,
+                "world_pos_buf": np.empty((n, 3), dtype=np.float32),
+                "last_xform": None,
+            }
+            self._gaussian_cache[name] = cache
+
+        n = len(cache["local_pos"])
+
+        recreated = False
+        if name not in self.objects:
+            self.objects[name] = MeshInstancerGL(max(n, 256), self._gaussian_mesh)
+            self.objects[name].cast_shadow = False
+            recreated = True
+        elif n > self.objects[name].num_instances:
+            self.objects[name] = MeshInstancerGL(max(n, self.objects[name].num_instances * 2), self._gaussian_mesh)
+            self.objects[name].cast_shadow = False
+            recreated = True
+
+        instancer = self.objects[name]
+        instancer.active_instances = n
+        instancer.hidden = False
+
+        # Fast-path: skip VBO update when the transform has not changed.
+        xform_key: tuple | None = None
+        if xform is not None:
+            xform_key = (
+                float(xform.p[0]),
+                float(xform.p[1]),
+                float(xform.p[2]),
+                float(xform.q[0]),
+                float(xform.q[1]),
+                float(xform.q[2]),
+                float(xform.q[3]),
+            )
+        if not recreated and cache["last_xform"] == xform_key:
+            return
+        cache["last_xform"] = xform_key
+
+        # Transform local positions to world space (pure numpy, no GPU round-trip).
+        vbo = cache["vbo"]
+        if xform is not None:
+            qx, qy, qz, qw = xform_key[3], xform_key[4], xform_key[5], xform_key[6]
+            R = np.array(
+                [
+                    [1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy - qw * qz), 2.0 * (qx * qz + qw * qy)],
+                    [2.0 * (qx * qy + qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz - qw * qx)],
+                    [2.0 * (qx * qz - qw * qy), 2.0 * (qy * qz + qw * qx), 1.0 - 2.0 * (qx * qx + qy * qy)],
+                ],
+                dtype=np.float32,
+            )
+            t = np.array(xform_key[:3], dtype=np.float32)
+            wp_buf = cache["world_pos_buf"]
+            np.dot(cache["local_pos"], R.T, out=wp_buf)
+            wp_buf += t
+            vbo[:, 12:15] = wp_buf
+        else:
+            vbo[:, 12:15] = cache["local_pos"]
+
+        # Upload transforms directly to GL.
+        gl = RendererGL.gl
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_transform_buffer)
+        gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, n * 64, vbo.ctypes.data)
+
+        if recreated or not cache["colors_uploaded"]:
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_color_buffer)
+            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, n * 12, cache["colors"].ctypes.data)
+            cache["colors_uploaded"] = True
+
     @override
     def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
         """
@@ -905,7 +1075,8 @@ class ViewerGL(ViewerBase):
 
                 shapes.colors_changed = False
 
-            # ---- Non-shape rendering uses standard synchronous paths ----
+            # ---- Gaussians and non-shape rendering use standard synchronous paths ----
+            self._log_gaussian_shapes(state)
             self._log_non_shape_state(state)
             self.model_changed = False
         else:
@@ -1691,12 +1862,23 @@ class ViewerGL(ViewerBase):
                 # Wireframe mode
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
+                def _edit_color3(
+                    label: str, color: tuple[float, float, float]
+                ) -> tuple[bool, tuple[float, float, float]]:
+                    """Normalize color_edit3 input/output across imgui_bundle versions."""
+                    if _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3:
+                        changed, updated_color = imgui.color_edit3(label, imgui.ImVec4(*color, 1.0))
+                        return changed, (updated_color.x, updated_color.y, updated_color.z)
+
+                    changed, updated_color = imgui.color_edit3(label, color)
+                    return changed, (updated_color[0], updated_color[1], updated_color[2])
+
                 # Light color
-                changed, self.renderer._light_color = imgui.color_edit3("Light Color", self.renderer._light_color)
+                changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
                 # Sky color
-                changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", self.renderer.sky_upper)
+                changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
                 # Ground color
-                changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", self.renderer.sky_lower)
+                changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
             # Wind Effects section
             if self.wind is not None:
