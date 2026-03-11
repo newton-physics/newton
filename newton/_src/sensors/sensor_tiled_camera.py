@@ -139,10 +139,10 @@ class SensorTiledCamera:
             """Color Modes for Config.color_mode."""
 
             MODEL_COLOR = 0
-            """Assign colors from model."""
+            """Assign colors from model, falling back to :attr:`~Config.constant_color` for shapes without a defined color."""
 
             CONSTANT_COLOR = 1
-            """Assign a constant color to all shapes."""
+            """Assign :attr:`~Config.constant_color` to all shapes."""
 
             RANDOM_PER_SHAPE = 2
             """Assign a random color per shape."""
@@ -166,7 +166,8 @@ class SensorTiledCamera:
         """Color mode for color and albedo image outputs."""
 
         constant_color: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
-        """Color for constant color mode."""
+        """RGBA color used by :attr:`~ColorMode.CONSTANT_COLOR` (applied to all shapes) and
+        :attr:`~ColorMode.MODEL_COLOR` (fallback for shapes without a model-defined color)."""
 
         backface_culling: bool = True
         """Cull back-facing triangles."""
