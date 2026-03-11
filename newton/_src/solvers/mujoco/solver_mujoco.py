@@ -3917,6 +3917,7 @@ class SolverMuJoCo(SolverBase):
         eq_constraint_enabled = model.equality_constraint_enabled.numpy()
         eq_constraint_world = model.equality_constraint_world.numpy()
         eq_constraint_solref = get_custom_attribute("eq_solref")
+        eq_constraint_solimp = get_custom_attribute("eq_solimp")
 
         # Read mimic constraint arrays
         mimic_joint0 = model.constraint_mimic_joint0.numpy()
@@ -4647,6 +4648,8 @@ class SolverMuJoCo(SolverBase):
                 eq.data[0:3] = eq_constraint_anchor[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
+                if eq_constraint_solimp is not None:
+                    eq.solimp = eq_constraint_solimp[i]
 
             elif constraint_type == EqType.JOINT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
@@ -4659,6 +4662,8 @@ class SolverMuJoCo(SolverBase):
                 eq.data[0:5] = eq_constraint_polycoef[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
+                if eq_constraint_solimp is not None:
+                    eq.solimp = eq_constraint_solimp[i]
 
             elif constraint_type == EqType.WELD:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
@@ -4669,10 +4674,12 @@ class SolverMuJoCo(SolverBase):
                 cns_relpose = wp.transform(*eq_constraint_relpose[i])
                 eq.data[0:3] = eq_constraint_anchor[i]
                 eq.data[3:6] = wp.transform_get_translation(cns_relpose)
-                eq.data[6:10] = wp.transform_get_rotation(cns_relpose)
+                eq.data[6:10] = quat_to_mjc(wp.transform_get_rotation(cns_relpose))
                 eq.data[10] = eq_constraint_torquescale[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
+                if eq_constraint_solimp is not None:
+                    eq.solimp = eq_constraint_solimp[i]
 
         # add connect constraints for joints that are excluded from the articulation
         # (the UsdPhysics way of defining loop closures)
