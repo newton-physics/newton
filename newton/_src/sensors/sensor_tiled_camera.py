@@ -248,6 +248,8 @@ class SensorTiledCamera:
             self.assign_random_colors_per_shape()
         elif config.color_mode == SensorTiledCamera.Config.ColorMode.CONSTANT_COLOR:
             self.assign_constant_color((1.0, 1.0, 1.0, 1.0))
+        else:
+            raise ValueError(f"Unsupported color_mode: {config.color_mode!r}")
 
     def sync_transforms(self, state: State):
         """Synchronize shape transforms from the simulation state.
