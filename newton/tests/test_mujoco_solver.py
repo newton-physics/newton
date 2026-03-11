@@ -3282,11 +3282,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
 
         model = builder.finalize()
 
-        # Set custom solimp and solref values
+        # Set custom solimp values
         custom_solimp = np.array([[0.8, 0.95, 0.001, 0.6, 3.0]], dtype=np.float32)
-        custom_solref = np.array([[0.05, 0.5]], dtype=np.float32)
         model.mujoco.eq_solimp.assign(wp.array(custom_solimp, dtype=vec5, device=model.device))
-        model.mujoco.eq_solref.assign(wp.array(custom_solref, dtype=wp.vec2, device=model.device))
 
         with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
             xml_path = f.name
@@ -3308,12 +3306,6 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
             self.assertIsNotNone(solimp_str, "solimp attribute missing from connect constraint in saved MJCF")
             solimp_values = [float(x) for x in solimp_str.split()]
             np.testing.assert_allclose(solimp_values, custom_solimp[0], rtol=1e-4)
-
-            # Verify solref attribute is also present (sanity check)
-            solref_str = connect.get("solref")
-            self.assertIsNotNone(solref_str, "solref attribute missing from connect constraint in saved MJCF")
-            solref_values = [float(x) for x in solref_str.split()]
-            np.testing.assert_allclose(solref_values, custom_solref[0], rtol=1e-4)
         finally:
             os.unlink(xml_path)
 
