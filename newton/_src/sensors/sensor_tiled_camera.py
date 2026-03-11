@@ -206,7 +206,8 @@ class SensorTiledCamera:
 
         colors = []
         for shape in self.model.shape_source:
-            if color := getattr(shape, "color", None):
+            color = getattr(shape, "color", None)
+            if color is not None:
                 colors.append((*color, 1.0))
             else:
                 colors.append((1.0, 1.0, 1.0, 1.0))
