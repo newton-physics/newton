@@ -15,9 +15,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
 import warnings
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
@@ -405,7 +404,7 @@ class SensorTiledCamera:
         Args:
             seed: Random seed.
         """
-        warnings.warn("assign_random_colors_per_world is deprecated.", category=DeprecationWarning)
+        warnings.warn("assign_random_colors_per_world is deprecated.", category=DeprecationWarning, stacklevel=2)
         self.render_context.utils.assign_random_colors_per_world(seed)
 
     def assign_random_colors_per_shape(self, seed: int = 100):
@@ -414,7 +413,7 @@ class SensorTiledCamera:
         Args:
             seed: Random seed.
         """
-        warnings.warn("assign_random_colors_per_shape is deprecated.", category=DeprecationWarning)
+        warnings.warn("assign_random_colors_per_shape is deprecated.", category=DeprecationWarning, stacklevel=2)
         self.render_context.utils.assign_random_colors_per_shape(seed)
 
     def create_default_light(self, enable_shadows: bool = True):
