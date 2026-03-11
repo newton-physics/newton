@@ -7980,6 +7980,69 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
                 msg=f"expected_solref[{i}] is {expected_solref[i]}, measured_solref[{i}] is {measured_solref[0][i]}",
             )
 
+    def test_weld_constraint_quat_spec_conversion(self):
+        """Test that WELD constraint quaternion is correctly converted to MuJoCo wxyz format in the spec."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        b1 = builder.add_link()
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1])
+
+        b2 = builder.add_link()
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j2])
+
+        # 90 degree rotation around Z axis
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)
+        builder.add_equality_constraint_weld(
+            body1=b1,
+            body2=b2,
+            relpose=wp.transform(wp.vec3(0.1, 0.0, 0.0), rot),
+        )
+
+        model = builder.finalize()
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+
+            # Verify the compiled mj_model has the quaternion in wxyz format
+            mj_eq_data = solver.mj_model.eq_data[0]
+            quat_in_model = mj_eq_data[6:10]
+
+            # Warp quaternion is xyzw: (0, 0, sin(pi/4), cos(pi/4)) = (0, 0, 0.7071, 0.7071)
+            # MuJoCo wxyz should be: (cos(pi/4), 0, 0, sin(pi/4)) = (0.7071, 0, 0, 0.7071)
+            expected_wxyz = [np.cos(np.pi / 4.0), 0.0, 0.0, np.sin(np.pi / 4.0)]
+            np.testing.assert_allclose(
+                quat_in_model,
+                expected_wxyz,
+                atol=1e-4,
+                err_msg=f"WELD quaternion in compiled model is {quat_in_model}, expected wxyz {expected_wxyz}",
+            )
+
+            # Parse the saved XML and verify the weld element has correct quaternion
+            tree = ET.parse(xml_path)
+            weld_elems = list(tree.iter("weld"))
+            self.assertEqual(len(weld_elems), 1, "Expected one weld equality constraint")
+            weld = weld_elems[0]
+            data_str = weld.get("relpose")
+            self.assertIsNotNone(data_str, "relpose attribute missing from weld constraint in saved MJCF")
+            relpose_values = [float(x) for x in data_str.split()]
+            # relpose is "px py pz qw qx qy qz" in MuJoCo XML
+            quat_in_xml = relpose_values[3:7]
+            np.testing.assert_allclose(
+                quat_in_xml,
+                expected_wxyz,
+                atol=1e-4,
+                err_msg=f"WELD quaternion in saved MJCF is {quat_in_xml}, expected wxyz {expected_wxyz}",
+            )
+        finally:
+            os.unlink(xml_path)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
