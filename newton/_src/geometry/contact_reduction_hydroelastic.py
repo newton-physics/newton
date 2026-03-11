@@ -55,6 +55,7 @@ from .contact_reduction import (
 )
 from .contact_reduction_global import (
     BETA_THRESHOLD,
+    BIN_MASK,
     VALUES_PER_KEY,
     GlobalContactReducer,
     GlobalContactReducerData,
@@ -310,6 +311,10 @@ def _create_accumulate_reduced_depth_kernel():
         for i in range(tid, num_active, total_num_threads):
             entry_idx = ht_active_slots[i]
 
+            # Extract bin_id from the stored key to distinguish normal vs voxel bins.
+            stored_key = ht_keys[entry_idx]
+            entry_bin_id = int((stored_key >> wp.uint64(55)) & BIN_MASK)
+
             p1_ids = exported_ids_vec()
             p1_count = int(0)
 
@@ -326,13 +331,19 @@ def _create_accumulate_reduced_depth_kernel():
                 pd = position_depth[contact_id]
                 depth = pd[3]
                 if depth < 0.0:
-                    contact_normal = decode_oct(normal[contact_id])
-                    bin_id = get_slot(contact_normal)
-                    pair = shape_pairs[contact_id]
-                    nbin_key = make_contact_key(pair[0], pair[1], bin_id)
-                    nbin_idx = hashtable_find(nbin_key, ht_keys)
+                    if entry_bin_id < wp.static(NUM_NORMAL_BINS):
+                        # Normal-bin entry: winning contacts map back to this entry.
+                        nbin_idx = entry_idx
+                    else:
+                        # Voxel-bin entry: need hash lookup for the normal bin.
+                        contact_normal = decode_oct(normal[contact_id])
+                        bin_id = get_slot(contact_normal)
+                        pair = shape_pairs[contact_id]
+                        nbin_key = make_contact_key(pair[0], pair[1], bin_id)
+                        nbin_idx = hashtable_find(nbin_key, ht_keys)
                     if nbin_idx >= 0:
                         pen_mag = -depth
+                        contact_normal = decode_oct(normal[contact_id])
                         wp.atomic_add(total_depth_reduced, nbin_idx, pen_mag)
                         wp.atomic_add(total_normal_reduced, nbin_idx, pen_mag * contact_normal)
 
