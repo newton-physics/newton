@@ -70,9 +70,15 @@ class TestJointArmatureBase:
         builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
 
         inertia_mat = wp.mat33(
-            body_inertia, 0.0, 0.0,
-            0.0, body_inertia, 0.0,
-            0.0, 0.0, body_inertia,
+            body_inertia,
+            0.0,
+            0.0,
+            0.0,
+            body_inertia,
+            0.0,
+            0.0,
+            0.0,
+            body_inertia,
         )
         body = builder.add_link(
             mass=body_mass,
@@ -81,13 +87,23 @@ class TestJointArmatureBase:
         )
         if joint_type == "prismatic":
             joint = builder.add_joint_prismatic(
-                axis=motion_axis, parent=-1, child=body,
-                armature=armature, effort_limit=1e12, velocity_limit=1e12, friction=0.0,
+                axis=motion_axis,
+                parent=-1,
+                child=body,
+                armature=armature,
+                effort_limit=1e12,
+                velocity_limit=1e12,
+                friction=0.0,
             )
         elif joint_type == "revolute":
             joint = builder.add_joint_revolute(
-                axis=motion_axis, parent=-1, child=body,
-                armature=armature, effort_limit=1e12, velocity_limit=1e12, friction=0.0,
+                axis=motion_axis,
+                parent=-1,
+                child=body,
+                armature=armature,
+                effort_limit=1e12,
+                velocity_limit=1e12,
+                friction=0.0,
             )
         elif joint_type == "d6_prismatic" or joint_type == "d6_revolute":
             dof_cfg = newton.ModelBuilder.JointDofConfig(
@@ -96,11 +112,15 @@ class TestJointArmatureBase:
             )
             if joint_type == "d6_prismatic":
                 joint = builder.add_joint_d6(
-                    -1, body, linear_axes=[dof_cfg],
+                    -1,
+                    body,
+                    linear_axes=[dof_cfg],
                 )
             else:
                 joint = builder.add_joint_d6(
-                    -1, body, angular_axes=[dof_cfg],
+                    -1,
+                    body,
+                    angular_axes=[dof_cfg],
                 )
         else:
             raise ValueError(joint_type)
@@ -133,10 +153,12 @@ class TestJointArmatureBase:
         sims = [None] * num_armatures
         measured_qds = [0.0] * num_armatures
         for i in range(0, num_armatures):
-
             sim = self._build_model(
-                armature=armatures[i], body_inertia=effective_inertia, joint_type=joint_type,
-                body_mass=effective_inertia, motion_axis=motion_axis,
+                armature=armatures[i],
+                body_inertia=effective_inertia,
+                joint_type=joint_type,
+                body_mass=effective_inertia,
+                motion_axis=motion_axis,
             )
 
             # Apply a force to the joint for 1 sim step and measure the joint speed.
@@ -166,7 +188,9 @@ class TestJointArmatureBase:
 
         sims[0].solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         sims[0].control.joint_f.assign(np.array([force], dtype=np.float32))
-        sims[0].solver.step(state_in=sims[0].state_in, state_out=sims[0].state_out, control=sims[0].control, dt=dt, contacts=None)
+        sims[0].solver.step(
+            state_in=sims[0].state_in, state_out=sims[0].state_out, control=sims[0].control, dt=dt, contacts=None
+        )
 
         measured_qd_changed = sims[0].state_out.joint_qd.numpy()[0]
         expected_qd_changed = force * dt / (effective_inertia + armature_changed)
@@ -240,6 +264,7 @@ class TestJointArmatureFeatherstone(TestJointArmatureBase, unittest.TestCase):
             model,
             angular_damping=0.0,
         )
+
 
 # Note XPBD and SemiImplicit both document that they do not support armature.
 
