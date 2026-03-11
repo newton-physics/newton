@@ -1,0 +1,1112 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for the collider functions of narrow-phase collision detection"""
+
+import unittest
+
+import numpy as np
+import warp as wp
+
+from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton._src.solvers.kamino._src.core.data import DataKamino
+from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.core.state import StateKamino
+from newton._src.solvers.kamino._src.core.types import float32, int32, vec6f
+from newton._src.solvers.kamino._src.geometry.contacts import DEFAULT_GEOM_PAIR_CONTACT_GAP, ContactsKamino
+from newton._src.solvers.kamino._src.geometry.primitive import (
+    BoundingVolumeType,
+    CollisionPipelinePrimitive,
+)
+from newton._src.solvers.kamino._src.geometry.primitive.broadphase import (
+    PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES,
+    BoundingVolumesData,
+    CollisionCandidatesData,
+    CollisionCandidatesModel,
+    nxn_broadphase_aabb,
+    nxn_broadphase_bs,
+    update_geoms_aabb,
+    update_geoms_bs,
+)
+from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import (
+    PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS,
+    primitive_narrowphase,
+)
+from newton._src.solvers.kamino._src.models.builders import basics, testing
+from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+###
+# Constants
+###
+
+
+nominal_expected_contacts_per_shape_pair = {
+    ("sphere", "sphere"): 1,
+    ("sphere", "cylinder"): 1,
+    ("sphere", "capsule"): 1,
+    ("sphere", "box"): 1,
+    # TODO: ("sphere", "plane"): 1,
+    ("cylinder", "sphere"): 1,
+    # TODO: ("cylinder", "plane"): 4,
+    ("capsule", "sphere"): 1,
+    ("capsule", "capsule"): 1,
+    ("capsule", "box"): 1,
+    # TODO: ("capsule", "plane"): 1,
+    ("box", "box"): 4,
+    # TODO: ("box", "plane"): 4,
+    # TODO: ("ellipsoid", "plane"): 1,
+}
+"""
+Defines the expected number of contacts for each supported
+shape combination under the following idealized conditions:
+- all shapes are perfectly stacked along the vertical (z) axis
+- all shapes are centered at the origin in the (x,y) plane
+- the geoms are perfectly touching (i.e. penetration is exactly zero)
+- all contact margins are set to zero
+- all shapes are positioned and oriented in configurations
+that would would generate a "nominal" number of contacts per shape combination
+
+Notes:
+- We refer to these "nominal" expected contacts as those that are neither the worst-case
+(i.e. maximum possible contacts) nor the best-case (i.e. minimum possible contacts).
+- An example of a "nominal" configuration is a box-on-box arrangement where two boxes are
+perfectly aligned and touching face-to-face, generating 4 contact points. The worst-case
+would be if the boxes were slightly offset, generating 8 contact points (i.e. full face-face
+contact with 4 points on each face). The best-case would be if the boxes were touching at a
+single edge or corner, generating only 1 contact point.
+"""
+
+
+###
+# Test Scaffolding
+###
+
+
+class PrimitiveBroadPhaseTestBS:
+    def __init__(self, model: ModelKamino, device: wp.DeviceLike = None):
+        # Retrieve the number of world
+        num_worlds = model.size.num_worlds
+        num_geoms = model.geoms.num_geoms
+        # Construct collision pairs
+        world_num_geom_pairs, model_wid = CollisionPipelinePrimitive._assert_shapes_supported(model, True)
+        # Allocate the collision model data
+        with wp.ScopedDevice(device):
+            # Allocate the bounding volumes data
+            self.bvdata = BoundingVolumesData(radius=wp.zeros(shape=(num_geoms,), dtype=float32))
+            # Allocate the time-invariant collision candidates model
+            self._cmodel = CollisionCandidatesModel(
+                num_model_geom_pairs=model.geoms.num_collidable_pairs,
+                num_world_geom_pairs=world_num_geom_pairs,
+                model_num_pairs=wp.array([model.geoms.num_collidable_pairs], dtype=int32),
+                world_num_pairs=wp.array(world_num_geom_pairs, dtype=int32),
+                wid=wp.array(model_wid, dtype=int32),
+                geom_pair=model.geoms.collidable_pairs,
+            )
+            # Allocate the time-varying collision candidates data
+            self._cdata = CollisionCandidatesData(
+                num_model_geom_pairs=model.geoms.num_collidable_pairs,
+                model_num_collisions=wp.zeros(shape=(1,), dtype=int32),
+                world_num_collisions=wp.zeros(shape=(num_worlds,), dtype=int32),
+                wid=wp.zeros(shape=(model.geoms.num_collidable_pairs,), dtype=int32),
+                geom_pair=wp.zeros_like(model.geoms.collidable_pairs),
+            )
+
+    def collide(self, model: ModelKamino, data: DataKamino, state: StateKamino, default_gap: float = 0.0):
+        self._cdata.clear()
+        update_geoms_bs(state.q_i, model.geoms, data.geoms, self.bvdata, default_gap)
+        nxn_broadphase_bs(model.geoms, data.geoms, self.bvdata, self._cmodel, self._cdata)
+
+
+class PrimitiveBroadPhaseTestAABB:
+    def __init__(self, model: ModelKamino, device: wp.DeviceLike = None):
+        # Retrieve the number of world
+        num_worlds = model.size.num_worlds
+        num_geoms = model.geoms.num_geoms
+        # Construct collision pairs
+        world_num_geom_pairs, model_wid = CollisionPipelinePrimitive._assert_shapes_supported(model, True)
+        # Allocate the collision model data
+        with wp.ScopedDevice(device):
+            # Allocate the bounding volumes data
+            self.bvdata = BoundingVolumesData(aabb=wp.zeros(shape=(num_geoms,), dtype=vec6f))
+            # Allocate the time-invariant collision candidates model
+            self._cmodel = CollisionCandidatesModel(
+                num_model_geom_pairs=model.geoms.num_collidable_pairs,
+                num_world_geom_pairs=world_num_geom_pairs,
+                model_num_pairs=wp.array([model.geoms.num_collidable_pairs], dtype=int32),
+                world_num_pairs=wp.array(world_num_geom_pairs, dtype=int32),
+                wid=wp.array(model_wid, dtype=int32),
+                geom_pair=model.geoms.collidable_pairs,
+            )
+            # Allocate the time-varying collision candidates data
+            self._cdata = CollisionCandidatesData(
+                num_model_geom_pairs=model.geoms.num_collidable_pairs,
+                model_num_collisions=wp.zeros(shape=(1,), dtype=int32),
+                world_num_collisions=wp.zeros(shape=(num_worlds,), dtype=int32),
+                wid=wp.zeros(shape=(model.geoms.num_collidable_pairs,), dtype=int32),
+                geom_pair=wp.zeros_like(model.geoms.collidable_pairs),
+            )
+
+    def collide(self, model: ModelKamino, data: DataKamino, state: StateKamino, default_gap: float = 0.0):
+        self._cdata.clear()
+        update_geoms_aabb(state.q_i, model.geoms, data.geoms, self.bvdata, default_gap)
+        nxn_broadphase_aabb(model.geoms, self.bvdata, self._cmodel, self._cdata)
+
+
+PrimitiveBroadPhaseType = PrimitiveBroadPhaseTestBS | PrimitiveBroadPhaseTestAABB
+"""Type alias for all primitive broad-phase implementations."""
+
+###
+# Testing Operations
+###
+
+
+def check_broadphase_allocations(
+    testcase: unittest.TestCase,
+    builder: ModelBuilderKamino,
+    broadphase: PrimitiveBroadPhaseType,
+):
+    # Calculate the maximum number of geometry pairs
+    model_candidate_pairs = builder.make_collision_candidate_pairs()
+    num_candidate_pairs = len(model_candidate_pairs)
+    # Construct a broad-phase
+    testcase.assertEqual(broadphase._cmodel.num_model_geom_pairs, num_candidate_pairs)
+    testcase.assertEqual(sum(broadphase._cmodel.num_world_geom_pairs), num_candidate_pairs)
+    testcase.assertEqual(broadphase._cmodel.model_num_pairs.size, 1)
+    testcase.assertEqual(broadphase._cmodel.world_num_pairs.size, builder.num_worlds)
+    testcase.assertEqual(broadphase._cmodel.wid.size, num_candidate_pairs)
+    testcase.assertEqual(broadphase._cmodel.geom_pair.size, num_candidate_pairs)
+    np.testing.assert_array_equal(broadphase._cmodel.geom_pair.numpy(), model_candidate_pairs)
+    testcase.assertEqual(broadphase._cdata.model_num_collisions.size, 1)
+    testcase.assertEqual(broadphase._cdata.world_num_collisions.size, builder.num_worlds)
+    testcase.assertEqual(broadphase._cdata.wid.size, num_candidate_pairs)
+    testcase.assertEqual(broadphase._cdata.geom_pair.size, num_candidate_pairs)
+
+
+def test_broadphase(
+    testcase: unittest.TestCase,
+    broadphase_type: type[PrimitiveBroadPhaseType],
+    builder: ModelBuilderKamino,
+    expected_model_collisions: int,
+    expected_world_collisions: list[int],
+    expected_worlds: list[int] | None = None,
+    gap: float = 0.0,
+    case_name: str = "",
+    device: wp.DeviceLike = None,
+):
+    """
+    Tests a primitive broad-phase backend on a system specified via a ModelBuilderKamino.
+    """
+    # Create a test model and data
+    model = builder.finalize(device)
+    data = model.data()
+    state = model.state()
+
+    # Create a broad-phase backend
+    broadphase = broadphase_type(model=model, device=device)
+    check_broadphase_allocations(testcase, builder, broadphase)
+
+    # Perform broad-phase collision detection and check results
+    broadphase.collide(model, data, state, default_gap=gap)
+
+    # Check overall collision counts
+    num_model_collisions = broadphase._cdata.model_num_collisions.numpy()[0]
+    np.testing.assert_array_equal(
+        actual=num_model_collisions,
+        desired=expected_model_collisions,
+        err_msg=f"\n{broadphase_type.__name__}: Failed `model_num_collisions` check for {case_name}\n",
+    )
+    np.testing.assert_array_equal(
+        actual=broadphase._cdata.world_num_collisions.numpy(),
+        desired=expected_world_collisions,
+        err_msg=f"\n{broadphase_type.__name__}: Failed `world_num_collisions` check for {case_name}\n",
+    )
+
+    # Skip per-collision pair checks if there are no active collisions
+    if num_model_collisions == 0:
+        return
+
+    # Run per-collision checks
+    if expected_worlds is not None:
+        # Sort worlds since ordering of result might not be deterministic
+        expected_worlds_sorted = np.sort(expected_worlds)
+        actual_worlds_sorted = np.sort(broadphase._cdata.wid.numpy()[:num_model_collisions])
+        np.testing.assert_array_equal(
+            actual=actual_worlds_sorted,
+            desired=expected_worlds_sorted,
+            err_msg=f"\n{broadphase_type.__name__}: Failed `wid` check for {case_name}\n",
+        )
+
+
+def test_broadphase_on_single_pair(
+    testcase: unittest.TestCase,
+    broadphase_type: type[PrimitiveBroadPhaseType],
+    shape_pair: tuple[str, str],
+    expected_collisions: int,
+    distance: float = 0.0,
+    gap: float = 0.0,
+    device: wp.DeviceLike = None,
+):
+    """
+    Tests a primitive broad-phase backend on a single shape pair.
+    """
+    # Create a test model builder, model, and data
+    builder = testing.make_single_shape_pair_builder(shapes=shape_pair, distance=distance)
+
+    # Run the broad-phase test
+    test_broadphase(
+        testcase,
+        broadphase_type,
+        builder,
+        expected_collisions,
+        [expected_collisions],
+        gap=gap,
+        case_name=f"shape_pair='{shape_pair}', distance={distance}, gap={gap}",
+        device=device,
+    )
+
+
+def check_contacts(
+    contacts: ContactsKamino,
+    expected: dict,
+    header: str,
+    case: str,
+    rtol: float = 1e-6,
+    atol: float = 0.0,
+):
+    """
+    Checks the contents of a ContactsKamino container against expected values.
+    """
+    # Run contact counts checks
+    if "model_active_contacts" in expected:
+        np.testing.assert_equal(
+            actual=int(contacts.model_active_contacts.numpy()[0]),
+            desired=int(expected["model_active_contacts"]),
+            err_msg=f"\n{header}: Failed `model_active_contacts` check for `{case}`\n",
+        )
+    if "world_active_contacts" in expected:
+        np.testing.assert_equal(
+            actual=contacts.world_active_contacts.numpy(),
+            desired=expected["world_active_contacts"],
+            err_msg=f"\n{header}: Failed `world_active_contacts` check for `{case}`\n",
+        )
+
+    # Skip per-contact checks if there are no active contacts
+    num_active = contacts.model_active_contacts.numpy()[0]
+    if num_active == 0:
+        return
+
+    # Run per-contact assignment checks
+    if "wid" in expected:
+        np.testing.assert_equal(
+            actual=contacts.wid.numpy()[:num_active],
+            desired=np.zeros((num_active,), dtype=np.int32),
+            err_msg=f"\n{header}: Failed `wid` check for `{case}`\n",
+        )
+    if "cid" in expected:
+        np.testing.assert_equal(
+            actual=contacts.cid.numpy()[:num_active],
+            desired=np.arange(num_active, dtype=np.int32),
+            err_msg=f"\n{header}: Failed `cid` check for `{case}`\n",
+        )
+
+    # Run per-contact detailed checks
+    if "gid_AB" in expected:
+        np.testing.assert_equal(
+            actual=contacts.gid_AB.numpy()[:num_active],
+            desired=expected["gid_AB"],
+            err_msg=f"\n{header}: Failed `gid_AB` check for `{case}`\n",
+        )
+    if "bid_AB" in expected:
+        np.testing.assert_equal(
+            actual=contacts.bid_AB.numpy()[:num_active],
+            desired=expected["bid_AB"],
+            err_msg=f"\n{header}: Failed `bid_AB` check for `{case}`\n",
+        )
+    if "position_A" in expected:
+        np.testing.assert_allclose(
+            actual=contacts.position_A.numpy()[:num_active],
+            desired=expected["position_A"],
+            rtol=rtol,
+            atol=atol,
+            err_msg=f"\n{header}: Failed `position_A` check for `{case}`\n",
+        )
+    if "position_B" in expected:
+        np.testing.assert_allclose(
+            actual=contacts.position_B.numpy()[:num_active],
+            desired=expected["position_B"],
+            rtol=rtol,
+            atol=atol,
+            err_msg=f"\n{header}: Failed `position_B` check for `{case}`\n",
+        )
+    if "gapfunc" in expected:
+        np.testing.assert_allclose(
+            actual=contacts.gapfunc.numpy()[:num_active],
+            desired=expected["gapfunc"],
+            rtol=rtol,
+            atol=atol,
+            err_msg=f"{header}: Failed `gapfunc` check for `{case}`",
+        )
+    if "frame" in expected:
+        np.testing.assert_allclose(
+            actual=contacts.frame.numpy()[:num_active],
+            desired=expected["frame"],
+            rtol=rtol,
+            atol=atol,
+            err_msg=f"\n{header}: Failed `frame` check for `{case}`\n",
+        )
+
+
+def test_narrowphase(
+    testcase: unittest.TestCase,
+    builder: ModelBuilderKamino,
+    expected: dict,
+    max_contacts_per_pair: int = 12,
+    gap: float = 0.0,
+    rtol: float = 1e-6,
+    atol: float = 0.0,
+    case: str = "",
+    device: wp.DeviceLike = None,
+):
+    """
+    Runs the primitive narrow-phase collider using all broad-phase backends
+    on a system specified via a ModelBuilderKamino and checks the results.
+    """
+    # Run the narrow-phase test over each broad-phase backend
+    broadphase_types = [PrimitiveBroadPhaseTestAABB, PrimitiveBroadPhaseTestBS]
+    for bp_type in broadphase_types:
+        bp_name = bp_type.__name__
+        msg.info("Running narrow-phase test on '%s' using '%s'", case, bp_name)
+
+        # Create a test model and data
+        model = builder.finalize(device)
+        data = model.data()
+        state = model.state()
+
+        # Create a broad-phase backend
+        broadphase = bp_type(model=model, device=device)
+        broadphase.collide(model, data, state, default_gap=gap)
+
+        # Create a contacts container
+        _, world_req_contacts = builder.compute_required_contact_capacity(max_contacts_per_pair=max_contacts_per_pair)
+        contacts = ContactsKamino(capacity=world_req_contacts, device=device)
+        contacts.clear()
+
+        # Execute narrowphase for primitive shapes
+        primitive_narrowphase(model, data, broadphase._cdata, contacts, default_gap=gap)
+
+        # Optional verbose output
+        msg.debug("[%s][%s]: bodies.q_i:\n%s", case, bp_name, data.bodies.q_i)
+        msg.debug("[%s][%s]: contacts.model_active_contacts: %s", case, bp_name, contacts.model_active_contacts)
+        msg.debug("[%s][%s]: contacts.world_active_contacts: %s", case, bp_name, contacts.world_active_contacts)
+        msg.debug("[%s][%s]: contacts.wid: %s", case, bp_name, contacts.wid)
+        msg.debug("[%s][%s]: contacts.cid: %s", case, bp_name, contacts.cid)
+        msg.debug("[%s][%s]: contacts.gid_AB:\n%s", case, bp_name, contacts.gid_AB)
+        msg.debug("[%s][%s]: contacts.bid_AB:\n%s", case, bp_name, contacts.bid_AB)
+        msg.debug("[%s][%s]: contacts.position_A:\n%s", case, bp_name, contacts.position_A)
+        msg.debug("[%s][%s]: contacts.position_B:\n%s", case, bp_name, contacts.position_B)
+        msg.debug("[%s][%s]: contacts.gapfunc:\n%s", case, bp_name, contacts.gapfunc)
+        msg.debug("[%s][%s]: contacts.frame:\n%s", case, bp_name, contacts.frame)
+        msg.debug("[%s][%s]: contacts.material:\n%s", case, bp_name, contacts.material)
+
+        # Check results
+        check_contacts(
+            contacts,
+            expected,
+            rtol=rtol,
+            atol=atol,
+            case=f"{case} using {bp_name}",
+            header="primitive narrow-phase",
+        )
+
+
+def test_narrowphase_on_shape_pair(
+    testcase: unittest.TestCase,
+    shape_pair: tuple[str, str],
+    expected_contacts: int,
+    distance: float = 0.0,
+    gap: float = 0.0,
+    builder_kwargs: dict | None = None,
+):
+    """
+    Tests the primitive narrow-phase collider on a single shape pair.
+
+    Note:
+        This test only checks the number of generated contacts.
+    """
+    # Set default builder kwargs if none provided
+    if builder_kwargs is None:
+        builder_kwargs = {}
+
+    # Create a builder for the specified shape pair
+    builder = testing.make_single_shape_pair_builder(shapes=shape_pair, distance=distance, **builder_kwargs)
+
+    # Define expected contacts dictionary
+    expected = {
+        "model_active_contacts": expected_contacts,
+        "world_active_contacts": [expected_contacts],
+    }
+
+    # Run the narrow-phase test
+    test_narrowphase(
+        testcase=testcase,
+        builder=builder,
+        expected=expected,
+        gap=gap,
+        case=f"shape_pair='{shape_pair}'",
+        device=testcase.default_device,
+    )
+
+
+###
+# Tests
+###
+
+
+class TestPrimitiveBroadPhase(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.verbose = test_context.verbose  # Set to True for detailed output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            msg.set_log_level(msg.LogLevel.INFO)
+        else:
+            msg.reset_log_level()
+
+        # Construct a list of all supported primitive shape pairs
+        self.supported_shape_pairs: list[tuple[str, str]] = []
+        for shape_A in PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES:
+            shape_A_name = shape_A.name.lower()
+            for shape_B in PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES:
+                shape_B_name = shape_B.name.lower()
+                self.supported_shape_pairs.append((shape_A_name, shape_B_name))
+        msg.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
+
+    def tearDown(self):
+        self.default_device = None
+        if self.verbose:
+            msg.reset_log_level()
+
+    def test_01_bspheres_on_each_primitive_shape_pair_exact(self):
+        # Each shape pair in its own world with
+        # - zero distance: (i.e., exactly touching)
+        # - zero gap: no preemption of collisions
+        for shape_pair in self.supported_shape_pairs:
+            msg.info("[BS]: testing broadphase with exact boundaries on shape pair: %s", shape_pair)
+            test_broadphase_on_single_pair(
+                self,
+                broadphase_type=PrimitiveBroadPhaseTestBS,
+                shape_pair=shape_pair,
+                expected_collisions=1,
+                distance=0.0,
+                gap=0.0,
+                device=self.default_device,
+            )
+
+    def test_02_bspheres_on_each_primitive_shape_pair_apart(self):
+        # Each shape pair in its own world with
+        # - positive distance: (i.e., apart)
+        # - zero gap: no preemption of collisions
+        for shape_pair in self.supported_shape_pairs:
+            msg.info("[BS]: testing broadphase with shapes apart on shape pair: %s", shape_pair)
+            test_broadphase_on_single_pair(
+                self,
+                broadphase_type=PrimitiveBroadPhaseTestBS,
+                shape_pair=shape_pair,
+                expected_collisions=0,
+                distance=1.5,
+                gap=0.0,
+                device=self.default_device,
+            )
+
+    def test_03_bspheres_on_each_primitive_shape_pair_apart_with_margin(self):
+        # Each shape pair in its own world with
+        # - positive distance: (i.e., apart)
+        # - positive gap: preemption of collisions
+        for shape_pair in self.supported_shape_pairs:
+            msg.info("[BS]: testing broadphase with shapes apart but gap on shape pair: %s", shape_pair)
+            test_broadphase_on_single_pair(
+                self,
+                broadphase_type=PrimitiveBroadPhaseTestBS,
+                shape_pair=shape_pair,
+                expected_collisions=1,
+                distance=1.0,
+                gap=1.0,
+                device=self.default_device,
+            )
+
+    def test_04_bspheres_on_each_primitive_shape_pair_with_overlap(self):
+        # Each shape pair in its own world with
+        # - negative distance: (i.e., overlapping)
+        # - zero gap: no preemption of collisions
+        for shape_pair in self.supported_shape_pairs:
+            msg.info("[BS]: testing broadphase with overlapping shapes on shape pair: %s", shape_pair)
+            test_broadphase_on_single_pair(
+                self,
+                broadphase_type=PrimitiveBroadPhaseTestBS,
+                shape_pair=shape_pair,
+                expected_collisions=1,
+                distance=-0.01,
+                gap=0.0,
+                device=self.default_device,
+            )
+
+    def test_05_bspheres_on_all_primitive_shape_pairs(self):
+        # All shape pairs, but each in its own world with
+        # - zero distance: (i.e., exactly touching)
+        # - zero gap: no preemption of collisions
+        msg.info("[BS]: testing broadphase with overlapping shapes on all shape pairs")
+        builder = testing.make_shape_pairs_builder(
+            shape_pairs=self.supported_shape_pairs,
+            distance=0.0,
+        )
+        test_broadphase(
+            self,
+            builder=builder,
+            broadphase_type=PrimitiveBroadPhaseTestBS,
+            expected_model_collisions=len(self.supported_shape_pairs),
+            expected_world_collisions=[1] * len(self.supported_shape_pairs),
+            gap=0.0,
+            case_name="all shape pairs",
+            device=self.default_device,
+        )
+
+    def test_06_aabbs_on_each_primitive_shape_pair_exact(self):
+        # Each shape pair in its own world with
+        # - zero distance: (i.e., exactly touching)
+        # - zero gap: no preemption of collisions
+        for shape_pair in self.supported_shape_pairs:
+            msg.info("[AABB]: testing broadphase with exact boundaries on shape pair: %s", shape_pair)
+            test_broadphase_on_single_pair(
+                self,
+                broadphase_type=PrimitiveBroadPhaseTestAABB,
+                shape_pair=shape_pair,
+                expected_collisions=1,
+                distance=0.0,
+                gap=0.0,
+                device=self.default_device,
+            )
+
+    def test_07_aabbs_on_each_primitive_shape_pair_apart(self):
+        # Each shape pair in its own world with
+        # - positive distance: (i.e., apart)
+        # - zero gap: no preemption of collisions
+        for shape_pair in self.supported_shape_pairs:
+            msg.info("[AABB]: testing broadphase with shapes apart on shape pair: %s", shape_pair)
+            test_broadphase_on_single_pair(
+                self,
+                broadphase_type=PrimitiveBroadPhaseTestAABB,
+                shape_pair=shape_pair,
+                expected_collisions=0,
+                distance=1e-6,
+                gap=0.0,
+                device=self.default_device,
+            )
+
+    def test_08_aabbs_on_each_primitive_shape_pair_apart_with_margin(self):
+        # Each shape pair in its own world with
+        # - positive distance: (i.e., apart)
+        # - positive gap: preemption of collisions
+        for shape_pair in self.supported_shape_pairs:
+            msg.info("[AABB]: testing broadphase with shapes apart but gap on shape pair: %s", shape_pair)
+            test_broadphase_on_single_pair(
+                self,
+                broadphase_type=PrimitiveBroadPhaseTestAABB,
+                shape_pair=shape_pair,
+                expected_collisions=1,
+                distance=1e-6,
+                gap=1e-6,
+                device=self.default_device,
+            )
+
+    def test_09_aabbs_on_each_primitive_shape_pair_with_overlap(self):
+        # Each shape pair in its own world with
+        # - negative distance: (i.e., overlapping)
+        # - zero gap: no preemption of collisions
+        for shape_pair in self.supported_shape_pairs:
+            msg.info("[AABB]: testing broadphase with overlapping shapes on shape pair: %s", shape_pair)
+            test_broadphase_on_single_pair(
+                self,
+                broadphase_type=PrimitiveBroadPhaseTestAABB,
+                shape_pair=shape_pair,
+                expected_collisions=1,
+                distance=-0.01,
+                gap=0.0,
+                device=self.default_device,
+            )
+
+    def test_10_aabbs_on_all_primitive_shape_pairs(self):
+        # All shape pairs, but each in its own world with
+        # - zero distance: (i.e., exactly touching)
+        # - zero gap: no preemption of collisions
+        msg.info("[AABB]: testing broadphase with overlapping shapes on all shape pairs")
+        builder = testing.make_shape_pairs_builder(
+            shape_pairs=self.supported_shape_pairs,
+            distance=0.0,
+        )
+        test_broadphase(
+            self,
+            builder=builder,
+            broadphase_type=PrimitiveBroadPhaseTestAABB,
+            expected_model_collisions=len(self.supported_shape_pairs),
+            expected_world_collisions=[1] * len(self.supported_shape_pairs),
+            expected_worlds=list(range(len(self.supported_shape_pairs))),
+            gap=0.0,
+            case_name="all shape pairs",
+            device=self.default_device,
+        )
+
+    def test_11_bspheres_on_boxes_nunchaku(self):
+        msg.info("[BS]: testing broadphase on `boxes_nunchaku`")
+        builder = basics.build_boxes_nunchaku()
+        test_broadphase(
+            self,
+            builder=builder,
+            broadphase_type=PrimitiveBroadPhaseTestBS,
+            expected_model_collisions=3,
+            expected_world_collisions=[3],
+            expected_worlds=[0, 0, 0],
+            gap=0.0,
+            case_name="boxes_nunchaku",
+            device=self.default_device,
+        )
+
+    def test_12_aabbs_on_boxes_nunchaku(self):
+        msg.info("[AABB]: testing broadphase on `boxes_nunchaku`")
+        builder = basics.build_boxes_nunchaku()
+        test_broadphase(
+            self,
+            builder=builder,
+            broadphase_type=PrimitiveBroadPhaseTestAABB,
+            expected_model_collisions=3,
+            expected_world_collisions=[3],
+            expected_worlds=[0, 0, 0],
+            gap=0.0,
+            case_name="boxes_nunchaku",
+            device=self.default_device,
+        )
+
+
+class TestPrimitiveNarrowPhase(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.verbose = test_context.verbose  # Set to True for detailed output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            msg.set_log_level(msg.LogLevel.INFO)
+        else:
+            msg.reset_log_level()
+
+        # Construct a list of all supported primitive shape pairs
+        self.supported_shape_pairs: list[tuple[str, str]] = []
+        for shape_A in PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES:
+            shape_A_name = shape_A.name.lower()
+            for shape_B in PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES:
+                shape_B_name = shape_B.name.lower()
+                if (shape_A, shape_B) in PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS:
+                    self.supported_shape_pairs.append((shape_A_name, shape_B_name))
+        msg.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
+
+    def tearDown(self):
+        self.default_device = None
+        if self.verbose:
+            msg.reset_log_level()
+
+    def test_01_on_each_primitive_shape_pair_exact(self):
+        """
+        Tests the narrow-phase collision detection for each supported primitive
+        shape pair when placed exactly at their contact boundaries.
+        """
+        msg.info("Testing narrow-phase tests with exact boundaries")
+        # Each shape pair in its own world with
+        # - zero distance: (i.e., exactly touching)
+        # - zero gap: no preemption of collisions
+        for shape_pair in nominal_expected_contacts_per_shape_pair.keys():
+            # Define any special kwargs for specific shape pairs
+            kwargs = {}
+            if shape_pair == ("box", "box"):
+                # NOTE: To asses "nominal" contacts for box-box,
+                # we need to specify larger box dimensions for
+                # the bottom box to avoid contacts on edges
+                kwargs["bottom_dims"] = (2.0, 2.0, 1.0)
+
+            # Retrieve the nominal expected contacts for the shape pair
+            expected_contacts = nominal_expected_contacts_per_shape_pair.get(shape_pair, 0)
+
+            # Run the narrow-phase test on the shape pair
+            test_narrowphase_on_shape_pair(
+                self,
+                shape_pair=shape_pair,
+                expected_contacts=expected_contacts,
+                gap=0.0,  # No contact gap
+                distance=0.0,  # Exactly touching
+                builder_kwargs=kwargs,
+            )
+
+    def test_02_on_each_primitive_shape_pair_apart(self):
+        """
+        Tests the narrow-phase collision detection for each
+        supported primitive shape pair when placed apart.
+        """
+        msg.info("Testing narrow-phase tests with shapes apart")
+        # Each shape pair in its own world with
+        # - zero distance: (i.e., exactly touching)
+        # - zero gap: no preemption of collisions
+        for shape_pair in nominal_expected_contacts_per_shape_pair.keys():
+            test_narrowphase_on_shape_pair(
+                self,
+                shape_pair=shape_pair,
+                expected_contacts=0,
+                gap=0.0,  # No contact gap
+                distance=1e-6,  # Shapes apart
+            )
+
+    def test_03_on_each_primitive_shape_pair_apart_with_margin(self):
+        """
+        Tests the narrow-phase collision detection for each supported
+        primitive shape pair when placed apart but with contact gap.
+        """
+        msg.info("Testing narrow-phase tests with shapes apart")
+        # Each shape pair in its own world with
+        # - zero distance: (i.e., exactly touching)
+        # - zero gap: no preemption of collisions
+        for shape_pair in nominal_expected_contacts_per_shape_pair.keys():
+            # Define any special kwargs for specific shape pairs
+            kwargs = {}
+            if shape_pair == ("box", "box"):
+                # NOTE: To asses "nominal" contacts for box-box,
+                # we need to specify larger box dimensions for
+                # the bottom box to avoid contacts on edges
+                kwargs["bottom_dims"] = (2.0, 2.0, 1.0)
+
+            # Retrieve the nominal expected contacts for the shape pair
+            expected_contacts = nominal_expected_contacts_per_shape_pair.get(shape_pair, 0)
+
+            # Run the narrow-phase test on the shape pair
+            test_narrowphase_on_shape_pair(
+                self,
+                shape_pair=shape_pair,
+                expected_contacts=expected_contacts,
+                gap=1e-6,  # Contact gap
+                distance=1e-6,  # Shapes apart
+                builder_kwargs=kwargs,
+            )
+
+    ###
+    # Tests for special cases of shape combinations/configurations
+    ###
+
+    def test_04_on_sphere_on_sphere_full(self):
+        """
+        Tests all narrow-phase output data for the case of two spheres
+        stacked along the vertical (z) axis, centered at the origin
+        in the (x,y) plane, and slightly penetrating each other.
+        """
+        # NOTE: We set to negative value to move the geoms into each other,
+        # i.e. move the bottom geom upwards and the top geom downwards.
+        distance = -0.01
+
+        # Define expected contact data
+        expected = {
+            "model_active_contacts": 1,
+            "world_active_contacts": [1],
+            "gid_AB": np.array([[0, 1]], dtype=np.int32),
+            "bid_AB": np.array([[0, 1]], dtype=np.int32),
+            "position_A": np.array([[0.0, 0.0, 0.5 * abs(distance)]], dtype=np.float32),
+            "position_B": np.array([[0.0, 0.0, -0.5 * abs(distance)]], dtype=np.float32),
+            "gapfunc": np.array([[0.0, 0.0, 1.0, distance]], dtype=np.float32),
+            "frame": np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+        }
+
+        # Create a builder for the specified shape pair
+        builder = testing.make_single_shape_pair_builder(
+            shapes=("sphere", "sphere"),
+            distance=distance,
+        )
+
+        # Run the narrow-phase test on the shape pair
+        test_narrowphase(
+            self,
+            builder=builder,
+            expected=expected,
+            max_contacts_per_pair=2,
+            case="sphere_on_sphere_detailed",
+            device=self.default_device,
+        )
+
+    def test_05_box_on_box_with_four_points(self):
+        """
+        Tests all narrow-phase output data for the case of two boxes
+        stacked along the vertical (z) axis, centered at the origin
+        in the (x,y) plane, and slightly penetrating each other.
+
+        This test makes the bottom box larger in the (x,y) dimensions
+        to ensure that only four contact points are generated at the
+        face of the top box.
+        """
+        # NOTE: We set to negative value to move the geoms into each other,
+        # i.e. move the bottom geom upwards and the top geom downwards.
+        distance = -0.01
+
+        # Define expected contact data
+        expected = {
+            "model_active_contacts": 4,
+            "world_active_contacts": [4],
+            "gid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(4, 1)),
+            "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(4, 1)),
+            "position_A": np.array(
+                [
+                    [-0.5, -0.5, 0.5 * abs(distance)],
+                    [0.5, -0.5, 0.5 * abs(distance)],
+                    [-0.5, 0.5, 0.5 * abs(distance)],
+                    [0.5, 0.5, 0.5 * abs(distance)],
+                ],
+                dtype=np.float32,
+            ),
+            "position_B": np.array(
+                [
+                    [-0.5, -0.5, -0.5 * abs(distance)],
+                    [0.5, -0.5, -0.5 * abs(distance)],
+                    [-0.5, 0.5, -0.5 * abs(distance)],
+                    [0.5, 0.5, -0.5 * abs(distance)],
+                ],
+                dtype=np.float32,
+            ),
+            "gapfunc": np.tile(np.array([0.0, 0.0, 1.0, distance], dtype=np.float32), reps=(4, 1)),
+            "frame": np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), reps=(4, 1)),
+        }
+
+        # Create a builder for the specified shape pair
+        builder = testing.make_single_shape_pair_builder(
+            shapes=("box", "box"),
+            distance=distance,
+            bottom_dims=(2.0, 2.0, 1.0),  # Larger bottom box
+        )
+
+        # Run the narrow-phase test on the shape pair
+        test_narrowphase(
+            self,
+            builder=builder,
+            expected=expected,
+            case="box_on_box_four_points",
+            device=self.default_device,
+        )
+
+    def test_06_box_on_box_eight_points(self):
+        """
+        Tests the narrow-phase collision detection for a special case of
+        two boxes stacked along the vertical (z) axis, centered at the origin
+        in the (x,y) plane, and slightly penetrating each other.
+        """
+        # NOTE: We set to negative value to move the geoms into each other,
+        # i.e. move the bottom geom upwards and the top geom downwards.
+        distance = -0.01
+
+        # Define expected contact data
+        expected = {
+            "model_active_contacts": 8,
+            "world_active_contacts": [8],
+            "gid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(8, 1)),
+            "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(8, 1)),
+            "position_A": np.array(
+                [
+                    [-0.207107, -0.5, 0.5 * abs(distance)],
+                    [0.207107, -0.5, 0.5 * abs(distance)],
+                    [-0.5, -0.207107, 0.5 * abs(distance)],
+                    [-0.5, 0.207107, 0.5 * abs(distance)],
+                    [0.5, 0.207107, 0.5 * abs(distance)],
+                    [0.5, -0.207107, 0.5 * abs(distance)],
+                    [0.207107, 0.5, 0.5 * abs(distance)],
+                    [-0.207107, 0.5, 0.5 * abs(distance)],
+                ],
+                dtype=np.float32,
+            ),
+            "position_B": np.array(
+                [
+                    [-0.207107, -0.5, -0.5 * abs(distance)],
+                    [0.207107, -0.5, -0.5 * abs(distance)],
+                    [-0.5, -0.207107, -0.5 * abs(distance)],
+                    [-0.5, 0.207107, -0.5 * abs(distance)],
+                    [0.5, 0.207107, -0.5 * abs(distance)],
+                    [0.5, -0.207107, -0.5 * abs(distance)],
+                    [0.207107, 0.5, -0.5 * abs(distance)],
+                    [-0.207107, 0.5, -0.5 * abs(distance)],
+                ],
+                dtype=np.float32,
+            ),
+            "gapfunc": np.tile(np.array([0.0, 0.0, 1.0, distance], dtype=np.float32), reps=(8, 1)),
+            "frame": np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), reps=(8, 1)),
+        }
+
+        # Create a builder for the specified shape pair
+        builder = testing.make_single_shape_pair_builder(
+            shapes=("box", "box"),
+            distance=distance,
+            top_rpy=[0.0, 0.0, np.pi / 4],
+        )
+
+        # Run the narrow-phase test on the shape pair
+        test_narrowphase(
+            self,
+            builder=builder,
+            expected=expected,
+            case="box_on_box_eight_points",
+            device=self.default_device,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+    def test_07_on_box_on_box_one_point(self):
+        """
+        Tests the narrow-phase collision detection for a special case of
+        two boxes stacked along the vertical (z) axis, centered at the origin
+        in the (x,y) plane, and the top box rotated so two diagonally opposing corners
+        lie exactly on the Z-axis. thus the bottom corner of the top box touches the
+        top face of the bottom box at a single point, slightly penetrating each other.
+        """
+        # NOTE: We set to negative value to move the geoms into each other,
+        # i.e. move the bottom geom upwards and the top geom downwards.
+        penetration = -0.01
+
+        # Define expected contact data
+        expected = {
+            "num_contacts": 1,
+            "gid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
+            "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
+            "position_A": np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+            "position_B": np.array([[0.0, 0.0, -abs(penetration)]], dtype=np.float32),
+            "gapfunc": np.tile(np.array([0.0, 0.0, 1.0, penetration], dtype=np.float32), reps=(1, 1)),
+            "frame": np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), reps=(1, 1)),
+        }
+
+        # Create a builder for the specified shape pair
+        builder = testing.make_single_shape_pair_builder(
+            shapes=("box", "box"),
+            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + 0.5],
+            top_rpy=[np.pi / 4, -np.arctan(1.0 / np.sqrt(2)), 0.0],
+        )
+
+        # Run the narrow-phase test on the shape pair
+        test_narrowphase(
+            self,
+            builder=builder,
+            expected=expected,
+            case="box_on_box_one_point",
+            device=self.default_device,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+
+class TestPipelinePrimitive(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.verbose = test_context.verbose  # Set to True for detailed output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            msg.set_log_level(msg.LogLevel.INFO)
+        else:
+            msg.reset_log_level()
+
+    def tearDown(self):
+        self.default_device = None
+        if self.verbose:
+            msg.reset_log_level()
+
+    def test_00_make_default(self):
+        """Tests the default constructor of CollisionPipelinePrimitive."""
+        pipeline = CollisionPipelinePrimitive()
+        self.assertIsNone(pipeline._device)
+        self.assertEqual(pipeline._bvtype, BoundingVolumeType.AABB)
+        self.assertEqual(pipeline._default_gap, DEFAULT_GEOM_PAIR_CONTACT_GAP)
+        self.assertRaises(RuntimeError, pipeline.collide, ModelKamino(), DataKamino(), ContactsKamino())
+
+    def test_02_make_and_collide(self):
+        """
+        Tests the construction and execution
+        of the CollisionPipelinePrimitive on
+        all supported primitive shape pairs.
+        """
+        # Create a list of collidable shape pairs and their reversed versions
+        collidable_shape_pairs = list(nominal_expected_contacts_per_shape_pair.keys())
+        msg.debug("collidable_shape_pairs:\n%s\n", collidable_shape_pairs)
+
+        # Define any special kwargs for specific shape pairs
+        per_shape_pair_args = {}
+        per_shape_pair_args[("box", "box")] = {
+            # NOTE: To asses "nominal" contacts for box-box,
+            # we need to specify larger box dimensions for
+            # the bottom box to avoid contacts on edges
+            "bottom_dims": (2.0, 2.0, 1.0)
+        }
+
+        # Create a builder for all supported shape pairs
+        builder = testing.make_shape_pairs_builder(
+            shape_pairs=collidable_shape_pairs, per_shape_pair_args=per_shape_pair_args
+        )
+        model = builder.finalize(device=self.default_device)
+        data = model.data()
+        state = model.state()
+
+        # Create a contacts container
+        max_contacts_per_pair = 12  # Conservative estimate based on max contacts for any supported shape pair
+        _, world_req_contacts = builder.compute_required_contact_capacity(max_contacts_per_pair=max_contacts_per_pair)
+        contacts = ContactsKamino(capacity=world_req_contacts, device=self.default_device)
+        contacts.clear()
+
+        # Create the collision pipeline
+        pipeline = CollisionPipelinePrimitive(model=model, device=self.default_device)
+
+        # Run collision detection
+        pipeline.collide(data, state, contacts)
+
+        # Create a list of expected number of contacts per shape pair
+        expected_contacts_per_pair: list[int] = list(nominal_expected_contacts_per_shape_pair.values())
+        msg.debug("expected_contacts_per_pair:\n%s\n", expected_contacts_per_pair)
+
+        # Define expected contacts dictionary
+        expected = {
+            "model_active_contacts": sum(expected_contacts_per_pair),
+            "world_active_contacts": np.array(expected_contacts_per_pair, dtype=np.int32),
+        }
+
+        # Check results
+        check_contacts(
+            contacts,
+            expected,
+            case="all shape pairs",
+            header="pipeline primitive narrow-phase",
+        )
+
+
+###
+# Test execution
+###
+
+if __name__ == "__main__":
+    # Test setup
+    setup_tests()
+
+    # Run all tests
+    unittest.main(verbosity=2)

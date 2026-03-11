@@ -63,8 +63,13 @@ Vec3 = list[float] | tuple[float, float, float] | wp.vec3
 """A 3D vector represented as a list or tuple of 3 floats."""
 Vec4 = list[float] | tuple[float, float, float, float] | wp.vec4
 """A 4D vector represented as a list or tuple of 4 floats."""
+Vec6 = list[float] | tuple[float, float, float, float, float, float] | wp.spatial_vector
+"""A 6D vector represented as a list or tuple of 6 floats or a ``warp.spatial_vector``."""
+
 Quat = list[float] | tuple[float, float, float, float] | wp.quat
 """A quaternion represented as a list or tuple of 4 floats (in XYZW order)."""
+Mat22 = list[float] | wp.mat22
+"""A 2x2 matrix represented as a list of 4 floats or a ``warp.mat22``."""
 Mat33 = list[float] | wp.mat33
 """A 3x3 matrix represented as a list of 9 floats or a ``warp.mat33``."""
 Transform = tuple[Vec3, Quat] | wp.transform
@@ -202,7 +207,7 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
     if isinstance(axis, list | tuple | np.ndarray):
         return wp.vec3(*axis)
     elif wp.types.type_is_vector(type(axis)):
-        return wp.vec3(*axis)
+        return axis
     else:
         return Axis.from_any(axis).to_vec3()
 
@@ -212,6 +217,7 @@ __all__ = [
     "Axis",
     "AxisType",
     "Devicelike",
+    "Mat22",
     "Mat33",
     "Quat",
     "Sequence",
@@ -219,6 +225,7 @@ __all__ = [
     "Vec2",
     "Vec3",
     "Vec4",
+    "Vec6",
     "flag_to_int",
     "override",
     "vec5",

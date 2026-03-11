@@ -4665,7 +4665,7 @@ class SolverMuJoCo(SolverBase):
                 cns_relpose = wp.transform(*eq_constraint_relpose[i])
                 eq.data[0:3] = eq_constraint_anchor[i]
                 eq.data[3:6] = wp.transform_get_translation(cns_relpose)
-                eq.data[6:10] = wp.transform_get_rotation(cns_relpose)
+                eq.data[6:10] = quat_to_mjc(wp.transform_get_rotation(cns_relpose))
                 eq.data[10] = eq_constraint_torquescale[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]

@@ -323,6 +323,8 @@ Caveats
   emitted because kinematics may diverge.
 
 
+.. _mujoco-kinematic-links-and-fixed-roots:
+
 Kinematic Links and Fixed Roots
 -------------------------------
 
