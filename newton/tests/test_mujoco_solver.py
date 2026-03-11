@@ -7980,7 +7980,6 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
                 msg=f"expected_solref[{i}] is {expected_solref[i]}, measured_solref[{i}] is {measured_solref[0][i]}",
             )
 
-
     def test_weld_constraint_quat_spec_conversion(self):
         """Test that WELD constraint quaternion is correctly converted to MuJoCo wxyz format in the spec."""
         builder = newton.ModelBuilder()
