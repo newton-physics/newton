@@ -1470,6 +1470,11 @@ def _make_cell_color_kernel(geo_partition: fem.GeometryPartition):
         pid = wp.tid()
 
         cell = geo_partition.cell_index(partition_arg, pid)
+        if cell == -1:
+            colors[pid] = _NULL_COLOR
+            color_indices[pid] = pid
+            return
+
         if voxels:
             c = voxels[cell]
         else:
@@ -1506,13 +1511,17 @@ def make_dynamic_color_block_indices_kernel(geo_partition: fem.GeometryPartition
         i = wp.tid()
         elem_idx = color_indices[0, i]
         cell = geo_partition.cell_index(partition_arg, elem_idx)
+        if cell == -1:
+            color_indices[0, i] = 0
+            color_indices[1, i] = 0
+            return
         color_indices[0, i] = cell_node_offsets[cell]
         color_indices[1, i] = cell_node_offsets[cell + 1]
 
     return fill_dynamic_color_block_indices
 
 
-_NULL_COLOR = 1 << 31 - 1  # color for null nodes. make sure it is sorted last
+_NULL_COLOR = (1 << 31) - 1  # color for null nodes. make sure it is sorted last
 
 
 @wp.kernel
