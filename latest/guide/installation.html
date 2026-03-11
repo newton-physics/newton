@@ -982,9 +982,9 @@ Python version, or follow the <a class="reference internal" href="development.ht
 </div>
 <p>Run an example that runs RL policy inference. Choose the extra matching your
 NVIDIA driver’s CUDA support (<code class="docutils literal notranslate"><span class="pre">torch-cu12</span></code> for CUDA 12.x, <code class="docutils literal notranslate"><span class="pre">torch-cu13</span></code> for
-CUDA 13.x); run <code class="docutils literal notranslate"><span class="pre">nvidia-smi</span></code> to check the supported CUDA version (shown in
-the top-right corner of the output):</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pip install &quot;newton[torch-cu12]&quot;</span>
+CUDA 13.x) and the corresponding pytorch wheel (e.g, <code class="docutils literal notranslate"><span class="pre">128</span></code> for CUDA 12.8); run <code class="docutils literal notranslate"><span class="pre">nvidia-smi</span></code>
+to check the supported CUDA version (shown in the top-right corner of the output):</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pip install newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128</span>
 <span class="go">python -m newton.examples robot_anymal_c_walk</span>
 </pre></div>
 </div>
