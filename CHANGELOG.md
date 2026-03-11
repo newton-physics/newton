@@ -23,8 +23,15 @@
 - Replace `Model.sdf_data` / `sdf_volume` / `sdf_coarse_volume` with texture-based equivalents (`texture_sdf_data`, `texture_sdf_coarse_textures`, `texture_sdf_subgrid_textures`)
 - Render inertia boxes as wireframe lines instead of solid boxes in the GL viewer to avoid occluding objects
 - Upgrade GL viewer lighting from Blinn-Phong to Cook-Torrance PBR with GGX distribution, Schlick-GGX geometry, Fresnel-weighted ambient, and ACES filmic tone mapping
+- Simplify `SensorContact` force output: add `total_force` (aggregate per sensing object) and `force_matrix` (per-counterpart breakdown, `None` when no counterparts). Add `sensing_obj_idx` (`list[int]`), `counterpart_indices` (`list[list[int]]`), `sensing_obj_type`, and `counterpart_type` attributes. Rename `include_total` to `measure_total`
 
 ### Deprecated
+
+- Deprecate `SensorContact.net_force` in favor of `SensorContact.total_force` and `SensorContact.force_matrix`
+- Deprecate `SensorContact(include_total=...)` in favor of `SensorContact(measure_total=...)`
+- Deprecate `SensorContact.sensing_objs` in favor of `SensorContact.sensing_obj_idx`
+- Deprecate `SensorContact.counterparts` in favor of `SensorContact.counterpart_indices`
+- Deprecate `SensorContact.shape` and `SensorContact.reading_indices`
 
 ### Removed
 
