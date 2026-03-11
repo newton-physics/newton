@@ -1850,29 +1850,9 @@ class Gaussian:
             A new :class:`Gaussian` instance.
         """
 
-        def _get_attr(name):
-            attr = prim.GetAttribute(name)
-            if attr and attr.HasValue():
-                return np.array(attr.Get(), dtype=np.float32)
+        from ..usd.utils import get_gaussian  # noqa: PLC0415
 
-            attr = prim.GetAttribute(f"{name}h")
-            if attr and attr.HasValue():
-                return np.array(attr.Get(), dtype=np.float32)
-
-            return None
-
-        positions = _get_attr("positions")
-        if positions is None:
-            raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
-
-        return Gaussian(
-            positions=positions,
-            rotations=_get_attr("orientations"),
-            scales=_get_attr("scales"),
-            opacities=_get_attr("opacities"),
-            sh_coeffs=_get_attr("radiance:sphericalHarmonicsCoefficients"),
-            min_response=min_response,
-        )
+        return get_gaussian(prim, min_response=min_response)
 
     # ---- Utility -------------------------------------------------------------
 

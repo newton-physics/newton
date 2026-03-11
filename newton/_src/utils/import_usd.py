@@ -35,7 +35,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import Gaussian, GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
+from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
@@ -603,7 +603,7 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "particlefield3dgaussiansplat":
-                gaussian = Gaussian.create_from_usd(prim)
+                gaussian = usd.get_gaussian(prim)
                 shape_id = builder.add_shape_gaussian(
                     parent_body_id,
                     gaussian=gaussian,
@@ -2360,7 +2360,7 @@ def parse_usd(
                 prim_world_mat = _xform_to_mat44(incoming_world_xform) @ prim_world_mat
 
             g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
-            gaussian = Gaussian.create_from_usd(gaussian_prim)
+            gaussian = usd.get_gaussian(gaussian_prim)
             shape_id = builder.add_shape_gaussian(
                 body_id,
                 gaussian=gaussian,
