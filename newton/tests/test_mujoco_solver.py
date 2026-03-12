@@ -5788,10 +5788,9 @@ class TestMuJoCoOptions(unittest.TestCase):
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        mujoco = SolverMuJoCo._mujoco
 
         # Verify MuJoCo model uses custom attribute value
-        self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_SPARSE)
+        self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_SPARSE)
 
     def test_jacobian_constructor_override(self):
         """
@@ -5803,10 +5802,9 @@ class TestMuJoCoOptions(unittest.TestCase):
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, jacobian="dense")
-        mujoco = SolverMuJoCo._mujoco
 
         # Verify MuJoCo model uses constructor parameter, not custom attribute
-        self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_DENSE)
+        self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_DENSE)
 
     def test_enum_options_use_custom_attributes_when_not_provided(self):
         """
@@ -5974,11 +5972,10 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.replicate(builder, world_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
-        mujoco = SolverMuJoCo._mujoco
         self.assertEqual(solver.mj_model.nv, 2)
         # 2 equality constraints per loop joint
         self.assertEqual(solver.mj_model.neq, 2)
-        eq_type = int(mujoco.mjtEq.mjEQ_CONNECT)
+        eq_type = int(SolverMuJoCo._mujoco.mjtEq.mjEQ_CONNECT)
         assert np.allclose(solver.mj_model.eq_type, [eq_type, eq_type])
         # we defined no regular equality constraints, so there is no mapping from MuJoCo to Newton equality constraints
         assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), np.full_like(solver.mjc_eq_to_newton_eq.numpy(), -1))
@@ -6018,13 +6015,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.replicate(builder, world_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
-        mujoco = SolverMuJoCo._mujoco
         self.assertEqual(model.joint_count, 4 * world_count)
         self.assertEqual(model.equality_constraint_count, 2 * world_count)
         self.assertEqual(solver.mj_model.nv, 3)
         # 2 equality constraints per loop joint
         self.assertEqual(solver.mj_model.neq, 4)
-        eq_type = int(mujoco.mjtEq.mjEQ_CONNECT)
+        eq_type = int(SolverMuJoCo._mujoco.mjtEq.mjEQ_CONNECT)
         assert np.allclose(solver.mj_model.eq_type, [eq_type] * 4)
         # the two equality constraints we explicitly created are defined first in MuJoCo
         expected_eq_to_newton_eq = np.full((world_count, 4), -1, dtype=np.int32)
@@ -6454,11 +6450,10 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         """Test that mimic constraints are converted to MuJoCo mjEQ_JOINT constraints."""
         model = self._make_two_revolute_model(coef0=0.5, coef1=2.0)
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        mujoco = SolverMuJoCo._mujoco
 
         # Verify MuJoCo has 1 equality constraint of type JOINT
         self.assertEqual(solver.mj_model.neq, 1)
-        self.assertEqual(solver.mj_model.eq_type[0], mujoco.mjtEq.mjEQ_JOINT)
+        self.assertEqual(solver.mj_model.eq_type[0], SolverMuJoCo._mujoco.mjtEq.mjEQ_JOINT)
 
         # Verify polycoef data: [coef0, coef1, 0, 0, 0]
         eq_data = solver.mjw_model.eq_data.numpy()
@@ -6521,12 +6516,11 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        mujoco = SolverMuJoCo._mujoco
 
         # 1 regular eq + 1 mimic = 2 MuJoCo eq constraints
         self.assertEqual(solver.mj_model.neq, 2)
-        self.assertEqual(solver.mj_model.eq_type[0], mujoco.mjtEq.mjEQ_JOINT)
-        self.assertEqual(solver.mj_model.eq_type[1], mujoco.mjtEq.mjEQ_JOINT)
+        self.assertEqual(solver.mj_model.eq_type[0], SolverMuJoCo._mujoco.mjtEq.mjEQ_JOINT)
+        self.assertEqual(solver.mj_model.eq_type[1], SolverMuJoCo._mujoco.mjtEq.mjEQ_JOINT)
 
     def test_mimic_constraint_simulation(self):
         """Test that mimic constraint enforces joint tracking during simulation."""
