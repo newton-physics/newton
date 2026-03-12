@@ -83,10 +83,9 @@ class Example:
 
         self.model = builder.finalize()
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
-        mujoco, _ = SolverMuJoCo.import_mujoco()
         self.solver = SolverMuJoCo(
             self.model,
-            cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
+            cone="elliptic",
             impratio=100,
             iterations=100,
             ls_iterations=50,
