@@ -9831,9 +9831,9 @@ class ModelBuilder:
                         corrected_inv_inertias = body_inv_inertia_array.numpy()
                         for i in range(len(self.body_mass)):
                             self.body_mass[i] = float(corrected_masses[i])
-                            self.body_inertia[i] = wp.mat33(corrected_inertias[i])
+                            self.body_inertia[i] = self._coerce_mat33(corrected_inertias[i])
                             self.body_inv_mass[i] = float(corrected_inv_masses[i])
-                            self.body_inv_inertia[i] = wp.mat33(corrected_inv_inertias[i])
+                            self.body_inv_inertia[i] = self._coerce_mat33(corrected_inv_inertias[i])
 
                     # Use the corrected arrays directly on the Model
                     m.body_mass = body_mass_array

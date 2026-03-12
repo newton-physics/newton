@@ -416,8 +416,8 @@ class TestInertiaValidationParity(unittest.TestCase):
         results = self._finalize_both_paths(mass=1.0, inertia=inertia)
         self._assert_parity(results)
         # Result should be symmetric
-        I = results["detailed"]["model_inertia"]
-        np.testing.assert_allclose(I, I.T, atol=1e-6)
+        inertia = results["detailed"]["model_inertia"]
+        np.testing.assert_allclose(inertia, inertia.T, atol=1e-6)
 
     def test_parity_exact_triangle_boundary(self):
         """Exact triangle equality diag(1,1,2) should be a no-op in both paths."""
