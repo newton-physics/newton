@@ -990,6 +990,38 @@ class TestJointDriveBase(TestJointSteppingBase):
             self.assertGreater(measured_qd, measured_qd3)
             self.assertAlmostEqual(measured_qd3, expected_qd3, places=4)
 
+        # Change target_kd at runtime with a non-zero initial velocity so the damping term is observable.
+        higher_kd = drive_kd * 5.0
+        start_qd_for_kd = 2.0
+        sim.model.joint_target_ke.assign(np.full(num_dof, drive_ke, dtype=np.float32))
+        sim.model.joint_target_kd.assign(np.full(num_dof, higher_kd, dtype=np.float32))
+        sim.model.joint_target_pos.assign(np.full(num_dof, target_pos, dtype=np.float32))
+        sim.control = sim.model.control()
+        sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
+        sim.state_in.joint_qd.assign(self._make_dof_array(start_qd_for_kd, joint_type, motion_axis))
+        sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        expected_qd_kd = self._expected_drive_qd(
+            drive_ke, higher_kd, start_q, start_qd_for_kd, target_pos, dt, body_inertia
+        )
+
+        sim.solver.step(
+            state_in=sim.state_in,
+            state_out=sim.state_out,
+            control=sim.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim.state_in, sim.state_out = sim.state_out, sim.state_in
+        measured_qd_kd = sim.state_in.joint_qd.numpy()[qd_index]
+        self.assertAlmostEqual(measured_qd_kd, expected_qd_kd, places=4)
+        # Higher kd damps the positive initial velocity, so the result should be less than
+        # what we'd get with the original drive_kd.
+        expected_qd_orig_kd = self._expected_drive_qd(
+            drive_ke, drive_kd, start_q, start_qd_for_kd, target_pos, dt, body_inertia
+        )
+        self.assertLess(measured_qd_kd, expected_qd_orig_kd)
+
         # Apply a joint force with ke=kd=0 to verify control.joint_f works without drive interference.
         joint_force = 50.0
         sim.model.joint_target_ke.assign(np.full(num_dof, 0.0, dtype=np.float32))
