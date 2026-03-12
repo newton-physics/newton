@@ -2822,7 +2822,7 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
 
     # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
     # Each entry in the queue is (resolved_url, cache_relative_path).
-    downloaded_urls: set[str] = set()
+    downloaded_urls: set[str] = {url}
     pending: collections.deque[tuple[str, str]] = collections.deque()
 
     def _extract_references(layer_str, parent_url_folder, parent_local_folder):

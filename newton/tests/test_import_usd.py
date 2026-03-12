@@ -8221,15 +8221,17 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         self.assertEqual(len(shared_downloads), 1)
 
     def test_cyclic_references(self):
-        """Cyclic references do not cause infinite recursion."""
+        """Cyclic references (including back to root) do not cause infinite recursion."""
         url_to_layer = {
             "https://example.com/assets/scene.usd": "references = @./a.usd@",
             "https://example.com/assets/a.usd": "references = @./b.usd@",
-            "https://example.com/assets/b.usd": "references = @./a.usd@",
+            "https://example.com/assets/b.usd": "references = @./scene.usd@",
         }
         _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
-        a_downloads = [u for u in downloaded_urls if u.endswith("a.usd")]
-        self.assertEqual(len(a_downloads), 1)
+        # Root URL is fetched once at the top level; recursive refs back to it must not re-download.
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/scene.usd"), 1)
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/a.usd"), 1)
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/b.usd"), 1)
 
     def test_nested_subdirectory_references(self):
         """References in subdirectories preserve correct local paths."""
