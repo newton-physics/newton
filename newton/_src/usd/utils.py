@@ -1856,7 +1856,7 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         A new :class:`Gaussian` instance.
     """
 
-    def _get_attr(name):
+    def _get_float_array_attr(name):
         attr = prim.GetAttribute(name)
         if attr and attr.HasValue():
             return np.array(attr.Get(), dtype=np.float32)
@@ -1867,15 +1867,22 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
 
         return None
 
-    positions = _get_attr("positions")
+    positions = _get_float_array_attr("positions")
     if positions is None:
         raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
 
+    def _get_int_attr(name):
+        attr = prim.GetAttribute(name)
+        if attr and attr.HasValue():
+            return attr.Get()
+        return None
+
     return Gaussian(
         positions=positions,
-        rotations=_get_attr("orientations"),
-        scales=_get_attr("scales"),
-        opacities=_get_attr("opacities"),
-        sh_coeffs=_get_attr("radiance:sphericalHarmonicsCoefficients"),
+        rotations=_get_float_array_attr("orientations"),
+        scales=_get_float_array_attr("scales"),
+        opacities=_get_float_array_attr("opacities"),
+        sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
+        sh_degree=_get_int_attr("radiance:sphericalHarmonicsDegree"),
         min_response=min_response,
     )
