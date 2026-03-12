@@ -385,7 +385,7 @@ class TestMuJoCoActuators(unittest.TestCase):
 
     def test_ordering_matches_native_mujoco(self):
         """Test actuator ordering matches native MuJoCo loading."""
-        import mujoco
+        mujoco, _ = SolverMuJoCo.import_mujoco()
 
         native_model = mujoco.MjModel.from_xml_string(MJCF_ACTUATORS)
 

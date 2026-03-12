@@ -261,7 +261,7 @@ class TestImportMjcfBasic(unittest.TestCase):
 
     def test_site_euler_sequence_matches_mujoco(self):
         """Non-default compiler eulerseq should match MuJoCo site orientation."""
-        import mujoco
+        mujoco, _ = SolverMuJoCo.import_mujoco()
 
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
@@ -1256,7 +1256,7 @@ class TestImportMjcfGeometry(unittest.TestCase):
             builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
-        import mujoco
+        mujoco = SolverMuJoCo._mujoco
 
         tendon_names = [
             mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, i) for i in range(solver.mj_model.ntendon)
