@@ -1225,24 +1225,23 @@ def test_revolute_loop_joint(test, device, solver_fn):
 
 
 # ---------------------------------------------------------------------------
-# Test 12: Ball loop joint — 3D pendulum motion
+# Test 12: Ball loop joint -- conical pendulum orbit
 #
 # A pendulum body connected to the world via a free joint (in-tree, 6 DOFs)
 # and a ball loop joint at the pivot.  The ball loop must constrain only the
 # 3 translational DOFs, leaving all 3 rotational DOFs free.
 #
+# The pendulum starts tilted in X and is kicked in Z, creating nonzero
+# angular momentum about Y (gravity axis).  This forces a conical/rosette
+# orbit that spans both X and Z directions.
+#
 # Why this cannot pass by accident:
-#   - The body is given initial velocity in BOTH X and Z (two independent
-#     lateral directions).  Under Y-gravity the body traces a 3D spherical
-#     pendulum path.
-#   - With correct 1xCONNECT (ball): all 3 rotations are free, so the body
-#     swings in 3D.  Both X and Z displacements are significant.
+#   - With correct 1xCONNECT (ball): all 3 rotations are free, so the
+#     pendulum orbits in 3D.  Both X and Z displacements are significant.
 #   - With wrong 2xCONNECT (revolute around any single axis): only 1
-#     rotational DOF is free.  The body is confined to a plane, so at least
-#     one of X or Z displacement is suppressed.  Checking BOTH catches any
-#     single-axis revolute, regardless of which axis is chosen.
-#   - With wrong WELD: all DOFs are locked, no motion at all.  Both
-#     displacement checks fail.
+#     rotational DOF is free.  The pendulum is confined to a plane, so
+#     at least one of X or Z displacement is suppressed.
+#   - With wrong WELD: all DOFs are locked, no motion at all.
 #   - Without any constraint: the body flies off.  The closure-error check
 #     catches that.
 # ---------------------------------------------------------------------------
@@ -1281,43 +1280,61 @@ def test_ball_loop_joint(test, device, solver_fn):
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-    # Initial velocity in X and Z — two independent lateral directions.
-    # A correct ball joint lets the body swing in 3D (spherical pendulum).
-    # A wrong revolute around any single axis would suppress motion in at
-    # least one of these directions.
+    # Tilt the pendulum in X, then give it tangential velocity in Z.
+    # This creates nonzero angular momentum about the Y (gravity) axis,
+    # so the pendulum orbits in a conical/rosette pattern instead of
+    # swinging in a plane.  A wrong 2xCONNECT (revolute) would confine
+    # the motion to a plane, killing the orbit.
+    q = state.joint_q.numpy()
+    q_start = int(model.joint_q_start.numpy()[j_free])
+    q[q_start + 0] = 0.2  # offset x (tilt pendulum sideways)
+    q[q_start + 1] = -0.46  # offset y (adjust to keep ~0.5m length)
+    state.joint_q.assign(q)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
     qd = state.joint_qd.numpy()
     qd_start = int(model.joint_qd_start.numpy()[j_free])
-    qd[qd_start + 0] = 1.5  # vx
-    qd[qd_start + 2] = 1.5  # vz
+    qd[qd_start + 2] = 2.0  # vz (tangential to the tilt direction)
     state.joint_qd.assign(qd)
 
     control = model.control()
     sim_dt = 1e-3
     num_steps = 500
 
-    for _ in range(num_steps):
+    # Track max displacement in X and Z over the second half of the trajectory.
+    # Skip the first half so the initial X tilt doesn't count -- we want to
+    # see that the pendulum maintains displacement in BOTH axes as it orbits.
+    # A wrong 2xCONNECT (revolute) collapses X to zero almost immediately,
+    # confining the motion to the YZ plane.
+    max_x = 0.0
+    max_z = 0.0
+    half = num_steps // 2
+    for step_i in range(num_steps):
         solver.step(state, state, control, None, sim_dt)
+        if step_i >= half and step_i % 50 == 0:
+            bq = state.body_q.numpy()
+            max_x = max(max_x, abs(float(bq[link, 0])))
+            max_z = max(max_z, abs(float(bq[link, 2])))
 
     body_q = state.body_q.numpy()
     pos = body_q[link, :3]
 
-    # Both X and Z must have significant displacement — proves 3D motion.
-    # A revolute around Z would kill X swinging; around X would kill Z.
+    # Both X and Z must have significant displacement in the second half.
+    # An orbiting pendulum sweeps through both axes; a planar one stays
+    # near zero in the axis perpendicular to its plane.
     test.assertGreater(
-        abs(float(pos[0])),
+        max_x,
         0.05,
-        msg=f"Ball loop joint: X displacement {pos[0]:.4f} too small — rotation around Y/Z axis likely constrained",
+        msg=f"Ball loop joint: max X {max_x:.4f} in second half too small -- orbit confined to a plane",
     )
     test.assertGreater(
-        abs(float(pos[2])),
+        max_z,
         0.05,
-        msg=f"Ball loop joint: Z displacement {pos[2]:.4f} too small — rotation around X/Y axis likely constrained",
+        msg=f"Ball loop joint: max Z {max_z:.4f} in second half too small -- orbit confined to a plane",
     )
 
     # Loop closure: the pivot end of the link should be near the origin.
     # This would fail without any constraint (body flies away).
-    # The child anchor in body-local frame is eq_data[0, 3:6], auto-computed
-    # by MuJoCo from the child_xform and body positions at compile time.
     child_anchor_local = solver.mj_model.eq_data[0, 3:6]
     quat = body_q[link, 3:7]
     rot = np.array(wp.quat_to_matrix(wp.quat(*quat.tolist()))).reshape(3, 3)
