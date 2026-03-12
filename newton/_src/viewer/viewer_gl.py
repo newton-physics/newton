@@ -728,6 +728,7 @@ class ViewerGL(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        color: tuple[float, float, float] | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -741,6 +742,8 @@ class ViewerGL(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Enable backface culling.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -755,6 +758,9 @@ class ViewerGL(ViewerBase):
         self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+
+        if color is not None:
+            self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
 
     @override
     def log_instances(
