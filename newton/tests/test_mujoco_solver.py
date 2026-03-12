@@ -5988,11 +5988,11 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # Verify weld constraint data: anchor is set explicitly; relpose (data[3:10])
         # is auto-computed by MuJoCo's spec.compile() from body positions.
         eq_data = solver.mj_model.eq_data[0]
-        np.testing.assert_allclose(eq_data[0:3], [0.0, 0.0, -0.45], atol=1e-6)
+        assert np.allclose(eq_data[0:3], [0.0, 0.0, -0.45], atol=1e-6)
         # Auto-computed relpose: both bodies are at origin (default xforms), so
         # relpose translation equals the anchor offset, quaternion is identity.
-        np.testing.assert_allclose(eq_data[3:6], [0.0, 0.0, -0.45], atol=1e-6)
-        np.testing.assert_allclose(eq_data[6:10], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
+        assert np.allclose(eq_data[3:6], [0.0, 0.0, -0.45], atol=1e-6)
+        assert np.allclose(eq_data[6:10], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
         # we defined no regular equality constraints, so there is no mapping from MuJoCo to Newton equality constraints
         assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), np.full_like(solver.mjc_eq_to_newton_eq.numpy(), -1))
         # but we converted the loop joints to equality constraints, so there is a mapping from MuJoCo to Newton joints
@@ -6090,12 +6090,15 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         builder.joint_articulation[loop_j] = -1
 
         # Free body added AFTER loop joint — its Newton q_start will be offset
-        # from MuJoCo's jnt_qposadr by the loop joint's DOF count
-        b_free = builder.add_body(mass=1.0, xform=wp.transform(wp.vec3(2.0, 0.0, 1.0)))
+        # from MuJoCo's jnt_qposadr by the loop joint's DOF count.
+        # Use a distinctive non-zero position AND non-identity quaternion so the
+        # roundtrip cannot succeed by accident (e.g. all-zero loop joint q
+        # coincidentally matching a default pose).
+        free_pos = wp.vec3(2.0, 3.0, 1.0)
+        free_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
+        b_free = builder.add_body(mass=1.0, xform=wp.transform(free_pos, free_rot))
 
         world_builder = newton.ModelBuilder()
-        world_builder.bound_inertia = 0.01
-        world_builder.bound_mass = 0.01
         world_builder.replicate(builder, world_count=1)
         model = world_builder.finalize()
 
@@ -6106,19 +6109,24 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
         self.assertEqual(int(solver.mj_model.eq_type[1]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
         # First CONNECT: parent anchor on b1 at (0, 0, -0.5)
-        np.testing.assert_allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.5], atol=1e-6)
+        assert np.allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.5], atol=1e-6)
         # MuJoCo auto-computes child anchor from body positions at compile time:
         # world point = b1_pos + (0,0,-0.5) = (0,0,1) + (0,0,-0.5) = (0,0,0.5)
         # in b0 frame: (0,0,0.5) - b0_pos = (0,0,0.5)
-        np.testing.assert_allclose(solver.mj_model.eq_data[0, 3:6], [0, 0, 0.5], atol=1e-6)
+        assert np.allclose(solver.mj_model.eq_data[0, 3:6], [0, 0, 0.5], atol=1e-6)
         # Second CONNECT: offset along hinge axis (0, 0, 1) by 0.1
-        np.testing.assert_allclose(solver.mj_model.eq_data[1, 0:3], [0, 0, -0.4], atol=1e-6)
+        assert np.allclose(solver.mj_model.eq_data[1, 0:3], [0, 0, -0.4], atol=1e-6)
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
         # Record the free body's initial position
         body_q_before = state.body_q.numpy().copy()
+
+        # Sanity-check: the free body must have the non-default pose we set,
+        # otherwise the roundtrip comparison below is meaningless.
+        assert not np.allclose(body_q_before[b_free, 0:3], 0.0, atol=0.1)
+        assert not np.allclose(body_q_before[b_free, 3:7], [0, 0, 0, 1], atol=0.1)
 
         # Round-trip: Newton → MuJoCo → Newton
         solver._update_mjc_data(solver.mjw_data, model, state)
@@ -6128,11 +6136,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         body_q_after = state.body_q.numpy()
 
         # The free body's position must survive the round trip
-        np.testing.assert_allclose(
-            body_q_after[b_free, 0:3],
-            body_q_before[b_free, 0:3],
-            atol=1e-3,
-            err_msg="Free body position corrupted by loop joint q_start offset",
+        assert np.allclose(body_q_after[b_free, 0:3], body_q_before[b_free, 0:3], atol=1e-3), (
+            f"Free body position corrupted: {body_q_after[b_free, 0:3]} vs {body_q_before[b_free, 0:3]}"
         )
 
         # Quaternion check (sign-invariant)
@@ -6143,15 +6148,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
         # Verify runtime update kernel didn't corrupt loop joint constraint data
         eq_data_after = solver.mjw_model.eq_data.numpy()[0]
-        np.testing.assert_allclose(
-            eq_data_after[0, 0:3], [0, 0, -0.5], atol=1e-6, err_msg="Runtime update corrupted 1st connect parent anchor"
-        )
-        np.testing.assert_allclose(
-            eq_data_after[0, 3:6], [0, 0, 0.5], atol=1e-6, err_msg="Runtime update corrupted 1st connect child anchor"
-        )
-        np.testing.assert_allclose(
-            eq_data_after[1, 0:3], [0, 0, -0.4], atol=1e-6, err_msg="Runtime update corrupted 2nd connect parent anchor"
-        )
+        assert np.allclose(eq_data_after[0, 0:3], [0, 0, -0.5], atol=1e-6)
+        assert np.allclose(eq_data_after[0, 3:6], [0, 0, 0.5], atol=1e-6)
+        assert np.allclose(eq_data_after[1, 0:3], [0, 0, -0.4], atol=1e-6)
 
     def test_ball_loop_joint_coordinate_conversion_offset(self):
         """Verify coordinate conversion when a ball loop joint precedes other joints.
@@ -6178,12 +6177,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         )
         builder.joint_articulation[loop_j] = -1
 
-        # Free body added AFTER loop joint
-        b_free = builder.add_body(mass=1.0, xform=wp.transform(wp.vec3(2.0, 0.0, 1.0)))
+        # Free body added AFTER loop joint — use distinctive pose (see revolute variant).
+        free_pos = wp.vec3(2.0, 3.0, 1.0)
+        free_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
+        b_free = builder.add_body(mass=1.0, xform=wp.transform(free_pos, free_rot))
 
         world_builder = newton.ModelBuilder()
-        world_builder.bound_inertia = 0.01
-        world_builder.bound_mass = 0.01
         world_builder.replicate(builder, world_count=1)
         model = world_builder.finalize()
 
@@ -6198,6 +6197,10 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
         body_q_before = state.body_q.numpy().copy()
 
+        # Sanity-check: pose must be non-default
+        assert not np.allclose(body_q_before[b_free, 0:3], 0.0, atol=0.1)
+        assert not np.allclose(body_q_before[b_free, 3:7], [0, 0, 0, 1], atol=0.1)
+
         # Round-trip: Newton → MuJoCo → Newton
         solver._update_mjc_data(solver.mjw_data, model, state)
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
@@ -6205,11 +6208,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
         body_q_after = state.body_q.numpy()
 
-        np.testing.assert_allclose(
-            body_q_after[b_free, 0:3],
-            body_q_before[b_free, 0:3],
-            atol=1e-3,
-            err_msg="Free body position corrupted by ball loop joint q_start offset",
+        assert np.allclose(body_q_after[b_free, 0:3], body_q_before[b_free, 0:3], atol=1e-3), (
+            f"Free body position corrupted: {body_q_after[b_free, 0:3]} vs {body_q_before[b_free, 0:3]}"
         )
 
         q_before = body_q_before[b_free, 3:7]
