@@ -6064,20 +6064,27 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         """
         builder = newton.ModelBuilder()
 
-        # 2-link articulation
+        # 2-link articulation: b1 offset from b0 by (0, 0, 1) so the loop
+        # joint can use asymmetric local anchors that coincide in world space.
         b0 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j0 = builder.add_joint_revolute(-1, b0, axis=(0, 0, 1))
-        j1 = builder.add_joint_revolute(b0, b1, axis=(0, 0, 1))
+        j1 = builder.add_joint_revolute(
+            b0,
+            b1,
+            axis=(0, 0, 1),
+            parent_xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()),
+        )
         builder.add_articulation([j0, j1])
 
-        # Revolute loop joint BEFORE the free body — creates q_start offset
-        # (revolute has 1 DOF in Newton but 0 in MuJoCo since it becomes a connect constraint)
+        # Revolute loop joint BEFORE the free body — creates q_start offset.
+        # Asymmetric anchors: (0, 0, -0.5) on b1 at (0,0,1) → world (0, 0, 0.5)
+        #                     (0, 0,  0.5) on b0 at origin   → world (0, 0, 0.5)
         loop_j = builder.add_joint_revolute(
             b1,
             b0,
             parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()),
             axis=(0, 0, 1),
         )
         builder.joint_articulation[loop_j] = -1
@@ -6097,8 +6104,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # Revolute loop joint → single connect constraint
         self.assertEqual(solver.mj_model.neq, 1)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
-        # Verify parent anchor is set correctly
+        # Verify parent anchor on b1
         np.testing.assert_allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.5], atol=1e-6)
+        # MuJoCo auto-computes child anchor from body positions at compile time:
+        # world point = b1_pos + (0,0,-0.5) = (0,0,1) + (0,0,-0.5) = (0,0,0.5)
+        # in b0 frame: (0,0,0.5) - b0_pos = (0,0,0.5)
+        np.testing.assert_allclose(solver.mj_model.eq_data[0, 3:6], [0, 0, 0.5], atol=1e-6)
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -6126,6 +6137,15 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         q_after = body_q_after[b_free, 3:7]
         quat_dist = min(np.linalg.norm(q_after - q_before), np.linalg.norm(q_after + q_before))
         self.assertLess(quat_dist, 1e-3, "Free body orientation corrupted by loop joint q_start offset")
+
+        # Verify runtime update kernel didn't corrupt loop joint constraint data
+        eq_data_after = solver.mjw_model.eq_data.numpy()[0, 0]
+        np.testing.assert_allclose(
+            eq_data_after[0:3], [0, 0, -0.5], atol=1e-6, err_msg="Runtime update corrupted connect parent anchor"
+        )
+        np.testing.assert_allclose(
+            eq_data_after[3:6], [0, 0, 0.5], atol=1e-6, err_msg="Runtime update corrupted connect child anchor"
+        )
 
     def test_ball_loop_joint_coordinate_conversion_offset(self):
         """Verify coordinate conversion when a ball loop joint precedes other joints.
