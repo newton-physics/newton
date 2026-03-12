@@ -846,7 +846,7 @@ def _velocity_pd_kernel(
     joint_f[f_idx] = kp * (target - omega)
 
 
-def test_fourbar_linkage(test, device, solver_fn):
+def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
     def solve_fourbar(theta2, a, b, c, d):
         """Solve the Freudenstein equation for rocker angle theta4 given crank angle theta2.
 
@@ -939,7 +939,17 @@ def test_fourbar_linkage(test, device, solver_fn):
 
     builder.add_articulation([j0, j1, j2])
     # Loop closure
-    builder.add_equality_constraint_connect(body1=-1, body2=rocker_body, anchor=wp.vec3(d_link, 0.0, 0.0))
+    if use_loop_joint:
+        j_loop = builder.add_joint_revolute(
+            parent=-1,
+            child=rocker_body,
+            axis=(0, 0, 1),
+            parent_xform=wp.transform(wp.vec3(d_link, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(c_link / 2.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.joint_articulation[j_loop] = -1
+    else:
+        builder.add_equality_constraint_connect(body1=-1, body2=rocker_body, anchor=wp.vec3(d_link, 0.0, 0.0))
     model = builder.finalize(device=device)
 
     solver = solver_fn(model)
@@ -1250,6 +1260,16 @@ for device in devices:
             solver_fn=lambda model: newton.solvers.SolverMuJoCo(
                 model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
             ),
+        )
+        add_function_test(
+            TestPhysicsValidation,
+            "test_fourbar_linkage_loop_joint_mujoco_warp",
+            test_fourbar_linkage,
+            devices=[device],
+            solver_fn=lambda model: newton.solvers.SolverMuJoCo(
+                model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
+            ),
+            use_loop_joint=True,
         )
 
 if __name__ == "__main__":
