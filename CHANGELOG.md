@@ -11,9 +11,10 @@
 - Add box pyramid example and ASV benchmark for dense convex-on-convex contacts
 
 ### Changed
-- Deprecated `SensorTiledCamera.Config.colors_per_world` and `SensorTiledCamera.Config.colors_per_shape`
 
 ### Deprecated
+
+- Deprecated `SensorTiledCamera.Config.colors_per_world` and `SensorTiledCamera.Config.colors_per_shape`
 
 ### Removed
 
