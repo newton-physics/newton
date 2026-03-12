@@ -23,6 +23,7 @@ import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 wp.config.quiet = True
+wp.config.enable_backward = False
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -45,6 +46,7 @@ class _IKBenchmark:
     POS_THRESH_M = 5e-3
     ORI_THRESH_RAD = 0.05
     SEED = 123
+    NUM_SOLVES = 50
 
     def setup(self, batch_size):
         if not (wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())):
@@ -73,8 +75,6 @@ class _IKBenchmark:
         with wp.ScopedCapture() as cap:
             self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
         self.solve_graph = cap.graph
-
-    NUM_SOLVES = 50
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_solve(self, batch_size):
