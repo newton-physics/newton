@@ -4736,7 +4736,6 @@ class SolverMuJoCo(SolverBase):
                 eq.name1 = parent_name
                 eq.name2 = child_name
                 eq.data[0:3] = joint_parent_xform[j][:3]
-                eq.data[3:6] = joint_child_xform[j][:3]
                 mjc_eq_to_newton_jnt[eq.id] = j
 
         # add mimic constraints as mjEQ_JOINT equality constraints

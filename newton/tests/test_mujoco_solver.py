@@ -5966,13 +5966,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j0 = builder.add_joint_revolute(-1, b0)
         j1 = builder.add_joint_revolute(b0, b1)
         builder.add_articulation([j0, j1])
-        # add a loop joint
+        # add a loop joint with asymmetric xforms to exercise relpose computation
         loop_joint = builder.add_joint_fixed(
             b1,
             b0,
-            # note these offset transforms here are important to ensure valid anchor points for the equality constraints are used
             parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.1, -0.3), wp.quat_identity()),
         )
         world_count = 4
         world_builder = newton.ModelBuilder()
@@ -5986,6 +5985,14 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # Fixed loop joint → 1 weld constraint
         self.assertEqual(solver.mj_model.neq, 1)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(mujoco.mjtEq.mjEQ_WELD))
+        # Verify weld constraint data: anchor, relpose translation, and quaternion (wxyz)
+        eq_data = solver.mj_model.eq_data[0]
+        np.testing.assert_allclose(eq_data[0:3], [0.0, 0.0, -0.45], atol=1e-6)
+        # relpose = parent_xform * inv(child_xform); with identity rotations:
+        # translation = parent_pos - child_pos = (0, -0.1, -0.15)
+        np.testing.assert_allclose(eq_data[3:6], [0.0, -0.1, -0.15], atol=1e-6)
+        # identity quaternion in MuJoCo wxyz format (quat_to_mjc converts from xyzw)
+        np.testing.assert_allclose(eq_data[6:10], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
         # we defined no regular equality constraints, so there is no mapping from MuJoCo to Newton equality constraints
         assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), np.full_like(solver.mjc_eq_to_newton_eq.numpy(), -1))
         # but we converted the loop joints to equality constraints, so there is a mapping from MuJoCo to Newton joints
@@ -6090,6 +6097,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # Revolute loop joint → single connect constraint
         self.assertEqual(solver.mj_model.neq, 1)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
+        # Verify parent anchor is set correctly
+        np.testing.assert_allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.5], atol=1e-6)
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
