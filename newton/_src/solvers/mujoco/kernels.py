@@ -851,7 +851,7 @@ def apply_mjc_qfrc_kernel(
 ):
     worldid, jntid = wp.tid()
 
-    # Skip loop joints — they have no MuJoCo qvel entries
+    # Skip loop joints — they have no MuJoCo DOF entries
     qd_i = mj_qd_start[jntid]
     if qd_i < 0:
         return

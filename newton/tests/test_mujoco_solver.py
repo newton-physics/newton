@@ -6088,10 +6088,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         solver = SolverMuJoCo(model)
 
         # Revolute loop joint → single connect constraint
-        import mujoco as mj_lib
-
         self.assertEqual(solver.mj_model.neq, 1)
-        self.assertEqual(int(solver.mj_model.eq_type[0]), int(mj_lib.mjtEq.mjEQ_CONNECT))
+        self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -6157,10 +6155,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         solver = SolverMuJoCo(model)
 
         # Ball loop joint → single connect constraint
-        import mujoco as mj_lib
-
         self.assertEqual(solver.mj_model.neq, 1)
-        self.assertEqual(int(solver.mj_model.eq_type[0]), int(mj_lib.mjtEq.mjEQ_CONNECT))
+        self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)

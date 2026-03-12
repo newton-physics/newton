@@ -3249,8 +3249,7 @@ class SolverMuJoCo(SolverBase):
             nworld = mj_data.nworld
         else:
             # we have an MjData object from Mujoco
-            loop_coords = getattr(self, "_loop_joint_coord_count", 0)
-            effective_coord_count = model.joint_coord_count - loop_coords * model.world_count
+            effective_coord_count = model.joint_coord_count - self._total_loop_joint_coords
             single_world_template = len(mj_data.qpos) < effective_coord_count
             expected_qpos = (
                 effective_coord_count // model.world_count if single_world_template else effective_coord_count
@@ -4027,13 +4026,17 @@ class SolverMuJoCo(SolverBase):
                 stacklevel=2,
             )
 
-        # Count the joint coordinates that belong to loop joints (not added to MuJoCo as joints)
+        # Count the total joint coordinates that belong to loop joints across all worlds
+        # (not added to MuJoCo as joints). When separate_worlds=True, joints_loop is
+        # per-template so we multiply by world_count; otherwise it already spans all worlds.
         joint_q_start_np = model.joint_q_start.numpy()
-        self._loop_joint_coord_count = 0
-        self._loop_joint_dof_count = 0
+        loop_coord_count = 0
         for j in joints_loop:
-            self._loop_joint_coord_count += int(joint_q_start_np[j + 1]) - int(joint_q_start_np[j])
-            self._loop_joint_dof_count += int(joint_qd_start[j + 1]) - int(joint_qd_start[j])
+            loop_coord_count += int(joint_q_start_np[j + 1]) - int(joint_q_start_np[j])
+        if separate_worlds:
+            self._total_loop_joint_coords = loop_coord_count * model.world_count
+        else:
+            self._total_loop_joint_coords = loop_coord_count
 
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
@@ -4716,12 +4719,13 @@ class SolverMuJoCo(SolverBase):
                 eq.name1 = parent_name
                 eq.name2 = child_name
                 eq.data[0:3] = joint_parent_xform[j][:3]
-                # Compute relative anchor from parent and child xforms
+                # Compute relpose: child body pose in parent body frame,
+                # matching the body-transform convention at line 4303-4304.
                 parent_tf = wp.transform(*joint_parent_xform[j])
                 child_tf = wp.transform(*joint_child_xform[j])
-                relpose = wp.transform_multiply(wp.transform_inverse(parent_tf), child_tf)
+                relpose = wp.transform_multiply(parent_tf, wp.transform_inverse(child_tf))
                 eq.data[3:6] = wp.transform_get_translation(relpose)
-                eq.data[6:10] = wp.transform_get_rotation(relpose)
+                eq.data[6:10] = quat_to_mjc(wp.transform_get_rotation(relpose))
                 mjc_eq_to_newton_jnt[eq.id] = j
             else:
                 # Revolute/ball/other loop joints → single connect constraint
@@ -4732,6 +4736,7 @@ class SolverMuJoCo(SolverBase):
                 eq.name1 = parent_name
                 eq.name2 = child_name
                 eq.data[0:3] = joint_parent_xform[j][:3]
+                eq.data[3:6] = joint_child_xform[j][:3]
                 mjc_eq_to_newton_jnt[eq.id] = j
 
         # add mimic constraints as mjEQ_JOINT equality constraints
