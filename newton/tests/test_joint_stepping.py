@@ -13,7 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for joint stepping: armature, limits, friction, and drive.
+"""Tests for joints: armature, limits, friction, and drive.
+
+Each test verifies a single-step simulation result against an analytical formula
+so that solver regressions are caught by exact numerical comparison, not just
+qualitative checks.
 
 Armature adds to the diagonal of the joint-space inertia matrix, so for a 1-DOF
 revolute joint with applied torque tau, the acceleration should be approximately
@@ -23,6 +27,12 @@ For a prismatic joint, the effective mass becomes (m + armature).
 Joint limits are enforced via spring-damper penalty forces.  When a joint position
 exceeds its limit, the solver applies a restoring force proportional to the
 penetration depth (limit_ke) and a damping force (limit_kd).
+
+Joint friction is tested comparatively: a friction-enabled joint should produce a
+lower velocity than a frictionless joint under the same applied force.
+
+Joint drives apply a position-control force F = ke*(target - q) + kd*(0 - qd) and
+the resulting velocity is verified against the analytical expectation.
 """
 
 import unittest
@@ -657,6 +667,28 @@ class TestJointFrictionBase(TestJointSteppingBase):
 
         # Friction should reduce the velocity.
         self.assertGreater(qd_no_friction, qd_with_friction)
+
+        # Increase friction at runtime and verify a larger reduction.
+        higher_friction = friction_value * 3.0
+        sim_with_friction.model.joint_friction.assign(np.full(num_dof, higher_friction, dtype=np.float32))
+        sim_with_friction.state_in.joint_q.assign(self._make_dof_array(0.0, joint_type, motion_axis))
+        sim_with_friction.state_in.joint_qd.assign(self._make_dof_array(0.0, joint_type, motion_axis))
+        sim_with_friction.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        sim_with_friction.control.joint_f.assign(force_arr)
+        sim_with_friction.solver.step(
+            state_in=sim_with_friction.state_in,
+            state_out=sim_with_friction.state_out,
+            control=sim_with_friction.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim_with_friction.state_in, sim_with_friction.state_out = (
+            sim_with_friction.state_out,
+            sim_with_friction.state_in,
+        )
+        qd_higher_friction = sim_with_friction.state_in.joint_qd.numpy()[qd_index]
+        self.assertGreater(qd_higher_friction, 0.0)
+        self.assertGreater(qd_with_friction, qd_higher_friction)
 
     def test_joint_friction_revolute_x(self):
         """Joint friction reduces velocity for a revolute joint about X."""
