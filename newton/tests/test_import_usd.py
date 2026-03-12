@@ -8090,5 +8090,141 @@ def Mesh "JustAMesh" ()
         self.assertEqual(len(builder.tri_indices), 12)
 
 
+class TestResolveUsdFromUrl(unittest.TestCase):
+    """Tests for recursive USD reference resolution in :func:`resolve_usd_from_url`."""
+
+    def _run_resolve(self, url_to_layer, base_url="https://example.com/assets/scene.usd"):
+        """Run resolve_usd_from_url with mocked network and USD stage I/O.
+
+        Args:
+            url_to_layer: mapping from URL to USDA layer string content.
+            base_url: the top-level URL passed to resolve_usd_from_url.
+
+        Returns:
+            Tuple of (result_path, target_dir, downloaded_urls).
+        """
+        downloaded_urls = []
+
+        def fake_get(url, **_kwargs):
+            downloaded_urls.append(url)
+            resp = mock.MagicMock()
+            layer = url_to_layer.get(url)
+            if layer is None:
+                resp.status_code = 404
+                return resp
+            resp.status_code = 200
+            resp.content = layer.encode("utf-8")
+            return resp
+
+        # Map local file basename -> layer string so the mock stage can return it.
+        file_to_layer = {}
+
+        def fake_stage_open(path, _load_policy):
+            basename = os.path.basename(path)
+            layer_str = file_to_layer.get(basename, "")
+            stage = mock.MagicMock()
+            stage.GetRootLayer().ExportToString.return_value = layer_str
+            return stage
+
+        tmpdir = tempfile.mkdtemp()
+
+        # Track writes so we can populate file_to_layer when the function
+        # writes a downloaded file to disk.
+        real_open = open
+
+        def tracking_open(path, mode="r", **kwargs):
+            fh = real_open(path, mode, **kwargs)
+            if "w" in mode or "b" in mode:
+                basename = os.path.basename(path)
+                for url, layer in url_to_layer.items():
+                    if url.endswith(basename):
+                        file_to_layer[basename] = layer
+                        break
+            return fh
+
+        mock_requests = mock.MagicMock()
+        mock_requests.get = fake_get
+
+        mock_usd = mock.MagicMock()
+        mock_usd.Stage.Open = fake_stage_open
+        mock_usd.Stage.LoadNone = None
+
+        mock_pxr = mock.MagicMock()
+        mock_pxr.Usd = mock_usd
+
+        from newton._src.utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
+
+        with (
+            mock.patch.dict(
+                "sys.modules",
+                {"requests": mock_requests, "pxr": mock_pxr, "pxr.Usd": mock_usd},
+            ),
+            mock.patch("builtins.open", tracking_open),
+        ):
+            result = resolve_usd_from_url(base_url, target_folder_name=tmpdir)
+
+        return result, tmpdir, downloaded_urls
+
+    def test_single_level_references(self):
+        """References in the root stage are downloaded."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./child_a.usd@\nreferences = @./child_b.usd@",
+            "https://example.com/assets/child_a.usd": "",
+            "https://example.com/assets/child_b.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/child_a.usd", downloaded_urls)
+        self.assertIn("https://example.com/assets/child_b.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "child_a.usd")))
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "child_b.usd")))
+
+    def test_recursive_references(self):
+        """References in child stages are resolved recursively."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./robot.usd@",
+            "https://example.com/assets/robot.usd": "references = @./collisions.usd@",
+            "https://example.com/assets/collisions.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/robot.usd", downloaded_urls)
+        self.assertIn("https://example.com/assets/collisions.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
+
+    def test_deep_recursive_references(self):
+        """Three levels of nesting are resolved."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./level1.usd@",
+            "https://example.com/assets/level1.usd": "references = @./level2.usd@",
+            "https://example.com/assets/level2.usd": "references = @./level3.usd@",
+            "https://example.com/assets/level3.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/level3.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "level3.usd")))
+
+    def test_no_duplicate_downloads(self):
+        """The same reference appearing in multiple stages is downloaded only once."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./a.usd@\nreferences = @./b.usd@",
+            "https://example.com/assets/a.usd": "references = @./shared.usd@",
+            "https://example.com/assets/b.usd": "references = @./shared.usd@",
+            "https://example.com/assets/shared.usd": "",
+        }
+        _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        shared_downloads = [u for u in downloaded_urls if u.endswith("shared.usd")]
+        self.assertEqual(len(shared_downloads), 1)
+
+    def test_cyclic_references(self):
+        """Cyclic references do not cause infinite recursion."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./a.usd@",
+            "https://example.com/assets/a.usd": "references = @./b.usd@",
+            "https://example.com/assets/b.usd": "references = @./a.usd@",
+        }
+        _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        a_downloads = [u for u in downloaded_urls if u.endswith("a.usd")]
+        self.assertEqual(len(a_downloads), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
