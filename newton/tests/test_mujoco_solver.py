@@ -6146,12 +6146,6 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         quat_dist = min(np.linalg.norm(q_after - q_before), np.linalg.norm(q_after + q_before))
         self.assertLess(quat_dist, 1e-3, "Free body orientation corrupted by loop joint q_start offset")
 
-        # Verify runtime update kernel didn't corrupt loop joint constraint data
-        eq_data_after = solver.mjw_model.eq_data.numpy()[0]
-        assert np.allclose(eq_data_after[0, 0:3], [0, 0, -0.5], atol=1e-6)
-        assert np.allclose(eq_data_after[0, 3:6], [0, 0, 0.5], atol=1e-6)
-        assert np.allclose(eq_data_after[1, 0:3], [0, 0, -0.4], atol=1e-6)
-
     def test_ball_loop_joint_coordinate_conversion_offset(self):
         """Verify coordinate conversion when a ball loop joint precedes other joints.
 
