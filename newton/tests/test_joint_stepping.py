@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for joint stepping: armature and limits.
+"""Tests for joint stepping: armature, limits, friction, and drive.
 
 Armature adds to the diagonal of the joint-space inertia matrix, so for a 1-DOF
 revolute joint with applied torque tau, the acceleration should be approximately
@@ -58,6 +58,11 @@ class TestJointSteppingBase:
         motion_axis: int = 2,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
+        friction: float = 0.0,
+        target_ke: float | None = None,
+        target_kd: float | None = None,
+        target_pos: float | None = None,
+        effort_limit: float = 1e12,
     ):
         """Build a single joint attached to the world with specified armature.
 
@@ -70,6 +75,11 @@ class TestJointSteppingBase:
             motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
             limit_lower: Lower joint limit [m or rad]. None for unlimited.
             limit_upper: Upper joint limit [m or rad]. None for unlimited.
+            friction: Joint friction loss [N*m or N].
+            target_ke: Position drive stiffness [N*m/rad or N/m]. None for default.
+            target_kd: Position drive damping [N*m*s/rad or N*s/m]. None for default.
+            target_pos: Target position for the drive [rad or m]. None for default.
+            effort_limit: Maximum actuator force [N*m or N].
 
         Returns:
             A :class:`Sim` containing the model, solver, states, and control.
@@ -98,11 +108,14 @@ class TestJointSteppingBase:
                 parent=-1,
                 child=body,
                 armature=armature,
-                effort_limit=1e12,
+                effort_limit=effort_limit,
                 velocity_limit=1e12,
-                friction=0.0,
+                friction=friction,
                 limit_lower=limit_lower,
                 limit_upper=limit_upper,
+                target_ke=target_ke,
+                target_kd=target_kd,
+                target_pos=target_pos,
             )
         elif joint_type == "revolute":
             joint = builder.add_joint_revolute(
@@ -110,11 +123,14 @@ class TestJointSteppingBase:
                 parent=-1,
                 child=body,
                 armature=armature,
-                effort_limit=1e12,
+                effort_limit=effort_limit,
                 velocity_limit=1e12,
-                friction=0.0,
+                friction=friction,
                 limit_lower=limit_lower,
                 limit_upper=limit_upper,
+                target_ke=target_ke,
+                target_kd=target_kd,
+                target_pos=target_pos,
             )
         elif joint_type == "d6_prismatic" or joint_type == "d6_revolute":
             dof_kwargs = {}
@@ -122,9 +138,17 @@ class TestJointSteppingBase:
                 dof_kwargs["limit_lower"] = limit_lower
             if limit_upper is not None:
                 dof_kwargs["limit_upper"] = limit_upper
+            if target_ke is not None:
+                dof_kwargs["target_ke"] = target_ke
+            if target_kd is not None:
+                dof_kwargs["target_kd"] = target_kd
+            if target_pos is not None:
+                dof_kwargs["target_pos"] = target_pos
             dof_cfg = newton.ModelBuilder.JointDofConfig(
                 axis=motion_axis,
                 armature=armature,
+                friction=friction,
+                effort_limit=effort_limit,
                 **dof_kwargs,
             )
             if joint_type == "d6_prismatic":
@@ -268,7 +292,9 @@ class TestJointArmatureBase(TestJointSteppingBase):
 
 
 class TestJointLimitBase(TestJointSteppingBase):
-    def _expected_limit_qd(self, ke: float, kd: float, q: float, qd: float, limit_q: float, dt: float) -> float:
+    def _expected_limit_qd(
+        self, ke: float, kd: float, q: float, qd: float, limit_q: float, dt: float, inertia: float
+    ) -> float:
         """Compute the expected velocity after one step with a limit penalty force.
 
         Args:
@@ -278,8 +304,10 @@ class TestJointLimitBase(TestJointSteppingBase):
             qd: Current joint velocity [m/s or rad/s].
             limit_q: The limit value being violated [m or rad].
             dt: Time step [s].
+            inertia: Effective inertia of the body [kg*m^2 or kg].
         """
-        return dt * (-ke * (q - limit_q) - kd * qd)
+        force = -ke * (q - limit_q) - kd * qd
+        return qd + dt * force / inertia
 
     def _test_joint_limits(self, joint_type: str, motion_axis: int):
         """Verify that the penalty force from a joint limit breach produces the expected velocity.
@@ -295,6 +323,7 @@ class TestJointLimitBase(TestJointSteppingBase):
             motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
         """
         dt = 0.01
+        body_mass = 1.0
 
         # Configure the limits for the initial limit test.
         initial_upper_limit = 0.5
@@ -317,9 +346,9 @@ class TestJointLimitBase(TestJointSteppingBase):
         for i in range(0, num_limits):
             sim = self._build_model(
                 armature=0.0,
-                body_inertia=1.0,
+                body_inertia=body_mass,
                 joint_type=joint_type,
-                body_mass=1.0,
+                body_mass=body_mass,
                 motion_axis=motion_axis,
                 limit_lower=initial_limits_for_newton[i][0],
                 limit_upper=initial_limits_for_newton[i][1],
@@ -331,7 +360,7 @@ class TestJointLimitBase(TestJointSteppingBase):
             ke = sim.model.joint_limit_ke.numpy()[0]
             kd = sim.model.joint_limit_kd.numpy()[0]
             expected_qd = self._expected_limit_qd(
-                ke, kd, initial_start_qs[i], initial_start_qds[i], initial_limit_qs[i], dt
+                ke, kd, initial_start_qs[i], initial_start_qds[i], initial_limit_qs[i], dt, body_mass
             )
 
             sim.solver.step(
@@ -359,7 +388,7 @@ class TestJointLimitBase(TestJointSteppingBase):
             sim.state_in.joint_qd.assign(np.array([changed_start_qds[i]], dtype=np.float32))
             sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
             expected_qd = self._expected_limit_qd(
-                ke, kd, changed_start_qs[i], changed_start_qds[i], changed_limit_qs[i], dt
+                ke, kd, changed_start_qs[i], changed_start_qds[i], changed_limit_qs[i], dt, body_mass
             )
 
             sim.solver.step(
@@ -372,6 +401,61 @@ class TestJointLimitBase(TestJointSteppingBase):
             sim.state_in, sim.state_out = sim.state_out, sim.state_in
             measured_qd = sim.state_in.joint_qd.numpy()[0]
             self.assertAlmostEqual(measured_qd, expected_qd, places=4)
+
+            # Change ke at runtime, reset state, and verify the new stiffness is reflected.
+            # Remember that the limits are currently set to changed_limits_for_newton.
+            changed_ke = ke * 2.0
+            sim.model.joint_limit_ke.assign(np.array([changed_ke], dtype=np.float32))
+            sim.state_in.joint_q.assign(np.array([changed_start_qs[i]], dtype=np.float32))
+            sim.state_in.joint_qd.assign(np.array([changed_start_qds[i]], dtype=np.float32))
+            sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+            expected_qd = self._expected_limit_qd(
+                changed_ke, kd, changed_start_qs[i], changed_start_qds[i], changed_limit_qs[i], dt, body_mass
+            )
+
+            sim.solver.step(
+                state_in=sim.state_in,
+                state_out=sim.state_out,
+                control=sim.control,
+                dt=dt,
+                contacts=None,
+            )
+            sim.state_in, sim.state_out = sim.state_out, sim.state_in
+            measured_qd = sim.state_in.joint_qd.numpy()[0]
+            self.assertAlmostEqual(measured_qd, expected_qd, places=4)
+
+            # Change kd at runtime with a non-zero initial velocity to test damping.
+            # Set ke=0 to isolate the damping force.
+            # Only Featherstone matches the analytical formula; MuJoCo's constraint solver differs.
+            if isinstance(sim.solver, SolverFeatherstone):
+                changed_ke = 0
+                changed_kd = kd * 3.0
+                start_qd_for_kd_test = -5.0 if changed_start_qs[i] > 0 else 5.0
+                sim.model.joint_limit_ke.assign(np.array([changed_ke], dtype=np.float32))
+                sim.model.joint_limit_kd.assign(np.array([changed_kd], dtype=np.float32))
+                sim.state_in.joint_q.assign(np.array([changed_start_qs[i]], dtype=np.float32))
+                sim.state_in.joint_qd.assign(np.array([start_qd_for_kd_test], dtype=np.float32))
+                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+                expected_qd = self._expected_limit_qd(
+                    changed_ke,
+                    changed_kd,
+                    changed_start_qs[i],
+                    start_qd_for_kd_test,
+                    changed_limit_qs[i],
+                    dt,
+                    body_mass,
+                )
+
+                sim.solver.step(
+                    state_in=sim.state_in,
+                    state_out=sim.state_out,
+                    control=sim.control,
+                    dt=dt,
+                    contacts=None,
+                )
+                sim.state_in, sim.state_out = sim.state_out, sim.state_in
+                measured_qd = sim.state_in.joint_qd.numpy()[0]
+                self.assertAlmostEqual(measured_qd, expected_qd, places=4)
 
     def test_joint_limits_revolute_x(self):
         """Joint limit is enforced for a revolute joint about X."""
@@ -422,7 +506,120 @@ class TestJointLimitBase(TestJointSteppingBase):
         self._test_joint_limits(joint_type="d6_prismatic", motion_axis=2)
 
 
-# MuJoCo limits are soft constraints and cannot be tested with exact clamping assertions.
+class TestJointFrictionBase(TestJointSteppingBase):
+    def _test_joint_friction(self, joint_type: str, motion_axis: int):
+        """Verify that joint friction reduces velocity compared to the frictionless case.
+
+        Applies a force to a joint with and without friction, steps once, and
+        checks that the friction case produces a lower velocity.
+
+        Args:
+            joint_type: One of ``"revolute"``, ``"prismatic"``, ``"d6_revolute"``,
+                or ``"d6_prismatic"``.
+            motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
+        """
+        dt = 0.01
+        force = 100.0
+        body_inertia = 4.0
+        friction_value = 50.0
+
+        sim_no_friction = self._build_model(
+            armature=0.0,
+            body_inertia=body_inertia,
+            joint_type=joint_type,
+            body_mass=body_inertia,
+            motion_axis=motion_axis,
+            friction=0.0,
+        )
+        sim_with_friction = self._build_model(
+            armature=0.0,
+            body_inertia=body_inertia,
+            joint_type=joint_type,
+            body_mass=body_inertia,
+            motion_axis=motion_axis,
+            friction=friction_value,
+        )
+
+        # Apply the same force to both and step.
+        sim_no_friction.control.joint_f.assign(np.array([force], dtype=np.float32))
+        sim_no_friction.solver.step(
+            state_in=sim_no_friction.state_in,
+            state_out=sim_no_friction.state_out,
+            control=sim_no_friction.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim_no_friction.state_in, sim_no_friction.state_out = sim_no_friction.state_out, sim_no_friction.state_in
+        qd_no_friction = sim_no_friction.state_in.joint_qd.numpy()[0]
+
+        sim_with_friction.control.joint_f.assign(np.array([force], dtype=np.float32))
+        sim_with_friction.solver.step(
+            state_in=sim_with_friction.state_in,
+            state_out=sim_with_friction.state_out,
+            control=sim_with_friction.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim_with_friction.state_in, sim_with_friction.state_out = (
+            sim_with_friction.state_out,
+            sim_with_friction.state_in,
+        )
+        qd_with_friction = sim_with_friction.state_in.joint_qd.numpy()[0]
+
+        # Both should be positive (force is positive).
+        self.assertGreater(qd_no_friction, 0.0)
+        self.assertGreater(qd_with_friction, 0.0)
+
+        # Friction should reduce the velocity.
+        self.assertGreater(qd_no_friction, qd_with_friction)
+
+    def test_joint_friction_revolute_x(self):
+        """Joint friction reduces velocity for a revolute joint about X."""
+        self._test_joint_friction(joint_type="revolute", motion_axis=0)
+
+    def test_joint_friction_revolute_y(self):
+        """Joint friction reduces velocity for a revolute joint about Y."""
+        self._test_joint_friction(joint_type="revolute", motion_axis=1)
+
+    def test_joint_friction_revolute_z(self):
+        """Joint friction reduces velocity for a revolute joint about Z."""
+        self._test_joint_friction(joint_type="revolute", motion_axis=2)
+
+    def test_joint_friction_prismatic_x(self):
+        """Joint friction reduces velocity for a prismatic joint along X."""
+        self._test_joint_friction(joint_type="prismatic", motion_axis=0)
+
+    def test_joint_friction_prismatic_y(self):
+        """Joint friction reduces velocity for a prismatic joint along Y."""
+        self._test_joint_friction(joint_type="prismatic", motion_axis=1)
+
+    def test_joint_friction_prismatic_z(self):
+        """Joint friction reduces velocity for a prismatic joint along Z."""
+        self._test_joint_friction(joint_type="prismatic", motion_axis=2)
+
+    def test_joint_friction_d6_revolute_x(self):
+        """Joint friction reduces velocity for a D6 revolute joint about X."""
+        self._test_joint_friction(joint_type="d6_revolute", motion_axis=0)
+
+    def test_joint_friction_d6_revolute_y(self):
+        """Joint friction reduces velocity for a D6 revolute joint about Y."""
+        self._test_joint_friction(joint_type="d6_revolute", motion_axis=1)
+
+    def test_joint_friction_d6_revolute_z(self):
+        """Joint friction reduces velocity for a D6 revolute joint about Z."""
+        self._test_joint_friction(joint_type="d6_revolute", motion_axis=2)
+
+    def test_joint_friction_d6_prismatic_x(self):
+        """Joint friction reduces velocity for a D6 prismatic joint along X."""
+        self._test_joint_friction(joint_type="d6_prismatic", motion_axis=0)
+
+    def test_joint_friction_d6_prismatic_y(self):
+        """Joint friction reduces velocity for a D6 prismatic joint along Y."""
+        self._test_joint_friction(joint_type="d6_prismatic", motion_axis=1)
+
+    def test_joint_friction_d6_prismatic_z(self):
+        """Joint friction reduces velocity for a D6 prismatic joint along Z."""
+        self._test_joint_friction(joint_type="d6_prismatic", motion_axis=2)
 
 
 class TestJointLimitMuJoCo(TestJointLimitBase, unittest.TestCase):
@@ -465,8 +662,297 @@ class TestJointArmatureFeatherstone(TestJointArmatureBase, unittest.TestCase):
         )
 
 
-# Note: XPBD and SemiImplicit both document that they do not support
-# armature or joint limits.
+class TestJointFrictionMuJoCo(TestJointFrictionBase, unittest.TestCase):
+    def _create_solver(self, model):
+        return SolverMuJoCo(
+            model,
+            iterations=10,
+            ls_iterations=10,
+            disable_contacts=True,
+            use_mujoco_cpu=False,
+            integrator="euler",
+        )
+
+
+class TestJointDriveBase(TestJointSteppingBase):
+    def _drive_force(self, target_ke: float, target_kd: float, q: float, qd: float, target_pos: float) -> float:
+        """Compute the drive force for a position-controlled joint.
+
+        Args:
+            target_ke: Position stiffness [N*m/rad or N/m].
+            target_kd: Velocity damping [N*m*s/rad or N*s/m].
+            q: Current joint position [m or rad].
+            qd: Current joint velocity [m/s or rad/s].
+            target_pos: Target position [m or rad].
+        """
+        return target_ke * (target_pos - q) + target_kd * (0.0 - qd)
+
+    def _expected_drive_qd(
+        self, target_ke: float, target_kd: float, q: float, qd: float, target_pos: float, dt: float, inertia: float
+    ) -> float:
+        """Compute the expected velocity after one step with a position drive.
+
+        Args:
+            target_ke: Position stiffness [N*m/rad or N/m].
+            target_kd: Velocity damping [N*m*s/rad or N*s/m].
+            q: Current joint position [m or rad].
+            qd: Current joint velocity [m/s or rad/s].
+            target_pos: Target position [m or rad].
+            dt: Time step [s].
+            inertia: Effective inertia of the body [kg*m^2 or kg].
+        """
+        force = self._drive_force(target_ke, target_kd, q, qd, target_pos)
+        return qd + dt * force / inertia
+
+    def _test_joint_drive(self, joint_type: str, motion_axis: int):
+        """Verify that the joint drive produces the expected velocity.
+
+        Builds a joint with a position drive (target_ke, target_kd, target_pos),
+        starts from a displaced position, and checks that the resulting velocity
+        matches the analytical expectation.
+
+        Args:
+            joint_type: One of ``"revolute"``, ``"prismatic"``, ``"d6_revolute"``,
+                or ``"d6_prismatic"``.
+            motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
+        """
+        dt = 0.01
+        body_inertia = 4.0
+        drive_ke = 100.0
+        drive_kd = 10.0
+        target_pos = 1.0
+        start_q = 0.0
+        start_qd = 0.0
+
+        sim = self._build_model(
+            armature=0.0,
+            body_inertia=body_inertia,
+            joint_type=joint_type,
+            body_mass=body_inertia,
+            motion_axis=motion_axis,
+            target_ke=drive_ke,
+            target_kd=drive_kd,
+            target_pos=target_pos,
+        )
+        sim.state_in.joint_q.assign(np.array([start_q], dtype=np.float32))
+        sim.state_in.joint_qd.assign(np.array([start_qd], dtype=np.float32))
+
+        expected_qd = self._expected_drive_qd(drive_ke, drive_kd, start_q, start_qd, target_pos, dt, body_inertia)
+
+        sim.solver.step(
+            state_in=sim.state_in,
+            state_out=sim.state_out,
+            control=sim.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim.state_in, sim.state_out = sim.state_out, sim.state_in
+        measured_qd = sim.state_in.joint_qd.numpy()[0]
+        self.assertAlmostEqual(measured_qd, expected_qd, places=4)
+
+        # Higher drive stiffness should produce higher velocity toward target.
+        higher_ke = drive_ke * 3.0
+        sim.model.joint_target_ke.assign(np.array([higher_ke], dtype=np.float32))
+        sim.state_in.joint_q.assign(np.array([start_q], dtype=np.float32))
+        sim.state_in.joint_qd.assign(np.array([start_qd], dtype=np.float32))
+        sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        expected_qd2 = self._expected_drive_qd(higher_ke, drive_kd, start_q, start_qd, target_pos, dt, body_inertia)
+
+        sim.solver.step(
+            state_in=sim.state_in,
+            state_out=sim.state_out,
+            control=sim.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim.state_in, sim.state_out = sim.state_out, sim.state_in
+        measured_qd2 = sim.state_in.joint_qd.numpy()[0]
+        self.assertAlmostEqual(measured_qd2, expected_qd2, places=4)
+        self.assertGreater(measured_qd2, measured_qd)
+
+        # Change target_pos at runtime and verify the drive responds.
+        # Re-derive control from model so that control.joint_target_pos picks up the new value.
+        changed_target_pos = -1.0
+        sim.model.joint_target_ke.assign(np.array([drive_ke], dtype=np.float32))
+        sim.model.joint_target_pos.assign(np.array([changed_target_pos], dtype=np.float32))
+        sim.control = sim.model.control()
+        sim.state_in.joint_q.assign(np.array([start_q], dtype=np.float32))
+        sim.state_in.joint_qd.assign(np.array([start_qd], dtype=np.float32))
+        sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        expected_qd_tp = self._expected_drive_qd(
+            drive_ke, drive_kd, start_q, start_qd, changed_target_pos, dt, body_inertia
+        )
+
+        sim.solver.step(
+            state_in=sim.state_in,
+            state_out=sim.state_out,
+            control=sim.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim.state_in, sim.state_out = sim.state_out, sim.state_in
+        measured_qd_tp = sim.state_in.joint_qd.numpy()[0]
+        self.assertAlmostEqual(measured_qd_tp, expected_qd_tp, places=4)
+        # Original target_pos was positive, changed is negative, so velocity should flip sign.
+        self.assertLess(measured_qd_tp, 0.0)
+        self.assertGreater(measured_qd, 0.0)
+
+        # Set target_pos via Control instead of Model and verify the drive responds.
+        ctrl_target_pos = 2.0
+        sim.control.joint_target_pos.assign(np.array([ctrl_target_pos], dtype=np.float32))
+        sim.state_in.joint_q.assign(np.array([start_q], dtype=np.float32))
+        sim.state_in.joint_qd.assign(np.array([start_qd], dtype=np.float32))
+        sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        expected_qd_ctrl = self._expected_drive_qd(
+            drive_ke, drive_kd, start_q, start_qd, ctrl_target_pos, dt, body_inertia
+        )
+
+        sim.solver.step(
+            state_in=sim.state_in,
+            state_out=sim.state_out,
+            control=sim.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim.state_in, sim.state_out = sim.state_out, sim.state_in
+        measured_qd_ctrl = sim.state_in.joint_qd.numpy()[0]
+        self.assertAlmostEqual(measured_qd_ctrl, expected_qd_ctrl, places=4)
+        # ctrl_target_pos (2.0) is further from start_q than original target_pos (1.0),
+        # so the drive force and resulting velocity should be larger.
+        self.assertGreater(measured_qd_ctrl, measured_qd)
+
+        # Test effort limit: a small effort limit should cap the drive force.
+        # Featherstone does not support effort_limit; only MuJoCo does.
+        if isinstance(sim.solver, SolverMuJoCo):
+            small_effort = 10.0
+            sim.model.joint_target_ke.assign(np.array([drive_ke], dtype=np.float32))
+            sim.model.joint_target_pos.assign(np.array([target_pos], dtype=np.float32))
+            sim.model.joint_effort_limit.assign(np.array([small_effort], dtype=np.float32))
+            sim.state_in.joint_q.assign(np.array([start_q], dtype=np.float32))
+            sim.state_in.joint_qd.assign(np.array([start_qd], dtype=np.float32))
+            sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+            unclamped_force = self._drive_force(drive_ke, drive_kd, start_q, start_qd, target_pos)
+            clamped_force = unclamped_force
+            if unclamped_force > small_effort:
+                clamped_force = small_effort
+            elif unclamped_force < -small_effort:
+                clamped_force = -small_effort
+            self.assertGreater(abs(unclamped_force), abs(clamped_force))
+            expected_qd3 = start_qd + dt * clamped_force / body_inertia
+
+            sim.solver.step(
+                state_in=sim.state_in,
+                state_out=sim.state_out,
+                control=sim.control,
+                dt=dt,
+                contacts=None,
+            )
+            sim.state_in, sim.state_out = sim.state_out, sim.state_in
+            measured_qd3 = sim.state_in.joint_qd.numpy()[0]
+
+            # The effort-limited velocity should be less than the unlimited one.
+            self.assertGreater(measured_qd3, 0.0)
+            self.assertGreater(measured_qd, measured_qd3)
+            self.assertAlmostEqual(measured_qd3, expected_qd3, places=4)
+
+        # Apply a joint force with ke=kd=0 to verify control.joint_f works without drive interference.
+        joint_force = 50.0
+        sim.model.joint_target_ke.assign(np.array([0.0], dtype=np.float32))
+        sim.model.joint_target_kd.assign(np.array([0.0], dtype=np.float32))
+        sim.control = sim.model.control()
+        sim.control.joint_f.assign(np.array([joint_force], dtype=np.float32))
+        sim.state_in.joint_q.assign(np.array([start_q], dtype=np.float32))
+        sim.state_in.joint_qd.assign(np.array([start_qd], dtype=np.float32))
+        sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        expected_qd_f = start_qd + dt * joint_force / body_inertia
+
+        sim.solver.step(
+            state_in=sim.state_in,
+            state_out=sim.state_out,
+            control=sim.control,
+            dt=dt,
+            contacts=None,
+        )
+        sim.state_in, sim.state_out = sim.state_out, sim.state_in
+        measured_qd_f = sim.state_in.joint_qd.numpy()[0]
+        self.assertAlmostEqual(measured_qd_f, expected_qd_f, places=4)
+
+    def test_joint_drive_revolute_x(self):
+        """Joint drive produces expected velocity for a revolute joint about X."""
+        self._test_joint_drive(joint_type="revolute", motion_axis=0)
+
+    def test_joint_drive_revolute_y(self):
+        """Joint drive produces expected velocity for a revolute joint about Y."""
+        self._test_joint_drive(joint_type="revolute", motion_axis=1)
+
+    def test_joint_drive_revolute_z(self):
+        """Joint drive produces expected velocity for a revolute joint about Z."""
+        self._test_joint_drive(joint_type="revolute", motion_axis=2)
+
+    def test_joint_drive_prismatic_x(self):
+        """Joint drive produces expected velocity for a prismatic joint along X."""
+        self._test_joint_drive(joint_type="prismatic", motion_axis=0)
+
+    def test_joint_drive_prismatic_y(self):
+        """Joint drive produces expected velocity for a prismatic joint along Y."""
+        self._test_joint_drive(joint_type="prismatic", motion_axis=1)
+
+    def test_joint_drive_prismatic_z(self):
+        """Joint drive produces expected velocity for a prismatic joint along Z."""
+        self._test_joint_drive(joint_type="prismatic", motion_axis=2)
+
+    def test_joint_drive_d6_revolute_x(self):
+        """Joint drive produces expected velocity for a D6 revolute joint about X."""
+        self._test_joint_drive(joint_type="d6_revolute", motion_axis=0)
+
+    def test_joint_drive_d6_revolute_y(self):
+        """Joint drive produces expected velocity for a D6 revolute joint about Y."""
+        self._test_joint_drive(joint_type="d6_revolute", motion_axis=1)
+
+    def test_joint_drive_d6_revolute_z(self):
+        """Joint drive produces expected velocity for a D6 revolute joint about Z."""
+        self._test_joint_drive(joint_type="d6_revolute", motion_axis=2)
+
+    def test_joint_drive_d6_prismatic_x(self):
+        """Joint drive produces expected velocity for a D6 prismatic joint along X."""
+        self._test_joint_drive(joint_type="d6_prismatic", motion_axis=0)
+
+    def test_joint_drive_d6_prismatic_y(self):
+        """Joint drive produces expected velocity for a D6 prismatic joint along Y."""
+        self._test_joint_drive(joint_type="d6_prismatic", motion_axis=1)
+
+    def test_joint_drive_d6_prismatic_z(self):
+        """Joint drive produces expected velocity for a D6 prismatic joint along Z."""
+        self._test_joint_drive(joint_type="d6_prismatic", motion_axis=2)
+
+
+class TestJointDriveFeatherstone(TestJointDriveBase, unittest.TestCase):
+    def _create_solver(self, model):
+        return SolverFeatherstone(
+            model,
+            angular_damping=0.0,
+        )
+
+
+class TestJointDriveMuJoCo(TestJointDriveBase, unittest.TestCase):
+    def _create_solver(self, model):
+        return SolverMuJoCo(
+            model,
+            iterations=1,
+            ls_iterations=1,
+            disable_contacts=True,
+            use_mujoco_cpu=False,
+            integrator="euler",
+        )
+
+
+# Note: XPBD, SemiImplicit, and Featherstone do not support joint friction or effort_limit.
+# Note: XPBD and SemiImplicit do not support armature or joint limits.
 
 
 if __name__ == "__main__":
