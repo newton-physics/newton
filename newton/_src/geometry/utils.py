@@ -134,7 +134,7 @@ def compute_aabb(vertices: nparray) -> tuple[Vec3, Vec3]:
     return min_coords, max_coords
 
 
-def compute_equivalent_inertia_box(
+def compute_inertia_box_mesh(
     vertices: nparray,
     indices: nparray,
     is_solid: bool = True,

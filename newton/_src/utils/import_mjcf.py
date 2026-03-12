@@ -29,7 +29,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
-from ..geometry.utils import compute_aabb, compute_equivalent_inertia_box
+from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -795,7 +795,7 @@ def parse_mjcf(
                             axis=0,
                         ).flatten()
 
-                        com, half_extents, principal_rot = compute_equivalent_inertia_box(all_vertices, all_indices)
+                        com, half_extents, principal_rot = compute_inertia_box_mesh(all_vertices, all_indices)
                         # Sort half-extents so the largest is last (Z), matching MuJoCo's
                         # convention where capsule/cylinder axis aligns with Z.
                         he_arr = np.array([*half_extents])
