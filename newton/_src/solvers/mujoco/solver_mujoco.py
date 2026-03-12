@@ -4719,8 +4719,9 @@ class SolverMuJoCo(SolverBase):
                 eq.name1 = parent_name
                 eq.name2 = child_name
                 eq.data[0:3] = joint_parent_xform[j][:3]
-                # Compute relpose: child body pose in parent body frame,
-                # matching the body-transform convention at line 4303-4304.
+                # Compute relpose: relative transform from child anchor to parent
+                # anchor frame, i.e. parent_xform * inv(child_xform), matching
+                # the body-transform computation in the joint-body setup loop.
                 parent_tf = wp.transform(*joint_parent_xform[j])
                 child_tf = wp.transform(*joint_child_xform[j])
                 relpose = wp.transform_multiply(parent_tf, wp.transform_inverse(child_tf))
@@ -4864,6 +4865,16 @@ class SolverMuJoCo(SolverBase):
             j_idx = selected_joints[j_template]
             mj_q_start_np[j_template] = joint_mjc_qpos_start[j_idx]
             mj_qd_start_np[j_template] = joint_mjc_dof_start[j_idx]
+        # Validate that all non-loop joints got valid MuJoCo start indices
+        for j_template in range(n_template_joints):
+            j_idx = selected_joints[j_template]
+            if joint_articulation[j_idx] >= 0:
+                assert mj_q_start_np[j_template] >= 0, (
+                    f"Non-loop joint {j_idx} (template {j_template}) has no MuJoCo qpos mapping"
+                )
+                assert mj_qd_start_np[j_template] >= 0, (
+                    f"Non-loop joint {j_idx} (template {j_template}) has no MuJoCo DOF mapping"
+                )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
 
