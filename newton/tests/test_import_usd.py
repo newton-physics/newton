@@ -8244,7 +8244,10 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         url_to_layer = {
             "https://example.com/assets/scene.usd": "references = @../secret.usd@",
         }
-        _result, tmpdir, _downloaded_urls = self._run_resolve(url_to_layer)
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        # Escaped reference must not be fetched or written.
+        escaped_urls = [u for u in downloaded_urls if "secret.usd" in u]
+        self.assertEqual(len(escaped_urls), 0)
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
 
 
