@@ -5985,13 +5985,13 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # Fixed loop joint → 1 weld constraint
         self.assertEqual(solver.mj_model.neq, 1)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(mujoco.mjtEq.mjEQ_WELD))
-        # Verify weld constraint data: anchor, relpose translation, and quaternion (wxyz)
+        # Verify weld constraint data: anchor is set explicitly; relpose (data[3:10])
+        # is auto-computed by MuJoCo's spec.compile() from body positions.
         eq_data = solver.mj_model.eq_data[0]
         np.testing.assert_allclose(eq_data[0:3], [0.0, 0.0, -0.45], atol=1e-6)
-        # relpose = parent_xform * inv(child_xform); with identity rotations:
-        # translation = parent_pos - child_pos = (0, -0.1, -0.15)
-        np.testing.assert_allclose(eq_data[3:6], [0.0, -0.1, -0.15], atol=1e-6)
-        # identity quaternion in MuJoCo wxyz format (quat_to_mjc converts from xyzw)
+        # Auto-computed relpose: both bodies are at origin (default xforms), so
+        # relpose translation equals the anchor offset, quaternion is identity.
+        np.testing.assert_allclose(eq_data[3:6], [0.0, 0.0, -0.45], atol=1e-6)
         np.testing.assert_allclose(eq_data[6:10], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
         # we defined no regular equality constraints, so there is no mapping from MuJoCo to Newton equality constraints
         assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), np.full_like(solver.mjc_eq_to_newton_eq.numpy(), -1))
@@ -6101,15 +6101,18 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
         solver = SolverMuJoCo(model)
 
-        # Revolute loop joint → single connect constraint
-        self.assertEqual(solver.mj_model.neq, 1)
+        # Revolute loop joint → 2x connect constraints (origin + offset along axis)
+        self.assertEqual(solver.mj_model.neq, 2)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
-        # Verify parent anchor on b1
+        self.assertEqual(int(solver.mj_model.eq_type[1]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
+        # First CONNECT: parent anchor on b1 at (0, 0, -0.5)
         np.testing.assert_allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.5], atol=1e-6)
         # MuJoCo auto-computes child anchor from body positions at compile time:
         # world point = b1_pos + (0,0,-0.5) = (0,0,1) + (0,0,-0.5) = (0,0,0.5)
         # in b0 frame: (0,0,0.5) - b0_pos = (0,0,0.5)
         np.testing.assert_allclose(solver.mj_model.eq_data[0, 3:6], [0, 0, 0.5], atol=1e-6)
+        # Second CONNECT: offset along hinge axis (0, 0, 1) by 0.1
+        np.testing.assert_allclose(solver.mj_model.eq_data[1, 0:3], [0, 0, -0.4], atol=1e-6)
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -6139,12 +6142,15 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertLess(quat_dist, 1e-3, "Free body orientation corrupted by loop joint q_start offset")
 
         # Verify runtime update kernel didn't corrupt loop joint constraint data
-        eq_data_after = solver.mjw_model.eq_data.numpy()[0, 0]
+        eq_data_after = solver.mjw_model.eq_data.numpy()[0]
         np.testing.assert_allclose(
-            eq_data_after[0:3], [0, 0, -0.5], atol=1e-6, err_msg="Runtime update corrupted connect parent anchor"
+            eq_data_after[0, 0:3], [0, 0, -0.5], atol=1e-6, err_msg="Runtime update corrupted 1st connect parent anchor"
         )
         np.testing.assert_allclose(
-            eq_data_after[3:6], [0, 0, 0.5], atol=1e-6, err_msg="Runtime update corrupted connect child anchor"
+            eq_data_after[0, 3:6], [0, 0, 0.5], atol=1e-6, err_msg="Runtime update corrupted 1st connect child anchor"
+        )
+        np.testing.assert_allclose(
+            eq_data_after[1, 0:3], [0, 0, -0.4], atol=1e-6, err_msg="Runtime update corrupted 2nd connect parent anchor"
         )
 
     def test_ball_loop_joint_coordinate_conversion_offset(self):

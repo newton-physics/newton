@@ -4710,27 +4710,59 @@ class SolverMuJoCo(SolverBase):
             j_type = joint_type[j]
             parent_name = get_body_name(joint_parent[j])
             child_name = get_body_name(joint_child[j])
+            lin_count, ang_count = joint_dof_dim[j]
 
             if j_type == JointType.FIXED:
-                # Fixed loop joint → weld constraint (constrains all 6 DOFs)
+                # Fixed loop joint → weld constraint (constrains all 6 DOFs).
+                # Set the anchor on body1; leave data[3:10] (relpose) at zero
+                # so that spec.compile() auto-computes it from the body positions
+                # at compile time.  Manual relpose computation is fragile because
+                # the joint xforms define anchor offsets in body-local frames
+                # while the WELD relpose is measured relative to the anchor's
+                # world position — these differ whenever the anchor is not at
+                # the body origin.
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = True
                 eq.name1 = parent_name
                 eq.name2 = child_name
                 eq.data[0:3] = joint_parent_xform[j][:3]
-                # Compute relpose: relative transform from child anchor to parent
-                # anchor frame, i.e. parent_xform * inv(child_xform), matching
-                # the body-transform computation in the joint-body setup loop.
-                parent_tf = wp.transform(*joint_parent_xform[j])
-                child_tf = wp.transform(*joint_child_xform[j])
-                relpose = wp.transform_multiply(parent_tf, wp.transform_inverse(child_tf))
-                eq.data[3:6] = wp.transform_get_translation(relpose)
-                eq.data[6:10] = quat_to_mjc(wp.transform_get_rotation(relpose))
                 mjc_eq_to_newton_jnt[eq.id] = j
-            else:
-                # Revolute/ball/other loop joints → single connect constraint
-                # (pins anchor point, rotation freedom from kinematic chain)
+            elif lin_count == 0 and ang_count == 1:
+                # Single-hinge loop joint (revolute): 2x CONNECT at non-coincident
+                # points along the hinge axis constrains 5 DOFs (3 trans + 2 rot),
+                # leaving exactly 1 rotational DOF around the axis.
+                parent_anchor = joint_parent_xform[j][:3]
+                parent_xform_tf = wp.transform(*joint_parent_xform[j])
+                qd_start = joint_qd_start[j]
+                hinge_axis_local = wp.vec3(*joint_axis[qd_start])
+                # Rotate axis into the parent body frame (anchor data[0:3] is
+                # in the parent body frame, so the offset must be too).
+                hinge_axis = wp.quat_rotate(parent_xform_tf.q, hinge_axis_local)
+                offset = 0.1  # offset along axis for second constraint point
+
+                # First CONNECT at the joint anchor
+                eq1 = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq1.type = mujoco.mjtEq.mjEQ_CONNECT
+                eq1.active = True
+                eq1.name1 = parent_name
+                eq1.name2 = child_name
+                eq1.data[0:3] = parent_anchor
+                mjc_eq_to_newton_jnt[eq1.id] = j
+
+                # Second CONNECT offset along the hinge axis
+                parent_anchor_offset = np.array(parent_anchor) + offset * np.array(hinge_axis)
+                eq2 = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq2.type = mujoco.mjtEq.mjEQ_CONNECT
+                eq2.active = True
+                eq2.name1 = parent_name
+                eq2.name2 = child_name
+                eq2.data[0:3] = parent_anchor_offset
+                mjc_eq_to_newton_jnt[eq2.id] = j
+            elif lin_count == 0 and ang_count >= 2:
+                # Multi-hinge or ball loop joint: 1x CONNECT constrains 3
+                # translational DOFs, leaving all rotational DOFs free.
+                # Exact for 3 angular DOFs (ball), slight underconstrain for 2.
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = True
@@ -4738,6 +4770,15 @@ class SolverMuJoCo(SolverBase):
                 eq.name2 = child_name
                 eq.data[0:3] = joint_parent_xform[j][:3]
                 mjc_eq_to_newton_jnt[eq.id] = j
+            else:
+                warnings.warn(
+                    f"Loop joint {j} (type {JointType(j_type).name}, "
+                    f"{lin_count} linear + {ang_count} angular DOFs) "
+                    f"has no supported MuJoCo equality constraint mapping. "
+                    f"Skipping loop closure for this joint.",
+                    stacklevel=2,
+                )
+                continue
 
         # add mimic constraints as mjEQ_JOINT equality constraints
         mjc_eq_to_newton_mimic_dict = {}
