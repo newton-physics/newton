@@ -3256,6 +3256,59 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
             "Value did not change from initial!",
         )
 
+    def test_eq_solimp_spec_conversion(self):
+        """Test that eq_solimp is correctly written to the MuJoCo spec and saved XML."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        # Articulation 1: revolute joint from world
+        b1 = builder.add_link()
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1])
+
+        # Articulation 2: revolute joint from world (separate chain)
+        b2 = builder.add_link()
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j2])
+
+        # Add a connect constraint between the two bodies
+        builder.add_equality_constraint_connect(
+            body1=b1,
+            body2=b2,
+            anchor=wp.vec3(0.1, 0.0, 0.0),
+        )
+
+        model = builder.finalize()
+
+        # Set custom solimp values
+        custom_solimp = np.array([[0.8, 0.95, 0.001, 0.6, 3.0]], dtype=np.float32)
+        model.mujoco.eq_solimp.assign(wp.array(custom_solimp, dtype=vec5, device=model.device))
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+
+            # Verify compiled mj_model has correct solimp values
+            mj_eq_solimp = solver.mj_model.eq_solimp
+            np.testing.assert_allclose(mj_eq_solimp[0], custom_solimp[0], rtol=1e-5)
+
+            # Parse the saved XML and verify solimp is on the equality constraint
+            tree = ET.parse(xml_path)
+            connect_elems = list(tree.iter("connect"))
+            self.assertEqual(len(connect_elems), 1, "Expected one connect equality constraint")
+            connect = connect_elems[0]
+
+            # Verify solimp attribute is present and correct
+            solimp_str = connect.get("solimp")
+            self.assertIsNotNone(solimp_str, "solimp attribute missing from connect constraint in saved MJCF")
+            solimp_values = [float(x) for x in solimp_str.split()]
+            np.testing.assert_allclose(solimp_values, custom_solimp[0], rtol=1e-4)
+        finally:
+            os.unlink(xml_path)
+
     def test_eq_data_conversion_and_update(self):
         """
         Test validation of eq_data update from Newton equality constraint properties:
@@ -4033,11 +4086,9 @@ class TestMuJoCoValidation(unittest.TestCase):
         # Add ground plane (allowed)
         builder.add_ground_plane()
 
-        # Manually create a body in global world
-        builder.current_world = -1
+        # Create a body in the default global world
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         # Need a joint to make this a valid model
-        builder.current_world = -1
         j1 = builder.add_joint_free(b1)
         builder.add_articulation([j1])
 
@@ -4067,8 +4118,7 @@ class TestMuJoCoValidation(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
 
-        # Add a body in global world with a joint
-        builder.current_world = -1
+        # Add a body in the default global world with a joint
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = builder.add_joint_revolute(-1, b1)
         builder.add_articulation([j1])
@@ -4188,8 +4238,7 @@ class TestMuJoCoValidation(unittest.TestCase):
         main.add_world(robot)
         main.add_world(robot)
 
-        # Add a global equality constraint
-        main.current_world = -1
+        # Add a global equality constraint outside any world context
         # We need body indices in the main builder - use the first two bodies from world 0
         main.add_equality_constraint_weld(body1=0, body2=1)
 
@@ -7983,6 +8032,69 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
                 places=4,
                 msg=f"expected_solref[{i}] is {expected_solref[i]}, measured_solref[{i}] is {measured_solref[0][i]}",
             )
+
+    def test_weld_constraint_quat_spec_conversion(self):
+        """Test that WELD constraint quaternion is correctly converted to MuJoCo wxyz format in the spec."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        b1 = builder.add_link()
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1])
+
+        b2 = builder.add_link()
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j2])
+
+        # 90 degree rotation around Z axis
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)
+        builder.add_equality_constraint_weld(
+            body1=b1,
+            body2=b2,
+            relpose=wp.transform(wp.vec3(0.1, 0.0, 0.0), rot),
+        )
+
+        model = builder.finalize()
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+
+            # Verify the compiled mj_model has the quaternion in wxyz format
+            mj_eq_data = solver.mj_model.eq_data[0]
+            quat_in_model = mj_eq_data[6:10]
+
+            # Warp quaternion is xyzw: (0, 0, sin(pi/4), cos(pi/4)) = (0, 0, 0.7071, 0.7071)
+            # MuJoCo wxyz should be: (cos(pi/4), 0, 0, sin(pi/4)) = (0.7071, 0, 0, 0.7071)
+            expected_wxyz = [np.cos(np.pi / 4.0), 0.0, 0.0, np.sin(np.pi / 4.0)]
+            np.testing.assert_allclose(
+                quat_in_model,
+                expected_wxyz,
+                atol=1e-4,
+                err_msg=f"WELD quaternion in compiled model is {quat_in_model}, expected wxyz {expected_wxyz}",
+            )
+
+            # Parse the saved XML and verify the weld element has correct quaternion
+            tree = ET.parse(xml_path)
+            weld_elems = list(tree.iter("weld"))
+            self.assertEqual(len(weld_elems), 1, "Expected one weld equality constraint")
+            weld = weld_elems[0]
+            data_str = weld.get("relpose")
+            self.assertIsNotNone(data_str, "relpose attribute missing from weld constraint in saved MJCF")
+            relpose_values = [float(x) for x in data_str.split()]
+            # relpose is "px py pz qw qx qy qz" in MuJoCo XML
+            quat_in_xml = relpose_values[3:7]
+            np.testing.assert_allclose(
+                quat_in_xml,
+                expected_wxyz,
+                atol=1e-4,
+                err_msg=f"WELD quaternion in saved MJCF is {quat_in_xml}, expected wxyz {expected_wxyz}",
+            )
+        finally:
+            os.unlink(xml_path)
 
 
 if __name__ == "__main__":

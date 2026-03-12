@@ -1,0 +1,58 @@
+name: Newton + Minimum Dependency Versions
+
+# This workflow runs weekly to test Newton with the lowest compatible versions
+# of all PyPI dependencies (as specified by version floors in pyproject.toml).
+# It uses `uv lock --resolution lowest` to resolve every dependency to its
+# minimum supported version, catching cases where the codebase has drifted to
+# depend on features only available in newer releases.
+# Scheduled workflows automatically run on the default branch (main).
+
+env:
+  PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+
+on:
+  schedule:
+    - cron: '0 13 * * 1'  # Weekly on Monday at 1 PM UTC (5 AM PST)
+  workflow_dispatch:  # Allow manual triggers
+
+permissions:
+  contents: read
+
+jobs:
+  minimum-deps-tests:
+    name: Run Tests with minimum dependency versions
+    if: github.repository == 'newton-physics/newton'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867  # v7.1.6
+        with:
+          version: "0.9.0"
+
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548  # v6.1.0
+        with:
+          python-version-file: ".python-version"
+
+      - name: Resolve minimum dependency versions
+        run: |
+          uv lock --resolution lowest
+          echo "Resolved dependency versions:"
+          uv tree --depth 1
+
+      - name: Run Tests
+        run: uv run --extra dev -m newton.tests --junit-report-xml rspec.xml
+
+      - name: Test Summary
+        if: ${{ !cancelled() }}
+        uses: test-summary/action@31493c76ec9e7aa675f1585d3ed6f1da69269a86  # v2.4
+        with:
+          paths: "rspec.xml"
+          show: "fail"

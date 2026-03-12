@@ -36,8 +36,6 @@ Importers
 +-----------------------------------------------+---------------------------------------------------------+
 |:func:`warp.sim.parse_usd`                     |:meth:`newton.ModelBuilder.add_usd`                      |
 +-----------------------------------------------+---------------------------------------------------------+
-|:func:`warp.sim.resolve_usd_from_url`          |:func:`newton._src.utils.import_usd.resolve_usd_from_url`|
-+-----------------------------------------------+---------------------------------------------------------+
 
 The joint-specific arguments to the importers have been removed.
 Instead, you can set the default joint properties on a :class:`newton.ModelBuilder` instance in the :attr:`newton.ModelBuilder.default_joint_cfg` attribute.
@@ -50,18 +48,33 @@ For example, ``ke`` is now defined using ``builder.default_shape_cfg.ke``, where
 The MJCF and URDF importers both have an ``up_axis`` argument that defaults to +Z.
 All importers will rotate the asset now to match the builder's ``up_axis`` (instead of overwriting the ``up_axis`` in the builder, as was the case previously for the USD importer).
 
+:meth:`newton.ModelBuilder.add_usd` accepts both file paths and URLs directly, so a separate
+``resolve_usd_from_url()`` helper is usually unnecessary when migrating from ``warp.sim``.
+
 The MJCF importer from Warp sim only uses the ``geom_density`` defined in the MJCF for sphere and box shapes but ignores these definitions for other shape types (which will receive the default density specified by the ``density`` argument to ``wp.sim.parse_mjcf``). The Newton MJCF importer now considers the ``geom_density`` for all shape types. This change may yield to different simulation results and may require tuning contact and other simulation parameters to achieve similar results in Newton compared to Warp sim.
 
 
 ``Model``
 ---------
 
-:attr:`newton.ShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
+:attr:`newton.Model.shape_is_solid` is now of dtype ``bool`` instead of ``wp.uint8``.
 
 The ``Model.ground`` attribute and the special ground collision handling have been removed. Instead, you need to manually add a ground plane via :meth:`newton.ModelBuilder.add_ground_plane`.
 
-The attributes related to joint axes now have the same dimension as the joint dofs, which is :attr:`newton.Model.joint_dof_count`.
-The ``Model.joint_axis`` attribute has been removed since it now equals :attr:`newton.Model.joint_qd_start`.
+Newton's public ``spatial_vector`` arrays now use ``(linear, angular)`` ordering.
+For example, :attr:`newton.State.body_qd` stores ``(lin_vel, ang_vel)``, whereas
+``warp.sim`` followed Warp's native ``(ang_vel, lin_vel)`` convention. See
+:ref:`Twist conventions`.
+
+The attributes related to joint axes now have the same dimension as the joint DOFs, which is
+:attr:`newton.Model.joint_dof_count`. :attr:`newton.Model.joint_axis` remains available and is
+indexed per DOF; use :attr:`newton.Model.joint_qd_start` and :attr:`newton.Model.joint_dof_dim`
+to locate a joint's slice in the per-DOF arrays.
+
+For free and D6 joints, Newton stores linear DOFs before angular DOFs in per-axis arrays. In
+particular, floating-base slices of :attr:`newton.State.joint_qd`, :attr:`newton.Control.joint_f`,
+:attr:`newton.Control.joint_target_pos`, and :attr:`newton.Control.joint_target_vel` use
+``(lin_vel, ang_vel)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
 
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
 | **warp.sim**                                                     | **Newton**                                                                                                            |
@@ -78,11 +91,11 @@ The ``Model.joint_axis`` attribute has been removed since it now equals :attr:`n
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
 | ``Model.shape_materials.ke``, ``Model.shape_materials.kd``, etc. | :attr:`Model.shape_material_ke`, :attr:`Model.shape_material_kd`, etc.                                                |
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
-| ``Model.rigid_contact_torsional_friction``                       | :attr:`Model.shape_material_torsional_friction` (now per-shape array)                                                 |
+| ``Model.rigid_contact_torsional_friction``                       | :attr:`Model.shape_material_mu_torsional` (now per-shape array)                                                       |
 |                                                                  |                                                                                                                       |
 |                                                                  | Note: these coefficients are now interpreted as absolute values rather than being scaled by the friction coefficient. |
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
-| ``Model.rigid_contact_rolling_friction``                         | :attr:`Model.shape_material_rolling_friction` (now per-shape array)                                                   |
+| ``Model.rigid_contact_rolling_friction``                         | :attr:`Model.shape_material_mu_rolling` (now per-shape array)                                                         |
 |                                                                  |                                                                                                                       |
 |                                                                  | Note: these coefficients are now interpreted as absolute values rather than being scaled by the friction coefficient. |
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
@@ -103,18 +116,20 @@ The signatures of the :func:`newton.eval_fk` and :func:`newton.eval_ik` function
 ``Control``
 -----------
 
-The :class:`newton.Control` class now has a :attr:`newton.Control.joint_f` attribute which encodes the generalized force (torque) input to the joints.
-In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` now includes the dofs of the free joints as well, so its dimension is :attr:`newton.Model.joint_dof_count`.
-The control mode ``JOINT_MODE_FORCE`` has been removed, since it is now realized by setting :attr:`Control.joint_f` instead of ``joint_act``.
-``JointMode`` has been removed and it is now possible to set both joint target position and velocity simultaneously using the :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel` attributes.
+The :class:`newton.Control` interface is split by responsibility:
+:attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel` store per-DOF
+position and velocity targets, :attr:`newton.Control.joint_act` stores feedforward actuator input,
+and :attr:`newton.Control.joint_f` stores generalized forces/torques. Unlike ``warp.sim``,
+``joint_act`` is no longer the target array.
 
-The :class:`newton.Control` class now has a :attr:`newton.Control.joint_target` attribute (in place of the previous ``joint_act`` attribute) that encodes either the position or the velocity target for the control,
-depending on the control mode selected for the joint dof.
-Using joints with zero stiffness (:class:`newton.ModelBuilder.JointDofConfig.target_ke`) and damping (:class:`newton.ModelBuilder.JointDofConfig.target_kd`) will disable the target control.
+In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` includes the DOFs of the
+free joints as well, so its dimension is :attr:`newton.Model.joint_dof_count`.
 
-.. note::
-
-    :attr:`newton.Control.joint_target` is likely a temporary attribute and may be removed in a future release in favor of a more general actuation interface.
+``JointMode`` has been replaced by :class:`newton.JointTargetMode`. Direct force control
+corresponds to :attr:`newton.JointTargetMode.EFFORT` together with
+:attr:`newton.Control.joint_f`, while simultaneous position and velocity target control uses
+:attr:`newton.JointTargetMode.POSITION_VELOCITY` together with
+:attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
 
 
 ``ModelBuilder``
@@ -129,14 +144,14 @@ Analogously, the geometry types plane, capsule, cylinder, and cone now have thei
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder.add_body(origin=..., m=...)``           | ``ModelBuilder.add_body(xform=..., mass=...)``                         |
 +--------------------------------------------------------+------------------------------------------------------------------------+
-| ``ModelBuilder._add_shape()``                          | :func:`newton.ModelBuilder.add_shape`                                  |
+| ``ModelBuilder._add_shape()``                          | :meth:`newton.ModelBuilder.add_shape`                                  |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder.add_shape_*(pos=..., rot=...)``         | ``ModelBuilder.add_shape_*(xform=...)``                                |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder.add_shape_*(..., ke=..., ka=..., ...)`` | ``ModelBuilder.add_shape_*(cfg=ShapeConfig(ke=..., ka=..., ...))``     |
 |                                                        | see :class:`newton.ModelBuilder.ShapeConfig`                           |
 +--------------------------------------------------------+------------------------------------------------------------------------+
-| ``ModelBuilder.add_joint_*(..., target=...)``          | ``ModelBuilder.add_joint_*(..., action=...)``                          |
+| ``ModelBuilder.add_joint_*(..., target=...)``          | ``ModelBuilder.add_joint_*(..., target_pos=..., target_vel=...)``      |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder(up_vector=(0, 1, 0))``                  | ``ModelBuilder(up_axis="Y")`` or ``ModelBuilder(up_axis=Axis.Y)``      |
 +--------------------------------------------------------+------------------------------------------------------------------------+
@@ -147,7 +162,12 @@ It is now possible to set the up axis of the builder using the :attr:`~newton.Mo
 which can be defined from any value compatible with the :obj:`~newton.core.types.AxisType` alias.
 :attr:`newton.ModelBuilder.up_vector` is now a read-only property computed from :attr:`newton.ModelBuilder.up_axis`.
 
-The ``ModelBuilder.add_joint_*()`` functions now use ``None`` as default args values to be filled in by the ``ModelBuilder.default_joint_*`` attributes.
+The ``ModelBuilder.add_joint_*()`` functions now use ``None`` defaults that are filled in from
+the fields of :attr:`newton.ModelBuilder.default_joint_cfg`.
+
+Newton uses ``world_count`` throughout the public API (for example in
+:meth:`newton.ModelBuilder.replicate` and :attr:`newton.Model.world_count`); older ``num_envs``
+terminology is obsolete.
 
 The ``ModelBuilder.add_joint*()`` methods no longer accept ``linear_compliance`` and ``angular_compliance`` arguments
 and the ``Model`` no longer stores them as attributes.
@@ -166,13 +186,11 @@ Collisions
 +-----------------------------------------------+--------------------------------------------------------------+
 | **warp.sim**                                  | **Newton**                                                   |
 +-----------------------------------------------+--------------------------------------------------------------+
-| ``contacts = model.collide(state)``           | ``contacts = model.contacts()``                              |
-|                                               |                                                              |
-|                                               | ``model.collide(state, contacts)``                           |
+| ``contacts = model.collide(state)``           | ``contacts = model.collide(state)``                          |
 +-----------------------------------------------+--------------------------------------------------------------+
 
-:meth:`~newton.Model.contacts` allocates the contacts buffer and :meth:`~newton.Model.collide` populates it in place.
-The buffer can be reused across steps. For more control, create a :class:`~newton.CollisionPipeline` directly.
+:meth:`~newton.Model.collide` allocates and returns a contacts buffer when ``contacts`` is omitted.
+For more control, create a :class:`~newton.CollisionPipeline` directly.
 
 
 Renderers

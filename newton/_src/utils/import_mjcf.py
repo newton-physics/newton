@@ -382,6 +382,58 @@ def parse_mjcf(
                         if key in builder.custom_attributes:
                             builder.custom_attributes[key].values[0] = value
 
+    class_parent = {}
+    class_children = {}
+    class_defaults = {"__all__": {}}
+
+    def get_class(element) -> str:
+        return element.get("class", "__all__")
+
+    def parse_default(node, parent):
+        nonlocal class_parent
+        nonlocal class_children
+        nonlocal class_defaults
+        class_name = "__all__"
+        if "class" in node.attrib:
+            class_name = node.attrib["class"]
+            class_parent[class_name] = parent
+            parent = parent or "__all__"
+            if parent not in class_children:
+                class_children[parent] = []
+            class_children[parent].append(class_name)
+
+        if class_name not in class_defaults:
+            class_defaults[class_name] = {}
+        for child in node:
+            if child.tag == "default":
+                parse_default(child, node.get("class"))
+            else:
+                class_defaults[class_name][child.tag] = child.attrib
+
+    for default in root.findall("default"):
+        parse_default(default, None)
+
+    def merge_attrib(default_attrib: dict, incoming_attrib: dict) -> dict:
+        attrib = default_attrib.copy()
+        for key, value in incoming_attrib.items():
+            if key in attrib:
+                if isinstance(attrib[key], dict):
+                    attrib[key] = merge_attrib(attrib[key], value)
+                else:
+                    attrib[key] = value
+            else:
+                attrib[key] = value
+        return attrib
+
+    def resolve_defaults(class_name):
+        if class_name in class_children:
+            for child_name in class_children[class_name]:
+                if class_name in class_defaults and child_name in class_defaults:
+                    class_defaults[child_name] = merge_attrib(class_defaults[class_name], class_defaults[child_name])
+                resolve_defaults(child_name)
+
+    resolve_defaults("__all__")
+
     mesh_assets = {}
     texture_assets = {}
     material_assets = {}
@@ -393,11 +445,15 @@ def parse_mjcf(
                 # handle stl relative paths
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
+                # resolve mesh element's class defaults
+                mesh_class = mesh.attrib.get("class", "__all__")
+                mesh_defaults = class_defaults.get(mesh_class, {}).get("mesh", {})
+                mesh_attrib = merge_attrib(mesh_defaults, mesh.attrib)
                 name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
-                s = mesh.attrib.get("scale", "1.0 1.0 1.0")
+                s = mesh_attrib.get("scale", "1.0 1.0 1.0")
                 s = np.fromstring(s, sep=" ", dtype=np.float32)
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
-                maxhullvert = int(mesh.attrib.get("maxhullvert", str(mesh_maxhullvert)))
+                maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
                 mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
@@ -452,58 +508,6 @@ def parse_mjcf(
                 "file": file_path,
                 "elevation": elevation_data,
             }
-
-    class_parent = {}
-    class_children = {}
-    class_defaults = {"__all__": {}}
-
-    def get_class(element) -> str:
-        return element.get("class", "__all__")
-
-    def parse_default(node, parent):
-        nonlocal class_parent
-        nonlocal class_children
-        nonlocal class_defaults
-        class_name = "__all__"
-        if "class" in node.attrib:
-            class_name = node.attrib["class"]
-            class_parent[class_name] = parent
-            parent = parent or "__all__"
-            if parent not in class_children:
-                class_children[parent] = []
-            class_children[parent].append(class_name)
-
-        if class_name not in class_defaults:
-            class_defaults[class_name] = {}
-        for child in node:
-            if child.tag == "default":
-                parse_default(child, node.get("class"))
-            else:
-                class_defaults[class_name][child.tag] = child.attrib
-
-    for default in root.findall("default"):
-        parse_default(default, None)
-
-    def merge_attrib(default_attrib: dict, incoming_attrib: dict) -> dict:
-        attrib = default_attrib.copy()
-        for key, value in incoming_attrib.items():
-            if key in attrib:
-                if isinstance(attrib[key], dict):
-                    attrib[key] = merge_attrib(attrib[key], value)
-                else:
-                    attrib[key] = value
-            else:
-                attrib[key] = value
-        return attrib
-
-    def resolve_defaults(class_name):
-        if class_name in class_children:
-            for child_name in class_children[class_name]:
-                if class_name in class_defaults and child_name in class_defaults:
-                    class_defaults[child_name] = merge_attrib(class_defaults[class_name], class_defaults[child_name])
-                resolve_defaults(child_name)
-
-    resolve_defaults("__all__")
 
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     xform = xform * axis_xform
@@ -749,10 +753,7 @@ def parse_mjcf(
                         print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
                     continue
                 stl_file = mesh_assets[geom_attrib["mesh"]]["file"]
-                if "mesh" in geom_defaults:
-                    mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[geom_attrib["mesh"]]["scale"])
-                else:
-                    mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
+                mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
                 scaling = np.array(mesh_scale) * scale
                 # as per the Mujoco XML reference, ignore geom size attribute
                 assert len(geom_size) == 3, "need to specify size for mesh geom"

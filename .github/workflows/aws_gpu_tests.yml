@@ -5,12 +5,13 @@ name: GPU Unit Tests on AWS EC2 (Reusable)
 #   - pr_target_aws_gpu_tests.yml (for pull requests)
 #   - merge_queue_aws_gpu.yml (for merge groups)
 #   - push_aws_gpu.yml (for pushes to main/release branches)
+#   - scheduled_weekly_gpu_tests.yml (for weekly multi-GPU tests)
 
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
-  AWS_INSTANCE_TYPE: g7e.2xlarge
-  AWS_VOLUME_SIZE: 92
+  AWS_INSTANCE_TYPE: ${{ inputs.instance-type || 'g7e.2xlarge' }}
+  AWS_VOLUME_SIZE: ${{ inputs.volume-size || '92' }}
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
@@ -25,6 +26,16 @@ on:
         required: false
         type: string
         default: ''
+      instance-type:
+        description: 'EC2 instance type'
+        required: false
+        type: string
+        default: 'g7e.2xlarge'
+      volume-size:
+        description: 'EBS volume size in GB'
+        required: false
+        type: string
+        default: '92'
     secrets:
       GH_PERSONAL_ACCESS_TOKEN:
         required: true
@@ -78,6 +89,11 @@ jobs:
               {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-051b9d2e71acf8047", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"},
               {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-0c98bd06abe8ee5eb", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"}
             ]
+          pre-runner-script: |
+            if [ -d /opt/dlami/nvme ]; then
+              mkdir -p /opt/dlami/nvme/actions-runner/_work
+              ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
+            fi
           aws-resource-tags: >
             [
               {"Key": "Name", "Value": "ec2-github-runner"},

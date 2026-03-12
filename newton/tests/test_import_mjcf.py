@@ -706,6 +706,169 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
 
+class TestImportMjcfMeshScale(unittest.TestCase):
+    """Tests for MJCF mesh scale resolution from default classes."""
+
+    _OBJ_TRIANGLE = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+
+    def _build(self, mjcf_content: str) -> newton.ModelBuilder:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            mesh_path = os.path.join(tmpdir, "mesh.obj")
+            with open(mesh_path, "w") as f:
+                f.write(self._OBJ_TRIANGLE)
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf_path, parse_meshes=True)
+        return builder
+
+    def _mesh_extent(self, builder: newton.ModelBuilder, shape_idx: int = 0) -> float:
+        """Return the vertex extent (max - min) of a mesh shape."""
+        v = np.asarray(builder.shape_source[shape_idx].vertices)
+        return float(v.max() - v.min())
+
+    def test_mesh_no_class_no_explicit_scale(self):
+        """Mesh with no class and no explicit scale uses default (1,1,1)."""
+        builder = self._build("""\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 1.0, places=5)
+
+    def test_mesh_explicit_scale_on_asset(self):
+        """Explicit scale on <asset><mesh> is applied to vertices."""
+        builder = self._build("""\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj" scale="0.5 0.5 0.5"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
+
+    def test_mesh_inherits_scale_from_own_class(self):
+        """Mesh with class="X" inherits scale from <default class="X"><mesh scale="..."/>."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="scaled">
+      <mesh scale="2 2 2"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="scaled"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 2.0, places=5)
+
+    def test_mesh_explicit_scale_overrides_class_default(self):
+        """Explicit scale on <mesh> overrides the class default."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="scaled">
+      <mesh scale="2 2 2"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="scaled" scale="3 3 3"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 3.0, places=5)
+
+    def test_mesh_inherits_scale_from_global_default(self):
+        """Mesh with no class inherits from the root <default><mesh scale="..."/>."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <mesh scale="0.25 0.25 0.25"/>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.25, places=5)
+
+    def test_geom_class_mesh_scale_does_not_leak_to_asset(self):
+        """Geom's default class mesh scale must NOT override the asset mesh's scale.
+
+        Reproduces issue #2034: Robotiq 2F-85 V4 gripper from MuJoCo Menagerie.
+        The MJCF has <default class="robot"><mesh scale="0.001"/> but the
+        <asset><mesh> elements have no class, so they should load at scale=(1,1,1).
+        """
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="robot">
+      <mesh scale="0.001 0.001 0.001"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body childclass="robot">
+      <geom class="visual" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        # Asset mesh has no class → scale=(1,1,1), NOT 0.001 from the geom's class.
+        self.assertAlmostEqual(self._mesh_extent(builder), 1.0, places=5)
+
+    def test_geom_class_mesh_scale_applied_when_asset_has_same_class(self):
+        """When the asset mesh references the same class, its scale IS applied."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="robot">
+      <mesh scale="0.5 0.5 0.5"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="robot"/>
+  </asset>
+  <worldbody>
+    <body childclass="robot">
+      <geom class="visual" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
+
+
 class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""

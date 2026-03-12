@@ -222,6 +222,31 @@ class TestEqualityConstraints(unittest.TestCase):
                 f"World {world_idx} joint constraint joint2 index incorrect",
             )
 
+    def test_default_equality_constraint_torquescale_is_numeric(self):
+        builder = newton.ModelBuilder()
+
+        base = builder.add_link()
+        link1 = builder.add_link()
+        link2 = builder.add_link()
+
+        joint0 = builder.add_joint_free(parent=-1, child=base)
+        joint1 = builder.add_joint_revolute(parent=base, child=link1, axis=(0, 0, 1))
+        joint2 = builder.add_joint_revolute(parent=link1, child=link2, axis=(0, 0, 1))
+        builder.add_articulation([joint0, joint1, joint2])
+
+        builder.add_equality_constraint_connect(body1=base, body2=link1, anchor=wp.vec3(0.0, 0.0, 0.0))
+        builder.add_equality_constraint_joint(joint1=joint1, joint2=joint2)
+        builder.add_equality_constraint_weld(body1=link1, body2=link2)
+
+        self.assertEqual(builder.equality_constraint_torquescale, [0.0, 0.0, 1.0])
+
+        model = builder.finalize()
+        np.testing.assert_allclose(
+            model.equality_constraint_torquescale.numpy(),
+            np.array([0.0, 0.0, 1.0], dtype=np.float32),
+            rtol=1e-6,
+        )
+
     def test_collapse_fixed_joints_with_equality_constraints(self):
         """Test that equality constraints are properly remapped after collapse_fixed_joints,
         including correct transformation of anchor points and relpose."""
