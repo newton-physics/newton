@@ -5983,16 +5983,15 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(solver.mj_model.nv, 2)
-        # 2 equality constraints per loop joint
-        self.assertEqual(solver.mj_model.neq, 2)
-        eq_type = int(mujoco.mjtEq.mjEQ_CONNECT)
-        assert np.allclose(solver.mj_model.eq_type, [eq_type, eq_type])
+        # Fixed loop joint → 1 weld constraint
+        self.assertEqual(solver.mj_model.neq, 1)
+        self.assertEqual(int(solver.mj_model.eq_type[0]), int(mujoco.mjtEq.mjEQ_WELD))
         # we defined no regular equality constraints, so there is no mapping from MuJoCo to Newton equality constraints
         assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), np.full_like(solver.mjc_eq_to_newton_eq.numpy(), -1))
         # but we converted the loop joints to equality constraints, so there is a mapping from MuJoCo to Newton joints
         assert np.allclose(
             solver.mjc_eq_to_newton_jnt.numpy(),
-            [[loop_joint + i * builder.joint_count, loop_joint + i * builder.joint_count] for i in range(world_count)],
+            [[loop_joint + i * builder.joint_count] for i in range(world_count)],
         )
 
     def test_mixed_loop_joints_and_equality_constraints(self):
@@ -6030,23 +6029,162 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(model.joint_count, 4 * world_count)
         self.assertEqual(model.equality_constraint_count, 2 * world_count)
         self.assertEqual(solver.mj_model.nv, 3)
-        # 2 equality constraints per loop joint
-        self.assertEqual(solver.mj_model.neq, 4)
-        eq_type = int(mujoco.mjtEq.mjEQ_CONNECT)
-        assert np.allclose(solver.mj_model.eq_type, [eq_type] * 4)
+        # 2 explicit connect constraints + 1 weld from fixed loop joint
+        self.assertEqual(solver.mj_model.neq, 3)
+        eq_type_connect = int(mujoco.mjtEq.mjEQ_CONNECT)
+        eq_type_weld = int(mujoco.mjtEq.mjEQ_WELD)
+        assert np.allclose(solver.mj_model.eq_type, [eq_type_connect, eq_type_connect, eq_type_weld])
         # the two equality constraints we explicitly created are defined first in MuJoCo
-        expected_eq_to_newton_eq = np.full((world_count, 4), -1, dtype=np.int32)
+        expected_eq_to_newton_eq = np.full((world_count, 3), -1, dtype=np.int32)
         for i in range(world_count):
             expected_eq_to_newton_eq[i, 0] = i * 2
             expected_eq_to_newton_eq[i, 1] = i * 2 + 1
         assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), expected_eq_to_newton_eq)
-        # after those two explicit equality constraints come the 2 equality constraints per loop joint
-        expected_eq_to_newton_jnt = np.full((world_count, 4), -1, dtype=np.int32)
+        # after those two explicit equality constraints comes the 1 weld from the fixed loop joint
+        expected_eq_to_newton_jnt = np.full((world_count, 3), -1, dtype=np.int32)
         for i in range(world_count):
             # joint 3 is the loop joint, we have 4 joints per world
             expected_eq_to_newton_jnt[i, 2] = i * 4 + loop_joint
-            expected_eq_to_newton_jnt[i, 3] = i * 4 + loop_joint
         assert np.allclose(solver.mjc_eq_to_newton_jnt.numpy(), expected_eq_to_newton_jnt)
+
+    def test_loop_joint_coordinate_conversion_offset(self):
+        """Verify coordinate conversion when revolute loop joints precede other joints.
+
+        When a revolute loop joint (articulation=-1) is added before a free body,
+        its DOF creates an offset between Newton's joint_q_start and MuJoCo's
+        jnt_qposadr. The conversion must handle this correctly so that the
+        free body's coordinates are not corrupted.
+        """
+        builder = newton.ModelBuilder()
+
+        # 2-link articulation
+        b0 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        j0 = builder.add_joint_revolute(-1, b0, axis=(0, 0, 1))
+        j1 = builder.add_joint_revolute(b0, b1, axis=(0, 0, 1))
+        builder.add_articulation([j0, j1])
+
+        # Revolute loop joint BEFORE the free body — creates q_start offset
+        # (revolute has 1 DOF in Newton but 0 in MuJoCo since it becomes a connect constraint)
+        loop_j = builder.add_joint_revolute(
+            b1,
+            b0,
+            parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
+            axis=(0, 0, 1),
+        )
+        builder.joint_articulation[loop_j] = -1
+
+        # Free body added AFTER loop joint — its Newton q_start will be offset
+        # from MuJoCo's jnt_qposadr by the loop joint's DOF count
+        b_free = builder.add_body(mass=1.0, xform=wp.transform(wp.vec3(2.0, 0.0, 1.0)))
+
+        world_builder = newton.ModelBuilder()
+        world_builder.bound_inertia = 0.01
+        world_builder.bound_mass = 0.01
+        world_builder.replicate(builder, world_count=1)
+        model = world_builder.finalize()
+
+        solver = SolverMuJoCo(model)
+
+        # Revolute loop joint → single connect constraint
+        import mujoco as mj_lib
+
+        self.assertEqual(solver.mj_model.neq, 1)
+        self.assertEqual(int(solver.mj_model.eq_type[0]), int(mj_lib.mjtEq.mjEQ_CONNECT))
+
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        # Record the free body's initial position
+        body_q_before = state.body_q.numpy().copy()
+
+        # Round-trip: Newton → MuJoCo → Newton
+        solver._update_mjc_data(solver.mjw_data, model, state)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
+
+        body_q_after = state.body_q.numpy()
+
+        # The free body's position must survive the round trip
+        np.testing.assert_allclose(
+            body_q_after[b_free, 0:3],
+            body_q_before[b_free, 0:3],
+            atol=1e-3,
+            err_msg="Free body position corrupted by loop joint q_start offset",
+        )
+
+        # Quaternion check (sign-invariant)
+        q_before = body_q_before[b_free, 3:7]
+        q_after = body_q_after[b_free, 3:7]
+        quat_dist = min(np.linalg.norm(q_after - q_before), np.linalg.norm(q_after + q_before))
+        self.assertLess(quat_dist, 1e-3, "Free body orientation corrupted by loop joint q_start offset")
+
+    def test_ball_loop_joint_coordinate_conversion_offset(self):
+        """Verify coordinate conversion when a ball loop joint precedes other joints.
+
+        A ball joint has 4 q DOFs (quaternion) and 3 qd DOFs in Newton,
+        but 0 in MuJoCo (becomes connect constraint). This creates a larger
+        offset than revolute (4 vs 1) and tests the q != qd dimension case.
+        """
+        builder = newton.ModelBuilder()
+
+        # 2-link articulation
+        b0 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        j0 = builder.add_joint_revolute(-1, b0, axis=(0, 0, 1))
+        j1 = builder.add_joint_revolute(b0, b1, axis=(0, 0, 1))
+        builder.add_articulation([j0, j1])
+
+        # Ball loop joint BEFORE the free body — creates 4q/3qd offset
+        loop_j = builder.add_joint_ball(
+            b1,
+            b0,
+            parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
+        )
+        builder.joint_articulation[loop_j] = -1
+
+        # Free body added AFTER loop joint
+        b_free = builder.add_body(mass=1.0, xform=wp.transform(wp.vec3(2.0, 0.0, 1.0)))
+
+        world_builder = newton.ModelBuilder()
+        world_builder.bound_inertia = 0.01
+        world_builder.bound_mass = 0.01
+        world_builder.replicate(builder, world_count=1)
+        model = world_builder.finalize()
+
+        solver = SolverMuJoCo(model)
+
+        # Ball loop joint → single connect constraint
+        import mujoco as mj_lib
+
+        self.assertEqual(solver.mj_model.neq, 1)
+        self.assertEqual(int(solver.mj_model.eq_type[0]), int(mj_lib.mjtEq.mjEQ_CONNECT))
+
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q_before = state.body_q.numpy().copy()
+
+        # Round-trip: Newton → MuJoCo → Newton
+        solver._update_mjc_data(solver.mjw_data, model, state)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
+
+        body_q_after = state.body_q.numpy()
+
+        np.testing.assert_allclose(
+            body_q_after[b_free, 0:3],
+            body_q_before[b_free, 0:3],
+            atol=1e-3,
+            err_msg="Free body position corrupted by ball loop joint q_start offset",
+        )
+
+        q_before = body_q_before[b_free, 3:7]
+        q_after = body_q_after[b_free, 3:7]
+        quat_dist = min(np.linalg.norm(q_after - q_before), np.linalg.norm(q_after + q_before))
+        self.assertLess(quat_dist, 1e-3, "Free body orientation corrupted by ball loop joint q_start offset")
 
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):

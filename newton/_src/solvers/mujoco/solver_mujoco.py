@@ -3193,6 +3193,7 @@ class SolverMuJoCo(SolverBase):
                     model.joint_qd_start,
                     model.joint_dof_dim,
                     joints_per_world,
+                    self.mj_qd_start,
                 ],
                 outputs=[
                     qfrc,
@@ -3248,9 +3249,11 @@ class SolverMuJoCo(SolverBase):
             nworld = mj_data.nworld
         else:
             # we have an MjData object from Mujoco
-            single_world_template = len(mj_data.qpos) < model.joint_coord_count
+            loop_coords = getattr(self, "_loop_joint_coord_count", 0)
+            effective_coord_count = model.joint_coord_count - loop_coords * model.world_count
+            single_world_template = len(mj_data.qpos) < effective_coord_count
             expected_qpos = (
-                model.joint_coord_count // model.world_count if single_world_template else model.joint_coord_count
+                effective_coord_count // model.world_count if single_world_template else effective_coord_count
             )
             assert len(mj_data.qpos) >= expected_qpos, (
                 f"MuJoCo qpos size ({len(mj_data.qpos)}) < expected joint coords ({expected_qpos})"
@@ -3283,6 +3286,8 @@ class SolverMuJoCo(SolverBase):
                 model.joint_child,
                 model.body_com,
                 dof_ref,
+                self.mj_q_start,
+                self.mj_qd_start,
             ],
             outputs=[qpos, qvel],
             device=model.device,
@@ -3340,6 +3345,8 @@ class SolverMuJoCo(SolverBase):
                 model.body_flags,
                 state_prev.joint_q,
                 state_prev.joint_qd,
+                self.mj_q_start,
+                self.mj_qd_start,
             ],
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
@@ -3415,6 +3422,8 @@ class SolverMuJoCo(SolverBase):
                     model.joint_dof_dim,
                     model.joint_child,
                     model.body_com,
+                    self.mj_q_start,
+                    self.mj_qd_start,
                 ],
                 outputs=[qfrc_actuator],
                 device=model.device,
@@ -4018,6 +4027,14 @@ class SolverMuJoCo(SolverBase):
                 stacklevel=2,
             )
 
+        # Count the joint coordinates that belong to loop joints (not added to MuJoCo as joints)
+        joint_q_start_np = model.joint_q_start.numpy()
+        self._loop_joint_coord_count = 0
+        self._loop_joint_dof_count = 0
+        for j in joints_loop:
+            self._loop_joint_coord_count += int(joint_q_start_np[j + 1]) - int(joint_q_start_np[j])
+            self._loop_joint_dof_count += int(joint_qd_start[j + 1]) - int(joint_qd_start[j])
+
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
         colliding_shapes = selected_shapes[shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES != 0]
@@ -4241,6 +4258,7 @@ class SolverMuJoCo(SolverBase):
         # Maps from Newton joint index (per-world/template) to MuJoCo DOF start index (per-world/template)
         # Only populated for template joints; in kernels, use joint_in_world to index
         joint_mjc_dof_start = np.full(len(selected_joints), -1, dtype=np.int32)
+        joint_mjc_qpos_start = np.full(len(selected_joints), -1, dtype=np.int32)
 
         # Maps from Newton DOF index to MuJoCo joint index (first world only)
         # Needed because jnt_solimp/jnt_solref are per-joint (not per-DOF) in MuJoCo
@@ -4251,6 +4269,7 @@ class SolverMuJoCo(SolverBase):
 
         # need to keep track of current dof and joint counts to make the indexing above correct
         num_dofs = 0
+        num_qpos = 0
         num_mjc_joints = 0
 
         # add joints, bodies and geoms
@@ -4339,6 +4358,7 @@ class SolverMuJoCo(SolverBase):
             joint_mapping[j] = name
 
             joint_mjc_dof_start[j] = num_dofs
+            joint_mjc_qpos_start[j] = num_qpos
 
             if j_type == JointType.FREE:
                 body.add_joint(
@@ -4351,6 +4371,7 @@ class SolverMuJoCo(SolverBase):
                 for i in range(6):
                     dof_to_mjc_joint[qd_start + i] = num_mjc_joints
                 num_dofs += 6
+                num_qpos += 7
                 num_mjc_joints += 1
             elif j_type == JointType.BALL:
                 body.add_joint(
@@ -4368,6 +4389,7 @@ class SolverMuJoCo(SolverBase):
                 for i in range(3):
                     dof_to_mjc_joint[qd_start + i] = num_mjc_joints
                 num_dofs += 3
+                num_qpos += 4
                 num_mjc_joints += 1
                 # Add actuators for the ball joint using per-DOF arrays
                 for i in range(3):
@@ -4415,6 +4437,7 @@ class SolverMuJoCo(SolverBase):
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
                 num_dofs += lin_axis_count + ang_axis_count
+                num_qpos += lin_axis_count + ang_axis_count
 
                 # linear dofs
                 for i in range(lin_axis_count):
@@ -4677,25 +4700,39 @@ class SolverMuJoCo(SolverBase):
                 if eq_constraint_solimp is not None:
                     eq.solimp = eq_constraint_solimp[i]
 
-        # add connect constraints for joints that are excluded from the articulation
+        # add equality constraints for joints that are excluded from the articulation
         # (the UsdPhysics way of defining loop closures)
         mjc_eq_to_newton_jnt = {}
         for j in joints_loop:
-            eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
-            eq.type = mujoco.mjtEq.mjEQ_CONNECT
-            eq.active = True
-            eq.name1 = get_body_name(joint_parent[j])
-            eq.name2 = get_body_name(joint_child[j])
-            eq.data[0:3] = joint_parent_xform[j][:3]
-            mjc_eq_to_newton_jnt[eq.id] = j
+            j_type = joint_type[j]
+            parent_name = get_body_name(joint_parent[j])
+            child_name = get_body_name(joint_child[j])
 
-            eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
-            eq.type = mujoco.mjtEq.mjEQ_CONNECT
-            eq.active = True
-            eq.name1 = get_body_name(joint_child[j])
-            eq.name2 = get_body_name(joint_parent[j])
-            eq.data[0:3] = joint_child_xform[j][:3]
-            mjc_eq_to_newton_jnt[eq.id] = j
+            if j_type == JointType.FIXED:
+                # Fixed loop joint → weld constraint (constrains all 6 DOFs)
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.type = mujoco.mjtEq.mjEQ_WELD
+                eq.active = True
+                eq.name1 = parent_name
+                eq.name2 = child_name
+                eq.data[0:3] = joint_parent_xform[j][:3]
+                # Compute relative anchor from parent and child xforms
+                parent_tf = wp.transform(*joint_parent_xform[j])
+                child_tf = wp.transform(*joint_child_xform[j])
+                relpose = wp.transform_multiply(wp.transform_inverse(parent_tf), child_tf)
+                eq.data[3:6] = wp.transform_get_translation(relpose)
+                eq.data[6:10] = wp.transform_get_rotation(relpose)
+                mjc_eq_to_newton_jnt[eq.id] = j
+            else:
+                # Revolute/ball/other loop joints → single connect constraint
+                # (pins anchor point, rotation freedom from kinematic chain)
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.type = mujoco.mjtEq.mjEQ_CONNECT
+                eq.active = True
+                eq.name1 = parent_name
+                eq.name2 = child_name
+                eq.data[0:3] = joint_parent_xform[j][:3]
+                mjc_eq_to_newton_jnt[eq.id] = j
 
         # add mimic constraints as mjEQ_JOINT equality constraints
         mjc_eq_to_newton_mimic_dict = {}
@@ -4811,6 +4848,20 @@ class SolverMuJoCo(SolverBase):
 
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
+
+        # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.
+        # These map Newton template joint index → MuJoCo qpos/qvel start.
+        # Loop joints get -1 (they have no MuJoCo qpos/qvel slots).
+        # Must be created before _update_mjc_data which uses them.
+        n_template_joints = len(selected_joints)
+        mj_q_start_np = np.full(n_template_joints, -1, dtype=np.int32)
+        mj_qd_start_np = np.full(n_template_joints, -1, dtype=np.int32)
+        for j_template in range(n_template_joints):
+            j_idx = selected_joints[j_template]
+            mj_q_start_np[j_template] = joint_mjc_qpos_start[j_idx]
+            mj_qd_start_np[j_template] = joint_mjc_dof_start[j_idx]
+        self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
+        self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
 
         self._update_mjc_data(self.mj_data, model, state)
 
@@ -5504,6 +5555,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.body_q,
                 dof_ref,
                 dof_springref,
+                self.mj_q_start,
             ],
             outputs=[
                 self.mjw_model.qpos0,
