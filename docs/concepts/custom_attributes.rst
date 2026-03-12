@@ -752,7 +752,7 @@ This pattern is useful when:
 Multi-World Merging
 -------------------
 
-When using ``add_world()`` to create multi-world simulations, the :attr:`~newton.ModelBuilder.CustomAttribute.references` field specifies how attribute values should be transformed:
+When using ``add_builder()``, ``add_world()``, or ``replicate()`` in multi-world simulations, the :attr:`~newton.ModelBuilder.CustomAttribute.references` field specifies how attribute values should be transformed:
 
 .. testcode:: custom-merge
 
@@ -768,7 +768,7 @@ When using ``add_world()`` to create multi-world simulations, the :attr:`~newton
            frequency="mujoco:pair",
            dtype=wp.int32,
            namespace="mujoco",
-           references="world",  # Replaced with current_world during merge
+           references="world",  # Replaced with the builder-managed current world during merge
        )
    )
    builder.add_custom_attribute(
@@ -784,7 +784,7 @@ When using ``add_world()`` to create multi-world simulations, the :attr:`~newton
 Supported reference types:
 
 * Any built-in entity type (e.g., ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``) — offset by entity count
-* ``"world"`` — replaced with ``current_world``
+* ``"world"`` — replaced with the builder-managed ``current_world`` for the active merge context
 * Custom frequency keys (e.g., ``"mujoco:pair"``) — offset by that frequency's count
 
 Querying Counts

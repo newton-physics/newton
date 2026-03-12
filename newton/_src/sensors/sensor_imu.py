@@ -77,36 +77,51 @@ def compute_sensor_imu_kernel(
 
 
 class SensorIMU:
-    """Inertial Measurement Unit Sensor.
+    """Inertial Measurement Unit sensor.
 
-    This sensor measures the acceleration and angular velocity at the sites given.
+    Measures linear acceleration (specific force) and angular velocity at the
+    given sites. Each site defines an IMU frame; outputs are expressed in that
+    frame.
 
-    Body Accelerations Attribute:
-    This sensor requires the extended state attribute ``body_qdd`` to be computed by the solver.  This requires
-    a solver that supports computing ``body_qdd``, and requesting ``body_qdd`` from the model before calling
-    ``model.state()``. Instantiating the SensorIMU will automatically request ``body_qdd`` from the model by default.
+    This sensor requires the extended state attribute ``body_qdd``. By default,
+    constructing the sensor requests ``body_qdd`` from the model so that
+    subsequent ``model.state()`` calls allocate it automatically. The solver
+    must also support computing ``body_qdd``
+    (e.g. :class:`~newton.solvers.SolverMuJoCo`).
 
     The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
 
     Example:
-        Create a SensorIMU for a model with a list of site indices::
 
-            # Obtain shape indices (e.g. via selection or direct indexing)
-            sensor_sites = [0, 1, 2]  # indices of sites to attach IMU sensors
+        .. testcode::
 
-            model = Model()
-            sensor = SensorIMU(model, sensor_sites)
+            import warp as wp
+            import newton
+            from newton.sensors import SensorIMU
+
+            builder = newton.ModelBuilder()
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform((0, 0, 1), wp.quat_identity()))
+            builder.add_shape_sphere(body, radius=0.1)
+            builder.add_site(body, label="imu_0")
+            model = builder.finalize()
+
+            imu = SensorIMU(model, sites="imu_*")
+            solver = newton.solvers.SolverMuJoCo(model)
             state = model.state()
 
-            # Update after step()
-            sensor.update(state)
+            # after solver step
+            solver.step(state, state, None, None, dt=1.0 / 60.0)
+            imu.update(state)
+            acc = imu.accelerometer.numpy()
+            gyro = imu.gyroscope.numpy()
     """
 
     accelerometer: wp.array(dtype=wp.vec3)
-    """Linear acceleration readings in sensor frame, shape (n_sensors,)."""
+    """Linear acceleration readings [m/s²] in sensor frame, shape ``(n_sensors,)``."""
 
     gyroscope: wp.array(dtype=wp.vec3)
-    """Angular velocity readings in sensor frame, shape (n_sensors,)."""
+    """Angular velocity readings [rad/s] in sensor frame, shape ``(n_sensors,)``."""
 
     def __init__(
         self,
@@ -123,7 +138,7 @@ class SensorIMU:
 
         Args:
             model: The model to use.
-            sites: List of shape indices, single pattern to match against shape
+            sites: List of site indices, single pattern to match against site
                 labels, or list of patterns where any one matches.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
             request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.

@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -30,6 +30,10 @@ from .state import State
 
 if TYPE_CHECKING:
     from newton_actuators import Actuator
+
+    from ..geometry.sdf_utils import SDFData
+    from ..utils.heightfield import HeightfieldData
+    from .collide import CollisionPipeline
 
 
 class Model:
@@ -127,7 +131,7 @@ class Model:
             Args:
                 name: The name of the namespace
             """
-            self._name = name
+            self._name: str = name
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
@@ -140,135 +144,143 @@ class Model:
         Initialize a Model object.
 
         Args:
-            device (wp.Device, optional): Device on which the Model's data will be allocated.
+            device: Device on which the Model's data will be allocated.
         """
-        self.requires_grad = False
+        self.requires_grad: bool = False
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
-        self.world_count = 0
+        self.world_count: int = 0
         """Number of worlds added to the ModelBuilder."""
 
-        self.particle_q = None
+        self.particle_q: wp.array(dtype=wp.vec3) | None = None
         """Particle positions [m], shape [particle_count, 3], float."""
-        self.particle_qd = None
+        self.particle_qd: wp.array(dtype=wp.vec3) | None = None
         """Particle velocities [m/s], shape [particle_count, 3], float."""
-        self.particle_mass = None
+        self.particle_mass: wp.array(dtype=wp.float32) | None = None
         """Particle mass [kg], shape [particle_count], float."""
-        self.particle_inv_mass = None
+        self.particle_inv_mass: wp.array(dtype=wp.float32) | None = None
         """Particle inverse mass [1/kg], shape [particle_count], float."""
-        self.particle_radius = None
+        self.particle_radius: wp.array(dtype=wp.float32) | None = None
         """Particle radius [m], shape [particle_count], float."""
-        self.particle_max_radius = 0.0
+        self.particle_max_radius: float = 0.0
         """Maximum particle radius [m] (useful for HashGrid construction)."""
-        self.particle_ke = 1.0e3
+        self.particle_ke: float = 1.0e3
         """Particle normal contact stiffness [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
-        self.particle_kd = 1.0e2
+        self.particle_kd: float = 1.0e2
         """Particle normal contact damping [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
-        self.particle_kf = 1.0e2
+        self.particle_kf: float = 1.0e2
         """Particle friction force stiffness [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
-        self.particle_mu = 0.5
+        self.particle_mu: float = 0.5
         """Particle friction coefficient [dimensionless]."""
-        self.particle_cohesion = 0.0
+        self.particle_cohesion: float = 0.0
         """Particle cohesion strength [m]."""
-        self.particle_adhesion = 0.0
+        self.particle_adhesion: float = 0.0
         """Particle adhesion strength [m]."""
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
-        self.particle_flags: wp.array | None = None
+        self.particle_flags: wp.array(dtype=wp.int32) | None = None
         """Particle enabled state, shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] (to prevent instability)."""
-        self.particle_world: wp.array | None = None
+        self.particle_world: wp.array(dtype=wp.int32) | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
-        self.particle_world_start = None
+        self.particle_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first particle per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the particles belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global particles (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total particle count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the particles belonging to that world. The second-last element (accessible
+        via index ``-2``) stores the start index of the global particles (i.e. with
+        world index ``-1``) added to the end of the model, and the last element
+        stores the total particle count.
 
-        The number of particles in a given world `w` can be computed as:
-            `num_particles_in_world = particle_world_start[w + 1] - particle_world_start[w]`.
+        The number of particles in a given world ``w`` can be computed as::
 
-        The total number of global particles can be computed as:
-            `num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]`.
+            num_particles_in_world = particle_world_start[w + 1] - particle_world_start[w]
+
+        The total number of global particles can be computed as::
+
+            num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]
         """
 
-        self.shape_label = []
+        self.shape_label: list[str] = []
         """List of labels for each shape."""
-        self.shape_transform = None
+        self.shape_transform: wp.array(dtype=wp.transform) | None = None
         """Rigid shape transforms [m, unitless quaternion], shape [shape_count, 7], float."""
-        self.shape_body = None
+        self.shape_body: wp.array(dtype=wp.int32) | None = None
         """Rigid shape body index, shape [shape_count], int."""
-        self.shape_flags = None
+        self.shape_flags: wp.array(dtype=wp.int32) | None = None
         """Rigid shape flags, shape [shape_count], int."""
-        self.body_shapes = {}
+        self.body_shapes: dict[int, list[int]] = {}
         """Mapping from body index to list of attached shape indices."""
 
         # Shape material properties
-        self.shape_material_ke = None
+        self.shape_material_ke: wp.array(dtype=wp.float32) | None = None
         """Shape contact elastic stiffness [N/m], shape [shape_count], float."""
-        self.shape_material_kd = None
+        self.shape_material_kd: wp.array(dtype=wp.float32) | None = None
         """Shape contact damping stiffness, shape [shape_count], float.
         Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
         but multiplied by ke as a relative damping factor by VBD."""
-        self.shape_material_kf = None
+        self.shape_material_kf: wp.array(dtype=wp.float32) | None = None
         """Shape contact friction stiffness [N·s/m], shape [shape_count], float."""
-        self.shape_material_ka = None
+        self.shape_material_ka: wp.array(dtype=wp.float32) | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
-        self.shape_material_mu = None
+        self.shape_material_mu: wp.array(dtype=wp.float32) | None = None
         """Shape coefficient of friction [dimensionless], shape [shape_count], float."""
-        self.shape_material_restitution = None
+        self.shape_material_restitution: wp.array(dtype=wp.float32) | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
-        self.shape_material_mu_torsional = None
+        self.shape_material_mu_torsional: wp.array(dtype=wp.float32) | None = None
         """Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float."""
-        self.shape_material_mu_rolling = None
+        self.shape_material_mu_rolling: wp.array(dtype=wp.float32) | None = None
         """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
-        self.shape_material_kh = None
+        self.shape_material_kh: wp.array(dtype=wp.float32) | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Contact stiffness is computed as ``area * kh``, yielding an effective spring constant [N/m]."""
-        self.shape_gap = None
+        self.shape_gap: wp.array(dtype=wp.float32) | None = None
         """Shape additional contact detection gap [m], shape [shape_count], float."""
 
         # Shape geometry properties
-        self.shape_type = None
+        self.shape_type: wp.array(dtype=wp.int32) | None = None
         """Shape geometry type, shape [shape_count], int32."""
-        self.shape_is_solid = None
+        self.shape_is_solid: wp.array(dtype=wp.bool) | None = None
         """Whether shape is solid or hollow, shape [shape_count], bool."""
-        self.shape_margin = None
+        self.shape_margin: wp.array(dtype=wp.float32) | None = None
         """Shape surface margin [m], shape [shape_count], float."""
-        self.shape_source = []
+        self.shape_source: list[object | None] = []
         """List of source geometry objects (e.g., :class:`~newton.Mesh`) used for rendering and broadphase, shape [shape_count]."""
-        self.shape_source_ptr = None
+        self.shape_source_ptr: wp.array(dtype=wp.uint64) | None = None
         """Geometry source pointer to be used inside the Warp kernels which can be generated by finalizing the geometry objects, see for example :meth:`newton.Mesh.finalize`, shape [shape_count], uint64."""
-        self.shape_scale = None
+        self.shape_scale: wp.array(dtype=wp.vec3) | None = None
         """Shape 3D scale, shape [shape_count, 3], float."""
-        self.shape_filter = None
+        self.shape_filter: wp.array(dtype=wp.int32) | None = None
         """Shape filter group, shape [shape_count], int."""
 
-        self.shape_collision_group = None
+        self.shape_collision_group: wp.array(dtype=wp.int32) | None = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
-        self.shape_collision_radius = None
+        self.shape_collision_radius: wp.array(dtype=wp.float32) | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
-        self.shape_contact_pairs = None
+        self.shape_contact_pairs: wp.array(dtype=wp.vec2i) | None = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
-        self.shape_contact_pair_count = 0
+        self.shape_contact_pair_count: int = 0
         """Number of shape contact pairs."""
-        self.shape_world = None
+        self.shape_world: wp.array(dtype=wp.int32) | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
-        self.shape_world_start = None
+        self.shape_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first shape per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the shapes belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global shapes (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total shape count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the shapes belonging to that world. The second-last element (accessible via
+        index ``-2``) stores the start index of the global shapes (i.e. with world
+        index ``-1``) added to the end of the model, and the last element stores the
+        total shape count.
 
-        The number of shapes in a given world `w` can be computed as:
-            `num_shapes_in_world = shape_world_start[w + 1] - shape_world_start[w]`.
+        The number of shapes in a given world ``w`` can be computed as::
 
-        The total number of global shapes can be computed as:
-            `num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]`.
+            num_shapes_in_world = shape_world_start[w + 1] - shape_world_start[w]
+
+        The total number of global shapes can be computed as::
+
+            num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]
         """
 
         # Gaussians
@@ -279,395 +291,423 @@ class Model:
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
 
         # Heightfield collision data
-        self.shape_heightfield_data = None
+        self.shape_heightfield_data: wp.array(dtype=HeightfieldData) | None = None
         """Array of HeightfieldData structs, shape [shape_count]. Contains grid metadata for collision kernels."""
-        self.heightfield_elevation_data = None
+        self.heightfield_elevation_data: wp.array(dtype=wp.float32) | None = None
         """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
 
         # SDF storage (compact table + per-shape index indirection)
-        self.sdf_data = None
+        self.sdf_data: wp.array(dtype=SDFData) | None = None
         """Compact array of SDFData structs, shape [num_sdfs]."""
-        self.sdf_volume = []
+        self.sdf_volume: list[wp.Volume | None] = []
         """Sparse SDF volumes matching sdf_data by index. Kept for reference counting."""
-        self.sdf_coarse_volume = []
+        self.sdf_coarse_volume: list[wp.Volume | None] = []
         """Coarse SDF volumes matching sdf_data by index. Kept for reference counting."""
-        self.shape_sdf_index = None
+        self.shape_sdf_index: wp.array(dtype=wp.int32) | None = None
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
-        self.sdf_block_coords = None
+        self.sdf_block_coords: wp.array(dtype=wp.vec3us) | None = None
         """Compact flat array of active SDF block coordinates."""
-        self.sdf_index2blocks = None
+        self.sdf_index2blocks: wp.array(dtype=wp.vec2i) | None = None
         """Per-SDF [start, end) indices into sdf_block_coords, shape [num_sdfs, 2]."""
 
         # Local AABB and voxel grid for contact reduction
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
         # computed once during finalization, not per-frame contact data.
-        self.shape_collision_aabb_lower = None
+        self.shape_collision_aabb_lower: wp.array(dtype=wp.vec3) | None = None
         """Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
         Computed from base geometry only (excludes shape margin; shape margin and gap are applied
         during contact margin calculations). Used for voxel-based contact reduction."""
-        self.shape_collision_aabb_upper = None
+        self.shape_collision_aabb_upper: wp.array(dtype=wp.vec3) | None = None
         """Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Computed from base geometry only (excludes shape margin; shape margin and gap are applied
         during contact margin calculations). Used for voxel-based contact reduction."""
-        self._shape_voxel_resolution = None
+        self._shape_voxel_resolution: wp.array(dtype=wp.vec3i) | None = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
-        self.spring_indices = None
+        self.spring_indices: wp.array(dtype=wp.int32) | None = None
         """Particle spring indices, shape [spring_count*2], int."""
-        self.spring_rest_length = None
+        self.spring_rest_length: wp.array(dtype=wp.float32) | None = None
         """Particle spring rest length [m], shape [spring_count], float."""
-        self.spring_stiffness = None
+        self.spring_stiffness: wp.array(dtype=wp.float32) | None = None
         """Particle spring stiffness [N/m], shape [spring_count], float."""
-        self.spring_damping = None
+        self.spring_damping: wp.array(dtype=wp.float32) | None = None
         """Particle spring damping [N·s/m], shape [spring_count], float."""
-        self.spring_control = None
+        self.spring_control: wp.array(dtype=wp.float32) | None = None
         """Particle spring activation [dimensionless], shape [spring_count], float."""
-        self.spring_constraint_lambdas = None
+        self.spring_constraint_lambdas: wp.array(dtype=wp.float32) | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
-        self.tri_indices = None
+        self.tri_indices: wp.array(dtype=wp.int32) | None = None
         """Triangle element indices, shape [tri_count*3], int."""
-        self.tri_poses = None
+        self.tri_poses: wp.array(dtype=wp.mat22) | None = None
         """Triangle element rest pose, shape [tri_count, 2, 2], float."""
-        self.tri_activations = None
+        self.tri_activations: wp.array(dtype=wp.float32) | None = None
         """Triangle element activations, shape [tri_count], float."""
-        self.tri_materials = None
+        self.tri_materials: wp.array(dtype=wp.float32, ndim=2) | None = None
         """Triangle element materials, shape [tri_count, 5], float.
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s], [3] k_drag [Pa·s], [4] k_lift [Pa].
         Stored per-element; kernels multiply by rest area internally."""
-        self.tri_areas = None
+        self.tri_areas: wp.array(dtype=wp.float32) | None = None
         """Triangle element rest areas [m²], shape [tri_count], float."""
 
-        self.edge_indices = None
+        self.edge_indices: wp.array(dtype=wp.int32) | None = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""
-        self.edge_rest_angle = None
+        self.edge_rest_angle: wp.array(dtype=wp.float32) | None = None
         """Bending edge rest angle [rad], shape [edge_count], float."""
-        self.edge_rest_length = None
+        self.edge_rest_length: wp.array(dtype=wp.float32) | None = None
         """Bending edge rest length [m], shape [edge_count], float."""
-        self.edge_bending_properties = None
+        self.edge_bending_properties: wp.array(dtype=wp.float32, ndim=2) | None = None
         """Bending edge stiffness and damping, shape [edge_count, 2], float.
         Components: [0] stiffness [N·m/rad], [1] damping [N·s]."""
-        self.edge_constraint_lambdas = None
+        self.edge_constraint_lambdas: wp.array(dtype=wp.float32) | None = None
         """Lagrange multipliers for edge constraints (internal use)."""
 
-        self.tet_indices = None
+        self.tet_indices: wp.array(dtype=wp.int32) | None = None
         """Tetrahedral element indices, shape [tet_count*4], int."""
-        self.tet_poses = None
+        self.tet_poses: wp.array(dtype=wp.mat33) | None = None
         """Tetrahedral rest poses, shape [tet_count, 3, 3], float."""
-        self.tet_activations = None
+        self.tet_activations: wp.array(dtype=wp.float32) | None = None
         """Tetrahedral volumetric activations, shape [tet_count], float."""
-        self.tet_materials = None
+        self.tet_materials: wp.array(dtype=wp.float32, ndim=2) | None = None
         """Tetrahedral elastic parameters in form :math:`k_{mu}, k_{lambda}, k_{damp}`, shape [tet_count, 3].
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
 
-        self.muscle_start = None
+        self.muscle_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
-        self.muscle_params = None
+        self.muscle_params: wp.array(dtype=wp.float32, ndim=2) | None = None
         """Muscle parameters, shape [muscle_count, 5], float.
         Components: [0] f0 [N] (force scaling), [1] lm [m] (muscle fiber length), [2] lt [m] (tendon slack length),
         [3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor)."""
-        self.muscle_bodies = None
+        self.muscle_bodies: wp.array(dtype=wp.int32) | None = None
         """Body indices of the muscle waypoints, int."""
-        self.muscle_points = None
+        self.muscle_points: wp.array(dtype=wp.vec3) | None = None
         """Local body offset of the muscle waypoints, float."""
-        self.muscle_activations = None
+        self.muscle_activations: wp.array(dtype=wp.float32) | None = None
         """Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float."""
 
-        self.body_q = None
+        self.body_q: wp.array(dtype=wp.transform) | None = None
         """Rigid body poses [m, unitless quaternion] for state initialization, shape [body_count, 7], float."""
-        self.body_qd = None
+        self.body_qd: wp.array(dtype=wp.spatial_vector) | None = None
         """Rigid body velocities [m/s, rad/s] for state initialization, shape [body_count, 6], float."""
-        self.body_com = None
+        self.body_com: wp.array(dtype=wp.vec3) | None = None
         """Rigid body center of mass [m] (in local frame), shape [body_count, 3], float."""
-        self.body_inertia = None
+        self.body_inertia: wp.array(dtype=wp.mat33) | None = None
         """Rigid body inertia tensor [kg·m²] (relative to COM), shape [body_count, 3, 3], float."""
-        self.body_inv_inertia = None
+        self.body_inv_inertia: wp.array(dtype=wp.mat33) | None = None
         """Rigid body inverse inertia tensor [1/(kg·m²)] (relative to COM), shape [body_count, 3, 3], float."""
-        self.body_mass = None
+        self.body_mass: wp.array(dtype=wp.float32) | None = None
         """Rigid body mass [kg], shape [body_count], float."""
-        self.body_inv_mass = None
+        self.body_inv_mass: wp.array(dtype=wp.float32) | None = None
         """Rigid body inverse mass [1/kg], shape [body_count], float."""
-        self.body_flags = None
+        self.body_flags: wp.array(dtype=wp.int32) | None = None
         """Rigid body flags (:class:`~newton.BodyFlags`), shape [body_count], int."""
-        self.body_label = []
+        self.body_label: list[str] = []
         """Rigid body labels, shape [body_count], str."""
-        self.body_world = None
+        self.body_world: wp.array(dtype=wp.int32) | None = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
-        self.body_world_start = None
+        self.body_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first body per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the bodies belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global bodies (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total body count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the bodies belonging to that world. The second-last element (accessible via
+        index ``-2``) stores the start index of the global bodies (i.e. with world
+        index ``-1``) added to the end of the model, and the last element stores the
+        total body count.
 
-        The number of bodies in a given world `w` can be computed as:
-            `num_bodies_in_world = body_world_start[w + 1] - body_world_start[w]`.
+        The number of bodies in a given world ``w`` can be computed as::
 
-        The total number of global bodies can be computed as:
-            `num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]`.
+            num_bodies_in_world = body_world_start[w + 1] - body_world_start[w]
+
+        The total number of global bodies can be computed as::
+
+            num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]
         """
 
-        self.joint_q = None
+        self.joint_q: wp.array(dtype=wp.float32) | None = None
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
-        self.joint_qd = None
+        self.joint_qd: wp.array(dtype=wp.float32) | None = None
         """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float."""
-        self.joint_f = None
+        self.joint_f: wp.array(dtype=wp.float32) | None = None
         """Generalized joint forces [N or N·m, depending on joint type] for state initialization, shape [joint_dof_count], float."""
-        self.joint_target_pos = None
+        self.joint_target_pos: wp.array(dtype=wp.float32) | None = None
         """Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_target_vel = None
+        self.joint_target_vel: wp.array(dtype=wp.float32) | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_act = None
+        self.joint_act: wp.array(dtype=wp.float32) | None = None
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
-        self.joint_type = None
+        self.joint_type: wp.array(dtype=wp.int32) | None = None
         """Joint type, shape [joint_count], int."""
-        self.joint_articulation = None
+        self.joint_articulation: wp.array(dtype=wp.int32) | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
-        self.joint_parent = None
+        self.joint_parent: wp.array(dtype=wp.int32) | None = None
         """Joint parent body indices, shape [joint_count], int."""
-        self.joint_child = None
+        self.joint_child: wp.array(dtype=wp.int32) | None = None
         """Joint child body indices, shape [joint_count], int."""
-        self.joint_ancestor = None
+        self.joint_ancestor: wp.array(dtype=wp.int32) | None = None
         """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
-        self.joint_X_p = None
+        self.joint_X_p: wp.array(dtype=wp.transform) | None = None
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
-        self.joint_X_c = None
+        self.joint_X_c: wp.array(dtype=wp.transform) | None = None
         """Joint mass frame in child frame [m, unitless quaternion], shape [joint_count, 7], float."""
-        self.joint_axis = None
+        self.joint_axis: wp.array(dtype=wp.vec3) | None = None
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
-        self.joint_armature = None
+        self.joint_armature: wp.array(dtype=wp.float32) | None = None
         """Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_target_mode = None
+        self.joint_target_mode: wp.array(dtype=wp.int32) | None = None
         """Joint target mode per DOF, see :class:`newton.JointTargetMode`. Shape [joint_dof_count], dtype int32."""
-        self.joint_target_ke = None
+        self.joint_target_ke: wp.array(dtype=wp.float32) | None = None
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_target_kd = None
+        self.joint_target_kd: wp.array(dtype=wp.float32) | None = None
         """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_effort_limit = None
+        self.joint_effort_limit: wp.array(dtype=wp.float32) | None = None
         """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_velocity_limit = None
+        self.joint_velocity_limit: wp.array(dtype=wp.float32) | None = None
         """Joint velocity limits [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_friction = None
+        self.joint_friction: wp.array(dtype=wp.float32) | None = None
         """Joint friction force/torque [N or N·m, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_dof_dim = None
+        self.joint_dof_dim: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
-        self.joint_enabled = None
+        self.joint_enabled: wp.array(dtype=wp.bool) | None = None
         """Controls which joint is simulated (bodies become disconnected if False, only supported by :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
-        self.joint_limit_lower = None
+        self.joint_limit_lower: wp.array(dtype=wp.float32) | None = None
         """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_limit_upper = None
+        self.joint_limit_upper: wp.array(dtype=wp.float32) | None = None
         """Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_limit_ke = None
+        self.joint_limit_ke: wp.array(dtype=wp.float32) | None = None
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_limit_kd = None
+        self.joint_limit_kd: wp.array(dtype=wp.float32) | None = None
         """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_twist_lower = None
+        self.joint_twist_lower: wp.array(dtype=wp.float32) | None = None
         """Joint lower twist limit [rad], shape [joint_count], float."""
-        self.joint_twist_upper = None
+        self.joint_twist_upper: wp.array(dtype=wp.float32) | None = None
         """Joint upper twist limit [rad], shape [joint_count], float."""
-        self.joint_q_start = None
+        self.joint_q_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
-        self.joint_qd_start = None
+        self.joint_qd_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first velocity coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
-        self.joint_label = []
+        self.joint_label: list[str] = []
         """Joint labels, shape [joint_count], str."""
-        self.joint_world = None
+        self.joint_world: wp.array(dtype=wp.int32) | None = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
-        self.joint_world_start = None
+        self.joint_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first joint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the joints belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global joints (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total joint count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the joints belonging to that world. The second-last element (accessible via
+        index ``-2``) stores the start index of the global joints (i.e. with world
+        index ``-1``) added to the end of the model, and the last element stores the
+        total joint count.
 
-        The number of joints in a given world `w` can be computed as:
-            `num_joints_in_world = joint_world_start[w + 1] - joint_world_start[w]`.
+        The number of joints in a given world ``w`` can be computed as::
 
-        The total number of global joints can be computed as:
-            `num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]`.
+            num_joints_in_world = joint_world_start[w + 1] - joint_world_start[w]
+
+        The total number of global joints can be computed as::
+
+            num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]
         """
-        self.joint_dof_world_start = None
+        self.joint_dof_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first joint degree of freedom per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the joint DOFs belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global joint DOFs (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total joint DOF count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the joint DOFs belonging to that world. The second-last element (accessible
+        via index ``-2``) stores the start index of the global joint DOFs (i.e. with
+        world index ``-1``) added to the end of the model, and the last element
+        stores the total joint DOF count.
 
-        The number of joint DOFs in a given world `w` can be computed as:
-            `num_joint_dofs_in_world = joint_dof_world_start[w + 1] - joint_dof_world_start[w]`.
+        The number of joint DOFs in a given world ``w`` can be computed as::
 
-        The total number of global joint DOFs can be computed as:
-            `num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]`.
+            num_joint_dofs_in_world = joint_dof_world_start[w + 1] - joint_dof_world_start[w]
+
+        The total number of global joint DOFs can be computed as::
+
+            num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]
         """
-        self.joint_coord_world_start = None
+        self.joint_coord_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first joint coordinate per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the joint coordinates belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global joint coordinates (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total joint coordinate count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the joint coordinates belonging to that world. The second-last element
+        (accessible via index ``-2``) stores the start index of the global joint
+        coordinates (i.e. with world index ``-1``) added to the end of the model,
+        and the last element stores the total joint coordinate count.
 
-        The number of joint coordinates in a given world `w` can be computed as:
-            `num_joint_coords_in_world = joint_coord_world_start[w + 1] - joint_coord_world_start[w]`.
+        The number of joint coordinates in a given world ``w`` can be computed as::
 
-        The total number of global joint coordinates can be computed as:
-            `num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]`.
+            num_joint_coords_in_world = joint_coord_world_start[w + 1] - joint_coord_world_start[w]
+
+        The total number of global joint coordinates can be computed as::
+
+            num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]
         """
-        self.joint_constraint_world_start = None
+        self.joint_constraint_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first joint constraint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the joint constraints belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global joint constraints (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total joint constraint count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the joint constraints belonging to that world. The second-last element
+        (accessible via index ``-2``) stores the start index of the global joint
+        constraints (i.e. with world index ``-1``) added to the end of the model,
+        and the last element stores the total joint constraint count.
 
-        The number of joint constraints in a given world `w` can be computed as:
-            `num_joint_constraints_in_world = joint_constraint_world_start[w + 1] - joint_constraint_world_start[w]`.
+        The number of joint constraints in a given world ``w`` can be computed as::
 
-        The total number of global joint constraints can be computed as:
-            `num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]`.
+            num_joint_constraints_in_world = joint_constraint_world_start[w + 1] - joint_constraint_world_start[w]
+
+        The total number of global joint constraints can be computed as::
+
+            num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]
         """
 
-        self.articulation_start = None
+        self.articulation_start: wp.array(dtype=wp.int32) | None = None
         """Articulation start index, shape [articulation_count], int."""
-        self.articulation_label = []
+        self.articulation_label: list[str] = []
         """Articulation labels, shape [articulation_count], str."""
-        self.articulation_world = None
+        self.articulation_world: wp.array(dtype=wp.int32) | None = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
-        self.articulation_world_start = None
+        self.articulation_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first articulation per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the articulations belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global articulations (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total articulation count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the articulations belonging to that world. The second-last element
+        (accessible via index ``-2``) stores the start index of the global
+        articulations (i.e. with world index ``-1``) added to the end of the model,
+        and the last element stores the total articulation count.
 
-        The number of articulations in a given world `w` can be computed as:
-            `num_articulations_in_world = articulation_world_start[w + 1] - articulation_world_start[w]`.
+        The number of articulations in a given world ``w`` can be computed as::
 
-        The total number of global articulations can be computed as:
-            `num_global_articulations = articulation_world_start[-1] - articulation_world_start[-2] + articulation_world_start[0]`.
+            num_articulations_in_world = articulation_world_start[w + 1] - articulation_world_start[w]
+
+        The total number of global articulations can be computed as::
+
+            num_global_articulations = articulation_world_start[-1] - articulation_world_start[-2] + articulation_world_start[0]
         """
-        self.max_joints_per_articulation = 0
+        self.max_joints_per_articulation: int = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
-        self.max_dofs_per_articulation = 0
+        self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
-        self.soft_contact_ke = 1.0e3
+        self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
-        self.soft_contact_kd = 10.0
+        self.soft_contact_kd: float = 10.0
         """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`).
         Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
         but multiplied by ke as a relative damping factor by VBD."""
-        self.soft_contact_kf = 1.0e3
+        self.soft_contact_kf: float = 1.0e3
         """Stiffness of friction force in soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
-        self.soft_contact_mu = 0.5
+        self.soft_contact_mu: float = 0.5
         """Friction coefficient of soft contacts [dimensionless]."""
-        self.soft_contact_restitution = 0.0
+        self.soft_contact_restitution: float = 0.0
         """Restitution coefficient of soft contacts [dimensionless] (used by :class:`SolverXPBD`)."""
 
-        self.rigid_contact_max = 0
+        self.rigid_contact_max: int = 0
         """Number of potential contact points between rigid bodies."""
 
-        self.up_axis = 2
+        self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
-        self.gravity = None
-        """Gravity vector [m/s²], shape [1], dtype vec3."""
+        self.gravity: wp.array(dtype=wp.vec3) | None = None
+        """Per-world gravity vectors [m/s²], shape [world_count, 3], dtype :class:`vec3`."""
 
-        self.equality_constraint_type = None
+        self.equality_constraint_type: wp.array(dtype=wp.int32) | None = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
-        self.equality_constraint_body1 = None
+        self.equality_constraint_body1: wp.array(dtype=wp.int32) | None = None
         """First body index, shape [equality_constraint_count], int."""
-        self.equality_constraint_body2 = None
+        self.equality_constraint_body2: wp.array(dtype=wp.int32) | None = None
         """Second body index, shape [equality_constraint_count], int."""
-        self.equality_constraint_anchor = None
+        self.equality_constraint_anchor: wp.array(dtype=wp.vec3) | None = None
         """Anchor point on first body, shape [equality_constraint_count, 3], float."""
-        self.equality_constraint_torquescale = None
+        self.equality_constraint_torquescale: wp.array(dtype=wp.float32) | None = None
         """Torque scale, shape [equality_constraint_count], float."""
-        self.equality_constraint_relpose = None
+        self.equality_constraint_relpose: wp.array(dtype=wp.transform) | None = None
         """Relative pose, shape [equality_constraint_count, 7], float."""
-        self.equality_constraint_joint1 = None
+        self.equality_constraint_joint1: wp.array(dtype=wp.int32) | None = None
         """First joint index, shape [equality_constraint_count], int."""
-        self.equality_constraint_joint2 = None
+        self.equality_constraint_joint2: wp.array(dtype=wp.int32) | None = None
         """Second joint index, shape [equality_constraint_count], int."""
-        self.equality_constraint_polycoef = None
-        """Polynomial coefficients, shape [equality_constraint_count, 2], float."""
-        self.equality_constraint_label = []
+        self.equality_constraint_polycoef: wp.array(dtype=wp.float32, ndim=2) | None = None
+        """Polynomial coefficients, shape [equality_constraint_count, 5], float."""
+        self.equality_constraint_label: list[str] = []
         """Constraint name/label, shape [equality_constraint_count], str."""
-        self.equality_constraint_enabled = None
+        self.equality_constraint_enabled: wp.array(dtype=wp.bool) | None = None
         """Whether constraint is active, shape [equality_constraint_count], bool."""
-        self.equality_constraint_world = None
+        self.equality_constraint_world: wp.array(dtype=wp.int32) | None = None
         """World index for each constraint, shape [equality_constraint_count], int."""
-        self.equality_constraint_world_start = None
+        self.equality_constraint_world_start: wp.array(dtype=wp.int32) | None = None
         """Start index of the first equality constraint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `world_count - 1` store the start index of the equality constraints belonging to that world.
-        The second-last element (accessible via index `-2`) stores the start index of the global equality constraints (i.e. with
-        world index `-1`) added to the end of the model, and the last element stores the total equality constraint count.
+        The entries at indices ``0`` to ``world_count - 1`` store the start index of
+        the equality constraints belonging to that world. The second-last element
+        (accessible via index ``-2``) stores the start index of the global equality
+        constraints (i.e. with world index ``-1``) added to the end of the model,
+        and the last element stores the total equality constraint count.
 
-        The number of equality constraints in a given world `w` can be computed as:
-            `num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]`.
+        The number of equality constraints in a given world ``w`` can be computed as::
 
-        The total number of global equality constraints can be computed as:
-            `num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]`.
+            num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]
+
+        The total number of global equality constraints can be computed as::
+
+            num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]
         """
 
-        self.constraint_mimic_joint0 = None
+        self.constraint_mimic_joint0: wp.array(dtype=wp.int32) | None = None
         """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
-        self.constraint_mimic_joint1 = None
+        self.constraint_mimic_joint1: wp.array(dtype=wp.int32) | None = None
         """Leader joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
-        self.constraint_mimic_coef0 = None
+        self.constraint_mimic_coef0: wp.array(dtype=wp.float32) | None = None
         """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
-        self.constraint_mimic_coef1 = None
+        self.constraint_mimic_coef1: wp.array(dtype=wp.float32) | None = None
         """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
-        self.constraint_mimic_enabled = None
+        self.constraint_mimic_enabled: wp.array(dtype=wp.bool) | None = None
         """Whether constraint is active, shape [constraint_mimic_count], bool."""
-        self.constraint_mimic_label = []
+        self.constraint_mimic_label: list[str] = []
         """Constraint name/label, shape [constraint_mimic_count], str."""
-        self.constraint_mimic_world = None
+        self.constraint_mimic_world: wp.array(dtype=wp.int32) | None = None
         """World index for each constraint, shape [constraint_mimic_count], int."""
 
-        self.particle_count = 0
+        self.particle_count: int = 0
         """Total number of particles in the system."""
-        self.body_count = 0
+        self.body_count: int = 0
         """Total number of bodies in the system."""
-        self.shape_count = 0
+        self.shape_count: int = 0
         """Total number of shapes in the system."""
-        self.joint_count = 0
+        self.joint_count: int = 0
         """Total number of joints in the system."""
-        self.tri_count = 0
+        self.tri_count: int = 0
         """Total number of triangles in the system."""
-        self.tet_count = 0
+        self.tet_count: int = 0
         """Total number of tetrahedra in the system."""
-        self.edge_count = 0
+        self.edge_count: int = 0
         """Total number of edges in the system."""
-        self.spring_count = 0
+        self.spring_count: int = 0
         """Total number of springs in the system."""
-        self.muscle_count = 0
+        self.muscle_count: int = 0
         """Total number of muscles in the system."""
-        self.articulation_count = 0
+        self.articulation_count: int = 0
         """Total number of articulations in the system."""
-        self.joint_dof_count = 0
+        self.joint_dof_count: int = 0
         """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
-        self.joint_coord_count = 0
+        self.joint_coord_count: int = 0
         """Total number of position degrees of freedom of all joints."""
-        self.joint_constraint_count = 0
+        self.joint_constraint_count: int = 0
         """Total number of joint constraints of all joints."""
-        self.equality_constraint_count = 0
+        self.equality_constraint_count: int = 0
         """Total number of equality constraints in the system."""
-        self.constraint_mimic_count = 0
+        self.constraint_mimic_count: int = 0
         """Total number of mimic constraints in the system."""
 
         # indices of particles sharing the same color
-        self.particle_color_groups = []
+        self.particle_color_groups: list[wp.array(dtype=wp.int32)] = []
         """Coloring of all particles for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of particles sharing the same color."""
-        self.particle_colors = None
+        self.particle_colors: wp.array(dtype=wp.int32) | None = None
         """Color assignment for every particle."""
 
-        self.body_color_groups = []
+        self.body_color_groups: list[wp.array(dtype=wp.int32)] = []
         """Coloring of all rigid bodies for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of bodies sharing the same color."""
-        self.body_colors = None
+        self.body_colors: wp.array(dtype=wp.int32) | None = None
         """Color assignment for every rigid body."""
 
-        self.device = wp.get_device(device)
+        self.device: wp.Device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
@@ -768,11 +808,11 @@ class Model:
         The returned state is initialized with the initial configuration from the model description.
 
         Args:
-            requires_grad (bool, optional): Whether the state variables should have `requires_grad` enabled.
+            requires_grad: Whether the state variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
 
         Returns:
-            State: The state object
+            The state object.
         """
 
         requested = self.get_requested_state_attributes()
@@ -821,12 +861,12 @@ class Model:
         The returned control object is initialized with the control inputs from the model description.
 
         Args:
-            requires_grad (bool, optional): Whether the control variables should have `requires_grad` enabled.
+            requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
-            clone_variables (bool): If True, clone the control input arrays; if False, use references.
+            clone_variables: If True, clone the control input arrays; if False, use references.
 
         Returns:
-            Control: The initialized control object.
+            The initialized control object.
         """
         c = Control()
         if requires_grad is None:
@@ -921,7 +961,7 @@ class Model:
             it defaults to ``builder.rigid_gap`` [m]. To adjust contact gaps [m], set them before calling
             :meth:`ModelBuilder.finalize`.
         Returns:
-            Contacts: The contact object containing collision information.
+            The contact object containing collision information.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
@@ -942,10 +982,10 @@ class Model:
         pipeline.
 
         Args:
-            state (State): The current simulation state.
-            contacts (Contacts | None): The contacts buffer to populate (will be cleared first). If None, a new
+            state: The current simulation state.
+            contacts: The contacts buffer to populate (will be cleared first). If None, a new
                 contacts buffer is allocated via :meth:`contacts`.
-            collision_pipeline (CollisionPipeline | None): Optional collision pipeline override.
+            collision_pipeline: Optional collision pipeline override.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
@@ -985,7 +1025,7 @@ class Model:
         Get the set of requested contact attribute names.
 
         Returns:
-            set[str]: The set of requested contact attributes.
+            The set of requested contact attributes.
         """
         return self._requested_contact_attributes
 
@@ -1047,7 +1087,7 @@ class Model:
     def add_attribute(
         self,
         name: str,
-        attrib: wp.array | list,
+        attrib: wp.array | list[Any],
         frequency: Model.AttributeFrequency | str,
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
@@ -1056,14 +1096,14 @@ class Model:
         Add a custom attribute to the model.
 
         Args:
-            name (str): Name of the attribute.
-            attrib (wp.array | list): The array to add as an attribute. Can be a wp.array for
+            name: Name of the attribute.
+            attrib: The array to add as an attribute. Can be a wp.array for
                 numeric types or a list for string attributes.
-            frequency (Model.AttributeFrequency | str): The frequency of the attribute.
+            frequency: The frequency of the attribute.
                 Can be a Model.AttributeFrequency enum value or a string for custom frequencies.
-            assignment (Model.AttributeAssignment, optional): The assignment category using Model.AttributeAssignment enum.
+            assignment: The assignment category using Model.AttributeAssignment enum.
                 Determines which object will hold the attribute.
-            namespace (str, optional): Namespace for the attribute.
+            namespace: Namespace for the attribute.
                 If None, attribute is added directly to the assignment object (e.g., model.attr_name).
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
 
@@ -1101,10 +1141,10 @@ class Model:
         Get the frequency of an attribute.
 
         Args:
-            name (str): Name of the attribute.
+            name: Name of the attribute.
 
         Returns:
-            Model.AttributeFrequency | str: The frequency of the attribute.
+            The frequency of the attribute.
                 Either a Model.AttributeFrequency enum value or a string for custom frequencies.
 
         Raises:
@@ -1120,10 +1160,10 @@ class Model:
         Get the count for a custom frequency.
 
         Args:
-            frequency (str): The custom frequency (e.g., ``"mujoco:pair"``).
+            frequency: The custom frequency (e.g., ``"mujoco:pair"``).
 
         Returns:
-            int: The count of elements with this frequency.
+            The count of elements with this frequency.
 
         Raises:
             KeyError: If the frequency is not known.
@@ -1139,7 +1179,7 @@ class Model:
         See :ref:`extended_state_attributes` for details.
 
         Returns:
-            list[str]: The list of requested state attributes.
+            The list of requested state attributes.
         """
         attributes = []
 

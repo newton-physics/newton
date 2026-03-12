@@ -204,7 +204,7 @@ def parse_usd(
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
     Returns:
-        dict: Dictionary with the following entries:
+        The returned mapping has the following entries:
 
         .. list-table::
             :widths: 25 75
