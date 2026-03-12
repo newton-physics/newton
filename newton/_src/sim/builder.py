@@ -822,10 +822,9 @@ class ModelBuilder:
 
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
-        When False, uses a fast GPU kernel that reports only the total number of corrected bodies
-        and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).
-        When True, uses a CPU implementation that reports specific issues for each body and updates
-        the ModelBuilder's internal state.
+        When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
+        When True, uses a CPU implementation that reports specific issues for each body.
+        Both modes produce semantically identical results and update the ModelBuilder's internal state.
         Default: False."""
 
         # endregion
@@ -9825,8 +9824,18 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-                    # Directly use the corrected arrays on the Model (avoids double allocation)
-                    # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
+                        # Update builder state to match kernel output
+                        corrected_masses = body_mass_array.numpy()
+                        corrected_inertias = body_inertia_array.numpy()
+                        corrected_inv_masses = body_inv_mass_array.numpy()
+                        corrected_inv_inertias = body_inv_inertia_array.numpy()
+                        for i in range(len(self.body_mass)):
+                            self.body_mass[i] = float(corrected_masses[i])
+                            self.body_inertia[i] = wp.mat33(corrected_inertias[i])
+                            self.body_inv_mass[i] = float(corrected_inv_masses[i])
+                            self.body_inv_inertia[i] = wp.mat33(corrected_inv_inertias[i])
+
+                    # Use the corrected arrays directly on the Model
                     m.body_mass = body_mass_array
                     m.body_inv_mass = body_inv_mass_array
                     m.body_inertia = body_inertia_array
