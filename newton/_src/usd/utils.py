@@ -1871,18 +1871,12 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     if positions is None:
         raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
 
-    def _get_int_attr(name):
-        attr = prim.GetAttribute(name)
-        if attr and attr.HasValue():
-            return attr.Get()
-        return None
-
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
         scales=_get_float_array_attr("scales"),
         opacities=_get_float_array_attr("opacities"),
         sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
-        sh_degree=_get_int_attr("radiance:sphericalHarmonicsDegree"),
+        sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
         min_response=min_response,
     )

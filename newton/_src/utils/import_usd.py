@@ -2333,18 +2333,13 @@ def parse_usd(
 
     # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
     if load_visual_shapes:
-        for gaussian_prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
-            if str(gaussian_prim.GetTypeName()) != "ParticleField3DGaussianSplat":
+        prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
+        for gaussian_prim in prims:
+            if gaussian_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                prims.PruneChildren()
                 continue
 
-            owner = gaussian_prim.GetParent()
-            has_rigid_body_ancestor = False
-            while owner and owner.IsValid():
-                if owner.HasAPI(UsdPhysics.RigidBodyAPI):
-                    has_rigid_body_ancestor = True
-                    break
-                owner = owner.GetParent()
-            if has_rigid_body_ancestor:
+            if str(gaussian_prim.GetTypeName()) != "ParticleField3DGaussianSplat":
                 continue
 
             gaussian_path = str(gaussian_prim.GetPath())
