@@ -35,3 +35,7 @@ repos:
       - id: typos
         args: []
         exclude: \.(js|css)$
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.16.3
+    hooks:
+      - id: gitleaks

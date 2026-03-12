@@ -11,6 +11,9 @@ on:
       - "docs/**"
       - "**.md"
 
+permissions:
+  contents: read
+
 jobs:
   run-tests:
     if: github.repository == 'newton-physics/newton'

@@ -3,6 +3,9 @@ name: Merge Queue - AWS GPU
 on:
   merge_group:
 
+permissions:
+  contents: read
+
 jobs:
   run-tests:
     name: Run GPU Tests
