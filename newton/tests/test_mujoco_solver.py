@@ -3256,6 +3256,59 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
             "Value did not change from initial!",
         )
 
+    def test_eq_solimp_spec_conversion(self):
+        """Test that eq_solimp is correctly written to the MuJoCo spec and saved XML."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        # Articulation 1: revolute joint from world
+        b1 = builder.add_link()
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1])
+
+        # Articulation 2: revolute joint from world (separate chain)
+        b2 = builder.add_link()
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j2])
+
+        # Add a connect constraint between the two bodies
+        builder.add_equality_constraint_connect(
+            body1=b1,
+            body2=b2,
+            anchor=wp.vec3(0.1, 0.0, 0.0),
+        )
+
+        model = builder.finalize()
+
+        # Set custom solimp values
+        custom_solimp = np.array([[0.8, 0.95, 0.001, 0.6, 3.0]], dtype=np.float32)
+        model.mujoco.eq_solimp.assign(wp.array(custom_solimp, dtype=vec5, device=model.device))
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+
+            # Verify compiled mj_model has correct solimp values
+            mj_eq_solimp = solver.mj_model.eq_solimp
+            np.testing.assert_allclose(mj_eq_solimp[0], custom_solimp[0], rtol=1e-5)
+
+            # Parse the saved XML and verify solimp is on the equality constraint
+            tree = ET.parse(xml_path)
+            connect_elems = list(tree.iter("connect"))
+            self.assertEqual(len(connect_elems), 1, "Expected one connect equality constraint")
+            connect = connect_elems[0]
+
+            # Verify solimp attribute is present and correct
+            solimp_str = connect.get("solimp")
+            self.assertIsNotNone(solimp_str, "solimp attribute missing from connect constraint in saved MJCF")
+            solimp_values = [float(x) for x in solimp_str.split()]
+            np.testing.assert_allclose(solimp_values, custom_solimp[0], rtol=1e-4)
+        finally:
+            os.unlink(xml_path)
+
     def test_eq_data_conversion_and_update(self):
         """
         Test validation of eq_data update from Newton equality constraint properties:
