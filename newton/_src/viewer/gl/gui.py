@@ -33,9 +33,9 @@ class UI:
             self.imgui = imgui
             self.giz = imguizmo.im_guizmo
             self.is_available = True
-        except ImportError:
+        except ImportError as _e:
             self.is_available = False
-            print("Warning: imgui_bundle not found. Install with: pip install imgui-bundle")
+            print(f"Warning: imgui_bundle UI unavailable: {_e}")
             return
 
         self.window = window

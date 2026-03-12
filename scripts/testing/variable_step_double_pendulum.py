@@ -1,10 +1,3 @@
-##
-#
-# A simple example of cart-pole simulation with different time steps for each
-# world.
-#
-##
-
 import numpy as np
 import warp as wp
 import newton

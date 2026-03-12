@@ -1,18 +1,6 @@
-##
-#
-# Three ANYmal C robots walking side by side using the CENIC adaptive-step
-# MuJoCo solver. Each world adapts its own timestep independently.
-#
-# The policy runs at ~50 Hz. Inside each policy step, four CENIC physics
-# steps advance each world. Per-world sim time, dt, and error are shown
-# in a wiping status grid in the terminal.
-#
-# Run: uv run --extra examples --extra torch-cu12 scripts/cenic_step_anymal_walk.py
-#
-##
-
 import sys
 
+import numpy as np
 import torch
 import warp as wp
 
@@ -24,6 +12,9 @@ import newton.utils
 from newton import GeoType, State
 
 num_worlds = 3
+
+# Policy fires every POLICY_DT seconds of simulation time (zero-order hold).
+POLICY_DT = 0.002  # 2 ms
 
 # Joint index remapping between lab convention and MuJoCo convention
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
@@ -43,12 +34,7 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
 def compute_obs_for_world(world, actions_w, state, joint_pos_initial, torch_device,
                           lab_indices, gravity_vec, command, q_offset, qd_offset,
                           coords_per_world, dofs_per_world):
-    """Build the policy observation for a single world.
-
-    Slices the flat joint arrays using per-world offsets. This involves a
-    CPU transfer (unavoidable with a PyTorch policy) but runs outside the
-    physics hot path.
-    """
+    """Build the policy observation for a single world."""
     q  = q_offset
     qd = qd_offset
 
@@ -67,10 +53,6 @@ def compute_obs_for_world(world, actions_w, state, joint_pos_initial, torch_devi
 
     return torch.cat([vel_b, ang_vel_b, grav, command, joint_pos_rel, joint_vel_rel, actions_w], dim=1)
 
-
-# ---------------------------------------------------------------------------
-# Build the model — single robot template, replicated 3 times side by side
-# ---------------------------------------------------------------------------
 
 device = wp.get_device()
 torch_device = wp.device_to_torch(device)
@@ -118,21 +100,13 @@ for i in range(len(robot.joint_target_ke)):
     robot.joint_target_ke[i] = 150
     robot.joint_target_kd[i] = 5
 
-# Replicate side by side along X, spaced 1.5 m apart.
-# SolverMuJoCoCENIC requires separate_worlds=True so all bodies need an
-# explicit world index — replicate() handles that automatically.
 scene = newton.ModelBuilder()
 scene.replicate(robot, num_worlds, spacing=(1.5, 0.0, 0.0))
 scene.add_ground_plane()
 model = scene.finalize()
 
-# Per-world layout (same for every world since they're identical replicas)
-coords_per_world = model.joint_coord_count // num_worlds  # free joint (7) + 12 revolute = 19
-dofs_per_world   = model.joint_dof_count   // num_worlds  # free joint (6) + 12 revolute = 18
-
-# ---------------------------------------------------------------------------
-# Create the CENIC solver
-# ---------------------------------------------------------------------------
+coords_per_world = model.joint_coord_count // num_worlds
+dofs_per_world   = model.joint_dof_count   // num_worlds
 
 solver = newton.solvers.SolverMuJoCoCENIC(
     model,
@@ -153,36 +127,25 @@ control = model.control()
 
 newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-# ---------------------------------------------------------------------------
-# Load the walking policy
-# ---------------------------------------------------------------------------
-
 policy = torch.jit.load(
     str(asset_path / "rl_policies" / "anymal_walking_policy_physx.pt"),
     map_location=torch_device,
 )
 
-# Initial joint positions are identical for all worlds — read from world 0
 joint_pos_initial = torch.tensor(
     state_0.joint_q[7:coords_per_world],
     device=torch_device, dtype=torch.float32,
 ).unsqueeze(0)
 
-# Per-world action history, shape (num_worlds, 12)
 actions = torch.zeros(num_worlds, 12, device=torch_device, dtype=torch.float32)
 
 lab_indices    = torch.tensor(lab_to_mujoco, device=torch_device)
 mujoco_indices = torch.tensor(mujoco_to_lab, device=torch_device)
 gravity_vec    = torch.tensor([[0.0, 0.0, -1.0]], device=torch_device, dtype=torch.float32)
 command        = torch.zeros((1, 3), device=torch_device, dtype=torch.float32)
-command[0, 0]  = 1.0  # walk forward
+command[0, 0]  = 1.0
 
-# Pre-allocated tensor for all worlds' joint targets (avoids per-step allocation)
 all_targets = torch.zeros(num_worlds * dofs_per_world, device=torch_device, dtype=torch.float32)
-
-# ---------------------------------------------------------------------------
-# Wiping status grid
-# ---------------------------------------------------------------------------
 
 LOG_EVERY_N_STEPS = 5
 _grid_lines_written = 0
@@ -227,10 +190,6 @@ def print_status_grid(solver, step):
     _grid_lines_written = len(lines)
 
 
-# ---------------------------------------------------------------------------
-# Visualizer
-# ---------------------------------------------------------------------------
-
 print(
     f"CENIC ready — {num_worlds} worlds  tol={solver._tol:.1e}  "
     f"dt_init={solver._dt.numpy()[0]:.4f}  coords/world={coords_per_world}  dofs/world={dofs_per_world}",
@@ -241,13 +200,14 @@ viewer = newton.viewer.ViewerGL(headless=False)
 viewer.set_model(model)
 
 t          = 0.0
-frame_dt   = 1.0 / 50
 outer_step = 0
 
+next_policy_time = np.zeros(num_worlds, dtype=np.float32)
+
 while viewer.is_running():
+
     with wp.ScopedTimer("policy", active=False):
         with torch.no_grad():
-            # Run the policy separately for each world, collect all targets
             for w in range(num_worlds):
                 q_offset  = w * coords_per_world
                 qd_offset = w * dofs_per_world
@@ -262,7 +222,6 @@ while viewer.is_running():
 
                 rearranged = torch.gather(act_w, 1, mujoco_indices.unsqueeze(0))
                 targets    = joint_pos_initial + 0.5 * rearranged
-                # Free-joint DOFs (6 zeros) + 12 revolute joint targets
                 all_targets[w * dofs_per_world : (w + 1) * dofs_per_world] = torch.cat([
                     torch.zeros(6, device=torch_device, dtype=torch.float32),
                     targets.squeeze(0),
@@ -271,13 +230,16 @@ while viewer.is_running():
             wp.copy(control.joint_target_pos, wp.from_torch(all_targets, dtype=wp.float32))
 
     with wp.ScopedTimer("simulate", active=False):
-        for _ in range(4):
+        while True:
             state_0.clear_forces()
             viewer.apply_forces(state_0)
             solver.step(state_0, state_1, control, contacts=None)
             state_0, state_1 = state_1, state_0
+            if np.all(solver.sim_time.numpy() >= next_policy_time):
+                break
 
-        t += frame_dt
+        next_policy_time += POLICY_DT
+        t          += POLICY_DT
         outer_step += 1
 
     if outer_step % LOG_EVERY_N_STEPS == 0:

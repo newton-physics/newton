@@ -1,1 +1,83 @@
+## CENIC simulation loop pattern
+
+All scripts using `SolverMuJoCoCENIC` must use `step_dt` — never reimplement the inner loop manually.
+
+```python
+DT = 0.002  # 500 Hz — default control and render period [s]
+
+while viewer.is_running():
+    state_0, state_1 = solver.step_dt(
+        DT, state_0, state_1, control,
+        apply_forces=viewer.apply_forces,
+    )
+    # control / policy updates go here — once per DT boundary
+    t += DT
+    viewer.render(state_0, t)  # begin_frame(t) + log_state + end_frame
+```
+
+`step_dt` owns the inner loop, the GPU boundary kernels, `clear_forces`, and `apply_forces` ordering. Never call `viewer.begin_frame`, policy updates, or `for _ in range(N)` inside the inner loop.
+
+---
+
+## CRITICAL: Zero device transfers in the hot path
+
+**Every `.numpy()` call on a GPU array is a full CUDA device synchronization.** In the inner physics loop this fires on every substep — thousands of times per frame during dense contact. This is the single most destructive performance pattern in CENIC scripts.
+
+### The rule: `.numpy()` must never appear inside the inner physics loop.
+
+❌ **Wrong** — stalls the GPU on every substep, O(N) data transferred per stall:
+```python
+while True:
+    solver.step(...)
+    if np.all(solver.sim_time.numpy() >= next_time):  # FULL GPU SYNC + N floats
+        break
+```
+
+✅ **Correct** — all logic stays on GPU; exactly one `int32` exits the device, once per DT boundary:
+```python
+# This is what step_dt does internally — do not reimplement it.
+wp.launch(_boundary_reset, dim=1, inputs=[flag])
+wp.launch(_boundary_check, dim=n, inputs=[sim_time, next_time, flag])
+if flag.numpy()[0]:   # 1 int32, fires once per render frame
+    break
+```
+
+### Why N worlds do not hurt physics throughput — but do hurt render throughput
+
+MuJoCo Warp batches all N worlds into a single GPU kernel per step. For small N (≤ ~64 worlds of simple geometry) the GPU is not saturated — physics throughput scales sub-linearly with N, approaching free.
+
+The viewer is the bottleneck at large N. `log_state` calls `wp.synchronize()` once per frame to flush the VBO copy. With N worlds doing more GPU work, that sync takes longer. **For data collection at N > 1, always run `--headless`.**
+
+### Acceptable `.numpy()` call-sites (outside the inner loop)
+
+- `_print_status()` — status grid, gated behind `step % LOG_EVERY`
+- Startup banners before the loop (e.g. reading `solver._dt.numpy()` once)
+- End-of-run summaries (wall time, FPS)
+
+Any `.numpy()` inside `while True: … solver.step(…)` must be rejected in review.
+
+---
+
+## dt parameter rules
+
+`dt_min` must always be strictly less than `dt_init`. If `dt_min >= dt_init`, any rejected step clamps dt *upward*, which is physically wrong and causes oscillation.
+
+```python
+# Correct relationship:  dt_min < dt_init <= dt_max
+solver = SolverMuJoCoCENIC(
+    model,
+    dt_init=1e-3,
+    dt_min=5e-4,   # floor — must be < dt_init
+    dt_max=0.008,
+)
+```
+
+---
+
+## Viewer sim-time integration
+
+`viewer.render(state, sim_time)` drives the camera and UI from **simulation time**, not wall clock. This prevents camera jumps during dense contact substeps where many physics steps fire between renders. No additional timing logic is needed in scripts — `render()` handles it.
+
+Multi-world scripts (`--num-worlds N`) produce diverging trajectories even from identical initial conditions. This is expected: GPU floating-point reductions are non-associative, causing per-world RMS error estimates to differ by ULP, which eventually leads to different accept/reject decisions and permanently diverging trajectories. Use `--num-worlds 1` for visualization; use `--headless` for data collection.
+
 @AGENTS.md

@@ -242,6 +242,13 @@ class ViewerGL(ViewerBase):
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
 
+        # Sim-time delta used for camera/wind integration.
+        # Updated each begin_frame() call so _update_camera uses sim-time
+        # steps rather than wall-clock steps (avoids jumpy camera when physics
+        # runs slower than real-time, e.g. during dense contact resolution).
+        self._last_sim_time: float = 0.0
+        self._sim_dt: float = 0.0
+
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
             self.ui = UI(self.renderer.window)
@@ -921,15 +928,20 @@ class ViewerGL(ViewerBase):
         self.log_lines("picking_line", starts, ends, colors, hidden=False)
 
     @override
-    def begin_frame(self, time: float):
+    def begin_frame(self, sim_time: float):
         """
         Begin a new frame (calls parent implementation).
 
         Args:
-            time: Current simulation time.
+            sim_time: Current simulation time [s].
         """
-        super().begin_frame(time)
+        super().begin_frame(sim_time)
         self._gizmo_log = {}
+
+        # Compute the simulation-time delta for this frame so _update_camera
+        # and wind integrate at sim-time speed, not wall-clock speed.
+        self._sim_dt = max(0.0, sim_time - self._last_sim_time)
+        self._last_sim_time = sim_time
 
     @override
     def end_frame(self):
@@ -945,6 +957,32 @@ class ViewerGL(ViewerBase):
         """
         self._update()
 
+    def render(self, state: nt.State, sim_time: float) -> None:
+        """Render one frame at the given simulation time.
+
+        Convenience wrapper for the ``begin_frame`` / ``log_state`` /
+        ``end_frame`` sequence.  Pair with :meth:`step_dt
+        <newton.solvers.SolverMuJoCoCENIC.step_dt>` so the viewer is driven
+        by simulation time in fixed increments:
+
+        .. code-block:: python
+
+            while viewer.is_running():
+                state_0, state_1 = solver.step_dt(DT, state_0, state_1, control,
+                                                   apply_forces=viewer.apply_forces)
+                t += DT
+                viewer.render(state_0, t)
+
+        Args:
+            state: The simulation state to display.
+            sim_time: Current simulation time [s].  Passed to
+                :meth:`begin_frame` so the camera integrates over the correct
+                simulation-time delta.
+        """
+        self.begin_frame(sim_time)
+        self.log_state(state)
+        self.end_frame()
+
     @override
     def apply_forces(self, state: nt.State):
         """
@@ -959,16 +997,22 @@ class ViewerGL(ViewerBase):
         # Apply wind forces
         self.wind._apply_wind_force(state)
 
+
     def _update(self):
         """
         Internal update: process events, update camera, wind, render scene and UI.
         """
         self.renderer.update()
 
-        # Integrate camera motion with viewer-owned timing
+        # Integrate camera motion. Prefer sim-time delta (set by begin_frame)
+        # so camera movement scales with simulation time rather than wall-clock
+        # time. This prevents jumpy camera when physics takes longer than DT
+        # to compute (e.g. dense contact). Fall back to wall-clock when
+        # sim_dt is zero (first frame or viewer used without begin_frame).
         now = time.perf_counter()
-        dt = max(0.0, min(0.1, now - self._last_time))
+        wall_dt = max(0.0, min(0.1, now - self._last_time))
         self._last_time = now
+        dt = self._sim_dt if self._sim_dt > 0.0 else wall_dt
         self._update_camera(dt)
 
         self.wind.update(dt)
@@ -1309,16 +1353,19 @@ class ViewerGL(ViewerBase):
             symbol: Key symbol.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
-            return
-
         try:
             import pyglet
         except Exception:
             return
 
+        # H always toggles UI — must be handled before the is_capturing check
+        # so it works even when an imgui widget has keyboard focus.
         if symbol == pyglet.window.key.H:
             self.show_ui = not self.show_ui
+            return
+
+        if self.ui and self.ui.is_capturing():
+            return
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
