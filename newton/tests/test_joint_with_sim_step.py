@@ -55,7 +55,7 @@ class Sim:
         self.control = control
 
 
-class TestJointSteppingBase:
+class TestJointWithSimStepBase:
     def _create_solver(self, model):
         raise NotImplementedError
 
@@ -236,7 +236,7 @@ class TestJointSteppingBase:
         return force_arr
 
 
-class TestJointArmatureBase(TestJointSteppingBase):
+class TestJointArmatureBase(TestJointWithSimStepBase):
     def _test_armature_reduces_joint_speed(self, joint_type: str, motion_axis: int):
         """Applying the same force with higher armature yields lower joint speed.
 
@@ -367,7 +367,7 @@ class TestJointArmatureBase(TestJointSteppingBase):
         self._test_armature_reduces_joint_speed(joint_type="ball", motion_axis=2)
 
 
-class TestJointLimitBase(TestJointSteppingBase):
+class TestJointLimitBase(TestJointWithSimStepBase):
     def _expected_limit_qd(
         self, ke: float, kd: float, q: float, qd: float, limit_q: float, dt: float, inertia: float
     ) -> float:
@@ -596,7 +596,7 @@ class TestJointLimitBase(TestJointSteppingBase):
         self._test_joint_limits(joint_type="ball", motion_axis=2)
 
 
-class TestJointFrictionBase(TestJointSteppingBase):
+class TestJointFrictionBase(TestJointWithSimStepBase):
     def _test_joint_friction(self, joint_type: str, motion_axis: int):
         """Verify that joint friction reduces velocity compared to the frictionless case.
 
@@ -803,7 +803,7 @@ class TestJointFrictionMuJoCo(TestJointFrictionBase, unittest.TestCase):
         )
 
 
-class TestJointDriveBase(TestJointSteppingBase):
+class TestJointDriveBase(TestJointWithSimStepBase):
     def _drive_force(self, target_ke: float, target_kd: float, q: float, qd: float, target_pos: float) -> float:
         """Compute the drive force for a position-controlled joint.
 
