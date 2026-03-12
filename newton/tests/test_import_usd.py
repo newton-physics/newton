@@ -8116,17 +8116,18 @@ class TestResolveUsdFromUrl(unittest.TestCase):
             resp.content = layer.encode("utf-8")
             return resp
 
-        # Map local file basename -> layer string so the mock stage can return it.
+        # Map cache-relative path -> layer string so the mock stage can return it.
         file_to_layer = {}
+        tmpdir = tempfile.mkdtemp()
+
+        def _local_key(path):
+            return os.path.relpath(path, tmpdir).replace(os.sep, "/")
 
         def fake_stage_open(path, _load_policy):
-            basename = os.path.basename(path)
-            layer_str = file_to_layer.get(basename, "")
+            layer_str = file_to_layer.get(_local_key(path), "")
             stage = mock.MagicMock()
             stage.GetRootLayer().ExportToString.return_value = layer_str
             return stage
-
-        tmpdir = tempfile.mkdtemp()
 
         # Track writes so we can populate file_to_layer when the function
         # writes a downloaded file to disk.
@@ -8135,10 +8136,10 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         def tracking_open(path, mode="r", **kwargs):
             fh = real_open(path, mode, **kwargs)
             if "w" in mode or "b" in mode:
-                basename = os.path.basename(path)
+                key = _local_key(path)
                 for url, layer in url_to_layer.items():
-                    if url.endswith(basename):
-                        file_to_layer[basename] = layer
+                    if url.endswith(key):
+                        file_to_layer[key] = layer
                         break
             return fh
 
@@ -8224,6 +8225,27 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
         a_downloads = [u for u in downloaded_urls if u.endswith("a.usd")]
         self.assertEqual(len(a_downloads), 1)
+
+    def test_nested_subdirectory_references(self):
+        """References in subdirectories preserve correct local paths."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+            "https://example.com/assets/robots/robot.usd": "references = @./collisions.usd@",
+            "https://example.com/assets/robots/collisions.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/robots/collisions.usd", downloaded_urls)
+        # collisions.usd must be inside robots/, not at cache root
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "robots", "collisions.usd")))
+        self.assertFalse(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
+
+    def test_path_traversal_rejected(self):
+        """References with .. that escape the target folder are skipped."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @../secret.usd@",
+        }
+        _result, tmpdir, _downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
 
 
 if __name__ == "__main__":

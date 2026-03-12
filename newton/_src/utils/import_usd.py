@@ -19,10 +19,12 @@ import collections
 import datetime
 import itertools
 import os
+import posixpath
 import re
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urljoin
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -2792,7 +2794,8 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
-    response = requests.get(url, allow_redirects=True)
+    request_timeout_s = 30
+    response = requests.get(url, allow_redirects=True, timeout=request_timeout_s)
     if response.status_code != 200:
         raise RuntimeError(f"Failed to download USD file. Status code: {response.status_code}")
     file = response.content
@@ -2818,39 +2821,43 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             print(f"Exported USDA file to {usda_filename}.")
 
     # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
-    downloaded = set()
-    pending = collections.deque()
+    # Each entry in the queue is (resolved_url, cache_relative_path).
+    downloaded_urls: set[str] = set()
+    pending: collections.deque[tuple[str, str]] = collections.deque()
 
-    def _extract_references(layer_str, ref_url_folder):
+    def _extract_references(layer_str, parent_url_folder, parent_local_folder):
         """Extract reference paths from a USD layer string and queue them for download."""
         for match in re.finditer(r"references.=.@(.*?)@", layer_str):
-            refname = match.group(1)
-            if refname.startswith("./"):
-                refname = refname[2:]
-            if refname not in downloaded:
-                pending.append((refname, ref_url_folder))
+            raw_ref = match.group(1)
+            ref_url = urljoin(parent_url_folder + "/", raw_ref)
+            local_path = os.path.normpath(os.path.join(parent_local_folder, raw_ref))
+            if os.path.isabs(local_path) or local_path.startswith(".."):
+                print(f"Skipping reference that escapes target folder: {raw_ref}")
+                continue
+            if ref_url not in downloaded_urls:
+                pending.append((ref_url, local_path))
 
-    _extract_references(stage_str, url_folder)
+    _extract_references(stage_str, url_folder, "")
 
     while pending:
-        refname, ref_url_folder = pending.popleft()
-        if refname in downloaded:
+        ref_url, local_path = pending.popleft()
+        if ref_url in downloaded_urls:
             continue
-        downloaded.add(refname)
+        downloaded_urls.add(ref_url)
         try:
-            response = requests.get(f"{ref_url_folder}/{refname}", allow_redirects=True)
+            response = requests.get(ref_url, allow_redirects=True, timeout=request_timeout_s)
             if response.status_code != 200:
-                print(f"Failed to download reference {refname}. Status code: {response.status_code}")
+                print(f"Failed to download reference {local_path}. Status code: {response.status_code}")
                 continue
             file = response.content
-            refdir = os.path.dirname(refname)
-            if refdir:
-                os.makedirs(os.path.join(target_folder_name, refdir), exist_ok=True)
-            ref_filename = os.path.join(target_folder_name, refname)
+            local_dir = os.path.dirname(local_path)
+            if local_dir:
+                os.makedirs(os.path.join(target_folder_name, local_dir), exist_ok=True)
+            ref_filename = os.path.join(target_folder_name, local_path)
             if not os.path.exists(ref_filename):
                 with open(ref_filename, "wb") as f:
                     f.write(file)
-            print(f"Downloaded USD reference {refname} to {ref_filename}.")
+            print(f"Downloaded USD reference {local_path} to {ref_filename}.")
 
             ref_stage = Usd.Stage.Open(ref_filename, Usd.Stage.LoadNone)
             ref_stage_str = ref_stage.GetRootLayer().ExportToString()
@@ -2858,16 +2865,19 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             if export_usda:
                 ref_base = os.path.basename(ref_filename)
                 ref_base_name = dot.join(ref_base.split(dot)[:-1])
-                usda_filename = os.path.join(target_folder_name, ref_base_name + ".usda")
+                usda_filename = (
+                    os.path.join(target_folder_name, local_dir, ref_base_name + ".usda")
+                    if local_dir
+                    else os.path.join(target_folder_name, ref_base_name + ".usda")
+                )
                 with open(usda_filename, "w") as f:
                     f.write(ref_stage_str)
                     print(f"Exported USDA file to {usda_filename}.")
 
-            # Recurse: resolve references relative to this file's URL folder
-            child_url_folder = ref_url_folder + "/" + refdir if refdir else ref_url_folder
-            _extract_references(ref_stage_str, child_url_folder)
+            # Recurse: resolve references relative to this file's location
+            _extract_references(ref_stage_str, posixpath.dirname(ref_url), local_dir)
         except Exception:
-            print(f"Failed to download {refname}.")
+            print(f"Failed to download {local_path}.")
     return target_filename
 
 
