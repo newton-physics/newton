@@ -261,8 +261,6 @@ class TestImportMjcfBasic(unittest.TestCase):
 
     def test_site_euler_sequence_matches_mujoco(self):
         """Non-default compiler eulerseq should match MuJoCo site orientation."""
-        import mujoco
-
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
     <compiler angle="radian" eulerseq="zyx"/>
@@ -281,7 +279,9 @@ class TestImportMjcfBasic(unittest.TestCase):
         site_idx = site_indices[0]
         newton_xyzw = np.array(builder.shape_transform[site_idx][3:7], dtype=np.float64)
 
-        native_wxyz = np.array(mujoco.MjModel.from_xml_string(mjcf_content).site_quat[0], dtype=np.float64)
+        native_wxyz = np.array(
+            SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf_content).site_quat[0], dtype=np.float64
+        )
         native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
 
         same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
@@ -1256,7 +1256,7 @@ class TestImportMjcfGeometry(unittest.TestCase):
             builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
-        import mujoco
+        mujoco = SolverMuJoCo._mujoco
 
         tendon_names = [
             mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, i) for i in range(solver.mj_model.ntendon)
