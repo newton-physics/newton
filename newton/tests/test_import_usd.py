@@ -8120,6 +8120,13 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         file_to_layer = {}
         tmpdir = tempfile.mkdtemp()
 
+        # Precompute exact local-key -> layer mapping from URLs.
+        base_url_dir = base_url.rsplit("/", 1)[0]
+        local_key_to_layer = {}
+        for url, layer in url_to_layer.items():
+            if url.startswith(base_url_dir + "/"):
+                local_key_to_layer[url[len(base_url_dir) + 1 :]] = layer
+
         def _local_key(path):
             return os.path.relpath(path, tmpdir).replace(os.sep, "/")
 
@@ -8137,10 +8144,8 @@ class TestResolveUsdFromUrl(unittest.TestCase):
             fh = real_open(path, mode, **kwargs)
             if "w" in mode or "b" in mode:
                 key = _local_key(path)
-                for url, layer in url_to_layer.items():
-                    if url.endswith(key):
-                        file_to_layer[key] = layer
-                        break
+                if key in local_key_to_layer:
+                    file_to_layer[key] = local_key_to_layer[key]
             return fh
 
         mock_requests = mock.MagicMock()
