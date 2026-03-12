@@ -1047,24 +1047,24 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
 
 
 # ---------------------------------------------------------------------------
-# Test 11: Revolute loop joint — out-of-plane stability
+# Test 11: Revolute loop joint -- out-of-plane stability
 #
-# A 2-link closed loop where one in-tree joint is a BALL joint (3 rotational
-# DOFs).  The loop is closed by a revolute loop joint around the Z axis.
-# Gravity has a Z component (perpendicular to the XY mechanism plane) that
-# tries to buckle the mechanism out of plane.
+# A four-bar linkage (world + crank + coupler + rocker) where the world->crank
+# joint is a BALL (3 rotational DOFs), placed diagonally from the revolute loop
+# closure at rocker->world.  The remaining two in-tree joints (crank->coupler,
+# coupler->rocker) are revolute Z.  Gravity has a Z component that tries to
+# buckle the mechanism out of plane.
 #
 # Why this cannot pass by accident:
-#   - The ball joint in the tree gives the second link X- and Y-rotation DOFs
-#     that have no in-tree constraint.  Only the loop closure can lock them.
+#   - The ball joint at world->crank gives the crank X/Y rotation DOFs that
+#     propagate through the revolute chain to the rocker.  Only the loop
+#     closure's second CONNECT can lock them.
 #   - With correct 2xCONNECT (revolute): the second CONNECT point along the Z
-#     axis prevents the body from tilting around X or Y at the ground pivot.
-#     Combined with the in-tree chain, the mechanism is forced planar and the
-#     Z displacement of both bodies stays near zero.
+#     axis constrains the out-of-plane rotation DOFs.  The mechanism is forced
+#     planar and Z displacement stays near zero.
 #   - With wrong 1xCONNECT (ball behaviour): only translational DOFs are
-#     constrained at the ground pivot.  The X/Y rotation DOFs from the ball
-#     joint are completely unconstrained, so the persistent Z-gravity buckles
-#     the mechanism out of the XY plane and the Z displacement grows.
+#     constrained at the ground pivot.  The crank's out-of-plane DOFs are
+#     unconstrained, so Z-gravity buckles the entire mechanism dramatically.
 #   - With wrong WELD: the in-plane revolute DOF is also locked and the
 #     mechanism cannot swing at all, failing the in-plane displacement check.
 # ---------------------------------------------------------------------------
@@ -1072,12 +1072,12 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
 
 def test_revolute_loop_joint(test, device, solver_fn):
     # Proper four-bar linkage: 4 bodies (world + crank + coupler + rocker),
-    # 4 joints (3 in-tree + 1 loop).  Same geometry as test_fourbar_linkage
-    # but with the coupler->rocker joint replaced by a BALL joint.
-    # This adds 2 extra rotational DOFs (X, Y) that are NOT constrained by
-    # any in-tree joint — only a correct revolute loop closure (2xCONNECT)
-    # can lock them.  A single CONNECT would leave these DOFs free, causing
-    # out-of-plane buckling under Z-gravity.
+    # 4 joints (3 in-tree + 1 loop).  The world->crank joint is a BALL,
+    # placed diagonally from the revolute loop closure at rocker->world.
+    # This gives the crank 3 rotational DOFs (X, Y, Z) where only Z is the
+    # intended four-bar motion.  The 2xCONNECT from the revolute loop must
+    # constrain the out-of-plane DOFs; a single CONNECT would leave them
+    # free, causing dramatic buckling under Z-gravity.
     a_link, b_link, c_link, d_link = 0.2, 0.5, 0.4, 0.5
     link_thickness = 0.02
 
@@ -1110,11 +1110,13 @@ def test_revolute_loop_joint(test, device, solver_fn):
     builder.add_shape_box(coupler_body, hx=b_link / 2, hy=link_thickness, hz=link_thickness, cfg=cfg)
     builder.add_shape_box(rocker_body, hx=c_link / 2, hy=link_thickness, hz=link_thickness, cfg=cfg)
 
-    # Joint 0: world -> crank (revolute Z)
-    j0 = builder.add_joint_revolute(
+    # Joint 0: world -> crank via BALL — diagonal to the loop joint.
+    # The ball joint gives the crank X/Y rotation DOFs that propagate through
+    # the revolute chain to the rocker.  Only the 2nd CONNECT from the loop
+    # closure can constrain these; a single CONNECT leaves them free.
+    j0 = builder.add_joint_ball(
         parent=-1,
         child=crank_body,
-        axis=(0, 0, 1),
         parent_xform=wp.transform_identity(),
         child_xform=wp.transform(wp.vec3(-a_link / 2, 0, 0), wp.quat_identity()),
     )
@@ -1129,14 +1131,11 @@ def test_revolute_loop_joint(test, device, solver_fn):
         ),
         child_xform=wp.transform(wp.vec3(-b_link / 2, 0, 0), wp.quat_identity()),
     )
-    # Joint 2: coupler -> rocker via BALL — introduces X/Y rotation DOFs that
-    # only a correct revolute loop closure can constrain.  With a revolute here
-    # instead, the mechanism would be planar by construction and a single
-    # CONNECT would suffice — the ball joint is what makes the 2nd CONNECT
-    # necessary.
-    j2 = builder.add_joint_ball(
+    # Joint 2: coupler -> rocker (revolute Z)
+    j2 = builder.add_joint_revolute(
         parent=coupler_body,
         child=rocker_body,
+        axis=(0, 0, 1),
         parent_xform=wp.transform(
             wp.vec3(b_link / 2, 0, 0),
             wp.quat_from_axis_angle(wp.vec3(0, 0, 1), float(delta_rocker)),
@@ -1171,9 +1170,11 @@ def test_revolute_loop_joint(test, device, solver_fn):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
     control = model.control()
 
-    # Give an initial angular velocity so the mechanism is in motion
+    # Give an initial angular velocity so the mechanism is in motion.
+    # j0 is a ball joint (3 DOFs: wx, wy, wz); set wz for in-plane spin.
     qd = state.joint_qd.numpy()
-    qd[int(model.joint_qd_start.numpy()[j0])] = 2.0 * np.pi  # 1 rev/s
+    qd_start = int(model.joint_qd_start.numpy()[j0])
+    qd[qd_start + 2] = 2.0 * np.pi  # wz = 1 rev/s
     state.joint_qd.assign(qd)
 
     sim_dt = 5e-4
@@ -1191,8 +1192,8 @@ def test_revolute_loop_joint(test, device, solver_fn):
 
     # With correct revolute loop (2xCONNECT), Z stays ~0 despite Z gravity,
     # because the second CONNECT constrains the ball joint's out-of-plane DOFs.
-    # With only 1 CONNECT the ball joint would allow out-of-plane rotation and
-    # the rocker would buckle under Z-gravity.
+    # With only 1 CONNECT the crank's out-of-plane DOFs are free and the
+    # entire mechanism buckles dramatically under Z-gravity.
     test.assertLess(
         max_z,
         0.02,
