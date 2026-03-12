@@ -1678,56 +1678,56 @@ for device in devices:
             use_mujoco_cpu=False,
         )
 
-    # Kinematic loop test (CUDA only, uses CUDA graph for performance)
-    if device.is_cuda:
+    # Kinematic loop and loop joint constraint tests (MuJoCo only)
+    loop_solvers = {
+        "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
+            model, use_mujoco_cpu=True, iterations=100, ls_iterations=50
+        ),
+        "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
+            model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
+        ),
+    }
+    for solver_name, solver_fn in loop_solvers.items():
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        if not device.is_cuda and solver_name == "mujoco_warp":
+            continue
+
         add_function_test(
             TestPhysicsValidation,
-            "test_fourbar_linkage_mujoco_warp",
+            f"test_fourbar_linkage_{solver_name}",
             test_fourbar_linkage,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(
-                model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
-            ),
+            solver_fn=solver_fn,
         )
         add_function_test(
             TestPhysicsValidation,
-            "test_fourbar_linkage_loop_joint_mujoco_warp",
+            f"test_fourbar_linkage_loop_joint_{solver_name}",
             test_fourbar_linkage,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(
-                model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
-            ),
+            solver_fn=solver_fn,
             use_loop_joint=True,
         )
-
-    # Loop joint constraint type tests (CUDA only)
-    if device.is_cuda:
         add_function_test(
             TestPhysicsValidation,
-            "test_revolute_loop_joint_mujoco_warp",
+            f"test_revolute_loop_joint_{solver_name}",
             test_revolute_loop_joint,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(
-                model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
-            ),
+            solver_fn=solver_fn,
         )
         add_function_test(
             TestPhysicsValidation,
-            "test_ball_loop_joint_mujoco_warp",
+            f"test_ball_loop_joint_{solver_name}",
             test_ball_loop_joint,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(
-                model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
-            ),
+            solver_fn=solver_fn,
         )
         add_function_test(
             TestPhysicsValidation,
-            "test_fixed_loop_joint_mujoco_warp",
+            f"test_fixed_loop_joint_{solver_name}",
             test_fixed_loop_joint,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(
-                model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
-            ),
+            solver_fn=solver_fn,
         )
 
 if __name__ == "__main__":
