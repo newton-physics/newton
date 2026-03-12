@@ -22,6 +22,7 @@ import warp as wp
 
 import newton
 from newton import Heightfield
+from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
 _cuda_available = wp.is_cuda_available()
@@ -223,7 +224,7 @@ class TestHeightfield(unittest.TestCase):
     def test_solver_mujoco_hfield(self):
         """Test converting Newton model with heightfield to MuJoCo."""
         try:
-            import mujoco  # noqa: F401
+            SolverMuJoCo.import_mujoco()
         except ImportError:
             self.skipTest("MuJoCo not installed")
 
@@ -248,7 +249,7 @@ class TestHeightfield(unittest.TestCase):
     def test_heightfield_collision(self):
         """Test that a sphere doesn't fall through a heightfield."""
         try:
-            import mujoco  # noqa: F401
+            SolverMuJoCo.import_mujoco()
         except ImportError:
             self.skipTest("MuJoCo not installed")
 
