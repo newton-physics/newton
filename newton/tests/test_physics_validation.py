@@ -1284,7 +1284,7 @@ def test_ball_loop_joint(test, device, solver_fn):
     # This creates nonzero angular momentum about the Y (gravity) axis,
     # so the pendulum orbits in a conical/rosette pattern instead of
     # swinging in a plane.  A wrong 2xCONNECT (revolute) would confine
-    # the motion to a plane, killing the orbit.
+    # the motion to a single plane, killing the orbit.
     q = state.joint_q.numpy()
     q_start = int(model.joint_q_start.numpy()[j_free])
     q[q_start + 0] = 0.2  # offset x (tilt pendulum sideways)

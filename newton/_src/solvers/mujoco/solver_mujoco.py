@@ -4718,9 +4718,8 @@ class SolverMuJoCo(SolverBase):
                 # so that spec.compile() auto-computes it from the body positions
                 # at compile time.  Manual relpose computation is fragile because
                 # the joint xforms define anchor offsets in body-local frames
-                # while the WELD relpose is measured relative to the anchor's
-                # world position — these differ whenever the anchor is not at
-                # the body origin.
+                # while the WELD relpose is measured in body2's local frame —
+                # these differ whenever the anchor is not at the body origin.
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = True
@@ -4762,7 +4761,8 @@ class SolverMuJoCo(SolverBase):
             elif lin_count == 0 and ang_count >= 2:
                 # Multi-hinge or ball loop joint: 1x CONNECT constrains 3
                 # translational DOFs, leaving all rotational DOFs free.
-                # Exact for 3 angular DOFs (ball), slight underconstrain for 2.
+                # Exact for 3 angular DOFs (ball).  For 2 angular DOFs
+                # (universal), this underconstrains by 1 rotational DOF.
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = True

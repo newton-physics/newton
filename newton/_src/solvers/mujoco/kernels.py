@@ -2101,7 +2101,7 @@ def convert_qfrc_actuator_from_mj_kernel(
     """
     worldid, jntid = wp.tid()
 
-    # Skip loop joints — they have no MuJoCo qpos/qvel entries
+    # Skip loop joints — they have no MuJoCo DOF entries
     q_i = mj_q_start[jntid]
     if q_i < 0:
         return
