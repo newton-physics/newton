@@ -202,11 +202,6 @@ class SensorTiledCamera:
         self.render_context.shape_transforms = wp.empty(
             self.model.shape_count, dtype=wp.transformf, device=self.render_context.device
         )
-        self.render_context.shape_textures = wp.array(
-            np.full(self.model.shape_count, fill_value=-1, dtype=np.int32),
-            dtype=wp.int32,
-            device=self.render_context.device,
-        )
 
         self.render_context.shape_world_index = self.model.shape_world
         self.render_context.gaussians_data = self.model.gaussians_data
@@ -528,15 +523,17 @@ class SensorTiledCamera:
             return color
         return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
 
-    def __load_textures(self, config: Config | None = None):
+    def __load_textures(self, config: Config):
         if not config.enable_textures and not config.checkerboard_texture:
             return
 
         textures = []
         texture_hashes = {}
-        num_bytes_total = 0
 
-        mesh_texcoords = np.empty((0, 2), dtype=np.float32)
+        num_pixel_total = 0
+        num_uvs_total = 0
+
+        mesh_texcoords = []
         mesh_texcoord_offsets = []
         mesh_hashes = {}
 
@@ -548,7 +545,7 @@ class SensorTiledCamera:
                         texture_hashes[shape.texture_hash] = len(textures)
 
                         data = load_texture(shape.texture)
-                        num_bytes_total += data.shape[0] * data.shape[1]
+                        num_pixel_total += data.shape[0] * data.shape[1]
                         textures.append(data)
                     texture_ids.append(texture_hashes[shape.texture_hash])
                 else:
@@ -556,8 +553,9 @@ class SensorTiledCamera:
 
                 if shape.uvs is not None:
                     if shape not in mesh_hashes:
-                        mesh_hashes[shape] = mesh_texcoords.shape[0]
-                        mesh_texcoords = np.concatenate([mesh_texcoords, shape.uvs])
+                        mesh_hashes[shape] = num_uvs_total
+                        num_uvs_total += len(shape.uvs)
+                        mesh_texcoords.append(shape.uvs)
                     mesh_texcoord_offsets.append(mesh_hashes[shape])
                 else:
                     mesh_texcoord_offsets.append(-1)
@@ -565,10 +563,13 @@ class SensorTiledCamera:
                 texture_ids.append(-1)
                 mesh_texcoord_offsets.append(-1)
 
+        if mesh_texcoords:
+            mesh_texcoords = np.concatenate(mesh_texcoords)
+
         num_textures = len(textures)
         texture_width = np.empty(num_textures, dtype=np.int32)
         texture_height = np.empty(num_textures, dtype=np.int32)
-        texture_data = np.empty(num_bytes_total, dtype=np.uint32)
+        texture_data = np.empty(num_pixel_total, dtype=np.uint32)
         texture_offsets = np.empty(num_textures, dtype=np.int32)
 
         offset = 0
