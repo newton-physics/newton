@@ -405,8 +405,8 @@ def create_parser():
         "--viewer",
         type=str,
         default="gl",
-        choices=["gl", "usd", "rerun", "null", "viser"],
-        help="Viewer to use (gl, usd, rerun, null, or viser).",
+        choices=["gl", "usd", "rtx", "rerun", "null", "viser"],
+        help="Viewer to use (gl, usd, rtx, rerun, null, or viser).",
     )
     parser.add_argument(
         "--rerun-address",
@@ -435,6 +435,12 @@ def create_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Suppress Warp compilation messages.",
+    )
+    parser.add_argument(
+        "--paused",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Start the viewer in a paused state.",
     )
 
     return parser
@@ -539,6 +545,8 @@ def init(parser=None):
         if args.output_path is None:
             raise ValueError("--output-path is required when using usd viewer")
         viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
+    elif args.viewer == "rtx":
+        viewer = newton.viewer.ViewerRTX(headless=args.headless)
     elif args.viewer == "rerun":
         viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
     elif args.viewer == "null":

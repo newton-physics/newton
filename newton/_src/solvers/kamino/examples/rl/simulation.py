@@ -42,11 +42,12 @@ from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.core.types import transformf, vec6f
 from newton._src.solvers.kamino._src.geometry import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
+from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino._src.utils.viewer import Color3, ViewerConfig
-from newton._src.viewer import ViewerGL
+from newton._src.viewer import ViewerGL, ViewerRTX
 
 
 class SimulatorFromNewton:
@@ -56,6 +57,11 @@ class SimulatorFromNewton:
     already-finalized :class:`newton.Model` instead of a ``ModelBuilderKamino``.
     Internally uses :meth:`ModelKamino.from_newton` to obtain Kamino-native
     model, state, control, and solver objects.
+
+    When *use_newton_collisions* is ``True`` (required for heightfield /
+    mesh terrain), Newton's own :meth:`~newton.Model.collide` pipeline
+    runs each step and the resulting contacts are converted to Kamino
+    format via :func:`convert_contacts_newton_to_kamino`.
     """
 
     def __init__(
@@ -63,6 +69,7 @@ class SimulatorFromNewton:
         newton_model: newton.Model,
         config: Simulator.Config | None = None,
         device: wp.DeviceLike = None,
+        use_newton_collisions: bool = False,
     ):
         self._device = wp.get_device(device)
 
@@ -81,11 +88,25 @@ class SimulatorFromNewton:
         self._control: ControlKamino = self._model.control(device=self._device)
 
         # Collision detection
-        self._collision_detector = CollisionDetector(
-            model=self._model,
-            config=config.collision_detector,
-        )
-        self._contacts = self._collision_detector.contacts
+        self._use_newton_collisions = use_newton_collisions
+        self._collision_detector: CollisionDetector | None = None
+
+        if use_newton_collisions:
+            self._newton_model = newton_model
+            self._newton_state = newton_model.state()
+            self._newton_contacts = newton_model.contacts()
+            per_world = max(1024, newton_model.rigid_contact_max // max(newton_model.world_count, 1))
+            world_max = [per_world] * newton_model.world_count
+            self._contacts = ContactsKamino(capacity=world_max, device=self._device)
+        else:
+            self._newton_model = None
+            self._newton_state = None
+            self._newton_contacts = None
+            self._collision_detector = CollisionDetector(
+                model=self._model,
+                config=config.collision_detector,
+            )
+            self._contacts = self._collision_detector.contacts
 
         # Solver
         self._solver = SolverKaminoImpl(
@@ -121,12 +142,27 @@ class SimulatorFromNewton:
         return self._contacts
 
     @property
-    def collision_detector(self) -> CollisionDetector:
+    def collision_detector(self) -> CollisionDetector | None:
         return self._collision_detector
 
     @property
     def solver(self) -> SolverKaminoImpl:
         return self._solver
+
+    def _run_newton_collision(self, state_kamino: StateKamino):
+        """Convert COM poses to body-origin frame, run Newton collision, convert contacts."""
+        convert_body_com_to_origin(
+            body_com=self._model.bodies.i_r_com_i,
+            body_q_com=state_kamino.q_i,
+            body_q=self._newton_state.body_q,
+        )
+        self._newton_model.collide(self._newton_state, self._newton_contacts)
+        convert_contacts_newton_to_kamino(
+            self._newton_model,
+            self._newton_state,
+            self._newton_contacts,
+            self._contacts,
+        )
 
     def step(self):
         """Advance the simulation by one timestep.
@@ -136,13 +172,24 @@ class SimulatorFromNewton:
         only for rendering via :meth:`RigidBodySim.render`.
         """
         self._state_p.copy_from(self._state_n)
-        self._solver.step(
-            state_in=self._state_p,
-            state_out=self._state_n,
-            control=self._control,
-            contacts=self._contacts,
-            detector=self._collision_detector,
-        )
+
+        if self._use_newton_collisions:
+            self._run_newton_collision(self._state_p)
+            self._solver.step(
+                state_in=self._state_p,
+                state_out=self._state_n,
+                control=self._control,
+                contacts=self._contacts,
+                detector=None,
+            )
+        else:
+            self._solver.step(
+                state_in=self._state_p,
+                state_out=self._state_n,
+                control=self._control,
+                contacts=self._contacts,
+                detector=self._collision_detector,
+            )
 
     def reset(self, **kwargs):
         """Reset the simulation state.
@@ -182,6 +229,9 @@ class RigidBodySim:
         use_cuda_graph: Capture CUDA graphs for step and reset (requires
             CUDA device with memory pool enabled).
         render_config: Viewer appearance settings.  ``None`` uses defaults.
+        terrain_fn: Optional callable ``fn(builder)`` that adds terrain
+            shapes to the multi-world :class:`~newton.ModelBuilder`.
+            When provided, replaces the default ground plane.
     """
 
     def __init__(
@@ -200,8 +250,12 @@ class RigidBodySim:
         video_folder: str | None = None,
         async_save: bool = True,
         max_contacts_per_pair: int | None = None,
+        max_contacts_per_world: int | None = None,
         render_config: ViewerConfig | None = None,
         collapse_fixed_joints: bool = False,
+        viewer_type: str = "gl",
+        terrain_fn: callable | None = None,
+        scene_callback: callable | None = None,
     ):
         # ----- Device setup -----
         self._device = wp.get_device(device)
@@ -239,21 +293,22 @@ class RigidBodySim:
             hide_collision_shapes=True,
         )
 
+        if scene_callback is not None:
+            scene_callback(robot_builder)
+
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for _ in range(num_worlds):
             builder.add_world(robot_builder)
 
-        # Add a global ground plane applied to all worlds
-        builder.add_ground_plane()
+        if terrain_fn is not None:
+            terrain_fn(builder)
+        elif add_ground:
+            builder.add_ground_plane()
 
         # Create the model from the builder
         self._newton_model = builder.finalize(skip_validation_joints=True)
-
-        # TODO remove after fixing bug
-        self._newton_model.shape_margin.fill_(0.0)
-        self._newton_model.shape_gap.fill_(1e-5)
 
         if enable_gravity:
             self._newton_model.set_gravity((0.0, 0.0, -9.81))
@@ -261,14 +316,20 @@ class RigidBodySim:
         # ----- Create Kamino simulator from Newton model -----
         msg.notif("Building Kamino simulator ...")
 
-        # Cap per-pair contact count to limit Delassus matrix size
+        # Cap contact counts to limit Delassus matrix size
         if max_contacts_per_pair is not None:
             settings.collision_detector.max_contacts_per_pair = max_contacts_per_pair
+        if max_contacts_per_world is not None:
+            settings.collision_detector.max_contacts_per_world = max_contacts_per_world
 
+        # Use Newton's collision pipeline when terrain_fn adds non-primitive
+        # shapes (heightfields, meshes) that Kamino's detector cannot handle.
+        use_newton_cd = terrain_fn is not None
         self.sim = SimulatorFromNewton(
             newton_model=self._newton_model,
             config=settings,
             device=self._device,
+            use_newton_collisions=use_newton_cd,
         )
         self.model: ModelKamino = self.sim.model
         msg.info(f"Model size: {self.sim.model.size}")
@@ -292,14 +353,16 @@ class RigidBodySim:
         self._extract_metadata()
 
         # ----- Viewer -----
-        self.viewer: ViewerGL | None = None
+        self.viewer: ViewerGL | ViewerRTX | None = None
         self._newton_state: newton.State | None = None
         self._render_config = render_config or ViewerConfig()
         if not headless:
             msg.notif("Creating the 3D viewer ...")
-            self.viewer = ViewerGL()
+            if viewer_type == "rtx":
+                self.viewer = ViewerRTX(environment="studio")
+            else:
+                self.viewer = ViewerGL()
             self.viewer.set_model(self._newton_model)
-            # Newton state used only for rendering (body_q synced from Kamino each frame)
             self._newton_state = self._newton_model.state()
             self._apply_render_config(self._render_config)
 
@@ -319,6 +382,9 @@ class RigidBodySim:
 
     def _apply_render_config(self, cfg: ViewerConfig):
         """Apply render configuration to the viewer."""
+        if not isinstance(self.viewer, ViewerGL):
+            return
+
         viewer = self.viewer
         renderer = viewer.renderer
 
@@ -375,16 +441,18 @@ class RigidBodySim:
     def _make_rl_interface(self):
         """Create zero-copy PyTorch views of simulator state, control and contact arrays."""
         nw = self.sim.model.size.num_worlds
+        njc = self.sim.model.size.max_of_num_joint_coords
         njd = self.sim.model.size.max_of_num_joint_dofs
         nb = self.sim.model.size.max_of_num_bodies
 
         # State tensors (read-only views into simulator)
-        self._q_j = wp.to_torch(self.sim.state.q_j).reshape(nw, njd)
+        # q_j uses generalized coordinates (njc), dq_j uses DOFs (njd)
+        self._q_j = wp.to_torch(self.sim.state.q_j).reshape(nw, njc)
         self._dq_j = wp.to_torch(self.sim.state.dq_j).reshape(nw, njd)
         self._q_i = wp.to_torch(self.sim.state.q_i).reshape(nw, nb, 7)
         self._u_i = wp.to_torch(self.sim.state.u_i).reshape(nw, nb, 6)
 
-        # Control tensors (writable views)
+        # Control tensors (writable views — all use DOF space)
         self._q_j_ref = wp.to_torch(self.sim.control.q_j_ref).reshape(nw, njd)
         self._dq_j_ref = wp.to_torch(self.sim.control.dq_j_ref).reshape(nw, njd)
         self._tau_j_ref = wp.to_torch(self.sim.control.tau_j_ref).reshape(nw, njd)
@@ -396,7 +464,7 @@ class RigidBodySim:
         # Reset buffers
         self._reset_base_q_wp = wp.zeros(nw, dtype=transformf, device=self._device)
         self._reset_base_u_wp = wp.zeros(nw, dtype=vec6f, device=self._device)
-        self._reset_q_j = torch.zeros((nw, njd), device=self._torch_device)
+        self._reset_q_j = torch.zeros((nw, njc), device=self._torch_device)
         self._reset_dq_j = torch.zeros((nw, njd), device=self._torch_device)
         self._reset_base_q = wp.to_torch(self._reset_base_q_wp).reshape(nw, 7)
         self._reset_base_u = wp.to_torch(self._reset_base_u_wp).reshape(nw, 6)

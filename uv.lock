@@ -2797,6 +2797,24 @@ remesh = [
     { name = "open3d", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "pyfqmr" },
 ]
+rtx = [
+    { name = "alphashape" },
+    { name = "coacd", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "fast-simplification" },
+    { name = "meshio" },
+    { name = "newton-usd-schemas" },
+    { name = "ovrtx" },
+    { name = "plyfile" },
+    { name = "pycollada" },
+    { name = "pyglet" },
+    { name = "requests" },
+    { name = "resolve-robotics-uri-py" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "trimesh" },
+    { name = "usd-core", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-exchange", marker = "(python_full_version < '3.13' and platform_machine == 'aarch64') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+]
 sim = [
     { name = "mujoco", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "mujoco-warp", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
@@ -2864,6 +2882,7 @@ requires-dist = [
     { name = "alphashape", marker = "extra == 'examples'", specifier = ">=1.3.1" },
     { name = "alphashape", marker = "extra == 'importers'", specifier = ">=1.3.1" },
     { name = "alphashape", marker = "extra == 'notebook'", specifier = ">=1.3.1" },
+    { name = "alphashape", marker = "extra == 'rtx'", specifier = ">=1.3.1" },
     { name = "alphashape", marker = "extra == 'torch-cu12'", specifier = ">=1.3.1" },
     { name = "alphashape", marker = "extra == 'torch-cu13'", specifier = ">=1.3.1" },
     { name = "cbor2", marker = "extra == 'dev'", specifier = ">=5.7.0" },
@@ -2876,6 +2895,7 @@ requires-dist = [
     { name = "coacd", marker = "python_full_version < '3.14' and extra == 'examples'", specifier = ">=1.0.7" },
     { name = "coacd", marker = "python_full_version < '3.14' and extra == 'importers'", specifier = ">=1.0.7" },
     { name = "coacd", marker = "python_full_version < '3.14' and extra == 'notebook'", specifier = ">=1.0.7" },
+    { name = "coacd", marker = "python_full_version < '3.14' and extra == 'rtx'", specifier = ">=1.0.7" },
     { name = "coacd", marker = "python_full_version < '3.14' and extra == 'torch-cu12'", specifier = ">=1.0.7" },
     { name = "coacd", marker = "python_full_version < '3.14' and extra == 'torch-cu13'", specifier = ">=1.0.7" },
     { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.8.0" },
@@ -2884,6 +2904,7 @@ requires-dist = [
     { name = "fast-simplification", marker = "extra == 'examples'", specifier = ">=0.1.11" },
     { name = "fast-simplification", marker = "extra == 'importers'", specifier = ">=0.1.11" },
     { name = "fast-simplification", marker = "extra == 'notebook'", specifier = ">=0.1.11" },
+    { name = "fast-simplification", marker = "extra == 'rtx'", specifier = ">=0.1.11" },
     { name = "fast-simplification", marker = "extra == 'torch-cu12'", specifier = ">=0.1.11" },
     { name = "fast-simplification", marker = "extra == 'torch-cu13'", specifier = ">=0.1.11" },
     { name = "gitpython", marker = "extra == 'dev'", specifier = ">=3.1.44" },
@@ -2903,6 +2924,7 @@ requires-dist = [
     { name = "meshio", marker = "extra == 'examples'", specifier = ">=5.3.0" },
     { name = "meshio", marker = "extra == 'importers'", specifier = ">=5.3.0" },
     { name = "meshio", marker = "extra == 'notebook'", specifier = ">=5.3.0" },
+    { name = "meshio", marker = "extra == 'rtx'", specifier = ">=5.3.0" },
     { name = "meshio", marker = "extra == 'torch-cu12'", specifier = ">=5.3.0" },
     { name = "meshio", marker = "extra == 'torch-cu13'", specifier = ">=5.3.0" },
     { name = "mujoco", marker = "python_full_version < '3.14' and extra == 'dev'", specifier = ">=3.5.0" },
@@ -2925,9 +2947,11 @@ requires-dist = [
     { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0" },
     { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.1.0" },
     { name = "newton-usd-schemas", marker = "extra == 'notebook'", specifier = ">=0.1.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'rtx'", specifier = ">=0.1.0" },
     { name = "newton-usd-schemas", marker = "extra == 'torch-cu12'", specifier = ">=0.1.0" },
     { name = "newton-usd-schemas", marker = "extra == 'torch-cu13'", specifier = ">=0.1.0" },
     { name = "open3d", marker = "python_full_version < '3.14' and extra == 'remesh'", specifier = ">=0.18.0" },
+    { name = "ovrtx", marker = "extra == 'rtx'", specifier = ">=0.2" },
     { name = "pillow", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "pillow", marker = "extra == 'examples'", specifier = ">=9.0.0" },
     { name = "pillow", marker = "extra == 'notebook'", specifier = ">=9.0.0" },
@@ -2938,6 +2962,7 @@ requires-dist = [
     { name = "plyfile", marker = "extra == 'examples'", specifier = ">=1.1.3" },
     { name = "plyfile", marker = "extra == 'importers'", specifier = ">=1.1.3" },
     { name = "plyfile", marker = "extra == 'notebook'", specifier = ">=1.1.3" },
+    { name = "plyfile", marker = "extra == 'rtx'", specifier = ">=1.1.3" },
     { name = "plyfile", marker = "extra == 'torch-cu12'", specifier = ">=1.1.3" },
     { name = "plyfile", marker = "extra == 'torch-cu13'", specifier = ">=1.1.3" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
@@ -2945,6 +2970,7 @@ requires-dist = [
     { name = "pycollada", marker = "extra == 'examples'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'importers'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'notebook'", specifier = ">=0.9" },
+    { name = "pycollada", marker = "extra == 'rtx'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'torch-cu12'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'torch-cu13'", specifier = ">=0.9" },
     { name = "pydata-sphinx-theme", marker = "extra == 'docs'", specifier = ">=0.16.1" },
@@ -2952,6 +2978,7 @@ requires-dist = [
     { name = "pyglet", marker = "extra == 'dev'", specifier = ">=2.1.6,<3" },
     { name = "pyglet", marker = "extra == 'examples'", specifier = ">=2.1.6,<3" },
     { name = "pyglet", marker = "extra == 'notebook'", specifier = ">=2.1.6,<3" },
+    { name = "pyglet", marker = "extra == 'rtx'", specifier = ">=2.1.6" },
     { name = "pyglet", marker = "extra == 'torch-cu12'", specifier = ">=2.1.6,<3" },
     { name = "pyglet", marker = "extra == 'torch-cu13'", specifier = ">=2.1.6,<3" },
     { name = "pypandoc", marker = "extra == 'docs'", specifier = ">=1.11" },
@@ -2966,6 +2993,7 @@ requires-dist = [
     { name = "requests", marker = "extra == 'examples'", specifier = ">=2.25.0" },
     { name = "requests", marker = "extra == 'importers'", specifier = ">=2.25.0" },
     { name = "requests", marker = "extra == 'notebook'", specifier = ">=2.25.0" },
+    { name = "requests", marker = "extra == 'rtx'", specifier = ">=2.25.0" },
     { name = "requests", marker = "extra == 'torch-cu12'", specifier = ">=2.25.0" },
     { name = "requests", marker = "extra == 'torch-cu13'", specifier = ">=2.25.0" },
     { name = "rerun-sdk", extras = ["notebook"], marker = "python_full_version < '3.14' and extra == 'notebook'", specifier = ">=0.27.1" },
@@ -2974,6 +3002,7 @@ requires-dist = [
     { name = "resolve-robotics-uri-py", marker = "extra == 'examples'", specifier = ">=0.4.0" },
     { name = "resolve-robotics-uri-py", marker = "extra == 'importers'", specifier = ">=0.4.0" },
     { name = "resolve-robotics-uri-py", marker = "extra == 'notebook'", specifier = ">=0.4.0" },
+    { name = "resolve-robotics-uri-py", marker = "extra == 'rtx'", specifier = ">=0.4.0" },
     { name = "resolve-robotics-uri-py", marker = "extra == 'torch-cu12'", specifier = ">=0.4.0" },
     { name = "resolve-robotics-uri-py", marker = "extra == 'torch-cu13'", specifier = ">=0.4.0" },
     { name = "scipy", marker = "extra == 'dev'" },
@@ -2981,6 +3010,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'examples'" },
     { name = "scipy", marker = "extra == 'importers'" },
     { name = "scipy", marker = "extra == 'notebook'" },
+    { name = "scipy", marker = "extra == 'rtx'" },
     { name = "scipy", marker = "extra == 'torch-cu12'" },
     { name = "scipy", marker = "extra == 'torch-cu13'" },
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=7.4.7" },
@@ -2995,6 +3025,7 @@ requires-dist = [
     { name = "trimesh", marker = "extra == 'examples'", specifier = ">=4.6.8" },
     { name = "trimesh", marker = "extra == 'importers'", specifier = ">=4.6.8" },
     { name = "trimesh", marker = "extra == 'notebook'", specifier = ">=4.6.8" },
+    { name = "trimesh", marker = "extra == 'rtx'", specifier = ">=4.6.8" },
     { name = "trimesh", marker = "extra == 'torch-cu12'", specifier = ">=4.6.8" },
     { name = "trimesh", marker = "extra == 'torch-cu13'", specifier = ">=4.6.8" },
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'dev'", specifier = ">=25.5" },
@@ -3002,6 +3033,7 @@ requires-dist = [
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'examples'", specifier = ">=25.5" },
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'importers'", specifier = ">=25.5" },
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'notebook'", specifier = ">=25.5" },
+    { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'rtx'", specifier = ">=25.5" },
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'torch-cu12'", specifier = ">=25.5" },
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'torch-cu13'", specifier = ">=25.5" },
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'dev'", specifier = ">=2.2.0" },
@@ -3009,12 +3041,13 @@ requires-dist = [
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'examples'", specifier = ">=2.2.0" },
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.2.0" },
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'notebook'", specifier = ">=2.2.0" },
+    { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'rtx'", specifier = ">=2.2.0" },
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'torch-cu12'", specifier = ">=2.2.0" },
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'torch-cu13'", specifier = ">=2.2.0" },
     { name = "viser", marker = "extra == 'docs'", specifier = ">=1.0.16" },
     { name = "warp-lang", specifier = ">=1.12.0", index = "https://pypi.nvidia.com/" },
 ]
-provides-extras = ["dev", "docs", "examples", "importers", "notebook", "remesh", "sim", "torch-cu12", "torch-cu13"]
+provides-extras = ["dev", "docs", "examples", "importers", "notebook", "remesh", "rtx", "sim", "torch-cu12", "torch-cu13"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "asv", specifier = ">=0.6.4" }]
@@ -3582,6 +3615,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/36/86/b585f53236dec60ab
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/ab/fc8290c6a4c722e5514d80f62b2dc4c4df1a68a41d1364e625c35990fcf3/overrides-7.7.0-py3-none-any.whl", hash = "sha256:c7ed9d062f78b8e4c1a7b70bd8796b35ead4d9f510227ef9c5dc7626c60d7e49", size = 17832, upload-time = "2024-01-27T21:01:31.393Z" },
 ]
+
+[[package]]
+name = "ovrtx"
+version = "0.2.0.280040"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/2a/69b4670856be874d9d2d791b3407c874b9bc3b1b30165fb1407a8613bc56/ovrtx-0.2.0.280040.tar.gz", hash = "sha256:42a6e9de481241fc75381ce762cdf59f01faaca59e9a472edb4d3c57cdf44411", size = 672, upload-time = "2026-03-07T08:42:38.809Z" }
 
 [[package]]
 name = "packaging"

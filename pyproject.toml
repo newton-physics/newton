@@ -83,6 +83,13 @@ examples = [
     "Pillow>=9.0.0",        # for image processing (viewer icons, heightfield loading, textures)
 ]
 
+# OVRTX real-time ray tracing viewer
+rtx = [
+    "newton[importers]",    # include import dependencies (USD)
+    "pyglet>=2.1.6",        # for the viewer window/presentation
+    "ovrtx>=0.2",           # NVIDIA OVRTX renderer
+]
+
 # Extra dependency needed to run examples that inference an RL policy
 torch-cu12 = [
     "newton[examples]", # include example dependencies
@@ -222,6 +229,7 @@ banned-module-level-imports = [
     "networkx",
     "open3d",
     "openmesh",
+    "ovrtx",
     "PIL",
     "point_cloud_utils",
     "pxr",
