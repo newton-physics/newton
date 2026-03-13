@@ -180,7 +180,13 @@ def test_shapes_on_plane(test, device, solver_fn):
         solver = temp_solver
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    contacts = model.contacts() if not isinstance(solver, newton.solvers.SolverMuJoCo) else None
+    if isinstance(solver, newton.solvers.SolverMuJoCo):
+        contacts = None
+    elif device.is_cpu:
+        with test.assertWarnsRegex(UserWarning, "mesh-mesh contacts will be skipped"):
+            contacts = model.contacts()
+    else:
+        contacts = model.contacts()
 
     use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
     # Increased substeps for better stability (more substeps = smaller time steps = more stable)
