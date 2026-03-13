@@ -29,10 +29,10 @@ jobs:
       - name: Dependency review
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
-          # Compare against empty tree on manual dispatch to audit ALL dependencies,
-          # otherwise compare against the PR base as usual.
-          base-ref: ${{ github.event_name == 'workflow_dispatch' && '4b825dc642cb6eb9a060e54bf899d15006a9e46f' || '' }}
-          head-ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
+          # TODO: Remove base-ref/head-ref before merging.
+          # Temporarily audit ALL dependencies by comparing against the empty tree.
+          base-ref: 4b825dc642cb6eb9a060e54bf899d15006a9e46f
+          head-ref: ${{ github.sha }}
           allow-licenses: >-
             Apache-2.0,
             MIT,
