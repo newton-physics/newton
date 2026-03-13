@@ -77,31 +77,28 @@ def bench_wall_vs_n(ns, tol=1e-3, outer_steps=50, warmup=15):
     return results
 
 
-def trace_error_and_dt(tols, n_worlds=1, sim_duration=1.0, warmup=20):
-    """Returns dict tol → (sim_times, errors, dts) for world 0."""
-    print(f"\n[Fig 4/5] Error & dt traces  N={n_worlds}  sim={sim_duration}s", flush=True)
-    traces = {}
-    for tol in tols:
-        model  = _build_model(n_worlds)
-        solver = _make_solver(model, tol=tol)
-        s0, s1 = model.state(), model.state()
-        ctrl   = model.control()
+def trace_error_and_dt(tol=1e-3, n_worlds=1, sim_duration=1.0, warmup=20):
+    """Returns (sim_times, errors, dts) for world 0 at the given tolerance."""
+    print(f"\n[Fig 4/5] Error & dt traces  N={n_worlds}  tol={tol:.0e}  sim={sim_duration}s", flush=True)
+    model  = _build_model(n_worlds)
+    solver = _make_solver(model, tol=tol)
+    s0, s1 = model.state(), model.state()
+    ctrl   = model.control()
 
-        for _ in range(warmup):
-            s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
+    for _ in range(warmup):
+        s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
 
-        sim_times, errors, dts = [], [], []
+    sim_times, errors, dts = [], [], []
+    t = solver.sim_time.numpy()[0]
+    while t < sim_duration:
+        s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
         t = solver.sim_time.numpy()[0]
-        while t < sim_duration:
-            s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-            t = solver.sim_time.numpy()[0]
-            sim_times.append(t)
-            errors.append(solver.last_error.numpy()[0])
-            dts.append(solver.dt.numpy()[0])
+        sim_times.append(t)
+        errors.append(solver.last_error.numpy()[0])
+        dts.append(solver.dt.numpy()[0])
 
-        traces[tol] = (np.array(sim_times), np.array(errors), np.array(dts))
-        print(f"  tol={tol:.0e}  {len(sim_times)} outer steps", flush=True)
-    return traces
+    print(f"  {len(sim_times)} outer steps", flush=True)
+    return np.array(sim_times), np.array(errors), np.array(dts)
 
 
 STYLE = {"linewidth": 1.8, "marker": "o", "markersize": 4}
@@ -138,9 +135,8 @@ def main():
         warmup       = 20
         sim_duration = 3.0
 
-    tol_colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(tols)))
-
     wall_vs_tol = bench_wall_vs_tol(tols, n_worlds=1, outer_steps=outer_steps, warmup=warmup)
+
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot([str(f"{t:.0e}") for t in tols], wall_vs_tol, **STYLE, color="tab:blue")
     ax.set_xlabel("Error tolerance")
@@ -176,27 +172,26 @@ def main():
     ax.legend(fontsize=8)
     _save(fig, out / "fig3_cost_per_world.png")
 
-    traces = trace_error_and_dt(tols, n_worlds=1, sim_duration=sim_duration, warmup=warmup)
+    ts, errs, dts = trace_error_and_dt(tol=1e-3, n_worlds=1, sim_duration=sim_duration, warmup=warmup)
 
     fig, ax = plt.subplots(figsize=(9, 4))
-    for (tol, (ts, errs, _)), color in zip(traces.items(), tol_colors):
-        ax.plot(ts, errs, label=f"tol={tol:.0e}", color=color, linewidth=1.2, alpha=0.85)
-        ax.axhline(tol, color=color, linestyle="--", linewidth=0.7, alpha=0.5)
+    ax.plot(ts, errs, color="tab:blue", linewidth=1.2)
+    ax.axhline(1e-3, color="tab:blue", linestyle="--", linewidth=0.8, label="tolerance = 1e-3")
     ax.set_xlabel("Simulation time [s]")
     ax.set_ylabel("RMS error (world 0)")
-    ax.set_title("Integration error over time  (N=1)  [dashed = tolerance target]")
+    ax.set_title("Integration error over time  (N=1, tol=1e-3)")
     ax.set_yscale("log")
     ax.legend(fontsize=8)
     ax.grid(True, which="both", alpha=0.3)
     _save(fig, out / "fig4_error_over_time.png")
 
     fig, ax = plt.subplots(figsize=(9, 4))
-    for (tol, (ts, _, dts)), color in zip(traces.items(), tol_colors):
-        ax.plot(ts, np.array(dts) * 1e3, label=f"tol={tol:.0e}", color=color, linewidth=1.2, alpha=0.85)
-    ax.axhline(DT_INNER_MIN * 1e3, color="grey", linestyle=":", linewidth=1.0, label=f"dt_min={DT_INNER_MIN*1e3:.1f} ms")
+    ax.plot(ts, np.array(dts) * 1e3, color="tab:orange", linewidth=1.2)
+    ax.axhline(DT_INNER_MIN * 1e3, color="grey", linestyle=":", linewidth=1.0,
+               label=f"dt_inner_min = {DT_INNER_MIN*1e3:.2f} ms")
     ax.set_xlabel("Simulation time [s]")
-    ax.set_ylabel("Adaptive dt [ms]")
-    ax.set_title("Step size over time  (N=1)")
+    ax.set_ylabel("dt_inner [ms]")
+    ax.set_title("Adaptive inner step size over time  (N=1, tol=1e-3)")
     ax.legend(fontsize=8)
     ax.grid(True, which="both", alpha=0.3)
     _save(fig, out / "fig5_dt_over_time.png")

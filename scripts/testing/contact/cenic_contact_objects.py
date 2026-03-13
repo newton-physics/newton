@@ -9,8 +9,8 @@ import warp as wp
 import newton
 import newton.solvers
 
-DT_OUTER  = 0.002  # 500 Hz control / render cadence [s]
-LOG_EVERY = 50     # print status grid every N outer steps (~0.1 s at 500 Hz)
+DT_OUTER  = 0.002  # X Hz control / render cadence [s]
+LOG_EVERY = 50     # print status grid every N outer steps
 
 SPHERE_RADIUS = 0.050
 BOX_HALF      = 0.050
@@ -21,7 +21,7 @@ Z_BOXES       = 1.25
 
 
 TOL    = 1e-3
-DT_INNER_MIN = 1e-6
+DT_INNER_MIN = 1e-5  
 
 
 def build_template() -> newton.ModelBuilder:
@@ -29,10 +29,6 @@ def build_template() -> newton.ModelBuilder:
     template = newton.ModelBuilder()
     newton.solvers.SolverMuJoCoCENIC.register_custom_attributes(template)
 
-    # ke=1e4: ~4 mm static sag for 10 cm / ~1 kg objects.
-    # kd=200: critically damped (damratio = kd/2 × sqrt(1/ke) = 1.0).
-    # margin=0.005: 5 mm detection per shape → 10 mm summed.
-    # With DT_OUTER=0.002 s and peak velocity 4.9 m/s: max displacement = 9.8 mm < 10 mm. ✓
     cfg_obj = newton.ModelBuilder.ShapeConfig(ke=1e4, kd=200, mu=0.3, margin=0.005)
 
     for ox in GRID_OFFSETS:
@@ -100,6 +96,7 @@ def make_solver(model: newton.Model, tol: float = TOL) -> newton.solvers.SolverM
         tol=tol,
         dt_inner_init=DT_OUTER,
         dt_inner_min=DT_INNER_MIN,
+        dt_inner_max=DT_OUTER,
     )
 
 
