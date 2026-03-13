@@ -12,6 +12,8 @@
 
 ### Changed
 
+- Render inertia boxes as wireframe lines instead of solid boxes in the GL viewer to avoid occluding objects
+
 ### Deprecated
 
 ### Removed
