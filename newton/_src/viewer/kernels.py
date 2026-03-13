@@ -409,6 +409,7 @@ def compute_inertia_box_lines(
     body_inv_mass: wp.array(dtype=float),
     body_world: wp.array(dtype=int),
     world_offsets: wp.array(dtype=wp.vec3),
+    max_worlds: int,
     color: wp.vec3,
     # outputs: 12 lines per body
     line_starts: wp.array(dtype=wp.vec3),
@@ -420,11 +421,22 @@ def compute_inertia_box_lines(
     body_id = tid // 12
     edge_id = tid % 12
 
+    nan_line = wp.vec3(wp.nan, wp.nan, wp.nan)
+    zero_color = wp.vec3(0.0, 0.0, 0.0)
+
+    # Skip bodies from worlds beyond max_worlds limit
+    world_idx = body_world[body_id]
+    if max_worlds >= 0 and world_idx >= 0 and world_idx >= max_worlds:
+        line_starts[tid] = nan_line
+        line_ends[tid] = nan_line
+        line_colors[tid] = zero_color
+        return
+
     inv_m = body_inv_mass[body_id]
     if inv_m == 0.0:
-        line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_colors[tid] = wp.vec3(0.0, 0.0, 0.0)
+        line_starts[tid] = nan_line
+        line_ends[tid] = nan_line
+        line_colors[tid] = zero_color
         return
 
     # Compute principal inertia axes and extents
@@ -434,11 +446,6 @@ def compute_inertia_box_lines(
     sx = wp.sqrt(wp.abs(box_inertia[2] + box_inertia[1] - box_inertia[0]))
     sy = wp.sqrt(wp.abs(box_inertia[0] + box_inertia[2] - box_inertia[1]))
     sz = wp.sqrt(wp.abs(box_inertia[1] + box_inertia[0] - box_inertia[2]))
-
-    # 8 corners of the box in local frame (half-extents)
-    hx = sx
-    hy = sy
-    hz = sz
 
     # Box edges: pairs of corner indices
     # Corners: 0=(-,-,-) 1=(+,-,-) 2=(+,+,-) 3=(-,+,-)
@@ -452,89 +459,89 @@ def compute_inertia_box_lines(
     c1z = float(0.0)
 
     if edge_id == 0:  # 0-1
-        c0x = -hx
-        c0y = -hy
-        c0z = -hz
-        c1x = hx
-        c1y = -hy
-        c1z = -hz
+        c0x = -sx
+        c0y = -sy
+        c0z = -sz
+        c1x = sx
+        c1y = -sy
+        c1z = -sz
     elif edge_id == 1:  # 1-2
-        c0x = hx
-        c0y = -hy
-        c0z = -hz
-        c1x = hx
-        c1y = hy
-        c1z = -hz
+        c0x = sx
+        c0y = -sy
+        c0z = -sz
+        c1x = sx
+        c1y = sy
+        c1z = -sz
     elif edge_id == 2:  # 2-3
-        c0x = hx
-        c0y = hy
-        c0z = -hz
-        c1x = -hx
-        c1y = hy
-        c1z = -hz
+        c0x = sx
+        c0y = sy
+        c0z = -sz
+        c1x = -sx
+        c1y = sy
+        c1z = -sz
     elif edge_id == 3:  # 3-0
-        c0x = -hx
-        c0y = hy
-        c0z = -hz
-        c1x = -hx
-        c1y = -hy
-        c1z = -hz
+        c0x = -sx
+        c0y = sy
+        c0z = -sz
+        c1x = -sx
+        c1y = -sy
+        c1z = -sz
     elif edge_id == 4:  # 4-5
-        c0x = -hx
-        c0y = -hy
-        c0z = hz
-        c1x = hx
-        c1y = -hy
-        c1z = hz
+        c0x = -sx
+        c0y = -sy
+        c0z = sz
+        c1x = sx
+        c1y = -sy
+        c1z = sz
     elif edge_id == 5:  # 5-6
-        c0x = hx
-        c0y = -hy
-        c0z = hz
-        c1x = hx
-        c1y = hy
-        c1z = hz
+        c0x = sx
+        c0y = -sy
+        c0z = sz
+        c1x = sx
+        c1y = sy
+        c1z = sz
     elif edge_id == 6:  # 6-7
-        c0x = hx
-        c0y = hy
-        c0z = hz
-        c1x = -hx
-        c1y = hy
-        c1z = hz
+        c0x = sx
+        c0y = sy
+        c0z = sz
+        c1x = -sx
+        c1y = sy
+        c1z = sz
     elif edge_id == 7:  # 7-4
-        c0x = -hx
-        c0y = hy
-        c0z = hz
-        c1x = -hx
-        c1y = -hy
-        c1z = hz
+        c0x = -sx
+        c0y = sy
+        c0z = sz
+        c1x = -sx
+        c1y = -sy
+        c1z = sz
     elif edge_id == 8:  # 0-4
-        c0x = -hx
-        c0y = -hy
-        c0z = -hz
-        c1x = -hx
-        c1y = -hy
-        c1z = hz
+        c0x = -sx
+        c0y = -sy
+        c0z = -sz
+        c1x = -sx
+        c1y = -sy
+        c1z = sz
     elif edge_id == 9:  # 1-5
-        c0x = hx
-        c0y = -hy
-        c0z = -hz
-        c1x = hx
-        c1y = -hy
-        c1z = hz
+        c0x = sx
+        c0y = -sy
+        c0z = -sz
+        c1x = sx
+        c1y = -sy
+        c1z = sz
     elif edge_id == 10:  # 2-6
-        c0x = hx
-        c0y = hy
-        c0z = -hz
-        c1x = hx
-        c1y = hy
-        c1z = hz
+        c0x = sx
+        c0y = sy
+        c0z = -sz
+        c1x = sx
+        c1y = sy
+        c1z = sz
     elif edge_id == 11:  # 3-7
-        c0x = -hx
-        c0y = hy
-        c0z = -hz
-        c1x = -hx
-        c1y = hy
-        c1z = hz
+        c0x = -sx
+        c0y = sy
+        c0z = -sz
+        c1x = -sx
+        c1y = sy
+        c1z = sz
 
     local0 = wp.vec3(c0x, c0y, c0z)
     local1 = wp.vec3(c1x, c1y, c1z)
@@ -557,7 +564,6 @@ def compute_inertia_box_lines(
     world1 = world_com + wp.quat_rotate(body_rot, local1)
 
     # Apply world offset
-    world_idx = body_world[body_id]
     if world_offsets and world_idx >= 0 and world_idx < world_offsets.shape[0]:
         offset = world_offsets[world_idx]
         world0 = world0 + offset

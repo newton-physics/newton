@@ -1555,6 +1555,7 @@ class ViewerBase(ABC):
                 self.model.body_inv_mass,
                 self.model.body_world,
                 self.world_offsets,
+                self.max_worlds if self.max_worlds is not None else -1,
                 wp.vec3(0.5, 0.5, 0.5),  # color
             ],
             outputs=[
