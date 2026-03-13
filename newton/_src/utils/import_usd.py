@@ -2335,6 +2335,9 @@ def parse_usd(
     if load_visual_shapes:
         prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
         for gaussian_prim in prims:
+            if str(gaussian_prim.GetPath()).startswith('/Prototypes/'):
+                continue
+
             if gaussian_prim.HasAPI(UsdPhysics.RigidBodyAPI):
                 prims.PruneChildren()
                 continue
