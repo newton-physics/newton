@@ -332,15 +332,15 @@ def download_git_folder(
         if stale_dir.exists():
             _safe_rmtree(stale_dir)
         if cache_folder.exists():
-            try:
-                os.rename(cache_folder, stale_dir)
-            except FileNotFoundError:
-                # Another thread already moved/removed it
-                pass
+            _safe_rename(cache_folder, stale_dir)
         _safe_rename(temp_dir, cache_folder)
-        # Clean up stale dir
-        if stale_dir.exists():
-            _safe_rmtree(stale_dir)
+        # Clean up stale dir; catch errors so a cleanup failure after a
+        # successful rename doesn't get misreported as a download failure.
+        try:
+            if stale_dir.exists():
+                _safe_rmtree(stale_dir)
+        except OSError:
+            pass  # cleaned up by _cleanup_stale_temp_dirs on next call
 
         print(f"Successfully downloaded folder to: {cache_folder / folder_path}")
         return cache_folder / folder_path
