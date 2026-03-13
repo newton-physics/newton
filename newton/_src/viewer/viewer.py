@@ -79,7 +79,10 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         self._shape_instances = {}
-        self._inertia_box_instances: ViewerBase.ShapeInstances | None = None
+        # Inertia box wireframe line vertices (12 lines per body)
+        self._inertia_box_points0 = None
+        self._inertia_box_points1 = None
+        self._inertia_box_colors = None
 
         # Geometry mesh cache (geometry hash -> mesh path)
         self._geometry_cache: dict[int, str] = {}
@@ -182,39 +185,44 @@ class ViewerBase(ABC):
         return min(self.max_worlds, self.model.world_count)
 
     def _get_shape_isomesh(self, shape_idx: int) -> newton.Mesh | None:
-        """Get the isomesh for a collision shape with an SDF volume.
+        """Get the isomesh for a collision shape with a texture SDF.
 
-        Computes the marching-cubes isosurface from the SDF volume and caches it.
-        Uses the volume.id (uint64) as cache key, so shapes sharing the same SDF
-        volume will reuse the same isomesh.
+        Computes the marching-cubes isosurface from the texture SDF and caches it
+        by SDF table index.
 
         Args:
             shape_idx: Index of the shape.
 
         Returns:
-            Mesh object for the isomesh, or None if shape has no SDF volume.
+            Mesh object for the isomesh, or ``None`` if shape has no texture SDF.
         """
         if self.model is None:
             return None
 
-        # Check if this shape has an SDF volume
         sdf_idx = int(self._shape_sdf_index_host[shape_idx]) if self._shape_sdf_index_host is not None else -1
-        sdf_volume = self.model.sdf_volume[sdf_idx] if (sdf_idx >= 0 and self.model.sdf_volume) else None
-        if sdf_volume is None:
+        if sdf_idx < 0 or self.model.texture_sdf_data is None:
             return None
 
-        # Use volume.id as cache key - this is a unique uint64 pointer
-        volume_id = int(sdf_volume.id)
+        if sdf_idx in self._isomesh_cache:
+            return self._isomesh_cache[sdf_idx]
 
-        # Check if already computed. Cached None means "computed but no mesh".
-        if volume_id in self._isomesh_cache:
-            return self._isomesh_cache[volume_id]
+        slots = (
+            self.model.texture_sdf_subgrid_start_slots[sdf_idx]
+            if hasattr(self.model, "texture_sdf_subgrid_start_slots") and self.model.texture_sdf_subgrid_start_slots
+            else None
+        )
+        if slots is None:
+            self._isomesh_cache[sdf_idx] = None
+            return None
 
-        # Compute isomesh from SDF volume
-        from ..geometry.sdf_utils import compute_isomesh  # noqa: PLC0415
+        from ..geometry.sdf_texture import compute_isomesh_from_texture_sdf  # noqa: PLC0415
 
-        isomesh = compute_isomesh(sdf_volume)
-        self._isomesh_cache[volume_id] = isomesh
+        coarse_tex = self.model.texture_sdf_coarse_textures[sdf_idx]
+        coarse_dims = (coarse_tex.width - 1, coarse_tex.height - 1, coarse_tex.depth - 1)
+        isomesh = compute_isomesh_from_texture_sdf(
+            self.model.texture_sdf_data, sdf_idx, slots, coarse_dims, device=self.device
+        )
+        self._isomesh_cache[sdf_idx] = isomesh
         return isomesh
 
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
@@ -442,20 +450,7 @@ class ViewerBase(ABC):
                 hidden=not visible,
             )
 
-        if self.show_inertia_boxes:
-            if self._inertia_box_instances is None:
-                self._populate_inertia_boxes()
-            self._inertia_box_instances.update(state, world_offsets=self.world_offsets)
-        if self._inertia_box_instances is not None:
-            self.log_instances(
-                self._inertia_box_instances.name,
-                self._inertia_box_instances.mesh,
-                self._inertia_box_instances.world_xforms,
-                self._inertia_box_instances.scales,
-                self._inertia_box_instances.colors,
-                self._inertia_box_instances.materials,
-                hidden=not self.show_inertia_boxes,
-            )
+        self._log_inertia_boxes(state)
 
         self._log_triangles(state)
         self._log_particles(state)
@@ -1321,9 +1316,9 @@ class ViewerBase(ABC):
             # visual-only copy exists.
             is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
             is_visible = flags & int(newton.ShapeFlags.VISIBLE)
-            # Check for SDF volume existence without computing the isomesh (lazy evaluation)
+            # Check for texture SDF existence without computing the isomesh (lazy evaluation)
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            has_sdf = sdf_idx >= 0 and self.model.sdf_volume and self.model.sdf_volume[sdf_idx] is not None
+            has_sdf = sdf_idx >= 0 and self.model.texture_sdf_data is not None
             if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
@@ -1428,7 +1423,7 @@ class ViewerBase(ABC):
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        sdf_data = self.model.sdf_data.numpy() if self.model.sdf_data is not None else None
+        tex_sdf_np = self.model.texture_sdf_data.numpy() if self.model.texture_sdf_data is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
@@ -1437,7 +1432,7 @@ class ViewerBase(ABC):
             if not self._should_render_world(shape_world[s]):
                 continue
 
-            # Only process collision shapes with SDF volumes
+            # Only process collision shapes with texture SDFs
             is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
             if not is_collision_shape:
                 continue
@@ -1446,9 +1441,10 @@ class ViewerBase(ABC):
             if isomesh is None:
                 continue
 
-            # Check if scale was baked into the SDF
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            scale_baked = bool(sdf_data[sdf_idx]["scale_baked"]) if (sdf_data is not None and sdf_idx >= 0) else True
+            scale_baked = (
+                bool(tex_sdf_np[sdf_idx]["scale_baked"]) if (tex_sdf_np is not None and sdf_idx >= 0) else True
+            )
 
             # Create isomesh geometry (always use (1,1,1) for geometry since isomesh is in SDF space)
             geo_type = newton.GeoType.MESH
@@ -1535,75 +1531,50 @@ class ViewerBase(ABC):
             if batch_ref is not None:
                 batch_ref.colors_changed = True
 
-    # creates meshes and instances for each shape in the Model
-    def _populate_inertia_boxes(self):
-        # convert to NumPy
+    def _log_inertia_boxes(self, state: newton.State):
+        """Render inertia boxes as wireframe lines."""
+        if not self.show_inertia_boxes:
+            self.log_lines("/model/inertia_boxes", None, None, None)
+            return
+
         body_count = self.model.body_count
-        body_inertia = self.model.body_inertia.numpy()
-        body_inv_mass = self.model.body_inv_mass.numpy()
-        body_com = self.model.body_com.numpy()
-        body_world = self.model.body_world.numpy()
+        if body_count == 0:
+            return
 
-        scale = (1.0, 1.0, 1.0)
-        thickness = 0.0
-        is_solid = True
-        geo_src = None
-        geo_args = (newton.GeoType.BOX, scale, thickness, is_solid, geo_src)
-        geo_hash = self._hash_geometry(*geo_args)
-        if geo_hash not in self._geometry_cache:
-            mesh_name = self._populate_geometry(*geo_args)
-        else:
-            mesh_name = self._geometry_cache[geo_hash]
+        # 12 edges per body
+        num_lines = body_count * 12
 
-        static = False
-        flags = newton.ShapeFlags.VISIBLE
+        if self._inertia_box_points0 is None or len(self._inertia_box_points0) < num_lines:
+            self._inertia_box_points0 = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+            self._inertia_box_points1 = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+            self._inertia_box_colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
 
-        shape_name = "/model/inertia_boxes"
-        batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+        from .kernels import compute_inertia_box_lines  # noqa: PLC0415
 
-        # loop over bodies
-        for body in range(body_count):
-            # skip bodies from worlds beyond max_worlds limit
-            if not self._should_render_world(body_world[body]):
-                continue
+        wp.launch(
+            kernel=compute_inertia_box_lines,
+            dim=num_lines,
+            inputs=[
+                state.body_q,
+                self.model.body_com,
+                self.model.body_inertia,
+                self.model.body_inv_mass,
+                self.model.body_world,
+                self.world_offsets,
+                self.max_worlds if self.max_worlds is not None else -1,
+                wp.vec3(0.5, 0.5, 0.5),  # color
+            ],
+            outputs=[
+                self._inertia_box_points0,
+                self._inertia_box_points1,
+                self._inertia_box_colors,
+            ],
+            device=self.device,
+        )
 
-            rot, principal_inertia = wp.eig3(wp.mat33(body_inertia[body]))
-            xform = wp.transform(body_com[body], wp.quat_from_matrix(rot))
-
-            # computes extents of the solid box that would have similar inertia
-            # Note: GeoType.BOX exemplar has sides of length 2.0
-            box_inertia = principal_inertia * body_inv_mass[body] * (12 / 8.0)
-            scale = (
-                np.sqrt(box_inertia[2] + box_inertia[1] - box_inertia[0]),
-                np.sqrt(box_inertia[0] + box_inertia[2] - box_inertia[1]),
-                np.sqrt(box_inertia[1] + box_inertia[0] - box_inertia[2]),
-            )
-
-            # shape options
-            parent = body
-
-            color = self._shape_color_map(body)
-            if color is None:
-                color = wp.vec3(0.5, 0.5, 0.5)
-            else:
-                color = wp.vec3(color)
-
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
-
-            # add render instance
-            batch.add(
-                parent=parent,
-                xform=xform,
-                scale=scale,
-                color=color,
-                material=material,
-                shape_index=body,
-                world=body_world[body],
-            )
-
-        # batch to the GPU
-        batch.finalize()
-        self._inertia_box_instances = batch
+        self.log_lines(
+            "/model/inertia_boxes", self._inertia_box_points0, self._inertia_box_points1, self._inertia_box_colors
+        )
 
     def _log_joints(self, state: newton.State):
         """
