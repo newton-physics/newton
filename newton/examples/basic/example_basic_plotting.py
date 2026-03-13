@@ -68,11 +68,12 @@ class Example:
 
         self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        # Enable energy computation in MuJoCo
+        # Enable energy computation in MuJoCo (set on whichever model backs the solver)
         try:
             import mujoco  # noqa: PLC0415
 
-            self.solver.mj_model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
+            mjm = self.solver.mjw_model if hasattr(self.solver, "mjw_model") else self.solver.mj_model
+            mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
         except ImportError:
             pass
 
@@ -121,10 +122,10 @@ class Example:
         niter_np = d.solver_niter.numpy() if hasattr(d.solver_niter, "numpy") else d.solver_niter
         self.log_iterations.append(float(np.max(niter_np)))
 
-        # Energy: vec2 per world → [kinetic, potential]
-        energy_np = d.energy.numpy() if hasattr(d.energy, "numpy") else d.energy
-        self.log_energy_kinetic.append(float(energy_np.flat[0]))
-        self.log_energy_potential.append(float(energy_np.flat[1]))
+        # Energy: (world_count, 2) → sum across worlds
+        energy_np = d.energy.numpy() if hasattr(d.energy, "numpy") else np.asarray(d.energy)
+        self.log_energy_kinetic.append(float(energy_np[:, 0].sum()))
+        self.log_energy_potential.append(float(energy_np[:, 1].sum()))
 
         # Active constraint count
         nefc_np = d.nefc.numpy() if hasattr(d.nefc, "numpy") else d.nefc
