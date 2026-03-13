@@ -300,3 +300,4 @@ pnd = "pnd"
 [tool.typos.default.extend-identifiers]
 PNGs = "PNGs"
 Haa = "Haa"
+iy = "iy"

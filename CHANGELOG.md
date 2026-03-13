@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add 3D texture-based SDF, replacing NanoVDB volumes in the mesh-mesh collision pipeline for improved performance and CPU compatibility.
 - Interactive example browser in the GL viewer with tree-view navigation and switch/reset support
 - Add `TetMesh` class and USD loading API for tetrahedral mesh geometry
 - Support kinematic bodies in VBD solver
@@ -12,6 +13,7 @@
 
 ### Changed
 
+- Replace `Model.sdf_data` / `sdf_volume` / `sdf_coarse_volume` with texture-based equivalents (`texture_sdf_data`, `texture_sdf_coarse_textures`, `texture_sdf_subgrid_textures`)
 - Render inertia boxes as wireframe lines instead of solid boxes in the GL viewer to avoid occluding objects
 
 ### Deprecated
