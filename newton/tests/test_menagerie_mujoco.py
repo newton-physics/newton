@@ -2144,16 +2144,16 @@ class TestMenagerieBase(unittest.TestCase):
         # Setup viewer if in debug mode
         viewer = None
         if self.debug_visual:
-            import mujoco.viewer
+            import mujoco.viewer  # noqa: F401 — load viewer submodule
 
             view_name = "NEWTON" if self.debug_view_newton else "NATIVE"
             print(f"\n=== VISUAL DEBUG MODE ({view_name}) ===")
             print("Close viewer to exit.\n")
 
             if self.debug_view_newton:
-                viewer = mujoco.viewer.launch_passive(newton_solver.mj_model, newton_solver.mj_data)
+                viewer = _mujoco.viewer.launch_passive(newton_solver.mj_model, newton_solver.mj_data)
             else:
-                viewer = mujoco.viewer.launch_passive(mj_model, mj_data_native)
+                viewer = _mujoco.viewer.launch_passive(mj_model, mj_data_native)
 
         # Helper: sync mjw_data to mj_data for viewer
         def sync_to_viewer():

@@ -2519,7 +2519,7 @@ class SolverMuJoCo(SolverBase):
         Returns:
             int: Number of actuators added.
         """
-        import mujoco
+        mujoco = self._mujoco
 
         mujoco_attrs = getattr(model, "mujoco", None)
         mujoco_actuator_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
@@ -6104,8 +6104,9 @@ class SolverMuJoCo(SolverBase):
             show_transparent_geoms: Whether to show transparent geoms.
         """
         if self._viewer is None:
-            import mujoco
             import mujoco.viewer
+
+            mujoco = self._mujoco
 
             # make the headlights brighter to improve visibility
             # in the MuJoCo viewer
