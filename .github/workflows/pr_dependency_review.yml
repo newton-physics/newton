@@ -7,7 +7,6 @@ on:
     branches:
       - main
       - "release-*"
-  workflow_dispatch:
 
 # Cancels in-progress runs of this workflow for the same pull request,
 # but allows parallel runs for pushes to the main branch.
@@ -29,10 +28,6 @@ jobs:
       - name: Dependency review
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
-          # TODO: Remove base-ref/head-ref before merging.
-          # Temporarily audit ALL dependencies by comparing against the empty tree.
-          base-ref: 4b825dc642cb6eb9a060e54bf899d15006a9e46f
-          head-ref: ${{ github.sha }}
           allow-licenses: >-
             Apache-2.0,
             MIT,
