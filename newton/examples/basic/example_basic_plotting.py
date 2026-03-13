@@ -28,7 +28,7 @@
 #
 # These are displayed as live plots in the viewer GUI.
 #
-# Command: python -m newton.examples basic_plotting
+# Command: python -m newton.examples basic_plotting --world-count 4
 #
 ###########################################################################
 
@@ -51,14 +51,17 @@ class Example:
 
         self.viewer = viewer
 
-        builder = newton.ModelBuilder()
+        humanoid = newton.ModelBuilder()
 
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
-        builder.add_mjcf(
+        humanoid.add_mjcf(
             mjcf_filename,
             ignore_names=["floor", "ground"],
             xform=wp.transform(wp.vec3(0, 0, 1.5)),
         )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(humanoid, args.world_count)
         builder.add_ground_plane()
 
         self.model = builder.finalize()
@@ -69,7 +72,7 @@ class Example:
         try:
             import mujoco  # noqa: PLC0415
 
-            self.solver.mjw_model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
+            self.solver.mj_model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
         except ImportError:
             pass
 
@@ -97,8 +100,9 @@ class Example:
                 with wp.ScopedCapture() as capture:
                     self.simulate()
                 self.graph = capture.graph
-            except Exception:
+            except Exception as exc:
                 self.graph = None
+                wp.utils.warn(f"CUDA graph capture failed: {exc}")
         else:
             self.graph = None
 
@@ -185,6 +189,9 @@ class Example:
     def _print_summary(self):
         """Print a text summary of diagnostics data."""
         n = len(self.log_iterations)
+        if n == 0:
+            print("\nSimulation diagnostics summary: no steps recorded.")
+            return
         iters = np.array(self.log_iterations)
         print(f"\nSimulation diagnostics summary ({n} steps):")
         print(f"  Iterations:   mean={np.mean(iters):.1f}, max={np.max(iters):.0f}")
@@ -231,9 +238,17 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(world_count=4)
+        return parser
+
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
 
     example = Example(viewer, args)
 

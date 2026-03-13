@@ -134,34 +134,6 @@ class SlowExampleClothTwist:
         subprocess.run(command, capture_output=True, text=True, check=True)
 
 
-class SlowExampleRobotHumanoid:
-    warmup_time = 0
-    repeat = 2
-    number = 1
-    timeout = 600
-
-    def setup(self):
-        wp.build.clear_lto_cache()
-        wp.build.clear_kernel_cache()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_load(self):
-        """Time the amount of time it takes to load and run one frame of the example."""
-
-        command = [
-            sys.executable,
-            "-m",
-            "newton.examples.robot.example_robot_humanoid",
-            "--num-frames",
-            "1",
-            "--viewer",
-            "null",
-        ]
-
-        # Run the script as a subprocess
-        subprocess.run(command, capture_output=True, text=True, check=True)
-
-
 class SlowExampleBasicUrdf:
     warmup_time = 0
     repeat = 2
@@ -199,7 +171,6 @@ if __name__ == "__main__":
         "SlowExampleBasicUrdf": SlowExampleBasicUrdf,
         "SlowExampleRobotAnymal": SlowExampleRobotAnymal,
         "SlowExampleRobotCartpole": SlowExampleRobotCartpole,
-        "SlowExampleRobotHumanoid": SlowExampleRobotHumanoid,
         "SlowExampleClothFranka": SlowExampleClothFranka,
         "SlowExampleClothTwist": SlowExampleClothTwist,
     }

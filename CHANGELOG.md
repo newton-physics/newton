@@ -21,6 +21,8 @@
 
 ### Removed
 
+- Remove `robot_humanoid` example in favor of `basic_plotting` which uses the same humanoid model with diagnostics visualization
+
 ### Fixed
 
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
