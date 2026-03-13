@@ -660,11 +660,12 @@ def verify_and_correct_inertia(
             was_corrected = True
         return corrected_mass, wp.mat33(corrected_inertia), was_corrected
 
-    # Check that inertia matrix is symmetric
-    if not np.allclose(inertia_array, inertia_array.T):
+    # Unconditionally symmetrize inertia matrix (idempotent for symmetric tensors)
+    symmetrized = (inertia_array + inertia_array.T) / 2
+    if not np.allclose(inertia_array, symmetrized):
         warnings.warn(f"Inertia matrix{body_id} is not symmetric, making it symmetric", stacklevel=2)
-        corrected_inertia = (inertia_array + inertia_array.T) / 2
         was_corrected = True
+    corrected_inertia = symmetrized
 
     # Compute eigenvalues (principal moments) for validation
     try:
@@ -829,7 +830,7 @@ def validate_and_correct_inertia_kernel(
         inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     else:
         # Symmetrize inertia matrix: (I + I^T) / 2
-        inertia = wp.mat33(
+        sym = wp.mat33(
             inertia[0, 0],
             (inertia[0, 1] + inertia[1, 0]) * 0.5,
             (inertia[0, 2] + inertia[2, 0]) * 0.5,
@@ -840,6 +841,9 @@ def validate_and_correct_inertia_kernel(
             (inertia[1, 2] + inertia[2, 1]) * 0.5,
             inertia[2, 2],
         )
+        if wp.ddot(inertia - sym, inertia - sym) > 0.0:
+            was_corrected = True
+        inertia = sym
 
         # Use eigendecomposition for proper validation
         _eigvecs, eigvals = wp.eig3(inertia)
