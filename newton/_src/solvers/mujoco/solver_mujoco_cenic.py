@@ -13,11 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CENIC Adaptive-Step MuJoCo Solver — CUDA-graph-fused implementation.
+"""CENIC adaptive-step MuJoCo solver (CUDA-graph-fused).
 
-Per-world adaptive time-stepping via step doubling, captured as a CUDA graph
-to eliminate Python kernel-dispatch overhead from the inner loop.  The step
-controller implements Drake's CalcAdjustedStepSize (integrator_base.cc).
+Per-world adaptive time-stepping via step doubling, captured as a single
+CUDA graph.  Step controller follows Drake's CalcAdjustedStepSize.
 """
 
 from __future__ import annotations
@@ -38,11 +37,7 @@ def _apply_dt_cap(
     dt: wp.array(dtype=wp.float32),
     dt_half: wp.array(dtype=wp.float32),
 ):
-    """Clamp ideal_dt to [dt_min, dt_max] to produce the actual dt used this step.
-
-    Keeping ideal_dt separate prevents a boundary cap from corrupting the
-    controller state, so dt recovers quickly after contact-dense phases.
-    """
+    """Clamp ideal_dt to [dt_min, dt_max], preserving ideal_dt for controller recovery."""
     i = wp.tid()
     actual = wp.clamp(ideal_dt[i], dt_min, dt_max)
     dt[i] = actual
@@ -62,13 +57,8 @@ def _rms_error_kernel(
 ):
     """RMS difference between full-step and doubled half-step states.
 
-    joint_q error is in [rad or m].  joint_qd error is scaled by dt so it is
-    also in [rad or m] (velocity × time = displacement), giving both
-    components comparable magnitudes and preventing velocity-dominated
-    rejection during high-velocity contact phases.
-
-    NaN/Inf guard: diverged simulations get error=1e10, guaranteeing rejection
-    and an aggressive dt shrink.
+    joint_qd error is scaled by dt (velocity * time = displacement) so both
+    components share comparable units.  Diverged sims get error = 1e10.
     """
     world = wp.tid()
     q_start = world * coords_per_world
@@ -92,12 +82,11 @@ def _rms_error_kernel(
     error_out[world] = error
 
 
-# Drake integrator_base.cc constants (CalcAdjustedStepSize)
+# Drake CalcAdjustedStepSize constants (err_order=2 for step doubling).
 _DRAKE_SAFETY = wp.constant(wp.float32(0.9))
 _DRAKE_MIN_SHRINK = wp.constant(wp.float32(0.1))
 _DRAKE_MAX_GROW = wp.constant(wp.float32(5.0))
 _DRAKE_HYSTERESIS_HIGH = wp.constant(wp.float32(1.2))
-# err_order=2 (step doubling) → pow(tol/e, 1/2) = sqrt(tol/e)
 
 
 @wp.kernel
@@ -109,44 +98,35 @@ def _calc_adjusted_step(
     tol: float,
     dt_min: float,
 ):
-    """Drake CalcAdjustedStepSize for step doubling (err_order=2).
+    """Per-world Drake CalcAdjustedStepSize for step doubling (err_order=2).
 
-    Translates Drake integrator_base.cc (line 256) to a per-world GPU kernel.
-    dt_max clamping is intentionally excluded — the caller applies it via
-    _apply_dt_cap so that ideal_dt is preserved for controller recovery.
-
-    Drake constants: kSafety=0.9, kMinShrink=0.1, kMaxGrow=5.0,
-    kHysteresisHigh=1.2, err_order=2.
+    dt_max clamping is deferred to _apply_dt_cap so ideal_dt is preserved.
     """
     world = wp.tid()
     e = err[world]
     step = dt[world]
 
-    # NaN/Inf guard (Drake line 280): diverged sim → aggressive shrink
     if wp.isnan(e) or wp.isinf(e):
         accepted[world] = False
         ideal_dt[world] = _DRAKE_MIN_SHRINK * step
         return
 
-    # Accept-at-floor: never stall at dt_min (fp-safe floor comparison)
+    # At the floor we must accept to avoid stalling.
     if step <= dt_min * wp.float32(1.001) and e > tol:
         accepted[world] = True
         ideal_dt[world] = dt_min
         return
 
-    # CalcAdjustedStepSize line 256 — err_order=2 → sqrt
     new_step = _DRAKE_SAFETY * step * wp.sqrt(tol / wp.max(e, wp.float32(1.0e-30)))
 
-    # Suppress tiny grows — hysteresis (Drake line 304).
-    # Only applies when the controller wants to grow, not shrink.
+    # Hysteresis: suppress tiny grows.
     if new_step > step and new_step < _DRAKE_HYSTERESIS_HIGH * step:
         new_step = step
 
-    # Don't shrink an already-good step (Drake line 319)
+    # Don't shrink an already-good step.
     if new_step < step and e <= tol:
         new_step = step
 
-    # Relative clamp: [kMinShrink*step, kMaxGrow*step]
     new_step = wp.clamp(new_step, _DRAKE_MIN_SHRINK * step, _DRAKE_MAX_GROW * step)
 
     accepted[world] = e <= tol or new_step >= step
@@ -274,25 +254,14 @@ def _status_summary_kernel(
 class SolverMuJoCoCENIC(SolverMuJoCo):
     """Adaptive-step MuJoCo solver for high-accuracy dataset generation.
 
-    Uses step doubling to estimate per-world integration error and adapt the
-    timestep entirely on the GPU.  The full 3-eval block (coord-convert →
-    MuJoCo step ×3 → RMS error → Drake controller → state select) is captured
-    as a CUDA graph, reducing per-inner-step Python dispatch from ~18–36
-    ``wp.launch()`` calls to a single ``wp.capture_launch()``.
+    Uses step doubling (3 MuJoCo evals per attempt) to estimate per-world
+    integration error and adapt the timestep on the GPU.  The full attempt
+    is captured as a CUDA graph so each inner iteration is a single
+    ``wp.capture_launch()`` call.
 
-    The step controller implements Drake's ``CalcAdjustedStepSize``
-    (``integrator_base.cc``) with constants ``kSafety=0.9``,
-    ``kMinShrink=0.1``, ``kMaxGrow=5.0``, ``kHysteresisHigh=1.2``,
-    ``err_order=2``.
-
-    The graph is re-captured when the mean ``dt`` across worlds changes by
-    more than ``recapture_threshold`` (default 1 %) or when ``dt_outer``
-    changes between :meth:`step_dt` calls.
-
-    Note:
-        Timesteps are managed internally by the error controller.  Set the
-        initial value via ``dt_inner_init`` and query current values via
-        :attr:`dt`.
+    Timesteps are managed internally by the error controller.  Set the
+    initial value via ``dt_inner_init`` and query current values via
+    :attr:`dt`.
 
     Example:
 
@@ -359,14 +328,11 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._dt_min = float(dt_inner_min)
         self._dt_max = float(dt_inner_max) if dt_inner_max is not None else float("inf")
 
-        # Scratch states for the 3-eval step-doubling block
         self._scratch_full = model.state()
         self._scratch_mid = model.state()
         self._scratch_double = model.state()
 
-        # Stable internal buffers referenced by pointer inside the CUDA graph.
-        # _state_cur   — current accepted state, updated in place each graph replay.
-        # _state_saved — pre-attempt snapshot for rollback on rejection.
+        # Stable buffers whose pointers are baked into the CUDA graph.
         self._state_cur = model.state()
         self._state_saved = model.state()
 
@@ -378,15 +344,13 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._boundary_flag = wp.zeros(1, dtype=wp.int32, device=device)
         self._status_scalars = wp.zeros(6, dtype=wp.float32, device=device)
 
-        # CUDA graph state — captured once on first step_dt call.
-        # The graph captures GPU array *pointers* for _dt and _dt_half, so
-        # value changes written by _apply_dt_cap are visible on every replay
-        # without recapture.
-        self._graph: wp.Graph | None = None
+        # Stable buffer for opt.timestep; wp.copy() into it is a device-side
+        # op captured by the CUDA graph (unlike Python reference assignment).
+        self._timestep_buf = wp.full(world_count, dt_inner_init, dtype=wp.float32, device=device)
+        self.mjw_model.opt.timestep = self._timestep_buf
 
-    # ------------------------------------------------------------------
-    # Internal: substep and graph
-    # ------------------------------------------------------------------
+        # Captured once on first step_dt call.
+        self._graph: wp.Graph | None = None
 
     def _run_substep(
         self,
@@ -395,13 +359,9 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         contacts: Contacts,
         dt_array: wp.array,
     ) -> None:
-        """Run one MuJoCo step from state_in → state_out.
-
-        Always syncs mjw_data from state_in before stepping, because the three
-        substeps each start from a different initial state.
-        """
+        """Run one MuJoCo step: sync state_in, set timestep, step, write state_out."""
         self._update_mjc_data(self.mjw_data, self.model, state_in)
-        self.mjw_model.opt.timestep = dt_array
+        wp.copy(self.mjw_model.opt.timestep, dt_array)
 
         with wp.ScopedDevice(self.model.device):
             if self.mjw_model.opt.run_collision_detection:
@@ -413,31 +373,17 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._update_newton_state(self.model, state_out, self.mjw_data)
 
     def _run_3eval_block(self) -> None:
-        """One 3-eval step-doubling attempt — the CUDA graph body.
+        """One step-doubling attempt (the CUDA graph body).
 
-        All operations are ``wp.launch()`` or ``wp.copy()`` with no host-side
-        conditionals, so ``wp.ScopedCapture`` records a consistent sequence.
-
-        Sequence:
-          1. Snapshot ``_state_cur`` → ``_state_saved`` (rollback target).
-          2. Full step:   ``_state_cur + _dt     → _scratch_full``.
-          3. Half step 1: ``_state_cur + _dt_half → _scratch_mid``.
-          4. Half step 2: ``_scratch_mid + _dt_half → _scratch_double``.
-          5. RMS error between ``_scratch_full`` and ``_scratch_double``.
-          6. Drake ``_calc_adjusted_step`` → ``ideal_dt``, ``accepted``.
-          7. State select: accepted → ``_scratch_double``, rejected →
-             ``_state_saved``, written to ``_state_cur``.
-          8. ``_advance_sim_time`` for accepted worlds.
-
-        ``_apply_dt_cap`` (``ideal_dt → _dt, _dt_half``) is called *outside*
-        the graph so that ``effective_dt_max`` can change between
-        :meth:`step_dt` calls without triggering a re-capture.
+        Snapshot, 3 MuJoCo evals (full + 2x half), RMS error, Drake
+        controller, state select, sim_time advance.  _apply_dt_cap runs
+        outside the graph so effective_dt_max can change without recapture.
         """
         model = self.model
         n = model.world_count
         dev = model.device
 
-        # 1. Snapshot
+        # Snapshot for rollback on rejection.
         wp.copy(self._state_saved.joint_q, self._state_cur.joint_q)
         wp.copy(self._state_saved.joint_qd, self._state_cur.joint_qd)
         if self._state_cur.body_q is not None and self._state_saved.body_q is not None:
@@ -445,15 +391,11 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         if self._state_cur.body_qd is not None and self._state_saved.body_qd is not None:
             wp.copy(self._state_saved.body_qd, self._state_cur.body_qd)
 
-        # 2–4. Three-eval step doubling.
-        # _run_substep sets mjw_model.opt.timestep = dt_array before each
-        # mujoco_warp step.  During wp.ScopedCapture this Python assignment
-        # runs and records which GPU array pointer to use for that kernel.
+        # 3 MuJoCo evals: full dt, half dt, half dt.
         self._run_substep(self._state_cur, self._scratch_full, None, self._dt)
         self._run_substep(self._state_cur, self._scratch_mid, None, self._dt_half)
         self._run_substep(self._scratch_mid, self._scratch_double, None, self._dt_half)
 
-        # 5. RMS error (qd scaled by dt → position units)
         wp.launch(
             _rms_error_kernel,
             dim=n,
@@ -470,7 +412,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             device=dev,
         )
 
-        # 6. Drake controller → ideal_dt, accepted
         wp.launch(
             _calc_adjusted_step,
             dim=n,
@@ -479,7 +420,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             device=dev,
         )
 
-        # 7. State select
+        # State select: accepted worlds get scratch_double, rejected get saved.
         wp.launch(
             _select_float_kernel,
             dim=model.joint_coord_count,
@@ -515,7 +456,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
                 device=dev,
             )
 
-        # 8. Advance sim_time for accepted worlds
         wp.launch(
             _advance_sim_time,
             dim=n,
@@ -536,10 +476,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         if self._graph is None:
             self._capture_graph()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     @event_scope
     @override
     def step(
@@ -549,16 +485,15 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         control: Control,
         contacts: Contacts,
     ) -> State:
-        """Advance each world by one adaptive step using step doubling.
+        """Advance each world by one adaptive step (non-graph path).
 
-        Runs three MuJoCo evaluations on the GPU with no CPU-GPU transfers.
         For the CUDA-graph-optimized path use :meth:`step_dt`.
 
         Args:
-            state_in:  Input state.
+            state_in: Input state.
             state_out: Output state (written in place).
-            control:   Control inputs.
-            contacts:  Contact data (only used when ``use_mujoco_contacts`` is False).
+            control: Control inputs.
+            contacts: Contact data (when ``use_mujoco_contacts`` is False).
 
         Returns:
             state_out
@@ -657,29 +592,23 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         control: Control,
         apply_forces=None,
     ) -> tuple[State, State]:
-        """Advance all worlds by exactly ``dt_outer`` of simulation time.
-
-        Replays the captured CUDA graph (3 MuJoCo evals + RMS error + Drake
-        controller + state select) once per inner iteration, with a single
-        ``int32`` read-back per ``dt_outer`` boundary to check termination.
+        """Advance all worlds by exactly ``dt_outer`` seconds of simulation time.
 
         Args:
-            dt_outer: Outer control/render period to advance [s].
+            dt_outer: Outer control/render period [s].
             state_0: Current state (input/output).
-            state_1: Scratch state (unused internally; returned unchanged).
+            state_1: Scratch state (unused; returned unchanged).
             control: Control inputs (applied once, persists across substeps).
-            apply_forces: Optional callable ``fn(state)`` called once before
-                the loop to inject external forces.
+            apply_forces: Optional ``fn(state)`` for external forces.
 
         Returns:
-            ``(state_0, state_1)`` with ``state_0`` updated to the new state.
+            ``(state_0, state_1)`` with ``state_0`` updated.
         """
         device = self.model.device
         n = self.model.world_count
 
         effective_dt_max = min(self._dt_max, dt_outer)
 
-        # Prime _dt / _dt_half for the first graph replay and apply new dt_max.
         wp.launch(
             _apply_dt_cap,
             dim=n,
@@ -687,7 +616,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             device=device,
         )
 
-        # Copy external state into the stable internal buffer.
         wp.copy(self._state_cur.joint_q, state_0.joint_q)
         wp.copy(self._state_cur.joint_qd, state_0.joint_qd)
         if state_0.body_q is not None and self._state_cur.body_q is not None:
@@ -695,7 +623,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         if state_0.body_qd is not None and self._state_cur.body_qd is not None:
             wp.copy(self._state_cur.body_qd, state_0.body_qd)
 
-        # Apply control once — persists in mjw_data.ctrl across all substeps.
         self._apply_mjc_control(self.model, state_0, control, self.mjw_data)
         if apply_forces is not None:
             apply_forces(state_0)
@@ -705,15 +632,13 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         wp.launch(_boundary_advance, dim=n, inputs=[self._next_time, dt_outer], device=device)
         wp.launch(_boundary_reset, dim=1, inputs=[self._boundary_flag], device=device)
 
-        # Re-capture once per step_dt call (before the inner loop) so that
-        # _dt.numpy() never fires inside the hot path.
         self._maybe_recapture()
 
         while True:
             wp.capture_launch(self._graph)
 
-            # Apply dt cap outside the graph so effective_dt_max can change
-            # between step_dt calls without requiring a re-capture.
+            # dt cap runs outside the graph so effective_dt_max can change
+            # between step_dt calls without recapture.
             wp.launch(
                 _apply_dt_cap,
                 dim=n,
@@ -721,7 +646,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
                 device=device,
             )
 
-            # Boundary check: 1 int32 read-back per dt_outer boundary.
             wp.launch(_boundary_reset, dim=1, inputs=[self._boundary_flag], device=device)
             wp.launch(
                 _boundary_check,
@@ -732,7 +656,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             if self._boundary_flag.numpy()[0]:
                 break
 
-        # Copy result from internal buffer back to the external state.
         wp.copy(state_0.joint_q, self._state_cur.joint_q)
         wp.copy(state_0.joint_qd, self._state_cur.joint_qd)
         if state_0.body_q is not None and self._state_cur.body_q is not None:
@@ -766,12 +689,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         return self._accepted
 
     def get_status_summary(self) -> dict[str, float]:
-        """Compact per-world status with a single GPU transfer, O(1) in world count.
-
-        Returns:
-            A dict with keys ``sim_time_min``, ``sim_time_max``, ``error_max``,
-            ``accept_count``, ``dt_min``, ``dt_max``.
-        """
+        """Reduce per-world arrays to a 6-scalar summary via one GPU transfer."""
         device = self.model.device
         n = self.model.world_count
 

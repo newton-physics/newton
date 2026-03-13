@@ -9,8 +9,8 @@ import warp as wp
 import newton
 import newton.solvers
 
-DT_OUTER  = 0.01  # X Hz control / render cadence [s]
-LOG_EVERY = 250     # print status grid every N outer steps
+DT_OUTER = 0.01    # 100 Hz control / render cadence [s]
+LOG_EVERY = 250
 
 SPHERE_RADIUS = 0.050
 BOX_HALF      = 0.050
@@ -20,8 +20,8 @@ Z_SPHERES     = 1.00
 Z_BOXES       = 1.25
 
 
-TOL    = 1e-3
-DT_INNER_MIN = 1e-6  
+TOL = 1e-3
+DT_INNER_MIN = 1e-6
 
 
 def build_template() -> newton.ModelBuilder:

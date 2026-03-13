@@ -1,12 +1,11 @@
-"""CENIC scaling diagnostic — measures GPU wall time per component vs N worlds.
+"""CENIC scaling diagnostic: GPU wall time per component vs N worlds.
 
-Each component is timed with explicit wp.synchronize() bookends so we see the
-true GPU cost, not just kernel-launch latency.  Run headless on a range of N
-and plot which component scales with N.
+Each component is timed with wp.synchronize() bookends to measure true
+GPU cost rather than kernel-launch latency.
 
 Usage:
-    uv run python scripts/testing/cenic_scaling_diag.py
-    uv run python scripts/testing/cenic_scaling_diag.py --ns 1 2 4 8 16 32 64 --steps 100
+    uv run python scripts/testing/contact/cenic_scaling_diag.py
+    uv run python scripts/testing/contact/cenic_scaling_diag.py --ns 1 2 4 8 16 32 64 --steps 100
 """
 
 import argparse
@@ -16,7 +15,7 @@ import numpy as np
 import warp as wp
 
 import matplotlib
-matplotlib.use("Agg")  # headless-safe backend
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from scripts.testing.contact.cenic_contact_objects import DT_OUTER, build_model, make_solver

@@ -1,12 +1,7 @@
 """CENIC benchmark plots.
 
-Generates 6 figures:
-  1. Wall time vs error tolerance  (fixed N)
-  2. Wall time vs N worlds         (fixed tol)
-  3. Cost per world vs N worlds    (GPU amortization curve)
-  4. RMS error over sim time       (fixed N, tol=1e-5)
-  5. Adaptive dt_inner over sim time (fixed N, tol=1e-5)
-  6. GPU component breakdown       (mujoco_warp vs device-transfer overhead vs N)
+Generates 6 figures: wall time vs tol, wall time vs N, GPU amortization,
+RMS error trace, adaptive dt trace, and GPU component breakdown.
 
 Usage:
     uv run python scripts/testing/contact/cenic_benchmark_plots.py
@@ -121,7 +116,7 @@ def main():
     tols         = [1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4]
     ns           = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
     ns_diag      = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
-    outer_steps  = 1000
+    outer_steps  = 200
     sim_duration = 2.0
 
     wall_vs_tol = bench_wall_vs_tol(tols, n_worlds=1, sim_duration=sim_duration)
@@ -130,7 +125,7 @@ def main():
     ax.plot([str(f"{t:.0e}") for t in tols], wall_vs_tol, **STYLE, color="tab:blue")
     ax.set_xlabel("Error tolerance")
     ax.set_ylabel("Wall time per sim-second [ms/sim-s]")
-    ax.set_title("Wall time vs tolerance  (N=1, 3 s sim including contact)")
+    ax.set_title("Wall time vs tolerance  (N=1, 2 s sim including contact)")
     ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3)
     _save(fig, out / "fig1_wall_vs_tol.png")
@@ -140,12 +135,11 @@ def main():
     ax.plot(ns, wall_vs_n, **STYLE, color="black")
     ax.set_xlabel("N worlds")
     ax.set_ylabel("Wall time per sim-second [ms/sim-s]")
-    ax.set_title("Wall time vs N worlds  (tol=1e-3, 3 s sim including contact)")
+    ax.set_title("Wall time vs N worlds  (tol=1e-3, 2 s sim including contact)")
     ax.set_xscale("log", base=2)
     ax.grid(True, which="both", alpha=0.3)
     _save(fig, out / "fig2_wall_vs_n.png")
 
-    # Cost per world falls as the GPU fills (amortization), then rises past saturation.
     cost_per_world = [w / n for w, n in zip(wall_vs_n, ns)]
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(ns, cost_per_world, **STYLE, color="tab:orange")
@@ -161,10 +155,6 @@ def main():
     ax.legend(fontsize=8)
     _save(fig, out / "fig3_cost_per_world.png")
 
-    # Use a tighter tolerance for the trace so that dt adapts visibly.
-    # tol=1e-3 is below MuJoCo implicit-Euler step-doubling error at dt=0.002
-    # (O(dt²) ≈ 4e-6), so the controller never rejects and dt stays flat.
-    # tol=1e-5 forces rejections during contact events, revealing adaptation.
     trace_tol = 1e-3
     ts, errs, dts = trace_error_and_dt(tol=trace_tol, n_worlds=1, sim_duration=sim_duration)
 
