@@ -328,32 +328,6 @@ def test_buffer_fraction_no_crash(test, device):
     )
 
 
-def _compute_total_active_weight_sum(collision_pipeline, state):
-    """Compute total active aggregate weight in the hydroelastic reducer.
-
-    Args:
-        collision_pipeline: Collision pipeline configured for hydroelastic contacts.
-        state: Simulation state used for collision evaluation.
-
-    Returns:
-        Sum of active reducer ``weight_sum`` entries [unitless].
-    """
-    contacts = collision_pipeline.contacts()
-    collision_pipeline.collide(state, contacts)
-    wp.synchronize()
-
-    hydro = collision_pipeline.hydroelastic_sdf
-    reducer = hydro.contact_reduction.reducer
-    active_slots = reducer.hashtable.active_slots.numpy()
-    ht_capacity = reducer.hashtable.capacity
-    active_count = int(active_slots[ht_capacity])
-    if active_count <= 0:
-        return 0.0
-    active_indices = active_slots[:active_count]
-    weight_sum = reducer.weight_sum.numpy()
-    return float(np.sum(weight_sum[active_indices]))
-
-
 def test_iso_scan_scratch_buffers_are_level_sized(test, device):
     """Validate iso-scan scratch buffers match each level input size.
 
@@ -388,58 +362,6 @@ def test_iso_scan_scratch_buffers_are_level_sized(test, device):
         test.assertEqual(hydro.iso_subblock_idx_scratch[i].shape[0], level_input)
 
 
-def test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum(test, device):
-    """Validate opt-in aggregate mode keeps at least as much penetrating weight.
-
-    Args:
-        test: Unittest-style assertion helper.
-        device: Warp device under test.
-    """
-    config_default = HydroelasticSDF.Config(
-        reduce_contacts=True,
-        pre_prune_contacts=True,
-        pre_prune_accumulate_all_penetrating_aggregates=False,
-        buffer_fraction=1.0,
-        buffer_mult_contact=2,
-    )
-    model_default, _, state_default, _, _, pipeline_default, _, _ = build_stacked_cubes_scene(
-        device=device,
-        solver_fn=solvers["xpbd"],
-        shape_type=ShapeType.MESH,
-        cube_half=CUBE_HALF_SMALL,
-        reduce_contacts=True,
-        sdf_hydroelastic_config=config_default,
-    )
-    newton.eval_fk(model_default, model_default.joint_q, model_default.joint_qd, state_default)
-    total_weight_default = _compute_total_active_weight_sum(pipeline_default, state_default)
-
-    config_accurate = HydroelasticSDF.Config(
-        reduce_contacts=True,
-        pre_prune_contacts=True,
-        pre_prune_accumulate_all_penetrating_aggregates=True,
-        buffer_fraction=1.0,
-        buffer_mult_contact=2,
-    )
-    model_accurate, _, state_accurate, _, _, pipeline_accurate, _, _ = build_stacked_cubes_scene(
-        device=device,
-        solver_fn=solvers["xpbd"],
-        shape_type=ShapeType.MESH,
-        cube_half=CUBE_HALF_SMALL,
-        reduce_contacts=True,
-        sdf_hydroelastic_config=config_accurate,
-    )
-    newton.eval_fk(model_accurate, model_accurate.joint_q, model_accurate.joint_qd, state_accurate)
-    total_weight_accurate = _compute_total_active_weight_sum(pipeline_accurate, state_accurate)
-
-    test.assertGreater(total_weight_default, 0.0, "Expected positive aggregate weight in default mode")
-    test.assertGreater(total_weight_accurate, 0.0, "Expected positive aggregate weight in accurate mode")
-    test.assertGreaterEqual(
-        total_weight_accurate,
-        total_weight_default - 1e-6,
-        "Expected accurate aggregate mode to retain at least as much penetrating aggregate weight",
-    )
-
-
 def test_reduce_contacts_with_pre_prune_disabled_no_crash(test, device):
     """Validate the reduce_contacts=True, pre_prune_contacts=False path."""
     config = HydroelasticSDF.Config(
@@ -463,6 +385,139 @@ def test_reduce_contacts_with_pre_prune_disabled_no_crash(test, device):
 
     rigid_count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(rigid_count, 0, "Expected non-zero contacts with pre_prune_contacts=False")
+
+
+@wp.kernel
+def _set_body_z_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    body_idx: int,
+    z: float,
+):
+    cur = body_q[body_idx]
+    p = wp.transform_get_translation(cur)
+    body_q[body_idx] = wp.transform(wp.vec3(p[0], p[1], z), wp.transform_get_rotation(cur))
+
+
+def _compute_net_force(contacts, model, state):
+    """Compute net contact force from a contacts buffer."""
+    n = int(contacts.rigid_contact_count.numpy()[0])
+    if n == 0 or contacts.rigid_contact_stiffness is None:
+        return np.zeros(3)
+
+    normals = contacts.rigid_contact_normal.numpy()[:n]
+    p0 = contacts.rigid_contact_point0.numpy()[:n]
+    p1 = contacts.rigid_contact_point1.numpy()[:n]
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:n]
+    shape0 = contacts.rigid_contact_shape0.numpy()[:n]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:n]
+    shape_body = model.shape_body.numpy()
+    body_q = state.body_q.numpy()
+
+    b0 = shape_body[shape0]
+    b1 = shape_body[shape1]
+    # Translate contact points to world frame (body == -1 means world already)
+    off0 = np.where((b0 != -1)[:, None], body_q[np.maximum(b0, 0), :3], 0.0)
+    off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
+    p0w = p0 + off0
+    p1w = p1 + off1
+    depth = np.einsum("ij,ij->i", p0w - p1w, normals) / 2.0
+    mask = (stiffness > 0) & (depth < 0)
+    force_mag = stiffness[mask] * (-depth[mask])
+    return np.sum(force_mag[:, None] * normals[mask], axis=0)
+
+
+def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: bool):
+    """Reduced hydroelastic forces must match the unreduced reference."""
+    cube_half = 0.1
+    sphere_radius = 0.1
+    narrow_band = cube_half * 0.4
+    contact_margin = cube_half * 0.4
+
+    shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=64,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        gap=contact_margin,
+        kh=1e9,
+    )
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = shape_cfg
+    builder.add_ground_plane()
+
+    cube_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half), wp.quat_identity()),
+        label="cube",
+    )
+    builder.add_shape_box(body=cube_body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    rest_z = 2 * cube_half + sphere_radius
+    sphere_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, rest_z), wp.quat_identity()),
+        label="sphere",
+    )
+    builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    cfg_reduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=anchor_contact,
+    )
+    cfg_unreduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    pipe_red = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_reduced)
+    pipe_unr = newton.CollisionPipeline(model, rigid_contact_max=15000, sdf_hydroelastic_config=cfg_unreduced)
+    contacts_red = pipe_red.contacts()
+    contacts_unr = pipe_unr.contacts()
+
+    penetrations = [0.0, 1e-4, 1e-3, 1e-2]
+
+    for pen in penetrations:
+        sphere_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
+
+        pipe_red.collide(state, contacts_red)
+        pipe_unr.collide(state, contacts_unr)
+
+        f_red = _compute_net_force(contacts_red, model, state)
+        f_unr = _compute_net_force(contacts_unr, model, state)
+        anchor_label = "with anchor" if anchor_contact else "without anchor"
+
+        if pen == 0.0:
+            # No penetration — both forces should be near zero
+            test.assertLess(np.linalg.norm(f_red), 1e-3, f"pen={pen} ({anchor_label}): reduced force should be ~0")
+            test.assertLess(np.linalg.norm(f_unr), 1e-3, f"pen={pen} ({anchor_label}): unreduced force should be ~0")
+            continue
+
+        # z-component (normal force) — must be positive and match within 1%
+        test.assertGreater(f_unr[2], 0.0, f"pen={pen} ({anchor_label}): unreduced Fz should be positive")
+        rel_z = abs(f_red[2] - f_unr[2]) / abs(f_unr[2])
+        test.assertLess(rel_z, 0.01, f"pen={pen} ({anchor_label}): Fz mismatch {rel_z * 100:.2f}%")
+
+        # xy-components — should be small; match as fraction of Fz
+        for axis, label in [(0, "Fx"), (1, "Fy")]:
+            abs_diff = abs(f_red[axis] - f_unr[axis])
+            test.assertLess(
+                abs_diff / abs(f_unr[2]),
+                0.01,
+                f"pen={pen} ({anchor_label}): {label} diff {abs_diff:.4f} > 1% of Fz {f_unr[2]:.4f}",
+            )
+
+
+def test_reduced_vs_unreduced_contact_forces(test, device):
+    """Reduced and unreduced hydroelastic forces must agree within 1% without anchors."""
+    _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact=False)
+
+
+def test_reduced_vs_unreduced_contact_forces_with_anchor_contact(test, device):
+    """Reduced hydroelastic forces must still match with anchor_contact enabled."""
+    _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact=True)
 
 
 def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
@@ -704,11 +759,12 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         expected /= effective_mass
         ratio = measured / expected
 
+        # We expect a ratio slightly > 1 due to non-uniform pressure distribution.
         test.assertGreater(
-            ratio, 0.9, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
+            ratio, 1.0, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
         )
         test.assertLess(
-            ratio, 1.1, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
+            ratio, 1.2, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
         )
 
 
@@ -827,12 +883,6 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
-    "test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum",
-    test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum,
-    devices=cuda_devices,
-)
-add_function_test(
-    TestHydroelastic,
     "test_reduce_contacts_with_pre_prune_disabled_no_crash",
     test_reduce_contacts_with_pre_prune_disabled_no_crash,
     devices=cuda_devices,
@@ -843,6 +893,22 @@ add_function_test(
     "test_entry_k_eff_matches_shape_harmonic_mean",
     test_entry_k_eff_matches_shape_harmonic_mean,
     devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_forces",
+    test_reduced_vs_unreduced_contact_forces,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_forces_with_anchor_contact",
+    test_reduced_vs_unreduced_contact_forces_with_anchor_contact,
+    devices=cuda_devices,
+    check_output=False,
 )
 
 

@@ -201,14 +201,6 @@ class HydroelasticSDF:
         The anchor contact helps preserve moment balance. Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
         """Contact area used for non-penetrating contacts at the margin."""
-        pre_prune_accumulate_all_penetrating_aggregates: bool = False
-        """When pre-pruning is enabled, also accumulate aggregate force terms from all
-        penetrating faces before pruning writes to the contact buffer.
-
-        This preserves aggregate stiffness/normal/anchor fidelity while keeping the
-        fast local compaction path for contact storage. The default keeps the current
-        fastest behavior (aggregates from retained contacts only).
-        """
 
     @dataclass
     class ContactSurfaceData:
@@ -340,11 +332,6 @@ class HydroelasticSDF:
             self.generate_contacts_kernel = get_generate_contacts_kernel(
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
-                accumulate_all_penetrating_aggregates=(
-                    self.config.reduce_contacts
-                    and self.config.pre_prune_contacts
-                    and self.config.pre_prune_accumulate_all_penetrating_aggregates
-                ),
             )
 
             if self.config.reduce_contacts:
@@ -522,8 +509,9 @@ class HydroelasticSDF:
 
         self._find_iso_voxels(shape_sdf_data, shape_transform, shape_gap)
 
+        self._generate_contacts(shape_sdf_data, shape_transform, shape_gap)
+
         if self.config.reduce_contacts:
-            self._generate_contacts(shape_sdf_data, shape_transform, shape_gap)
             self._reduce_decode_contacts(
                 shape_transform,
                 shape_collision_aabb_lower,
@@ -533,7 +521,6 @@ class HydroelasticSDF:
                 writer_data,
             )
         else:
-            self._generate_contacts(shape_sdf_data, shape_transform, shape_gap)
             self._decode_contacts(
                 shape_transform,
                 shape_gap,
@@ -813,9 +800,6 @@ class HydroelasticSDF:
             shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             grid_size=self.grid_size,
-            skip_aggregates=(
-                self.config.pre_prune_contacts and self.config.pre_prune_accumulate_all_penetrating_aggregates
-            ),
         )
         self.contact_reduction.export(
             shape_gap=shape_gap,
@@ -1299,7 +1283,6 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
 def get_generate_contacts_kernel(
     output_vertices: bool,
     pre_prune: bool = False,
-    accumulate_all_penetrating_aggregates: bool = False,
 ):
     """Create kernel for hydroelastic contact generation.
 
@@ -1315,12 +1298,13 @@ def get_generate_contacts_kernel(
     - keep top-K penetrating faces by area*|depth| (K=2)
     - keep at most one non-penetrating fallback face (closest to penetration)
 
-    When ``accumulate_all_penetrating_aggregates`` is enabled, all penetrating
-    faces contribute to aggregate force terms (via hashtable entries) even if
-    they are later pruned from buffer writes.
+    All penetrating faces always contribute to aggregate force terms (via
+    hashtable entries) regardless of whether they are later pruned from
+    buffer writes. This ensures aggregate stiffness/normal/anchor fidelity.
 
     Args:
         output_vertices: Whether to output contact surface vertices for visualization.
+        pre_prune: Whether to perform local-first face compaction.
 
     Returns:
         generate_contacts_kernel: Warp kernel for contact generation.
@@ -1454,6 +1438,20 @@ def get_generate_contacts_kernel(
                     y_id,
                     z_id,
                 )
+                # Accumulate stats per normal bin
+                if pen_depth < 0.0:
+                    bin_id = get_slot(normal)
+                    key = make_contact_key(shape_a, shape_b, bin_id)
+                    entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
+                    if entry_idx >= 0:
+                        force_weight = area * (-pen_depth)
+                        wp.atomic_add(reducer_data.agg_force, entry_idx, force_weight * normal)
+                        wp.atomic_add(reducer_data.weighted_pos_sum, entry_idx, force_weight * face_center)
+                        wp.atomic_add(reducer_data.weight_sum, entry_idx, force_weight)
+                        reducer_data.entry_k_eff[entry_idx] = k_eff
+                    else:
+                        wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
+
                 if wp.static(not pre_prune):
                     contact_id = export_hydroelastic_contact_to_buffer(
                         shape_a,
@@ -1471,22 +1469,6 @@ def get_generate_contacts_kernel(
                         iso_vertex_depth[contact_id] = pen_depth
                         iso_vertex_shape_pair[contact_id] = pair
                     continue
-
-                if wp.static(accumulate_all_penetrating_aggregates) and pen_depth < 0.0:
-                    # Optional accurate aggregate mode: accumulate ALL penetrating
-                    # faces before local write pruning. This preserves downstream
-                    # aggregate stiffness/normal/anchor terms.
-                    bin_id = get_slot(normal)
-                    key = make_contact_key(shape_a, shape_b, bin_id)
-                    entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
-                    if entry_idx >= 0:
-                        force_weight = area * (-pen_depth)
-                        wp.atomic_add(reducer_data.agg_force, entry_idx, force_weight * normal)
-                        wp.atomic_add(reducer_data.weighted_pos_sum, entry_idx, force_weight * face_center)
-                        wp.atomic_add(reducer_data.weight_sum, entry_idx, force_weight)
-                        reducer_data.entry_k_eff[entry_idx] = k_eff
-                    else:
-                        wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
 
                 # Local-first compaction: keep top-K penetrating faces by score.
                 if pen_depth < 0.0:
