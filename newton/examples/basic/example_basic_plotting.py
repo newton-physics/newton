@@ -157,7 +157,7 @@ class Example:
         n = len(self.log_iterations)
         time = np.arange(n, dtype=np.float32) * self.frame_dt
 
-        fig, axs = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+        _fig, axs = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
 
         axs[0].step(time, self.log_iterations, color="blue")
         axs[0].set_ylabel("Solver Iterations")
