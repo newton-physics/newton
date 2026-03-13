@@ -796,19 +796,18 @@ def validate_and_correct_inertia_kernel(
     inertia = body_inertia[tid]
     was_corrected = False
 
-    # Detect NaN/Inf in mass or inertia and zero out
-    diag_sum = inertia[0, 0] + inertia[1, 1] + inertia[2, 2]
-    upper_sum = inertia[0, 1] + inertia[0, 2] + inertia[1, 2]
-    lower_sum = inertia[1, 0] + inertia[2, 0] + inertia[2, 1]
+    # Detect NaN/Inf in mass or any inertia coefficient and zero out
     if (
-        wp.isnan(mass)
-        or not wp.isfinite(mass)
-        or wp.isnan(diag_sum)
-        or not wp.isfinite(diag_sum)
-        or wp.isnan(upper_sum)
-        or not wp.isfinite(upper_sum)
-        or wp.isnan(lower_sum)
-        or not wp.isfinite(lower_sum)
+        not wp.isfinite(mass)
+        or not wp.isfinite(inertia[0, 0])
+        or not wp.isfinite(inertia[0, 1])
+        or not wp.isfinite(inertia[0, 2])
+        or not wp.isfinite(inertia[1, 0])
+        or not wp.isfinite(inertia[1, 1])
+        or not wp.isfinite(inertia[1, 2])
+        or not wp.isfinite(inertia[2, 0])
+        or not wp.isfinite(inertia[2, 1])
+        or not wp.isfinite(inertia[2, 2])
     ):
         mass = 0.0
         inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)

@@ -9824,16 +9824,18 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-                        # Update builder state to match kernel output
+                        # Update builder state to match kernel output (only corrected bodies)
                         corrected_masses = body_mass_array.numpy()
                         corrected_inertias = body_inertia_array.numpy()
                         corrected_inv_masses = body_inv_mass_array.numpy()
                         corrected_inv_inertias = body_inv_inertia_array.numpy()
+                        flags = correction_flags.numpy()
                         for i in range(len(self.body_mass)):
-                            self.body_mass[i] = float(corrected_masses[i])
-                            self.body_inertia[i] = self._coerce_mat33(corrected_inertias[i])
-                            self.body_inv_mass[i] = float(corrected_inv_masses[i])
-                            self.body_inv_inertia[i] = self._coerce_mat33(corrected_inv_inertias[i])
+                            if flags[i]:
+                                self.body_mass[i] = float(corrected_masses[i])
+                                self.body_inertia[i] = self._coerce_mat33(corrected_inertias[i])
+                                self.body_inv_mass[i] = float(corrected_inv_masses[i])
+                                self.body_inv_inertia[i] = self._coerce_mat33(corrected_inv_inertias[i])
 
                     # Use the corrected arrays directly on the Model
                     m.body_mass = body_mass_array
