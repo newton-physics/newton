@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-def create_compute_lighting_function(config: RenderContext.Config, state: RenderContext.State) -> wp.func:
+def create_compute_lighting_function(config: RenderContext.Config, state: RenderContext.State) -> wp.Function:
     raytrace_first_hit = raytrace.create_first_hit_function(config, state)
 
     @wp.func
