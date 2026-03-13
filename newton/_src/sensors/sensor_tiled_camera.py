@@ -524,6 +524,16 @@ class SensorTiledCamera:
         return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
 
     def __load_textures(self, config: Config):
+        """Load mesh textures and UV data into the render context.
+
+        Deduplicates textures by hash and meshes by identity, packing all texture
+        pixel data into a single flat buffer and all UV coordinates into a single
+        texcoord array. Per-shape index arrays map each shape to its texture and
+        UV offset (``-1`` when absent).
+
+        Args:
+            config: Sensor configuration controlling whether textures are enabled.
+        """
         if not config.enable_textures and not config.checkerboard_texture:
             return
 
