@@ -144,7 +144,7 @@ def main():
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(ns, cost_per_world, **STYLE, color="tab:orange")
     ax.set_xlabel("N worlds")
-    ax.set_ylabel("Wall time per world per step_dt [ms]")
+    ax.set_ylabel("Wall time per world per sim-second [ms/sim-s]")
     ax.set_title("GPU amortization: cost per world vs N  (tol=1e-3)")
     ax.set_xscale("log", base=2)
     ax.set_ylim(bottom=0)
