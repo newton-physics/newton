@@ -9889,18 +9889,42 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-                        # Update builder state to match kernel output (only corrected bodies)
-                        corrected_masses = body_mass_array.numpy()
-                        corrected_inertias = body_inertia_array.numpy()
-                        corrected_inv_masses = body_inv_mass_array.numpy()
-                        corrected_inv_inertias = body_inv_inertia_array.numpy()
-                        flags = correction_flags.numpy()
-                        for i in range(len(self.body_mass)):
-                            if flags[i]:
-                                self.body_mass[i] = float(corrected_masses[i])
-                                self.body_inertia[i] = self._coerce_mat33(corrected_inertias[i])
-                                self.body_inv_mass[i] = float(corrected_inv_masses[i])
-                                self.body_inv_inertia[i] = self._coerce_mat33(corrected_inv_inertias[i])
+                        # Update builder state to match kernel output.
+                        # Scalar lists are rebuilt in bulk via .tolist() (fast).
+                        # mat33 lists require per-element construction but only
+                        # run when corrections were actually made.
+                        self.body_mass = body_mass_array.numpy().tolist()
+                        self.body_inv_mass = body_inv_mass_array.numpy().tolist()
+                        inertias_np = body_inertia_array.numpy()
+                        inv_inertias_np = body_inv_inertia_array.numpy()
+                        self.body_inertia = [
+                            wp.mat33(
+                                m[0][0],
+                                m[0][1],
+                                m[0][2],
+                                m[1][0],
+                                m[1][1],
+                                m[1][2],
+                                m[2][0],
+                                m[2][1],
+                                m[2][2],
+                            )
+                            for m in inertias_np
+                        ]
+                        self.body_inv_inertia = [
+                            wp.mat33(
+                                m[0][0],
+                                m[0][1],
+                                m[0][2],
+                                m[1][0],
+                                m[1][1],
+                                m[1][2],
+                                m[2][0],
+                                m[2][1],
+                                m[2][2],
+                            )
+                            for m in inv_inertias_np
+                        ]
 
                     # Use the corrected arrays directly on the Model
                     m.body_mass = body_mass_array
