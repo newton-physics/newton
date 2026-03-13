@@ -79,7 +79,10 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         self._shape_instances = {}
-        self._inertia_box_instances: ViewerBase.ShapeInstances | None = None
+        # Inertia box wireframe line vertices (12 lines per body)
+        self._inertia_box_points0 = None
+        self._inertia_box_points1 = None
+        self._inertia_box_colors = None
 
         # Geometry mesh cache (geometry hash -> mesh path)
         self._geometry_cache: dict[int, str] = {}
@@ -442,20 +445,7 @@ class ViewerBase(ABC):
                 hidden=not visible,
             )
 
-        if self.show_inertia_boxes:
-            if self._inertia_box_instances is None:
-                self._populate_inertia_boxes()
-            self._inertia_box_instances.update(state, world_offsets=self.world_offsets)
-        if self._inertia_box_instances is not None:
-            self.log_instances(
-                self._inertia_box_instances.name,
-                self._inertia_box_instances.mesh,
-                self._inertia_box_instances.world_xforms,
-                self._inertia_box_instances.scales,
-                self._inertia_box_instances.colors,
-                self._inertia_box_instances.materials,
-                hidden=not self.show_inertia_boxes,
-            )
+        self._log_inertia_boxes(state)
 
         self._log_triangles(state)
         self._log_particles(state)
@@ -1535,75 +1525,50 @@ class ViewerBase(ABC):
             if batch_ref is not None:
                 batch_ref.colors_changed = True
 
-    # creates meshes and instances for each shape in the Model
-    def _populate_inertia_boxes(self):
-        # convert to NumPy
+    def _log_inertia_boxes(self, state: newton.State):
+        """Render inertia boxes as wireframe lines."""
+        if not self.show_inertia_boxes:
+            self.log_lines("/model/inertia_boxes", None, None, None)
+            return
+
         body_count = self.model.body_count
-        body_inertia = self.model.body_inertia.numpy()
-        body_inv_mass = self.model.body_inv_mass.numpy()
-        body_com = self.model.body_com.numpy()
-        body_world = self.model.body_world.numpy()
+        if body_count == 0:
+            return
 
-        scale = (1.0, 1.0, 1.0)
-        thickness = 0.0
-        is_solid = True
-        geo_src = None
-        geo_args = (newton.GeoType.BOX, scale, thickness, is_solid, geo_src)
-        geo_hash = self._hash_geometry(*geo_args)
-        if geo_hash not in self._geometry_cache:
-            mesh_name = self._populate_geometry(*geo_args)
-        else:
-            mesh_name = self._geometry_cache[geo_hash]
+        # 12 edges per body
+        num_lines = body_count * 12
 
-        static = False
-        flags = newton.ShapeFlags.VISIBLE
+        if self._inertia_box_points0 is None or len(self._inertia_box_points0) < num_lines:
+            self._inertia_box_points0 = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+            self._inertia_box_points1 = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+            self._inertia_box_colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
 
-        shape_name = "/model/inertia_boxes"
-        batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+        from .kernels import compute_inertia_box_lines  # noqa: PLC0415
 
-        # loop over bodies
-        for body in range(body_count):
-            # skip bodies from worlds beyond max_worlds limit
-            if not self._should_render_world(body_world[body]):
-                continue
+        wp.launch(
+            kernel=compute_inertia_box_lines,
+            dim=num_lines,
+            inputs=[
+                state.body_q,
+                self.model.body_com,
+                self.model.body_inertia,
+                self.model.body_inv_mass,
+                self.model.body_world,
+                self.world_offsets,
+                self.max_worlds if self.max_worlds is not None else -1,
+                wp.vec3(0.5, 0.5, 0.5),  # color
+            ],
+            outputs=[
+                self._inertia_box_points0,
+                self._inertia_box_points1,
+                self._inertia_box_colors,
+            ],
+            device=self.device,
+        )
 
-            rot, principal_inertia = wp.eig3(wp.mat33(body_inertia[body]))
-            xform = wp.transform(body_com[body], wp.quat_from_matrix(rot))
-
-            # computes extents of the solid box that would have similar inertia
-            # Note: GeoType.BOX exemplar has sides of length 2.0
-            box_inertia = principal_inertia * body_inv_mass[body] * (12 / 8.0)
-            scale = (
-                np.sqrt(box_inertia[2] + box_inertia[1] - box_inertia[0]),
-                np.sqrt(box_inertia[0] + box_inertia[2] - box_inertia[1]),
-                np.sqrt(box_inertia[1] + box_inertia[0] - box_inertia[2]),
-            )
-
-            # shape options
-            parent = body
-
-            color = self._shape_color_map(body)
-            if color is None:
-                color = wp.vec3(0.5, 0.5, 0.5)
-            else:
-                color = wp.vec3(color)
-
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
-
-            # add render instance
-            batch.add(
-                parent=parent,
-                xform=xform,
-                scale=scale,
-                color=color,
-                material=material,
-                shape_index=body,
-                world=body_world[body],
-            )
-
-        # batch to the GPU
-        batch.finalize()
-        self._inertia_box_instances = batch
+        self.log_lines(
+            "/model/inertia_boxes", self._inertia_box_points0, self._inertia_box_points1, self._inertia_box_colors
+        )
 
     def _log_joints(self, state: newton.State):
         """

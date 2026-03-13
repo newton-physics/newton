@@ -16,6 +16,7 @@
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
+wp.config.enable_backward = False
 wp.config.quiet = True
 
 import newton
