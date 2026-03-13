@@ -207,6 +207,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     body_q: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
     # Model:
+    geom_bodyid: wp.array(dtype=int),
+    body_weldid: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_priority: wp.array(dtype=int),
     geom_solmix: wp.array2d(dtype=float),
@@ -249,12 +251,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
     ncollision_out: wp.array(dtype=int),
 ):
     # See kernel solve_body_contact_positions for reference
+    # nacon_out must be zeroed before this kernel is launched so that
+    # wp.atomic_add below produces the correct compacted count.
 
     tid = wp.tid()
 
     count = rigid_contact_count[0]
 
-    # Set number of contacts (for a single world)
     if tid == 0:
         if count > naconmax:
             wp.printf(
@@ -262,8 +265,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 count,
                 naconmax,
             )
-            count = naconmax
-        nacon_out[0] = count
         ncollision_out[0] = 0
 
     if count > naconmax:
@@ -277,6 +278,18 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     # Skip invalid contacts - both shapes must be specified
     if shape_a < 0 or shape_b < 0:
+        return
+
+    # Replicate MuJoCo's weld-based self-collision filter: skip contacts where
+    # both geoms belong to bodies in the same weld group (e.g. ground plane vs
+    # a fixed-base link, both welded to the world body).  Without this check the
+    # solver sees invweight=0 for both sides, producing efc_D ~ 1/MJ_MINVAL
+    # which freezes all downstream DOFs.
+    geom_a = newton_shape_to_mjc_geom[shape_a]
+    geom_b = newton_shape_to_mjc_geom[shape_b]
+    mj_body_a = geom_bodyid[geom_a]
+    mj_body_b = geom_bodyid[geom_b]
+    if body_weldid[mj_body_a] == body_weldid[mj_body_b]:
         return
 
     body_a = shape_body[shape_a]
@@ -309,16 +322,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
     # Build contact frame
     frame = make_frame(n)
 
-    geom_a = newton_shape_to_mjc_geom[shape_a]
-    geom_b = newton_shape_to_mjc_geom[shape_b]
     geoms = wp.vec2i(geom_a, geom_b)
 
     # Compute world ID from body indices (more reliable than shape mapping for static shapes)
     # Static shapes like ground planes share the same Newton shape index across all worlds,
     # so the inverse shape mapping may have the wrong world ID for them.
     # Using body indices: body_index = world * bodies_per_world + body_in_world
-    # Note: At least one shape must be attached to a body (body >= 0) since collisions
-    # between two static shapes (not attached to any body) are not supported.
     worldid = body_a // bodies_per_world
     if body_a < 0:
         worldid = body_b // bodies_per_world
@@ -367,7 +376,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 friction[4],
             )
 
-    # Use the write_contact function to write all the data
+    # Atomically claim a compacted output slot (contacts may be filtered above)
+    cid = wp.atomic_add(nacon_out, 0, 1)
+    if cid >= naconmax:
+        return
+
     write_contact(
         dist_in=dist,
         pos_in=pos,
@@ -381,7 +394,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         solimp_in=solimp,
         geoms_in=geoms,
         worldid_in=worldid,
-        contact_id_in=tid,
+        contact_id_in=cid,
         contact_dist_out=contact_dist_out,
         contact_pos_out=contact_pos_out,
         contact_frame_out=contact_frame_out,

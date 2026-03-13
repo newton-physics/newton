@@ -3000,6 +3000,10 @@ class SolverMuJoCo(SolverBase):
         if self.newton_shape_to_mjc_geom is None:
             self._create_inverse_shape_mapping()
 
+        # Zero nacon before the kernel — the kernel uses atomic_add to count
+        # only the contacts that survive weld-based filtering.
+        self.mjw_data.nacon.zero_()
+
         bodies_per_world = self.model.body_count // self.model.world_count
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
@@ -3007,6 +3011,8 @@ class SolverMuJoCo(SolverBase):
             inputs=[
                 state_in.body_q,
                 model.shape_body,
+                self.mjw_model.geom_bodyid,
+                self.mjw_model.body_weldid,
                 self.mjw_model.geom_condim,
                 self.mjw_model.geom_priority,
                 self.mjw_model.geom_solmix,
