@@ -441,6 +441,17 @@ def parse_usd(
 
     bodies_with_visual_shapes: set[int] = set()
 
+    def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
+        prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
+        if articulation_root_xform is not None:
+            rebase_mat = _xform_to_mat44(wp.transform_inverse(articulation_root_xform))
+            prim_world_mat = rebase_mat @ prim_world_mat
+        if incoming_world_xform is not None:
+            # Apply the incoming world transform in model space (static shapes or when using body_xform).
+            incoming_mat = _xform_to_mat44(incoming_world_xform)
+            prim_world_mat = incoming_mat @ prim_world_mat
+        return prim_world_mat
+
     def _load_visual_shapes_impl(
         parent_body_id: int,
         prim: Usd.Prim,
@@ -466,14 +477,11 @@ def parse_usd(
         if any(re.match(path, path_name) for path in ignore_paths):
             return
 
-        prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
-        if articulation_root_xform is not None:
-            rebase_mat = _xform_to_mat44(wp.transform_inverse(articulation_root_xform))
-            prim_world_mat = rebase_mat @ prim_world_mat
-        if incoming_world_xform is not None and (parent_body_id == -1 or body_xform is not None):
-            # Apply the incoming world transform in model space (static shapes or when using body_xform).
-            incoming_mat = _xform_to_mat44(incoming_world_xform)
-            prim_world_mat = incoming_mat @ prim_world_mat
+        prim_world_mat = _get_prim_world_mat(
+            prim,
+            articulation_root_xform,
+            incoming_world_xform if (parent_body_id == -1 or body_xform is not None) else None,
+        )
         if body_xform is not None:
             # Use the body transform used by the builder to avoid USD/physics pose mismatches.
             body_world_mat = _xform_to_mat44(body_xform)
@@ -2335,7 +2343,7 @@ def parse_usd(
     if load_visual_shapes:
         prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
         for gaussian_prim in prims:
-            if str(gaussian_prim.GetPath()).startswith('/Prototypes/'):
+            if str(gaussian_prim.GetPath()).startswith("/Prototypes/"):
                 continue
 
             if gaussian_prim.HasAPI(UsdPhysics.RigidBodyAPI):
@@ -2353,9 +2361,7 @@ def parse_usd(
 
             body_id = -1
 
-            prim_world_mat = usd.get_transform_matrix(gaussian_prim, local=False, xform_cache=xform_cache)
-            if incoming_world_xform is not None:
-                prim_world_mat = _xform_to_mat44(incoming_world_xform) @ prim_world_mat
+            prim_world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
 
             g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
             gaussian = usd.get_gaussian(gaussian_prim)
