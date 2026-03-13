@@ -683,6 +683,15 @@ add_example_test(
 )
 
 
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_plotting",
+    devices=test_devices,
+    test_options={"num-frames": 200},
+    use_viewer=True,
+)
+
+
 class TestContactsExamples(unittest.TestCase):
     pass
 
