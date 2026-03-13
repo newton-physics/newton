@@ -552,9 +552,11 @@ class SensorTiledCamera:
             if isinstance(shape, Mesh):
                 if shape.texture is not None and not config.checkerboard_texture:
                     if shape.texture_hash not in texture_hashes:
-                        texture_hashes[shape.texture_hash] = len(textures)
-
                         data = load_texture(shape.texture)
+                        if data is None:
+                            raise ValueError(f"Failed to load texture: {shape.texture}")
+
+                        texture_hashes[shape.texture_hash] = len(textures)
                         num_pixel_total += data.shape[0] * data.shape[1]
                         textures.append(data)
                     texture_ids.append(texture_hashes[shape.texture_hash])
