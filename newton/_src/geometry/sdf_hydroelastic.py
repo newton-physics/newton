@@ -45,13 +45,13 @@ import warnings
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 import warp as wp
 
 from newton._src.core.types import MAXVAL, Devicelike
 
 from ..sim.model import Model
 from ..utils.heightfield import HeightfieldData, sample_sdf_heightfield
+from . import hydroelastic_pressure_fields
 from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import get_slot
@@ -66,8 +66,10 @@ from .contact_reduction_hydroelastic import (
     HydroelasticReductionConfig,
     export_hydroelastic_contact_to_buffer,
 )
-from .flags import HydroelasticContactWorkflow, HydroelasticType, ShapeFlags, hydroelastic_type_from_flags
+from .flags import HydroelasticContactWorkflow, ShapeFlags
 from .hashtable import hashtable_find_or_insert
+from .hydroelastic_runtime_adapter import collect_hydroelastic_runtime_data
+from .hydroelastic_workflow import resolve_pair_contact_workflow
 from .sdf_mc import (
     MC_DEGENERATE_N_SQ_EPS,
     MC_EDGE_CLAMP_MAX,
@@ -90,7 +92,7 @@ from .kernels import (
 from .sdf_contact import sample_sdf_extrapolated
 from .sdf_mc import get_mc_tables, mc_calc_face
 from .sdf_utils import SDFData
-from .types import Axis, GeoType
+from .types import GeoType
 from .utils import scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -102,17 +104,15 @@ HYDROELASTIC_MODE_COMPLIANT = wp.int32(2)
 HYDROELASTIC_WORKFLOW_CLASSIC = wp.int32(int(HydroelasticContactWorkflow.CLASSIC))
 HYDROELASTIC_WORKFLOW_PRESSURE = wp.int32(int(HydroelasticContactWorkflow.PRESSURE))
 
-_POISSON_MAX_ITERS = 512
-_POISSON_TOL = 1.0e-5
-_MIN_PRESSURE_GRID_DIM = 4
-
-
-@wp.struct
-class PressureFieldData:
-    """Per-shape immutable pressure field volume handle."""
-
-    pressure_ptr: wp.uint64
-    pressure_max: wp.float32
+# Backward-compatible re-exports for internal tests and downstream callers.
+PressureFieldData = hydroelastic_pressure_fields.PressureFieldData
+create_empty_pressure_field_data = hydroelastic_pressure_fields.create_empty_pressure_field_data
+sample_geometry_sdf_grid_kernel = hydroelastic_pressure_fields.sample_geometry_sdf_grid_kernel
+sample_sdf_grid_kernel = hydroelastic_pressure_fields.sample_sdf_grid_kernel
+_apply_pressure_axis_sine_modulation_to_grid = hydroelastic_pressure_fields._apply_pressure_axis_sine_modulation_to_grid
+_compute_pressure_grid_spec = hydroelastic_pressure_fields._compute_pressure_grid_spec
+_normalize_axis_triplet = hydroelastic_pressure_fields._normalize_axis_triplet
+_solve_poisson_pressure_extent = hydroelastic_pressure_fields._solve_poisson_pressure_extent
 
 
 @wp.kernel
@@ -152,361 +152,6 @@ def map_shape_pressure_data_kernel(
         out_shape_pressure_data[shape_idx].pressure_max = 0.0
     else:
         out_shape_pressure_data[shape_idx] = pressure_data[pressure_idx]
-
-
-@wp.kernel
-def sample_sdf_grid_kernel(
-    sdf_data: wp.array(dtype=SDFData),
-    sdf_idx: wp.int32,
-    lower: wp.vec3,
-    voxel_size: wp.vec3,
-    dims: wp.vec3i,
-    out_sdf: wp.array(dtype=wp.float32),
-):
-    """Sample extrapolated SDF values on a dense regular grid."""
-    tid = wp.tid()
-    nx = dims[0]
-    ny = dims[1]
-    nz = dims[2]
-    total = nx * ny * nz
-    if tid >= total:
-        return
-
-    x = tid % nx
-    y = (tid // nx) % ny
-    z = tid // (nx * ny)
-
-    p = lower + wp.vec3(float(x) * voxel_size[0], float(y) * voxel_size[1], float(z) * voxel_size[2])
-    out_sdf[tid] = sample_sdf_extrapolated(sdf_data[sdf_idx], p)
-
-
-@wp.kernel
-def sample_geometry_sdf_grid_kernel(
-    shape_type: wp.int32,
-    shape_scale: wp.vec3,
-    shape_source_ptr: wp.uint64,
-    lower: wp.vec3,
-    voxel_size: wp.vec3,
-    dims: wp.vec3i,
-    max_query_dist: wp.float32,
-    out_sdf: wp.array(dtype=wp.float32),
-):
-    """Sample geometry-based signed distances on a dense regular grid."""
-    tid = wp.tid()
-    nx = dims[0]
-    ny = dims[1]
-    nz = dims[2]
-    total = nx * ny * nz
-    if tid >= total:
-        return
-
-    x = tid % nx
-    y = (tid // nx) % ny
-    z = tid // (nx * ny)
-    p = lower + wp.vec3(float(x) * voxel_size[0], float(y) * voxel_size[1], float(z) * voxel_size[2])
-
-    sd = wp.float32(MAXVAL)
-    if shape_type == int(GeoType.SPHERE):
-        sd = sdf_sphere(p, shape_scale[0])
-    elif shape_type == int(GeoType.BOX):
-        sd = sdf_box(p, shape_scale[0], shape_scale[1], shape_scale[2])
-    elif shape_type == int(GeoType.CAPSULE):
-        sd = sdf_capsule(p, shape_scale[0], shape_scale[1], int(Axis.Z))
-    elif shape_type == int(GeoType.CYLINDER):
-        sd = sdf_cylinder(p, shape_scale[0], shape_scale[1], int(Axis.Z))
-    elif shape_type == int(GeoType.CONE):
-        sd = sdf_cone(p, shape_scale[0], shape_scale[1], int(Axis.Z))
-    elif shape_type == int(GeoType.ELLIPSOID):
-        sd = sdf_ellipsoid(p, shape_scale)
-    elif shape_type == int(GeoType.MESH) or shape_type == int(GeoType.CONVEX_MESH):
-        if shape_source_ptr != wp.uint64(0):
-            sd = sdf_mesh(shape_source_ptr, p, max_query_dist)
-
-    out_sdf[tid] = sd
-
-
-def create_empty_pressure_field_data() -> PressureFieldData:
-    """Create an empty pressure field payload."""
-    pressure_data = PressureFieldData()
-    pressure_data.pressure_ptr = wp.uint64(0)
-    pressure_data.pressure_max = 0.0
-    return pressure_data
-
-
-def _compute_pressure_grid_spec(sdf_entry: np.void) -> tuple[np.ndarray, float, np.ndarray]:
-    """Compute dense-grid sampling parameters for pressure field construction."""
-    center = np.asarray(sdf_entry["center"], dtype=np.float32)
-    half_extents = np.asarray(sdf_entry["half_extents"], dtype=np.float32)
-    lower = center - half_extents
-    upper = center + half_extents
-    extent = np.maximum(upper - lower, 1.0e-6)
-
-    sparse_voxel_size = np.asarray(sdf_entry["sparse_voxel_size"], dtype=np.float32)
-    # Warp's load_from_numpy currently expects an isotropic voxel size.
-    # Use the max sparse spacing to keep conservative coverage and avoid upsampling artifacts.
-    voxel_size = float(np.max(np.maximum(sparse_voxel_size, 1.0e-6)))
-    dims = np.rint(extent / voxel_size).astype(np.int32) + 1
-    dims = np.maximum(dims, _MIN_PRESSURE_GRID_DIM)
-    return lower.astype(np.float32), voxel_size, dims.astype(np.int32)
-
-
-def _solve_poisson_pressure_extent(
-    sdf_grid: np.ndarray,
-    voxel_size: np.ndarray,
-    max_iters: int = _POISSON_MAX_ITERS,
-    tol: float = _POISSON_TOL,
-) -> np.ndarray:
-    """Solve ``-Laplace(e) = 1`` inside the object with ``e = 0`` on boundary.
-
-    Args:
-        sdf_grid: Signed-distance samples on a regular grid.
-        voxel_size: Grid spacing [m] as ``(hx, hy, hz)``.
-        max_iters: Maximum Jacobi iterations.
-        tol: Infinity-norm convergence threshold.
-
-    Returns:
-        Normalized extent-like pressure field in ``[0, 1]`` over interior voxels
-        and zero outside.
-    """
-    # Solve directly on the signed-distance interior. Do not apply morphological
-    # post-processing; continuity comes from the PDE, not hole-filling.
-    inside = sdf_grid < 0.0
-    field = np.zeros_like(sdf_grid, dtype=np.float32)
-    if not np.any(inside):
-        return field
-
-    padded_outside = np.pad(~inside, 1, mode="constant", constant_values=True)
-    touches_outside = (
-        padded_outside[:-2, 1:-1, 1:-1]
-        | padded_outside[2:, 1:-1, 1:-1]
-        | padded_outside[1:-1, :-2, 1:-1]
-        | padded_outside[1:-1, 2:, 1:-1]
-        | padded_outside[1:-1, 1:-1, :-2]
-        | padded_outside[1:-1, 1:-1, 2:]
-    )
-    boundary = inside & touches_outside
-    free = inside & (~boundary)
-    if not np.any(free):
-        return field
-
-    hx, hy, hz = float(voxel_size[0]), float(voxel_size[1]), float(voxel_size[2])
-    cx = 1.0 / max(hx * hx, 1.0e-12)
-    cy = 1.0 / max(hy * hy, 1.0e-12)
-    cz = 1.0 / max(hz * hz, 1.0e-12)
-    denom = 2.0 * (cx + cy + cz)
-
-    next_field = np.zeros_like(field)
-    neighbor_sum = np.zeros_like(field)
-
-    for _ in range(max_iters):
-        work = np.where(inside, field, 0.0)
-        neighbor_sum.fill(0.0)
-        neighbor_sum[1:, :, :] += cx * work[:-1, :, :]
-        neighbor_sum[:-1, :, :] += cx * work[1:, :, :]
-        neighbor_sum[:, 1:, :] += cy * work[:, :-1, :]
-        neighbor_sum[:, :-1, :] += cy * work[:, 1:, :]
-        neighbor_sum[:, :, 1:] += cz * work[:, :, :-1]
-        neighbor_sum[:, :, :-1] += cz * work[:, :, 1:]
-
-        next_field.fill(0.0)
-        next_field[free] = (neighbor_sum[free] + 1.0) / denom
-
-        delta = float(np.max(np.abs(next_field[free] - field[free])))
-        field, next_field = next_field, field
-        if delta <= tol:
-            break
-
-    max_val = float(np.max(field[inside]))
-    if max_val > 1.0e-8:
-        field[inside] /= max_val
-    else:
-        field[inside] = 0.0
-    field[~inside] = 0.0
-    return field
-
-
-def _normalize_axis_triplet(
-    value: np.ndarray | tuple[float, float, float] | list[float] | None,
-    default: tuple[float, float, float],
-) -> np.ndarray:
-    """Convert axis-triplet input to float32 numpy array."""
-    if value is None:
-        return np.asarray(default, dtype=np.float32)
-    arr = np.asarray(value, dtype=np.float32).reshape(-1)
-    if arr.shape[0] != 3:
-        raise ValueError(f"Expected 3 values, got {arr.shape[0]}")
-    return arr
-
-
-def _apply_pressure_axis_sine_modulation_to_grid(
-    pressure_grid: np.ndarray,
-    inside: np.ndarray,
-    lower: np.ndarray,
-    voxel_size_scalar: float,
-    center: np.ndarray,
-    half_extents: np.ndarray,
-    amplitude: np.ndarray,
-    cycles: np.ndarray,
-    phase: np.ndarray,
-) -> np.ndarray:
-    """Apply per-axis sine modulation to a dense pressure grid."""
-    if not np.any(inside):
-        return pressure_grid
-
-    out = pressure_grid.astype(np.float32, copy=True)
-    two_pi = np.float32(2.0 * np.pi)
-    nx, ny, nz = out.shape
-    axis_sizes = (nx, ny, nz)
-
-    for axis in range(3):
-        amp = float(amplitude[axis])
-        if abs(amp) <= 1.0e-8:
-            continue
-        cyc = float(max(cycles[axis], 1.0e-6))
-        ph = float(phase[axis])
-        count = axis_sizes[axis]
-        coords = lower[axis] + np.arange(count, dtype=np.float32) * np.float32(voxel_size_scalar)
-        half_extent = float(max(abs(half_extents[axis]), 1.0e-8))
-        coord_norm = (coords - float(center[axis])) / half_extent
-        coord01 = 0.5 * (coord_norm + 1.0)
-        wave = np.sin(two_pi * np.float32(cyc) * coord01 + np.float32(ph)).astype(np.float32)
-        modulation = np.maximum(1.0 + np.float32(amp) * wave, 0.0).astype(np.float32)
-
-        if axis == 0:
-            out *= modulation[:, None, None]
-        elif axis == 1:
-            out *= modulation[None, :, None]
-        else:
-            out *= modulation[None, None, :]
-
-    out[~inside] = 0.0
-    return out
-
-
-def _is_geometry_sampling_supported(shape_type: int, shape_source_ptr: int) -> bool:
-    """Return whether pressure construction can sample geometry directly."""
-    if shape_type in {
-        int(GeoType.SPHERE),
-        int(GeoType.BOX),
-        int(GeoType.CAPSULE),
-        int(GeoType.CYLINDER),
-        int(GeoType.CONE),
-        int(GeoType.ELLIPSOID),
-    }:
-        return True
-    if shape_type in {int(GeoType.MESH), int(GeoType.CONVEX_MESH)}:
-        return shape_source_ptr != 0
-    return False
-
-
-def build_immutable_pressure_field_from_sdf(
-    sdf_data: wp.array(dtype=SDFData),
-    sdf_entry: np.void,
-    sdf_idx: int,
-    device: Devicelike,
-    shape_type: int | None = None,
-    shape_scale: np.ndarray | None = None,
-    shape_source_ptr: int | None = None,
-    pressure_sine_amplitude: np.ndarray | tuple[float, float, float] | None = None,
-    pressure_sine_cycles: np.ndarray | tuple[float, float, float] | None = None,
-    pressure_sine_phase: np.ndarray | tuple[float, float, float] | None = None,
-) -> tuple[PressureFieldData, wp.Volume | None]:
-    """Build immutable pressure field for one compact SDF entry."""
-    if int(sdf_entry["sparse_sdf_ptr"]) == 0:
-        return create_empty_pressure_field_data(), None
-
-    lower, voxel_size_scalar, dims = _compute_pressure_grid_spec(sdf_entry)
-    voxel_size = np.array([voxel_size_scalar, voxel_size_scalar, voxel_size_scalar], dtype=np.float32)
-    nx, ny, nz = int(dims[0]), int(dims[1]), int(dims[2])
-    total = nx * ny * nz
-
-    dense_sdf = wp.empty(total, dtype=wp.float32, device=device)
-    use_geometry_sampling = (
-        shape_type is not None
-        and shape_scale is not None
-        and shape_source_ptr is not None
-        and _is_geometry_sampling_supported(shape_type, int(shape_source_ptr))
-    )
-
-    if use_geometry_sampling:
-        shape_scale_arr = np.asarray(shape_scale, dtype=np.float32)
-        if shape_scale_arr.shape != (3,):
-            shape_scale_arr = np.ones(3, dtype=np.float32)
-        half_extents = np.asarray(sdf_entry["half_extents"], dtype=np.float32)
-        max_query_dist = float(np.linalg.norm(half_extents) + 4.0 * voxel_size_scalar)
-        wp.launch(
-            kernel=sample_geometry_sdf_grid_kernel,
-            dim=total,
-            inputs=[
-                wp.int32(shape_type),
-                wp.vec3(float(shape_scale_arr[0]), float(shape_scale_arr[1]), float(shape_scale_arr[2])),
-                wp.uint64(int(shape_source_ptr)),
-                wp.vec3(float(lower[0]), float(lower[1]), float(lower[2])),
-                wp.vec3(float(voxel_size[0]), float(voxel_size[1]), float(voxel_size[2])),
-                wp.vec3i(nx, ny, nz),
-                wp.float32(max_query_dist),
-            ],
-            outputs=[dense_sdf],
-            device=device,
-        )
-    else:
-        wp.launch(
-            kernel=sample_sdf_grid_kernel,
-            dim=total,
-            inputs=[
-                sdf_data,
-                wp.int32(sdf_idx),
-                wp.vec3(float(lower[0]), float(lower[1]), float(lower[2])),
-                wp.vec3(float(voxel_size[0]), float(voxel_size[1]), float(voxel_size[2])),
-                wp.vec3i(nx, ny, nz),
-            ],
-            outputs=[dense_sdf],
-            device=device,
-        )
-
-    sdf_grid_zyx = dense_sdf.numpy().reshape((nz, ny, nx))
-    # Warp load_from_numpy expects axis order (x, y, z).
-    sdf_grid = np.transpose(sdf_grid_zyx, (2, 1, 0))
-    pressure_grid = _solve_poisson_pressure_extent(sdf_grid, voxel_size)
-    inside = sdf_grid < 0.0
-    if np.any(inside):
-        # Convert normalized extent back to a distance-like scale so existing
-        # hydroelastic stiffness calibration (k * depth * area) remains coherent.
-        depth_scale = float(np.max(-sdf_grid[inside]))
-        pressure_grid[inside] *= depth_scale
-
-    amplitude = _normalize_axis_triplet(pressure_sine_amplitude, (0.0, 0.0, 0.0))
-    cycles = _normalize_axis_triplet(pressure_sine_cycles, (1.0, 1.0, 1.0))
-    phase = _normalize_axis_triplet(pressure_sine_phase, (0.0, 0.0, 0.0))
-    if np.any(np.abs(amplitude) > 1.0e-8):
-        center = np.asarray(sdf_entry["center"], dtype=np.float32)
-        half_extents = np.asarray(sdf_entry["half_extents"], dtype=np.float32)
-        pressure_grid = _apply_pressure_axis_sine_modulation_to_grid(
-            pressure_grid,
-            inside,
-            lower,
-            voxel_size_scalar,
-            center,
-            half_extents,
-            amplitude,
-            cycles,
-            phase,
-        )
-
-    pressure_volume = wp.Volume.load_from_numpy(
-        pressure_grid.astype(np.float32),
-        min_world=(float(lower[0]), float(lower[1]), float(lower[2])),
-        voxel_size=float(voxel_size_scalar),
-        bg_value=0.0,
-        device=device,
-    )
-
-    pressure_data = PressureFieldData()
-    pressure_data.pressure_ptr = pressure_volume.id
-    pressure_data.pressure_max = float(np.max(pressure_grid)) if pressure_grid.size > 0 else 0.0
-    return pressure_data, pressure_volume
-
-
 @wp.func
 def int_to_vec3f(x: wp.int32, y: wp.int32, z: wp.int32):
     return wp.vec3f(float(x), float(y), float(z))
@@ -609,25 +254,6 @@ def hydroelastic_mode_from_flags(flags: wp.int32) -> wp.int32:
 @wp.func
 def is_hydroelastic_compliant(mode: wp.int32) -> wp.bool:
     return mode == HYDROELASTIC_MODE_COMPLIANT
-
-
-@wp.func
-def resolve_pair_contact_workflow(
-    mode_a: wp.int32,
-    mode_b: wp.int32,
-    workflow_a: wp.int32,
-    workflow_b: wp.int32,
-) -> wp.int32:
-    """Resolve per-pair hydroelastic workflow from per-shape settings.
-
-    Rule: if any compliant participant chooses pressure workflow, the pair uses
-    pressure workflow; otherwise classic workflow.
-    """
-    if mode_a == HYDROELASTIC_MODE_COMPLIANT and workflow_a == HYDROELASTIC_WORKFLOW_PRESSURE:
-        return HYDROELASTIC_WORKFLOW_PRESSURE
-    if mode_b == HYDROELASTIC_MODE_COMPLIANT and workflow_b == HYDROELASTIC_WORKFLOW_PRESSURE:
-        return HYDROELASTIC_WORKFLOW_PRESSURE
-    return HYDROELASTIC_WORKFLOW_CLASSIC
 
 
 @wp.func
@@ -999,197 +625,23 @@ class HydroelasticSDF:
         Returns:
             HydroelasticSDF instance, or None if no hydroelastic shape pairs exist.
         """
-        shape_flags = model.shape_flags.numpy()
-        shape_hydro_mode = np.array([hydroelastic_type_from_flags(int(flags)) for flags in shape_flags], dtype=np.int32)
-
-        # Check if any shapes have hydroelastic flag
-        has_hydroelastic = np.any(shape_hydro_mode != int(HydroelasticType.NONE))
-        if not has_hydroelastic:
+        runtime_data = collect_hydroelastic_runtime_data(model)
+        if runtime_data is None:
             return None
-
-        shape_pairs = model.shape_contact_pairs.numpy()
-        num_hydroelastic_pairs = 0
-        for shape_a, shape_b in shape_pairs:
-            mode_a = shape_hydro_mode[shape_a]
-            mode_b = shape_hydro_mode[shape_b]
-            both_hydro = mode_a != int(HydroelasticType.NONE) and mode_b != int(HydroelasticType.NONE)
-            has_compliant = mode_a == int(HydroelasticType.COMPLIANT) or mode_b == int(HydroelasticType.COMPLIANT)
-            if both_hydro and has_compliant:
-                num_hydroelastic_pairs += 1
-
-        if num_hydroelastic_pairs == 0:
-            return None
-
-        shape_sdf_index = model.shape_sdf_index.numpy()
-        sdf_index2blocks = model.sdf_index2blocks.numpy()
-        sdf_data = model.sdf_data.numpy()
-        shape_type = model.shape_type.numpy()
-        shape_source_ptr = model.shape_source_ptr.numpy()
-        shape_scale = model.shape_scale.numpy()
-        if (
-            hasattr(model, "shape_hydroelastic_contact_workflow")
-            and model.shape_hydroelastic_contact_workflow is not None
-        ):
-            shape_contact_workflow = model.shape_hydroelastic_contact_workflow.numpy().astype(np.int32)
-        else:
-            shape_contact_workflow = np.full(
-                model.shape_count,
-                int(HydroelasticContactWorkflow.CLASSIC),
-                dtype=np.int32,
-            )
-        if (
-            hasattr(model, "shape_hydro_pressure_sine_amplitude")
-            and model.shape_hydro_pressure_sine_amplitude is not None
-        ):
-            shape_pressure_sine_amp = model.shape_hydro_pressure_sine_amplitude.numpy().astype(np.float32)
-        else:
-            shape_pressure_sine_amp = np.zeros((model.shape_count, 3), dtype=np.float32)
-        if hasattr(model, "shape_hydro_pressure_sine_cycles") and model.shape_hydro_pressure_sine_cycles is not None:
-            shape_pressure_sine_cycles = model.shape_hydro_pressure_sine_cycles.numpy().astype(np.float32)
-        else:
-            shape_pressure_sine_cycles = np.ones((model.shape_count, 3), dtype=np.float32)
-        if hasattr(model, "shape_hydro_pressure_sine_phase") and model.shape_hydro_pressure_sine_phase is not None:
-            shape_pressure_sine_phase = model.shape_hydro_pressure_sine_phase.numpy().astype(np.float32)
-        else:
-            shape_pressure_sine_phase = np.zeros((model.shape_count, 3), dtype=np.float32)
-
-        # Get indices of shapes that can collide and are hydroelastic
-        hydroelastic_indices = [
-            i
-            for i in range(model.shape_count)
-            if (shape_flags[i] & ShapeFlags.COLLIDE_SHAPES) and (shape_hydro_mode[i] != int(HydroelasticType.NONE))
-        ]
-
-        for idx in hydroelastic_indices:
-            mode = shape_hydro_mode[idx]
-            stype = int(shape_type[idx])
-            is_rigid_terrain = mode == int(HydroelasticType.RIGID) and stype in (
-                int(GeoType.PLANE),
-                int(GeoType.HFIELD),
-            )
-            if is_rigid_terrain:
-                continue
-            sdf_idx = shape_sdf_index[idx]
-            if sdf_idx < 0:
-                raise ValueError(f"Hydroelastic shape {idx} requires SDF data but has no attached/generated SDF.")
-            if not sdf_data[sdf_idx]["scale_baked"]:
-                sx, sy, sz = shape_scale[idx]
-                if not (np.isclose(sx, 1.0) and np.isclose(sy, 1.0) and np.isclose(sz, 1.0)):
-                    raise ValueError(
-                        f"Hydroelastic shape {idx} uses non-unit scale but its SDF is not scale-baked. "
-                        "Build a scale-baked SDF for hydroelastic use."
-                    )
-
-        # Count total tiles and max blocks per shape for hydroelastic shapes
-        total_num_tiles = 0
-        max_num_blocks_per_shape = 0
-        shape_sdf_shape2blocks = np.zeros((model.shape_count, 2), dtype=np.int32)
-        for shape_idx in range(model.shape_count):
-            sdf_idx = shape_sdf_index[shape_idx]
-            if sdf_idx >= 0:
-                shape_sdf_shape2blocks[shape_idx] = sdf_index2blocks[sdf_idx]
-        for idx in hydroelastic_indices:
-            start_block, end_block = shape_sdf_shape2blocks[idx]
-            num_blocks = end_block - start_block
-            total_num_tiles += num_blocks
-            max_num_blocks_per_shape = max(max_num_blocks_per_shape, num_blocks)
-
-        num_sdfs = len(model.sdf_volume)
-        sdf_shape_type = np.full(num_sdfs, -1, dtype=np.int32)
-        sdf_shape_scale = np.ones((num_sdfs, 3), dtype=np.float32)
-        sdf_shape_source_ptr = np.zeros(num_sdfs, dtype=np.uint64)
-        for shape_idx in range(model.shape_count):
-            sdf_idx = shape_sdf_index[shape_idx]
-            if sdf_idx < 0 or sdf_idx >= num_sdfs:
-                continue
-            if sdf_shape_type[sdf_idx] != -1:
-                continue
-            sdf_shape_type[sdf_idx] = int(shape_type[shape_idx])
-            sdf_shape_scale[sdf_idx] = np.asarray(shape_scale[shape_idx], dtype=np.float32)
-            sdf_shape_source_ptr[sdf_idx] = np.uint64(shape_source_ptr[shape_idx])
-
-        shape_pressure_index = np.full(model.shape_count, -1, dtype=np.int32)
-        compact_pressure_field_data: list[PressureFieldData] = []
-        pressure_field_volume: list[wp.Volume] = []
-        pressure_profile_cache: dict[tuple[Any, ...], int] = {}
-
-        for shape_idx in hydroelastic_indices:
-            if shape_hydro_mode[shape_idx] != int(HydroelasticType.COMPLIANT):
-                continue
-            sdf_idx = shape_sdf_index[shape_idx]
-            if sdf_idx < 0:
-                continue
-
-            amp = np.asarray(shape_pressure_sine_amp[shape_idx], dtype=np.float32)
-            cyc = np.asarray(shape_pressure_sine_cycles[shape_idx], dtype=np.float32)
-            phs = np.asarray(shape_pressure_sine_phase[shape_idx], dtype=np.float32)
-            workflow = int(shape_contact_workflow[shape_idx])
-            if workflow != int(HydroelasticContactWorkflow.PRESSURE):
-                amp = np.zeros(3, dtype=np.float32)
-                cyc = np.ones(3, dtype=np.float32)
-                phs = np.zeros(3, dtype=np.float32)
-
-            if np.all(np.abs(amp) <= 1.0e-8):
-                amp = np.zeros(3, dtype=np.float32)
-                cyc = np.ones(3, dtype=np.float32)
-                phs = np.zeros(3, dtype=np.float32)
-
-            key = (
-                int(sdf_idx),
-                float(amp[0]),
-                float(amp[1]),
-                float(amp[2]),
-                float(cyc[0]),
-                float(cyc[1]),
-                float(cyc[2]),
-                float(phs[0]),
-                float(phs[1]),
-                float(phs[2]),
-            )
-            pressure_idx = pressure_profile_cache.get(key)
-            if pressure_idx is None:
-                pressure_shape_type: int | None = None
-                pressure_shape_scale: np.ndarray | None = None
-                pressure_shape_source_ptr: int | None = None
-                if sdf_shape_type[sdf_idx] >= 0:
-                    pressure_shape_type = int(sdf_shape_type[sdf_idx])
-                    pressure_shape_scale = sdf_shape_scale[sdf_idx]
-                    pressure_shape_source_ptr = int(sdf_shape_source_ptr[sdf_idx])
-                pressure_data, pressure_volume = build_immutable_pressure_field_from_sdf(
-                    model.sdf_data,
-                    sdf_data[sdf_idx],
-                    sdf_idx,
-                    model.device,
-                    shape_type=pressure_shape_type,
-                    shape_scale=pressure_shape_scale,
-                    shape_source_ptr=pressure_shape_source_ptr,
-                    pressure_sine_amplitude=amp,
-                    pressure_sine_cycles=cyc,
-                    pressure_sine_phase=phs,
-                )
-                pressure_idx = len(compact_pressure_field_data)
-                pressure_profile_cache[key] = pressure_idx
-                compact_pressure_field_data.append(pressure_data)
-                if pressure_volume is not None:
-                    pressure_field_volume.append(pressure_volume)
-
-            shape_pressure_index[shape_idx] = pressure_idx
 
         return cls(
-            num_shape_pairs=num_hydroelastic_pairs,
-            total_num_tiles=total_num_tiles,
-            max_num_blocks_per_shape=max_num_blocks_per_shape,
+            num_shape_pairs=runtime_data.num_hydroelastic_pairs,
+            total_num_tiles=runtime_data.total_num_tiles,
+            max_num_blocks_per_shape=runtime_data.max_num_blocks_per_shape,
             shape_sdf_block_coords=model.sdf_block_coords,
-            shape_sdf_shape2blocks=wp.array(shape_sdf_shape2blocks, dtype=wp.vec2i, device=model.device),
+            shape_sdf_shape2blocks=wp.array(runtime_data.shape_sdf_shape2blocks, dtype=wp.vec2i, device=model.device),
             shape_material_kh=model.shape_material_kh,
             shape_material_kd=model.shape_material_kd,
             shape_material_mu=model.shape_material_mu,
-            shape_contact_workflow=wp.array(shape_contact_workflow, dtype=wp.int32, device=model.device),
-            shape_pressure_index=wp.array(shape_pressure_index, dtype=wp.int32, device=model.device),
-            compact_pressure_field_data=wp.array(
-                compact_pressure_field_data, dtype=PressureFieldData, device=model.device
-            ),
-            pressure_field_volume=pressure_field_volume,
+            shape_contact_workflow=wp.array(runtime_data.shape_contact_workflow, dtype=wp.int32, device=model.device),
+            shape_pressure_index=wp.array(runtime_data.shape_pressure_index, dtype=wp.int32, device=model.device),
+            compact_pressure_field_data=wp.array(runtime_data.compact_pressure_field_data, dtype=PressureFieldData, device=model.device),
+            pressure_field_volume=runtime_data.pressure_field_volume,
             n_shapes=model.shape_count,
             config=config,
             device=model.device,
