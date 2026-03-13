@@ -363,15 +363,7 @@ class Utils:
             [resolution], dtype=wp.int32, device=self.__render_context.device
         )
 
-        self.__render_context.material_texture_ids = wp.array([0], dtype=wp.int32, device=self.__render_context.device)
-        self.__render_context.material_texture_repeat = wp.array(
-            [wp.vec2f(1.0)], dtype=wp.vec2f, device=self.__render_context.device
-        )
-        self.__render_context.material_rgba = wp.array(
-            [wp.vec4f(1.0)], dtype=wp.vec4f, device=self.__render_context.device
-        )
-
-        self.__render_context.shape_materials = wp.array(
+        self.__render_context.shape_textures = wp.array(
             np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32),
             dtype=wp.int32,
             device=self.__render_context.device,
