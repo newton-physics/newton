@@ -5974,7 +5974,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.nv, 2)
         # Fixed loop joint → 1 weld constraint
         self.assertEqual(solver.mj_model.neq, 1)
-        self.assertEqual(int(solver.mj_model.eq_type[0]), int(mujoco.mjtEq.mjEQ_WELD))
+        self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_WELD))
         # Verify weld constraint data: anchor is set explicitly; relpose (data[3:10])
         # is auto-computed by MuJoCo's spec.compile() from body positions.
         eq_data = solver.mj_model.eq_data[0]
@@ -6026,8 +6026,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.nv, 3)
         # 2 explicit connect constraints + 1 weld from fixed loop joint
         self.assertEqual(solver.mj_model.neq, 3)
-        eq_type_connect = int(mujoco.mjtEq.mjEQ_CONNECT)
-        eq_type_weld = int(mujoco.mjtEq.mjEQ_WELD)
+        eq_type_connect = int(solver._mujoco.mjtEq.mjEQ_CONNECT)
+        eq_type_weld = int(solver._mujoco.mjtEq.mjEQ_WELD)
         assert np.allclose(solver.mj_model.eq_type, [eq_type_connect, eq_type_connect, eq_type_weld])
         # the two equality constraints we explicitly created are defined first in MuJoCo
         expected_eq_to_newton_eq = np.full((world_count, 3), -1, dtype=np.int32)
@@ -6084,7 +6084,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # coincidentally matching a default pose).
         free_pos = wp.vec3(2.0, 3.0, 1.0)
         free_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
-        b_free = builder.add_body(mass=1.0, xform=wp.transform(free_pos, free_rot))
+        b_free = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(free_pos, free_rot))
 
         world_builder = newton.ModelBuilder()
         world_builder.replicate(builder, world_count=1)
@@ -6162,7 +6162,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # Free body added AFTER loop joint — use distinctive pose (see revolute variant).
         free_pos = wp.vec3(2.0, 3.0, 1.0)
         free_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
-        b_free = builder.add_body(mass=1.0, xform=wp.transform(free_pos, free_rot))
+        b_free = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(free_pos, free_rot))
 
         world_builder = newton.ModelBuilder()
         world_builder.replicate(builder, world_count=1)

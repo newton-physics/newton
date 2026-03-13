@@ -957,6 +957,8 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
     sr = solver.mjw_model.eq_solref.numpy()
     sr[:] = [0.001, 1.0]
     solver.mjw_model.eq_solref.assign(sr)
+    if solver.use_mujoco_cpu:
+        solver.mj_model.eq_solref[:] = [0.001, 1.0]
 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -980,18 +982,29 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
     # Warmup
     solver.step(state, state, control, None, sim_dt)
 
-    with wp.ScopedCapture(device) as capture:
-        wp.launch(
-            _velocity_pd_kernel,
-            dim=1,
-            inputs=[state.joint_qd, control.joint_f, crank_qd_start, crank_qd_start, kp, omega_target],
-            device=device,
-        )
-        solver.step(state, state, control, None, sim_dt)
-    graph = capture.graph
+    use_graph = device.is_cuda
+    if use_graph:
+        with wp.ScopedCapture(device) as capture:
+            wp.launch(
+                _velocity_pd_kernel,
+                dim=1,
+                inputs=[state.joint_qd, control.joint_f, crank_qd_start, crank_qd_start, kp, omega_target],
+                device=device,
+            )
+            solver.step(state, state, control, None, sim_dt)
+        graph = capture.graph
 
     for step_i in range(num_steps - 1):
-        wp.capture_launch(graph)
+        if use_graph:
+            wp.capture_launch(graph)
+        else:
+            wp.launch(
+                _velocity_pd_kernel,
+                dim=1,
+                inputs=[state.joint_qd, control.joint_f, crank_qd_start, crank_qd_start, kp, omega_target],
+                device=device,
+            )
+            solver.step(state, state, control, None, sim_dt)
 
         if step_i < 20 or step_i % check_interval != 0:
             continue
@@ -1160,6 +1173,8 @@ def test_revolute_loop_joint(test, device, solver_fn):
     sr = solver.mjw_model.eq_solref.numpy()
     sr[:] = [0.001, 1.0]
     solver.mjw_model.eq_solref.assign(sr)
+    if solver.use_mujoco_cpu:
+        solver.mj_model.eq_solref[:] = [0.001, 1.0]
 
     # Y-gravity swings the mechanism in-plane; Z-gravity tries to buckle it.
     gravity = solver.mjw_model.opt.gravity.numpy()
@@ -1276,6 +1291,8 @@ def test_ball_loop_joint(test, device, solver_fn):
     sr = solver.mjw_model.eq_solref.numpy()
     sr[:] = [0.001, 1.0]
     solver.mjw_model.eq_solref.assign(sr)
+    if solver.use_mujoco_cpu:
+        solver.mj_model.eq_solref[:] = [0.001, 1.0]
 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -1416,6 +1433,8 @@ def test_fixed_loop_joint(test, device, solver_fn):
     sr = solver.mjw_model.eq_solref.numpy()
     sr[:] = [0.001, 1.0]
     solver.mjw_model.eq_solref.assign(sr)
+    if solver.use_mujoco_cpu:
+        solver.mj_model.eq_solref[:] = [0.001, 1.0]
 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
