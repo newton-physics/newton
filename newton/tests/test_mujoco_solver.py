@@ -5982,7 +5982,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # Auto-computed relpose: both bodies are at origin (default xforms), so
         # relpose translation equals the anchor offset, quaternion is identity.
         assert np.allclose(eq_data[3:6], [0.0, 0.0, -0.45], atol=1e-6)
-        assert np.allclose(eq_data[6:10], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
+        quat = np.array(eq_data[6:10], dtype=np.float64)
+        expected = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        assert np.allclose(quat, expected, atol=1e-6) or np.allclose(quat, -expected, atol=1e-6)
         # we defined no regular equality constraints, so there is no mapping from MuJoCo to Newton equality constraints
         assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), np.full_like(solver.mjc_eq_to_newton_eq.numpy(), -1))
         # but we converted the loop joints to equality constraints, so there is a mapping from MuJoCo to Newton joints

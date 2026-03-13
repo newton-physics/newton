@@ -954,11 +954,12 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
 
     solver = solver_fn(model)
     # Stiffen equality constraint for tight loop closure
-    sr = solver.mjw_model.eq_solref.numpy()
-    sr[:] = [0.001, 1.0]
-    solver.mjw_model.eq_solref.assign(sr)
     if solver.use_mujoco_cpu:
         solver.mj_model.eq_solref[:] = [0.001, 1.0]
+    else:
+        sr = solver.mjw_model.eq_solref.numpy()
+        sr[:] = [0.001, 1.0]
+        solver.mjw_model.eq_solref.assign(sr)
 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -1170,16 +1171,17 @@ def test_revolute_loop_joint(test, device, solver_fn):
     model = builder.finalize(device=device)
     solver = solver_fn(model)
 
-    sr = solver.mjw_model.eq_solref.numpy()
-    sr[:] = [0.001, 1.0]
-    solver.mjw_model.eq_solref.assign(sr)
     if solver.use_mujoco_cpu:
         solver.mj_model.eq_solref[:] = [0.001, 1.0]
-
-    # Y-gravity swings the mechanism in-plane; Z-gravity tries to buckle it.
-    gravity = solver.mjw_model.opt.gravity.numpy()
-    gravity[0] = [0.0, -9.81, -5.0]
-    solver.mjw_model.opt.gravity.assign(gravity)
+        solver.mj_model.opt.gravity[:] = [0.0, -9.81, -5.0]
+    else:
+        sr = solver.mjw_model.eq_solref.numpy()
+        sr[:] = [0.001, 1.0]
+        solver.mjw_model.eq_solref.assign(sr)
+        # Y-gravity swings the mechanism in-plane; Z-gravity tries to buckle it.
+        gravity = solver.mjw_model.opt.gravity.numpy()
+        gravity[0] = [0.0, -9.81, -5.0]
+        solver.mjw_model.opt.gravity.assign(gravity)
 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -1288,11 +1290,12 @@ def test_ball_loop_joint(test, device, solver_fn):
     model = builder.finalize(device=device)
     solver = solver_fn(model)
 
-    sr = solver.mjw_model.eq_solref.numpy()
-    sr[:] = [0.001, 1.0]
-    solver.mjw_model.eq_solref.assign(sr)
     if solver.use_mujoco_cpu:
         solver.mj_model.eq_solref[:] = [0.001, 1.0]
+    else:
+        sr = solver.mjw_model.eq_solref.numpy()
+        sr[:] = [0.001, 1.0]
+        solver.mjw_model.eq_solref.assign(sr)
 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -1430,11 +1433,12 @@ def test_fixed_loop_joint(test, device, solver_fn):
     model = builder.finalize(device=device)
     solver = solver_fn(model)
 
-    sr = solver.mjw_model.eq_solref.numpy()
-    sr[:] = [0.001, 1.0]
-    solver.mjw_model.eq_solref.assign(sr)
     if solver.use_mujoco_cpu:
         solver.mj_model.eq_solref[:] = [0.001, 1.0]
+    else:
+        sr = solver.mjw_model.eq_solref.numpy()
+        sr[:] = [0.001, 1.0]
+        solver.mjw_model.eq_solref.assign(sr)
 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
