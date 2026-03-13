@@ -1777,52 +1777,92 @@ class Gaussian:
         Returns:
             A new :class:`Gaussian` instance.
         """
-        from plyfile import PlyData  # noqa: PLC0415
+        import open3d as o3d
 
-        plydata = PlyData.read(filename)
-        vertex = plydata["vertex"]
+        pcd = o3d.t.io.read_point_cloud(filename)
+        point_attrs = {name: np.asarray(tensor.numpy()) for name, tensor in pcd.point.items()}
 
-        positions = np.stack([vertex["x"], vertex["y"], vertex["z"]], axis=1).astype(np.float32)
+        positions = point_attrs.get("positions")
+        if positions is None:
+            raise ValueError("PLY Gaussian point cloud is missing required 'positions' attribute")
+        positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+
+        def _get_point_attr(name: str, width: int | None = None) -> nparray | None:
+            values = point_attrs.get(name)
+            if values is None:
+                return None
+
+            values = np.asarray(values, dtype=np.float32)
+            if width is None:
+                return np.ascontiguousarray(values.reshape(-1))
+            return np.ascontiguousarray(values.reshape(-1, width))
+
+        def _require_point_attr(name: str, message: str) -> nparray:
+            values = _get_point_attr(name)
+            if values is None:
+                raise ValueError(message)
+            return values
 
         # Rotations (quaternion w,x,y,z)
-        if "rot_0" in vertex:
-            rotations = np.stack([vertex["rot_1"], vertex["rot_2"], vertex["rot_3"], vertex["rot_0"]], axis=1).astype(
-                np.float32
-            )
+        if "rot_0" in point_attrs:
+            missing_rotation = "PLY Gaussian point cloud is missing one or more rotation attributes"
+            rot_0 = _require_point_attr("rot_0", missing_rotation)
+            rot_1 = _require_point_attr("rot_1", missing_rotation)
+            rot_2 = _require_point_attr("rot_2", missing_rotation)
+            rot_3 = _require_point_attr("rot_3", missing_rotation)
+
+            rotations = np.stack([rot_1, rot_2, rot_3, rot_0], axis=1).astype(np.float32)
             rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
         else:
             rotations = None
 
         # Scales (stored as log-scale in standard 3DGS)
-        if "scale_0" in vertex:
-            log_scales = np.stack([vertex["scale_0"], vertex["scale_1"], vertex["scale_2"]], axis=1).astype(np.float32)
+        if "scale_0" in point_attrs:
+            missing_scale = "PLY Gaussian point cloud is missing one or more scale attributes"
+            scale_0 = _require_point_attr("scale_0", missing_scale)
+            scale_1 = _require_point_attr("scale_1", missing_scale)
+            scale_2 = _require_point_attr("scale_2", missing_scale)
+
+            log_scales = np.stack([scale_0, scale_1, scale_2], axis=1).astype(np.float32)
             scales = np.exp(log_scales)
         else:
             scales = None
 
         # Opacities (stored in logit-space in standard 3DGS)
-        if "opacity" in vertex:
-            logit_opacities = np.array(vertex["opacity"], dtype=np.float32)
+        if "opacity" in point_attrs:
+            logit_opacities = _get_point_attr("opacity")
             opacities = 1.0 / (1.0 + np.exp(-logit_opacities))
         else:
             opacities = None
 
         # Spherical harmonic coefficients
         sh_dc_names = [f"f_dc_{i}" for i in range(3)]
-        has_sh_dc = all(name in vertex for name in sh_dc_names)
+        has_sh_dc = all(name in point_attrs for name in sh_dc_names)
 
         sh_coeffs = None
         if has_sh_dc:
-            sh_dc = np.stack([vertex[name] for name in sh_dc_names], axis=1).astype(np.float32)
+            sh_dc = np.stack(
+                [
+                    _require_point_attr(name, "PLY Gaussian point cloud is missing SH DC attributes")
+                    for name in sh_dc_names
+                ],
+                axis=1,
+            ).astype(np.float32)
 
             rest_names = []
             i = 0
-            while f"f_rest_{i}" in vertex:
+            while f"f_rest_{i}" in point_attrs:
                 rest_names.append(f"f_rest_{i}")
                 i += 1
 
             if rest_names:
-                sh_rest = np.stack([vertex[name] for name in rest_names], axis=1).astype(np.float32)
+                sh_rest = np.stack(
+                    [
+                        _require_point_attr(name, "PLY Gaussian point cloud is missing SH rest attributes")
+                        for name in rest_names
+                    ],
+                    axis=1,
+                ).astype(np.float32)
                 sh_coeffs = np.concatenate([sh_dc, sh_rest], axis=1)
             else:
                 sh_coeffs = sh_dc
