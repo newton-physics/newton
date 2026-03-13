@@ -136,7 +136,7 @@ class Example:
         self._read_status()
 
     def test_final(self):
-        # Verify the ant hasn't exploded or fallen through the ground
+        # Verify the humanoid hasn't exploded or fallen through the ground
         newton.examples.test_body_state(
             self.model,
             self.state_0,
