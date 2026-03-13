@@ -58,8 +58,9 @@ def measure_n(n: int, steps: int, warmup: int) -> dict[str, float]:
         solver._run_substep(state_0, solver._scratch_mid, None, solver._dt_half)
         solver._run_substep(solver._scratch_mid, solver._scratch_double, None, solver._dt_half)
 
-    def _time_error_control():
-        solver._error_control_and_select_state(state_0, state_1)
+    def _time_graph_replay():
+        # Time the full CUDA graph replay (error + select + advance — the fused inner step)
+        wp.capture_launch(solver._graph)
 
     def _time_update_mjc():
         solver._update_mjc_data(solver.mjw_data, model, state_0)
@@ -78,7 +79,7 @@ def measure_n(n: int, steps: int, warmup: int) -> dict[str, float]:
 
     components = {
         "3x_substep":      _time_substep_full,
-        "error_control":   _time_error_control,
+        "graph_replay":    _time_graph_replay,
         "update_mjc_data": _time_update_mjc,
         "update_newton":   _time_update_newton,
         "mujoco_warp":     _time_mujoco_warp,
@@ -132,14 +133,14 @@ def main():
         all_results.append(r)
 
     components = [
-        ("step_dt",         "step_dt (end-to-end)",        "black",      "-",  2.5),
-        ("3x_substep",      "3× MuJoCo substep",           "tab:blue",   "-",  1.5),
-        ("mujoco_warp",     "mujoco_warp_step (×1)",       "tab:cyan",   "--", 1.2),
-        ("error_control",   "error_control + select",      "tab:orange", "-",  1.5),
-        ("update_mjc_data", "update_mjc_data (×1)",        "tab:green",  "--", 1.2),
-        ("update_newton",   "update_newton_state (×1)",    "tab:red",    "--", 1.2),
-        ("boundary_numpy",  "boundary_flag.numpy() (×1)",  "tab:purple", ":",  1.2),
-        ("status_summary",  "get_status_summary() (×1)",   "tab:brown",  ":",  1.2),
+        ("step_dt",         "step_dt (end-to-end)",              "black",      "-",  2.5),
+        ("3x_substep",      "3× MuJoCo substep (uncaptured)",    "tab:blue",   "-",  1.5),
+        ("mujoco_warp",     "mujoco_warp_step (×1)",             "tab:cyan",   "--", 1.2),
+        ("graph_replay",    "CUDA graph replay (full inner step)","tab:orange", "-",  1.5),
+        ("update_mjc_data", "update_mjc_data (×1)",              "tab:green",  "--", 1.2),
+        ("update_newton",   "update_newton_state (×1)",          "tab:red",    "--", 1.2),
+        ("boundary_numpy",  "boundary_flag.numpy() (×1)",        "tab:purple", ":",  1.2),
+        ("status_summary",  "get_status_summary() (×1)",         "tab:brown",  ":",  1.2),
     ]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
@@ -212,11 +213,11 @@ def main():
     print(f"Thread plot saved → {thread_out}", flush=True)
 
     print("\n=== Mean wall time per step_dt [ms] ===")
-    header = f"{'N':>6}" + "".join(f"  {k:>16}" for k in ["step_dt", "3x_substep", "mujoco_warp", "error_control", "update_mjc_data", "update_newton", "boundary_numpy", "status_summary"])
+    header = f"{'N':>6}" + "".join(f"  {k:>16}" for k in ["step_dt", "3x_substep", "mujoco_warp", "graph_replay", "update_mjc_data", "update_newton", "boundary_numpy", "status_summary"])
     print(header)
     for n, r in zip(ns, all_results):
         row = f"{n:>6}"
-        for k in ["step_dt", "3x_substep", "mujoco_warp", "error_control", "update_mjc_data", "update_newton", "boundary_numpy", "status_summary"]:
+        for k in ["step_dt", "3x_substep", "mujoco_warp", "graph_replay", "update_mjc_data", "update_newton", "boundary_numpy", "status_summary"]:
             row += f"  {r[k]*1e3:>16.3f}"
         print(row)
 

@@ -9,8 +9,8 @@ import warp as wp
 import newton
 import newton.solvers
 
-DT_OUTER  = 0.002  # X Hz control / render cadence [s]
-LOG_EVERY = 50     # print status grid every N outer steps
+DT_OUTER  = 0.01  # X Hz control / render cadence [s]
+LOG_EVERY = 250     # print status grid every N outer steps
 
 SPHERE_RADIUS = 0.050
 BOX_HALF      = 0.050
@@ -21,7 +21,7 @@ Z_BOXES       = 1.25
 
 
 TOL    = 1e-3
-DT_INNER_MIN = 1e-5  
+DT_INNER_MIN = 1e-6  
 
 
 def build_template() -> newton.ModelBuilder:
@@ -172,7 +172,7 @@ def main():
         yaw=136.3,
     )
     print(
-        f"CENIC contact demo: {args.num_worlds} world(s)  "
+        f"CENIC contact demo: {args.num_worlds} world(s)  solver=SolverMuJoCoCENIC  "
         f"tol={solver._tol:.1e}  dt_inner_init={solver._dt.numpy()[0]:.4f}  "
         f"dt_inner_max={solver._dt_max:.4f}",
         flush=True,

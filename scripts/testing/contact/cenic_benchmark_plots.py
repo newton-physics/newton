@@ -4,14 +4,13 @@ Generates 6 figures:
   1. Wall time vs error tolerance  (fixed N)
   2. Wall time vs N worlds         (fixed tol)
   3. Cost per world vs N worlds    (GPU amortization curve)
-  4. RMS error over sim time       (fixed N, several tol values)
-  5. Adaptive dt over sim time     (fixed N, several tol values)
+  4. RMS error over sim time       (fixed N, tol=1e-5)
+  5. Adaptive dt_inner over sim time (fixed N, tol=1e-5)
   6. GPU component breakdown       (mujoco_warp vs device-transfer overhead vs N)
 
 Usage:
     uv run python scripts/testing/contact/cenic_benchmark_plots.py
     uv run python scripts/testing/contact/cenic_benchmark_plots.py --out-dir /tmp/cenic_plots
-    uv run python scripts/testing/contact/cenic_benchmark_plots.py --quick
 """
 
 import argparse
@@ -31,69 +30,69 @@ _build_model = build_model
 _make_solver = lambda model, tol=1e-3: make_solver(model, tol=tol)
 
 
-def bench_wall_vs_tol(tols, n_worlds=1, outer_steps=100, warmup=20):
-    """Returns list of mean wall-time-per-step [s] for each tol."""
-    print(f"\n[Fig 1] Wall time vs tol  N={n_worlds}", flush=True)
-    model = _build_model(n_worlds)
+def _compile_kernels():
+    """Run a few steps with N=1 so all Warp kernels are JIT-compiled before timing."""
+    model  = _build_model(1)
+    solver = _make_solver(model)
+    s0, s1 = model.state(), model.state()
+    ctrl   = model.control()
+    for _ in range(5):
+        s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
+    wp.synchronize()
+
+
+def _time_sim(n, tol, sim_duration):
+    """Build a fresh solver, run exactly sim_duration/DT_OUTER steps, return ms/sim-s."""
+    model   = _build_model(n)
+    solver  = _make_solver(model, tol=tol)
+    s0, s1  = model.state(), model.state()
+    ctrl    = model.control()
+    n_steps = round(sim_duration / DT_OUTER)
+    wp.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(n_steps):
+        s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
+    wp.synchronize()
+    elapsed = time.perf_counter() - t0
+    return elapsed / sim_duration * 1e3, n_steps
+
+
+def bench_wall_vs_tol(tols, n_worlds=1, sim_duration=3.0):
+    """Returns list of mean ms/sim-second for each tol (3 s simulation, includes contact)."""
+    print(f"\n[Fig 1] Wall time vs tol  N={n_worlds}  sim={sim_duration}s", flush=True)
+    _compile_kernels()
     results = []
     for tol in tols:
-        solver  = _make_solver(model, tol=tol)
-        s0, s1  = model.state(), model.state()
-        ctrl    = model.control()
-        for _ in range(warmup):
-            s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-        wp.synchronize()
-        t0 = time.perf_counter()
-        for _ in range(outer_steps):
-            s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-        wp.synchronize()
-        elapsed = time.perf_counter() - t0
-        mean_ms = elapsed / outer_steps * 1e3
-        print(f"  tol={tol:.0e}  {mean_ms:.2f} ms/step", flush=True)
-        results.append(mean_ms)
+        ms, steps = _time_sim(n_worlds, tol, sim_duration)
+        print(f"  tol={tol:.0e}  {ms:.1f} ms/sim-s  ({steps} steps)", flush=True)
+        results.append(ms)
     return results
 
 
-def bench_wall_vs_n(ns, tol=1e-3, outer_steps=50, warmup=15):
-    """Returns list of mean wall-time-per-step [s] for each N."""
-    print(f"\n[Fig 2] Wall time vs N worlds  tol={tol:.0e}", flush=True)
+def bench_wall_vs_n(ns, tol=1e-3, sim_duration=3.0):
+    """Returns list of mean ms/sim-second for each N (3 s simulation, includes contact)."""
+    print(f"\n[Fig 2] Wall time vs N worlds  tol={tol:.0e}  sim={sim_duration}s", flush=True)
+    _compile_kernels()
     results = []
     for n in ns:
-        model  = _build_model(n)
-        solver = _make_solver(model, tol=tol)
-        s0, s1 = model.state(), model.state()
-        ctrl   = model.control()
-        for _ in range(warmup):
-            s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-        wp.synchronize()
-        t0 = time.perf_counter()
-        for _ in range(outer_steps):
-            s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-        wp.synchronize()
-        elapsed = time.perf_counter() - t0
-        mean_ms = elapsed / outer_steps * 1e3
-        print(f"  N={n:>5}  {mean_ms:.2f} ms/step", flush=True)
-        results.append(mean_ms)
+        ms, steps = _time_sim(n, tol, sim_duration)
+        print(f"  N={n:>5}  {ms:.1f} ms/sim-s  ({steps} steps)", flush=True)
+        results.append(ms)
     return results
 
 
-def trace_error_and_dt(tol=1e-3, n_worlds=1, sim_duration=1.0, warmup=20):
-    """Returns (sim_times, errors, dts) for world 0 at the given tolerance."""
+def trace_error_and_dt(tol=1e-5, n_worlds=1, sim_duration=3.0):
+    """Returns (sim_times, errors, dts) for world 0 over a 3 s simulation."""
     print(f"\n[Fig 4/5] Error & dt traces  N={n_worlds}  tol={tol:.0e}  sim={sim_duration}s", flush=True)
     model  = _build_model(n_worlds)
     solver = _make_solver(model, tol=tol)
     s0, s1 = model.state(), model.state()
     ctrl   = model.control()
 
-    for _ in range(warmup):
-        s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-
     sim_times, errors, dts = [], [], []
-    t = solver.sim_time.numpy()[0]
-    while t < sim_duration:
+    for _ in range(round(sim_duration / DT_OUTER)):
         s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-        t = solver.sim_time.numpy()[0]
-        sim_times.append(t)
+        sim_times.append(solver.sim_time.numpy()[0])
         errors.append(solver.last_error.numpy()[0])
         dts.append(solver.dt.numpy()[0])
 
@@ -114,44 +113,34 @@ def _save(fig, path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", default=".", help="Directory to write PNG files")
-    parser.add_argument("--quick",   action="store_true", help="Fewer points for fast iteration")
     args = parser.parse_args()
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    if args.quick:
-        tols         = [1e-1, 1e-2, 1e-3]
-        ns           = [1, 4, 16, 64, 256, 512, 1000]
-        ns_diag      = [1, 4, 16, 64, 256, 512, 1000]
-        outer_steps  = 20
-        warmup       = 10
-        sim_duration = 3.0
-    else:
-        tols         = [1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4]
-        ns           = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
-        ns_diag      = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
-        outer_steps  = 50
-        warmup       = 20
-        sim_duration = 3.0
+    tols         = [1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4]
+    ns           = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
+    ns_diag      = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
+    outer_steps  = 1000
+    sim_duration = 2.0
 
-    wall_vs_tol = bench_wall_vs_tol(tols, n_worlds=1, outer_steps=outer_steps, warmup=warmup)
+    wall_vs_tol = bench_wall_vs_tol(tols, n_worlds=1, sim_duration=sim_duration)
 
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot([str(f"{t:.0e}") for t in tols], wall_vs_tol, **STYLE, color="tab:blue")
     ax.set_xlabel("Error tolerance")
-    ax.set_ylabel("Wall time per step_dt [ms]")
-    ax.set_title("Wall time vs tolerance  (N=1)")
+    ax.set_ylabel("Wall time per sim-second [ms/sim-s]")
+    ax.set_title("Wall time vs tolerance  (N=1, 3 s sim including contact)")
     ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3)
     _save(fig, out / "fig1_wall_vs_tol.png")
 
-    wall_vs_n = bench_wall_vs_n(ns, tol=1e-3, outer_steps=outer_steps, warmup=warmup)
+    wall_vs_n = bench_wall_vs_n(ns, tol=1e-3, sim_duration=sim_duration)
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(ns, wall_vs_n, **STYLE, color="black")
     ax.set_xlabel("N worlds")
-    ax.set_ylabel("Wall time per step_dt [ms]")
-    ax.set_title("Wall time vs N worlds  (tol=1e-3)")
+    ax.set_ylabel("Wall time per sim-second [ms/sim-s]")
+    ax.set_title("Wall time vs N worlds  (tol=1e-3, 3 s sim including contact)")
     ax.set_xscale("log", base=2)
     ax.grid(True, which="both", alpha=0.3)
     _save(fig, out / "fig2_wall_vs_n.png")
@@ -172,14 +161,20 @@ def main():
     ax.legend(fontsize=8)
     _save(fig, out / "fig3_cost_per_world.png")
 
-    ts, errs, dts = trace_error_and_dt(tol=1e-3, n_worlds=1, sim_duration=sim_duration, warmup=warmup)
+    # Use a tighter tolerance for the trace so that dt adapts visibly.
+    # tol=1e-3 is below MuJoCo implicit-Euler step-doubling error at dt=0.002
+    # (O(dt²) ≈ 4e-6), so the controller never rejects and dt stays flat.
+    # tol=1e-5 forces rejections during contact events, revealing adaptation.
+    trace_tol = 1e-3
+    ts, errs, dts = trace_error_and_dt(tol=trace_tol, n_worlds=1, sim_duration=sim_duration)
 
     fig, ax = plt.subplots(figsize=(9, 4))
     ax.plot(ts, errs, color="tab:blue", linewidth=1.2)
-    ax.axhline(1e-3, color="tab:blue", linestyle="--", linewidth=0.8, label="tolerance = 1e-3")
+    ax.axhline(trace_tol, color="tab:blue", linestyle="--", linewidth=0.8,
+               label=f"tolerance = {trace_tol:.0e}")
     ax.set_xlabel("Simulation time [s]")
     ax.set_ylabel("RMS error (world 0)")
-    ax.set_title("Integration error over time  (N=1, tol=1e-3)")
+    ax.set_title(f"Integration error over time  (N=1, tol={trace_tol:.0e})")
     ax.set_yscale("log")
     ax.legend(fontsize=8)
     ax.grid(True, which="both", alpha=0.3)
@@ -191,21 +186,21 @@ def main():
                label=f"dt_inner_min = {DT_INNER_MIN*1e3:.2f} ms")
     ax.set_xlabel("Simulation time [s]")
     ax.set_ylabel("dt_inner [ms]")
-    ax.set_title("Adaptive inner step size over time  (N=1, tol=1e-3)")
+    ax.set_title(f"Adaptive inner step size over time  (N=1, tol={trace_tol:.0e})")
     ax.legend(fontsize=8)
     ax.grid(True, which="both", alpha=0.3)
     _save(fig, out / "fig5_dt_over_time.png")
 
     print("\n[Fig 6] GPU component breakdown  ns_diag=" + str(ns_diag), flush=True)
-    diag_results = [_measure_component_n(n, steps=outer_steps, warmup=warmup) for n in ns_diag]
+    diag_results = [_measure_component_n(n, steps=outer_steps, warmup=20) for n in ns_diag]
 
     _COMPONENTS = [
-        ("3x_substep",      "3× MuJoCo step (physics)",         "tab:blue",   "-",  2.0),
-        ("mujoco_warp",     "  mujoco_warp kernel (×1)",        "tab:cyan",   "--", 1.2),
-        ("error_control",   "error control + state select",     "tab:orange", "-",  1.5),
-        ("update_mjc_data", "update_mjc_data (×1)",             "tab:green",  "--", 1.2),
-        ("update_newton",   "update_newton_state (×1)",         "tab:red",    "--", 1.2),
-        ("boundary_numpy",  "boundary_flag.numpy() — 1 int32", "tab:purple", ":",  1.8),
+        ("3x_substep",      "3× MuJoCo step (uncaptured)",         "tab:blue",   "-",  2.0),
+        ("mujoco_warp",     "  mujoco_warp kernel (×1)",           "tab:cyan",   "--", 1.2),
+        ("graph_replay",    "CUDA graph replay (full inner step)",  "tab:orange", "-",  1.5),
+        ("update_mjc_data", "update_mjc_data (×1)",                "tab:green",  "--", 1.2),
+        ("update_newton",   "update_newton_state (×1)",            "tab:red",    "--", 1.2),
+        ("boundary_numpy",  "boundary_flag.numpy() — 1 int32",    "tab:purple", ":",  1.8),
     ]
 
     fig, ax = plt.subplots(figsize=(10, 5))
