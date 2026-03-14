@@ -16,6 +16,12 @@
 from ..math import (
     quat_between_axes,
 )
+
+from .spatial import (
+    SpatialVectorForm,
+    swap_spatial_halves,
+)
+
 from .types import (
     MAXVAL,
     Axis,
@@ -26,5 +32,7 @@ __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "SpatialVectorForm",
     "quat_between_axes",
+    "swap_spatial_halves",
 ]

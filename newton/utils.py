@@ -69,9 +69,19 @@ __all__ += [
 # ==================================================================================
 # world utils
 # ==================================================================================
+
+from ._src.core.spatial import (  # noqa: E402
+    SpatialVectorForm,
+    swap_spatial_halves,
+)
+
+from ._src.utils.spatial_conversion import convert_spatial_vector_batch  # noqa: E402
 from ._src.utils import compute_world_offsets  # noqa: E402
 
 __all__ += [
+    "SpatialVectorForm",
+    "convert_spatial_vector_batch",
+    "swap_spatial_halves",
     "compute_world_offsets",
 ]
 
