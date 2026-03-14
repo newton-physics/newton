@@ -86,8 +86,6 @@ class RenderContext:
 
         self.mesh_texcoord: wp.array(dtype=wp.vec2f) = None
         self.mesh_texcoord_offsets: wp.array(dtype=wp.int32) = None
-        self.mesh_face_offsets: wp.array(dtype=wp.int32) = None
-        self.mesh_face_vertices: wp.array(dtype=wp.vec3i) = None
 
         self.__triangle_points: wp.array(dtype=wp.vec3f) = None
         self.__triangle_indices: wp.array(dtype=wp.int32) = None
@@ -103,7 +101,7 @@ class RenderContext:
         self.shape_indices: wp.array(dtype=wp.int32) = None
         self.shape_sizes: wp.array(dtype=wp.vec3f) = None
         self.shape_transforms: wp.array(dtype=wp.transformf) = None
-        self.shape_materials: wp.array(dtype=wp.int32) = None
+        self.shape_textures: wp.array(dtype=wp.int32) = None
         self.shape_colors: wp.array(dtype=wp.vec4f) = None
         self.shape_world_index: wp.array(dtype=wp.int32) = None
         self.shape_source_ptr: wp.array(dtype=wp.uint64) = None
@@ -113,10 +111,6 @@ class RenderContext:
         self.texture_data: wp.array(dtype=wp.uint32) = None
         self.texture_width: wp.array(dtype=wp.int32) = None
         self.texture_height: wp.array(dtype=wp.int32) = None
-
-        self.material_texture_ids: wp.array(dtype=wp.int32) = None
-        self.material_texture_repeat: wp.array(dtype=wp.vec2f) = None
-        self.material_rgba: wp.array(dtype=wp.vec4f) = None
 
         self.lights_active: wp.array(dtype=wp.bool) = None
         self.lights_type: wp.array(dtype=wp.int32) = None
@@ -271,14 +265,12 @@ class RenderContext:
                     self.shape_enabled,
                     self.shape_types,
                     self.shape_indices,
-                    self.shape_materials,
+                    self.shape_textures,
                     self.shape_sizes,
                     self.shape_colors,
                     self.shape_transforms,
                     # Meshes
                     self.shape_source_ptr,
-                    self.mesh_face_offsets,
-                    self.mesh_face_vertices,
                     self.mesh_texcoord,
                     self.mesh_texcoord_offsets,
                     # Particle BVH
@@ -293,9 +285,6 @@ class RenderContext:
                     # Gaussians
                     self.gaussians_data,
                     # Textures
-                    self.material_texture_ids,
-                    self.material_texture_repeat,
-                    self.material_rgba,
                     self.texture_offsets,
                     self.texture_data,
                     self.texture_height,

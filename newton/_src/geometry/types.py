@@ -779,6 +779,10 @@ class Mesh:
         self._texture_hash = None
         self._cached_hash = None
 
+    @property
+    def texture_hash(self) -> int:
+        return self._compute_texture_hash()
+
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
             self._texture_hash = compute_texture_hash(self._texture)
