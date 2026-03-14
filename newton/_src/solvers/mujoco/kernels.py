@@ -411,6 +411,8 @@ def convert_mj_coords_to_warp_kernel(
     body_flags: wp.array(dtype=wp.int32),
     joint_q_in: wp.array(dtype=wp.float32),
     joint_qd_in: wp.array(dtype=wp.float32),
+    mj_q_start: wp.array(dtype=wp.int32),
+    mj_qd_start: wp.array(dtype=wp.int32),
     # outputs
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
@@ -418,9 +420,14 @@ def convert_mj_coords_to_warp_kernel(
     worldid, jntid = wp.tid()
 
     joint_id = joints_per_world * worldid + jntid
+
+    # Skip loop joints — they have no MuJoCo qpos/qvel entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
     type = joint_type[joint_id]
-    q_i = joint_q_start[jntid]
-    qd_i = joint_qd_start[jntid]
     wq_i = joint_q_start[joint_id]
     wqd_i = joint_qd_start[joint_id]
     child = joint_child[joint_id]
@@ -523,15 +530,21 @@ def convert_warp_coords_to_mj_kernel(
     joint_child: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
     dof_ref: wp.array(dtype=wp.float32),
+    mj_q_start: wp.array(dtype=wp.int32),
+    mj_qd_start: wp.array(dtype=wp.int32),
     # outputs
     qpos: wp.array2d(dtype=wp.float32),
     qvel: wp.array2d(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
 
+    # Skip loop joints — they have no MuJoCo qpos/qvel entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
     type = joint_type[jntid]
-    q_i = joint_q_start[jntid]
-    qd_i = joint_qd_start[jntid]
     wq_i = joint_q_start[joints_per_world * worldid + jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
@@ -617,6 +630,7 @@ def sync_qpos0_kernel(
     body_q: wp.array(dtype=wp.transform),
     dof_ref: wp.array(dtype=wp.float32),
     dof_springref: wp.array(dtype=wp.float32),
+    mj_q_start: wp.array(dtype=wp.int32),
     # outputs
     qpos0: wp.array2d(dtype=wp.float32),
     qpos_spring: wp.array2d(dtype=wp.float32),
@@ -629,8 +643,12 @@ def sync_qpos0_kernel(
     """
     worldid, jntid = wp.tid()
 
+    # Skip loop joints — they have no MuJoCo qpos entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
     type = joint_type[jntid]
-    q_i = joint_q_start[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
     if type == JointType.FREE:
@@ -827,13 +845,17 @@ def apply_mjc_qfrc_kernel(
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array2d(dtype=wp.int32),
     joints_per_world: int,
+    mj_qd_start: wp.array(dtype=wp.int32),
     # outputs
     qfrc_applied: wp.array2d(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
-    # q_i = joint_q_start[jntid]
-    qd_i = joint_qd_start[jntid]
-    # wq_i = joint_q_start[joints_per_world * worldid + jntid]
+
+    # Skip loop joints — they have no MuJoCo DOF entries
+    qd_i = mj_qd_start[jntid]
+    if qd_i < 0:
+        return
+
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
     joint_id = joints_per_world * worldid + jntid
     jtype = joint_type[jntid]
@@ -2064,6 +2086,8 @@ def convert_qfrc_actuator_from_mj_kernel(
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_child: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
+    mj_q_start: wp.array(dtype=wp.int32),
+    mj_qd_start: wp.array(dtype=wp.int32),
     # output
     qfrc_actuator: wp.array(dtype=wp.float32),
 ):
@@ -2077,8 +2101,12 @@ def convert_qfrc_actuator_from_mj_kernel(
     """
     worldid, jntid = wp.tid()
 
-    q_i = joint_q_start[jntid]
-    qd_i = joint_qd_start[jntid]
+    # Skip loop joints — they have no MuJoCo DOF entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
     type = joint_type[jntid]
