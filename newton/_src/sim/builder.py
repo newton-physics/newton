@@ -822,10 +822,9 @@ class ModelBuilder:
 
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
-        When False, uses a fast GPU kernel that reports only the total number of corrected bodies
-        and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).
-        When True, uses a CPU implementation that reports specific issues for each body and updates
-        the ModelBuilder's internal state.
+        When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
+        When True, uses a CPU implementation that reports specific issues for each body.
+        Both modes produce semantically identical results and update the ModelBuilder's internal state.
         Default: False."""
 
         # endregion
@@ -9890,8 +9889,44 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-                    # Directly use the corrected arrays on the Model (avoids double allocation)
-                    # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
+                        # Update builder state to match kernel output.
+                        # Scalar lists are rebuilt in bulk via .tolist() (fast).
+                        # mat33 lists require per-element construction but only
+                        # run when corrections were actually made.
+                        self.body_mass = body_mass_array.numpy().tolist()
+                        self.body_inv_mass = body_inv_mass_array.numpy().tolist()
+                        inertias_np = body_inertia_array.numpy()
+                        inv_inertias_np = body_inv_inertia_array.numpy()
+                        self.body_inertia = [
+                            wp.mat33(
+                                m[0][0],
+                                m[0][1],
+                                m[0][2],
+                                m[1][0],
+                                m[1][1],
+                                m[1][2],
+                                m[2][0],
+                                m[2][1],
+                                m[2][2],
+                            )
+                            for m in inertias_np
+                        ]
+                        self.body_inv_inertia = [
+                            wp.mat33(
+                                m[0][0],
+                                m[0][1],
+                                m[0][2],
+                                m[1][0],
+                                m[1][1],
+                                m[1][2],
+                                m[2][0],
+                                m[2][1],
+                                m[2][2],
+                            )
+                            for m in inv_inertias_np
+                        ]
+
+                    # Use the corrected arrays directly on the Model
                     m.body_mass = body_mass_array
                     m.body_inv_mass = body_inv_mass_array
                     m.body_inertia = body_inertia_array
