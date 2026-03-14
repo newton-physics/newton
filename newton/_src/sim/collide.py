@@ -826,8 +826,9 @@ class CollisionPipeline:
                 shape_collision_aabb_lower=model.shape_collision_aabb_lower,
                 shape_collision_aabb_upper=model.shape_collision_aabb_upper,
                 shape_voxel_resolution=self.narrow_phase.shape_voxel_resolution,
-                shape_heightfield_data=model.shape_heightfield_data,
-                heightfield_elevation_data=model.heightfield_elevation_data,
+                shape_heightfield_index=model.shape_heightfield_index,
+                heightfield_data=model.heightfield_data,
+                heightfield_elevations=model.heightfield_elevations,
                 writer_data=writer_data,
                 device=self.device,
             )
@@ -854,8 +855,9 @@ class CollisionPipeline:
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,
-                    model.shape_heightfield_data,
-                    model.heightfield_elevation_data,
+                    model.shape_heightfield_index,
+                    model.heightfield_data,
+                    model.heightfield_elevations,
                 ],
                 outputs=[
                     contacts.soft_contact_count,

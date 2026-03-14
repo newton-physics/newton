@@ -782,7 +782,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_gap: wp.array(dtype=float),  # Per-shape contact gaps
     shape_data: wp.array(dtype=wp.vec4),  # Shape data (scale xyz, margin w)
     shape_collision_radius: wp.array(dtype=float),
-    shape_heightfield_data: wp.array(dtype=HeightfieldData),
+    shape_heightfield_index: wp.array(dtype=wp.int32),
+    heightfield_data: wp.array(dtype=HeightfieldData),
     shape_pairs_mesh: wp.array(dtype=wp.vec2i),
     shape_pairs_mesh_count: wp.array(dtype=int),
     total_num_threads: int,
@@ -819,10 +820,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             # Only run on j==0; the j dimension is for tiled BVH queries (mesh only).
             if j != 0:
                 continue
-            hfd = shape_heightfield_data[shape_a]
-            if hfd.nrow <= 1 or hfd.ncol <= 1:
-                continue
-
+            hfd = heightfield_data[shape_heightfield_index[shape_a]]
             heightfield_vs_convex_midphase(
                 shape_a,
                 shape_b,
@@ -892,8 +890,9 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
         shape_transform: wp.array(dtype=wp.transform),
         shape_source: wp.array(dtype=wp.uint64),
         shape_gap: wp.array(dtype=float),  # Per-shape contact gaps
-        shape_heightfield_data: wp.array(dtype=HeightfieldData),
-        heightfield_elevation_data: wp.array(dtype=wp.float32),
+        shape_heightfield_index: wp.array(dtype=wp.int32),
+        heightfield_data: wp.array(dtype=HeightfieldData),
+        heightfield_elevations: wp.array(dtype=wp.float32),
         triangle_pairs: wp.array(dtype=wp.vec3i),
         triangle_pairs_count: wp.array(dtype=int),
         writer_data: Any,
@@ -919,10 +918,10 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
 
             if type_a == GeoType.HFIELD:
                 # Heightfield triangle
-                hfd = shape_heightfield_data[shape_a]
+                hfd = heightfield_data[shape_heightfield_index[shape_a]]
                 X_ws_a = shape_transform[shape_a]
                 shape_data_a, v0_world = get_triangle_from_heightfield(
-                    hfd, heightfield_elevation_data, X_ws_a, tri_idx
+                    hfd, heightfield_elevations, X_ws_a, tri_idx
                 )
             else:
                 # Mesh triangle
@@ -1624,8 +1623,9 @@ class NarrowPhase:
         shape_collision_aabb_upper: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB upper bounds
         shape_voxel_resolution: wp.array(dtype=wp.vec3i, ndim=1),  # Voxel grid resolution per shape
         texture_sdf_data: wp.array(dtype=TextureSDFData, ndim=1) | None = None,  # Compact texture SDF data table
-        shape_heightfield_data: wp.array(dtype=HeightfieldData, ndim=1) | None = None,
-        heightfield_elevation_data: wp.array(dtype=wp.float32, ndim=1) | None = None,
+        shape_heightfield_index: wp.array(dtype=wp.int32, ndim=1) | None = None,
+        heightfield_data: wp.array(dtype=HeightfieldData, ndim=1) | None = None,
+        heightfield_elevations: wp.array(dtype=wp.float32, ndim=1) | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -1752,7 +1752,8 @@ class NarrowPhase:
                     shape_gap,
                     shape_data,
                     shape_collision_radius,
-                    shape_heightfield_data,
+                    shape_heightfield_index,
+                    heightfield_data,
                     self.shape_pairs_mesh,
                     self.shape_pairs_mesh_count,
                     self.num_tile_blocks,
@@ -1817,8 +1818,9 @@ class NarrowPhase:
                         shape_transform,
                         shape_source,
                         shape_gap,
-                        shape_heightfield_data,
-                        heightfield_elevation_data,
+                        shape_heightfield_index,
+                        heightfield_data,
+                        heightfield_elevations,
                         self.triangle_pairs,
                         self.triangle_pairs_count,
                         reducer_data,
@@ -1838,8 +1840,9 @@ class NarrowPhase:
                         shape_transform,
                         shape_source,
                         shape_gap,
-                        shape_heightfield_data,
-                        heightfield_elevation_data,
+                        shape_heightfield_index,
+                        heightfield_data,
+                        heightfield_elevations,
                         self.triangle_pairs,
                         self.triangle_pairs_count,
                         writer_data,
@@ -1869,7 +1872,7 @@ class NarrowPhase:
 
             # Launch mesh-mesh contact processing kernel on CUDA.
             # The kernel uses texture SDF for fast sampling, with BVH fallback via shape_sdf_index,
-            # as well as on-the-fly heightfield evaluation via shape_heightfield_data.
+            # as well as on-the-fly heightfield evaluation via heightfield_data.
             if texture_sdf_data is None:
                 texture_sdf_data = wp.zeros(0, dtype=TextureSDFData, device=device)
 
@@ -1883,7 +1886,8 @@ class NarrowPhase:
                             self.shape_pairs_mesh_mesh,
                             self.shape_pairs_mesh_mesh_count,
                             shape_source,
-                            shape_heightfield_data,
+                            shape_heightfield_index,
+                            heightfield_data,
                             self.mesh_mesh_target_blocks,
                             self.mesh_mesh_block_offsets,
                         ],
@@ -1905,8 +1909,9 @@ class NarrowPhase:
                             shape_voxel_resolution,
                             self.shape_pairs_mesh_mesh,
                             self.shape_pairs_mesh_mesh_count,
-                            shape_heightfield_data,
-                            heightfield_elevation_data,
+                            shape_heightfield_index,
+                            heightfield_data,
+                            heightfield_elevations,
                             self.mesh_mesh_block_offsets,
                             reducer_data,
                             self.num_mesh_mesh_blocks,
@@ -1931,8 +1936,9 @@ class NarrowPhase:
                             shape_voxel_resolution,
                             self.shape_pairs_mesh_mesh,
                             self.shape_pairs_mesh_mesh_count,
-                            shape_heightfield_data,
-                            heightfield_elevation_data,
+                            shape_heightfield_index,
+                            heightfield_data,
+                            heightfield_elevations,
                             writer_data,
                             self.num_tile_blocks,
                         ],

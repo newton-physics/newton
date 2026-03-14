@@ -289,10 +289,12 @@ class Model:
         self.gaussians_data = None
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
 
-        # Heightfield collision data
-        self.shape_heightfield_data: wp.array(dtype=HeightfieldData) | None = None
-        """Array of HeightfieldData structs, shape [shape_count]. Contains grid metadata for collision kernels."""
-        self.heightfield_elevation_data: wp.array(dtype=wp.float32) | None = None
+        # Heightfield collision data (compact table + per-shape index indirection)
+        self.shape_heightfield_index: wp.array(dtype=wp.int32) | None = None
+        """Per-shape heightfield index, shape [shape_count]. -1 means shape has no heightfield."""
+        self.heightfield_data: wp.array(dtype=HeightfieldData) | None = None
+        """Compact array of HeightfieldData structs, one per actual heightfield shape."""
+        self.heightfield_elevations: wp.array(dtype=wp.float32) | None = None
         """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
 
         # SDF storage (compact table + per-shape index indirection)

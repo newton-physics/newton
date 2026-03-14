@@ -9725,13 +9725,13 @@ class ModelBuilder:
                     "contacts between heightfield pairs will be skipped.",
                     stacklevel=2,
                 )
-            if has_heightfields:
-                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+            from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
-                hfield_data_list = []
-                elevation_chunks = []
-                offset = 0
-                empty_hfield = create_empty_heightfield_data()
+            compact_heightfield_data = []
+            elevation_chunks = []
+            shape_heightfield_index = [-1] * len(self.shape_type)
+            offset = 0
+            if has_heightfields:
                 for i in range(len(self.shape_type)):
                     if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
                         hf = self.shape_source[i]
@@ -9743,26 +9743,26 @@ class ModelBuilder:
                         hd.hy = hf.hy
                         hd.min_z = hf.min_z
                         hd.max_z = hf.max_z
-                        hfield_data_list.append(hd)
+                        shape_heightfield_index[i] = len(compact_heightfield_data)
+                        compact_heightfield_data.append(hd)
                         elevation_chunks.append(hf.data.flatten())
                         offset += hf.nrow * hf.ncol
-                    else:
-                        hfield_data_list.append(empty_hfield)
-                m.shape_heightfield_data = wp.array(hfield_data_list, dtype=HeightfieldData, device=device)
-                if elevation_chunks:
-                    m.heightfield_elevation_data = wp.array(
-                        np.concatenate(elevation_chunks), dtype=wp.float32, device=device
-                    )
-                else:
-                    m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
-            else:
-                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
-                empty_hfield = create_empty_heightfield_data()
-                m.shape_heightfield_data = wp.array(
-                    [empty_hfield] * max(len(self.shape_type), 1), dtype=HeightfieldData, device=device
-                )
-                m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
+            m.shape_heightfield_index = wp.array(
+                shape_heightfield_index if shape_heightfield_index else [-1],
+                dtype=wp.int32,
+                device=device,
+            )
+            m.heightfield_data = (
+                wp.array(compact_heightfield_data, dtype=HeightfieldData, device=device)
+                if compact_heightfield_data
+                else wp.array([create_empty_heightfield_data()], dtype=HeightfieldData, device=device)
+            )
+            m.heightfield_elevations = (
+                wp.array(np.concatenate(elevation_chunks), dtype=wp.float32, device=device)
+                if elevation_chunks
+                else wp.zeros(1, dtype=wp.float32, device=device)
+            )
 
             # ---------------------
             # springs

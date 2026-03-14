@@ -1028,8 +1028,9 @@ def create_soft_contacts(
     soft_contact_max: int,
     shape_count: int,
     shape_flags: wp.array(dtype=wp.int32),
-    shape_heightfield_data: wp.array(dtype=HeightfieldData),
-    heightfield_elevation_data: wp.array(dtype=wp.float32),
+    shape_heightfield_index: wp.array(dtype=wp.int32),
+    heightfield_data: wp.array(dtype=HeightfieldData),
+    heightfield_elevations: wp.array(dtype=wp.float32),
     # outputs
     soft_contact_count: wp.array(dtype=int),
     soft_contact_particle: wp.array(dtype=int),
@@ -1133,9 +1134,8 @@ def create_soft_contacts(
         n = wp.vec3(0.0, 0.0, 1.0)
 
     if geo_type == GeoType.HFIELD:
-        hfd = shape_heightfield_data[shape_index]
-        if hfd.nrow > 1 and hfd.ncol > 1:
-            d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevation_data, x_local)
+        hfd = heightfield_data[shape_heightfield_index[shape_index]]
+        d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevations, x_local)
 
     if d < margin + radius:
         index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)

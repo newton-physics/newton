@@ -1186,8 +1186,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
     shape_transform: wp.array(dtype=wp.transform),
     shape_source: wp.array(dtype=wp.uint64),
     shape_gap: wp.array(dtype=float),
-    shape_heightfield_data: wp.array(dtype=HeightfieldData),
-    heightfield_elevation_data: wp.array(dtype=wp.float32),
+    shape_heightfield_index: wp.array(dtype=wp.int32),
+    heightfield_data: wp.array(dtype=HeightfieldData),
+    heightfield_elevations: wp.array(dtype=wp.float32),
     triangle_pairs: wp.array(dtype=wp.vec3i),
     triangle_pairs_count: wp.array(dtype=int),
     reducer_data: GlobalContactReducerData,
@@ -1218,10 +1219,10 @@ def mesh_triangle_contacts_to_reducer_kernel(
 
         if type_a == GeoType.HFIELD:
             # Heightfield triangle
-            hfd = shape_heightfield_data[shape_a]
+            hfd = heightfield_data[shape_heightfield_index[shape_a]]
             X_ws_a = shape_transform[shape_a]
             shape_data_a, v0_world = get_triangle_from_heightfield(
-                hfd, heightfield_elevation_data, X_ws_a, tri_idx
+                hfd, heightfield_elevations, X_ws_a, tri_idx
             )
         else:
             # Mesh triangle (mesh_id already validated by midphase)
