@@ -816,7 +816,9 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         # Pairs are normalized so the heightfield is always shape_a.
         # -----------------------------------------------------------------
         if type_a == GeoType.HFIELD:
-            # Heightfield is always shape_a (normalized by broad phase)
+            # Only run on j==0; the j dimension is for tiled BVH queries (mesh only).
+            if j != 0:
+                continue
             hfd = shape_heightfield_data[shape_a]
             if hfd.nrow <= 1 or hfd.ncol <= 1:
                 continue

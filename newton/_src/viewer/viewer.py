@@ -471,9 +471,9 @@ class ViewerBase(ABC):
             self.log_lines("/contacts", None, None, None)
             return
 
-        # Get contact count (handle case where it might be zero)
-        num_contacts = contacts.rigid_contact_count.numpy()[0]
+        # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
+        num_contacts = min(int(contacts.rigid_contact_count.numpy()[0]), max_contacts)
 
         # Ensure we have buffers for line endpoints
         if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
