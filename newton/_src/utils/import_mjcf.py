@@ -29,6 +29,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
+from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -361,9 +362,11 @@ def parse_mjcf(
         euler_seq = ["xyz".index(c) for c in compiler.attrib.get("eulerseq", "xyz").lower()]
         mesh_dir = compiler.attrib.get("meshdir", ".")
         texture_dir = compiler.attrib.get("texturedir", mesh_dir)
+        fitaabb = compiler.attrib.get("fitaabb", "false").lower() == "true"
     else:
         mesh_dir = "."
         texture_dir = "."
+        fitaabb = False
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -605,8 +608,12 @@ def parse_mjcf(
 
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
             geom_type = geom_attrib.get("type", "sphere")
+            fit_to_mesh = False
             if "mesh" in geom_attrib:
-                geom_type = "mesh"
+                if "type" in geom_attrib and geom_type in {"sphere", "capsule", "cylinder", "ellipsoid", "box"}:
+                    fit_to_mesh = True
+                else:
+                    geom_type = "mesh"
             if "hfield" in geom_attrib:
                 geom_type = "hfield"
 
@@ -723,6 +730,116 @@ def parse_mjcf(
                 if texture_asset and "file" in texture_asset:
                     # Pass texture path directly for lazy loading by the viewer
                     texture = texture_asset["file"]
+
+            # Fit primitive to mesh: load mesh vertices, compute fitted sizes,
+            # and override geom_size / tf so the primitive handlers below work
+            # transparently.
+            if fit_to_mesh:
+                mesh_name = geom_attrib.get("mesh")
+                if mesh_name is None or mesh_name not in mesh_assets:
+                    if verbose:
+                        print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
+                    continue
+                else:
+                    stl_file = mesh_assets[mesh_name]["file"]
+                    if "mesh" in geom_defaults:
+                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[mesh_name]["scale"])
+                    else:
+                        mesh_scale = mesh_assets[mesh_name]["scale"]
+                    scaling = np.array(mesh_scale) * scale
+                    maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
+
+                    m_meshes = load_meshes_from_file(
+                        stl_file,
+                        scale=scaling,
+                        maxhullvert=maxhullvert,
+                    )
+                    # Combine all sub-meshes into one vertex array for fitting.
+                    all_vertices = np.concatenate([m.vertices for m in m_meshes], axis=0)
+
+                    fitscale = parse_float(geom_attrib, "fitscale", 1.0)
+
+                    if fitaabb:
+                        # AABB mode: compute axis-aligned bounding box.
+                        aabb_min, aabb_max = compute_aabb(all_vertices)
+                        center = (aabb_min + aabb_max) / 2.0
+                        half_sizes = (aabb_max - aabb_min) / 2.0
+
+                        if geom_type == "sphere":
+                            geom_size = np.array([np.max(half_sizes)]) * fitscale
+                        elif geom_type in {"capsule", "cylinder"}:
+                            r = max(half_sizes[0], half_sizes[1])
+                            h = half_sizes[2]
+                            if geom_type == "capsule":
+                                h = max(h - r, 0.0)
+                            geom_size = np.array([r, h]) * fitscale
+                        elif geom_type in {"box", "ellipsoid"}:
+                            geom_size = half_sizes * fitscale
+                        else:
+                            if verbose:
+                                print(f"Warning: unsupported fit type {geom_type} for {geom_name}")
+                            fit_to_mesh = False
+
+                        if fit_to_mesh:
+                            # Shift the geom origin to the AABB center.
+                            center_offset = wp.vec3(*center)
+                            tf = tf * wp.transform(center_offset, wp.quat_identity())
+                    else:
+                        # Equivalent inertia box mode (default): compute the box whose
+                        # inertia tensor matches the mesh.
+                        all_indices = np.concatenate(
+                            [
+                                m.indices.reshape(-1, 3) + offset
+                                for m, offset in zip(
+                                    m_meshes,
+                                    np.cumsum([0] + [len(m.vertices) for m in m_meshes[:-1]]),
+                                    strict=True,
+                                )
+                            ],
+                            axis=0,
+                        ).flatten()
+
+                        com, half_extents, principal_rot = compute_inertia_box_mesh(all_vertices, all_indices)
+                        # Sort half-extents so the largest is last (Z), matching MuJoCo's
+                        # convention where capsule/cylinder axis aligns with Z.
+                        he_arr = np.array([*half_extents])
+                        sort_order = np.argsort(he_arr)
+                        he = he_arr[sort_order]
+
+                        if geom_type == "sphere":
+                            geom_size = np.array([np.mean(he)]) * fitscale
+                        elif geom_type in {"capsule", "cylinder"}:
+                            r = (he[0] + he[1]) / 2.0
+                            h = he[2]
+                            if geom_type == "capsule":
+                                # Subtract r/2 (not full r) to match MuJoCo.
+                                h = max(h - r / 2.0, 0.0)
+                            geom_size = np.array([r, h]) * fitscale
+                        elif geom_type in {"box", "ellipsoid"}:
+                            geom_size = he * fitscale
+                        else:
+                            if verbose:
+                                print(f"Warning: unsupported fit type {geom_type} for {geom_name}")
+                            fit_to_mesh = False
+
+                        if fit_to_mesh:
+                            # Build a rotation that maps the sorted principal axes
+                            # to the standard frame (X, Y, Z).  The eigenvectors in
+                            # principal_rot are in the original eigenvalue order; we
+                            # need to reorder columns to match the sorted half-extents.
+                            # Rows of warp mat33 = basis vectors of the rotated frame.
+                            rot_mat = np.array(wp.quat_to_matrix(principal_rot)).reshape(3, 3)
+                            # rot_mat rows are the principal axes; reorder them so
+                            # the axis with the largest half-extent becomes row 2 (Z).
+                            sorted_mat = rot_mat[sort_order, :]
+                            if np.linalg.det(sorted_mat) < 0:
+                                sorted_mat[0, :] = -sorted_mat[0, :]
+                            fit_rot = wp.quat_from_matrix(wp.mat33(*sorted_mat.flatten().tolist()))
+
+                            # Shift the geom origin to the mesh COM and rotate to
+                            # the principal-axis frame.
+                            center_offset = wp.vec3(*com)
+                            tf = tf * wp.transform(center_offset, fit_rot)
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
