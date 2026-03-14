@@ -75,6 +75,8 @@ from .collision_core import (
     get_triangle_shape_from_mesh,
 )
 from .contact_data import ContactData
+from .types import GeoType
+from ..utils.heightfield import HeightfieldData, get_triangle_from_heightfield
 from .contact_reduction import (
     NUM_NORMAL_BINS,
     NUM_SPATIAL_DIRECTIONS,
@@ -1184,15 +1186,17 @@ def mesh_triangle_contacts_to_reducer_kernel(
     shape_transform: wp.array(dtype=wp.transform),
     shape_source: wp.array(dtype=wp.uint64),
     shape_gap: wp.array(dtype=float),
+    shape_heightfield_data: wp.array(dtype=HeightfieldData),
+    heightfield_elevation_data: wp.array(dtype=wp.float32),
     triangle_pairs: wp.array(dtype=wp.vec3i),
     triangle_pairs_count: wp.array(dtype=int),
     reducer_data: GlobalContactReducerData,
     total_num_threads: int,
 ):
-    """Process mesh-triangle contacts and store them in GlobalContactReducer.
+    """Process mesh/heightfield-triangle contacts and store them in GlobalContactReducer.
 
-    This kernel processes triangle pairs (mesh-shape, convex-shape, triangle_index) and
-    computes contacts using GJK/MPR, storing results in the GlobalContactReducer for
+    This kernel processes triangle pairs (mesh-or-hfield shape, convex-shape, triangle_index)
+    and computes contacts using GJK/MPR, storing results in the GlobalContactReducer for
     subsequent reduction and export.
 
     Uses grid stride loop over triangle pairs.
@@ -1206,23 +1210,26 @@ def mesh_triangle_contacts_to_reducer_kernel(
             break
 
         triple = triangle_pairs[i]
-        shape_a = triple[0]  # Mesh shape
+        shape_a = triple[0]  # Mesh or heightfield shape
         shape_b = triple[1]  # Convex shape
         tri_idx = triple[2]
 
-        # Get mesh data for shape A
-        mesh_id_a = shape_source[shape_a]
-        if mesh_id_a == wp.uint64(0):
-            continue
+        type_a = shape_types[shape_a]
 
-        scale_data_a = shape_data[shape_a]
-        mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
-
-        # Get mesh world transform
-        X_mesh_ws_a = shape_transform[shape_a]
-
-        # Extract triangle shape data from mesh
-        shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_mesh_ws_a, tri_idx)
+        if type_a == GeoType.HFIELD:
+            # Heightfield triangle
+            hfd = shape_heightfield_data[shape_a]
+            X_ws_a = shape_transform[shape_a]
+            shape_data_a, v0_world = get_triangle_from_heightfield(
+                hfd, heightfield_elevation_data, X_ws_a, tri_idx
+            )
+        else:
+            # Mesh triangle (mesh_id already validated by midphase)
+            mesh_id_a = shape_source[shape_a]
+            scale_data_a = shape_data[shape_a]
+            mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
+            X_ws_a = shape_transform[shape_a]
+            shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_ws_a, tri_idx)
 
         # Extract shape B data
         pos_b, quat_b, shape_data_b, _scale_b, margin_offset_b = extract_shape_data(

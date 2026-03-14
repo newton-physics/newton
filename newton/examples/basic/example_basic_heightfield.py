@@ -46,7 +46,7 @@ class Example:
 
         # Create a wave-like heightfield terrain
         nrow, ncol = 50, 50
-        hx, hy = 5.0, 5.0
+        hx, hy = 9.0, 9.0
         x = np.linspace(-hx, hx, ncol)
         y = np.linspace(-hy, hy, nrow)
         xx, yy = np.meshgrid(x, y)
@@ -62,7 +62,7 @@ class Example:
         builder.add_shape_heightfield(heightfield=hfield)
 
         # Drop several spheres onto the terrain
-        drop_z = 3.0
+        drop_z = 1.0
         self.sphere_bodies = []
         positions = [
             (-2.0, -2.0),
@@ -79,6 +79,7 @@ class Example:
             self.sphere_bodies.append(body)
 
         self.model = builder.finalize()
+        self.model.rigid_contact_max = 100000
 
         if self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model)
