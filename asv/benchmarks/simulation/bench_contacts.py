@@ -16,6 +16,7 @@
 import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
+wp.config.enable_backward = False
 wp.config.quiet = True
 
 import importlib
@@ -126,6 +127,36 @@ class FastExampleContactHydroWorkingDefaults:
         wp.synchronize_device()
 
 
+class FastExampleContactPyramidDefaults:
+    """Benchmark the box pyramid example with default configuration."""
+
+    repeat = 2
+    number = 1
+
+    def setup(self):
+        example_cls = _import_example_class(
+            [
+                "newton.examples.contacts.example_pyramid",
+            ]
+        )
+        self.num_frames = 20
+        if hasattr(newton.examples, "default_args") and hasattr(example_cls, "create_parser"):
+            args = newton.examples.default_args(example_cls.create_parser())
+            self.example = example_cls(ViewerNull(num_frames=self.num_frames), args)
+        else:
+            self.example = example_cls(
+                viewer=ViewerNull(num_frames=self.num_frames),
+                solver="xpbd",
+                test_mode=False,
+            )
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_simulate(self):
+        for _ in range(self.num_frames):
+            self.example.step()
+        wp.synchronize_device()
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -134,6 +165,7 @@ if __name__ == "__main__":
     benchmark_list = {
         "FastExampleContactSdfDefaults": FastExampleContactSdfDefaults,
         "FastExampleContactHydroWorkingDefaults": FastExampleContactHydroWorkingDefaults,
+        "FastExampleContactPyramidDefaults": FastExampleContactPyramidDefaults,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

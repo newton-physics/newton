@@ -901,8 +901,9 @@ class ModelBuilder:
         self.shape_sdf_max_resolution: list[int | None] = []
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
 
-        # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
+        # Mesh SDF storage (texture SDF arrays created at finalize)
 
+        # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
         """Shape collision filter pairs accumulated for :attr:`Model.shape_collision_filter_pairs`."""
 
@@ -9534,8 +9535,28 @@ class ModelBuilder:
             m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
-            # Compute and compact SDF resources (shared table + per-shape index indirection)
-            from ..geometry.sdf_utils import SDFData, compute_sdf_from_shape  # noqa: PLC0415
+            # Compute and compact texture SDF resources (shared table + per-shape index indirection)
+            from ..geometry.types import Mesh as NewtonMesh  # noqa: PLC0415
+
+            def _create_primitive_mesh(stype: int, scale: Sequence[float] | None) -> NewtonMesh | None:
+                """Create a watertight mesh from a primitive shape for texture SDF construction."""
+                from ..core.types import Axis  # noqa: PLC0415
+
+                sx, sy, sz = scale if scale is not None else (1.0, 1.0, 1.0)
+                common_kw = {"compute_normals": False, "compute_uvs": False, "compute_inertia": False}
+                if stype == GeoType.BOX:
+                    return NewtonMesh.create_box(sx, sy, sz, duplicate_vertices=False, **common_kw)
+                elif stype == GeoType.SPHERE:
+                    return NewtonMesh.create_sphere(sx, **common_kw)
+                elif stype == GeoType.CAPSULE:
+                    return NewtonMesh.create_capsule(sx, sy, up_axis=Axis.Z, **common_kw)
+                elif stype == GeoType.CYLINDER:
+                    return NewtonMesh.create_cylinder(sx, sy, up_axis=Axis.Z, **common_kw)
+                elif stype == GeoType.CONE:
+                    return NewtonMesh.create_cone(sx, sy, up_axis=Axis.Z, **common_kw)
+                elif stype == GeoType.ELLIPSOID:
+                    return NewtonMesh.create_ellipsoid(sx, sy, sz, **common_kw)
+                return None
 
             current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
@@ -9554,14 +9575,21 @@ class ModelBuilder:
             if (has_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
                     "SDF collision paths require a CUDA-capable GPU device. "
-                    "wp.Volume (used for SDF collision) only supports CUDA."
+                    "Texture SDFs (used for SDF collision) only support CUDA."
                 )
 
-            compact_sdf_data = []
-            compact_sdf_volume = []
-            compact_sdf_coarse_volume = []
             sdf_block_coords = []
             sdf_index2blocks = []
+            from ..geometry.sdf_texture import (  # noqa: PLC0415
+                TextureSDFData,
+                create_empty_texture_sdf_data,
+                create_texture_sdf_from_mesh,
+            )
+
+            compact_texture_sdf_data = []
+            compact_texture_sdf_coarse_textures = []
+            compact_texture_sdf_subgrid_textures = []
+            compact_texture_sdf_subgrid_start_slots = []
             shape_sdf_index = [-1] * len(self.shape_type)
             sdf_cache = {}
 
@@ -9570,7 +9598,6 @@ class ModelBuilder:
                 shape_src = self.shape_source[i]
                 shape_flags = self.shape_flags[i]
                 shape_scale = self.shape_scale[i]
-                shape_margin = self.shape_margin[i]
                 shape_gap = self.shape_gap[i]
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
@@ -9578,77 +9605,115 @@ class ModelBuilder:
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
-                sdf_data = None
-                sparse_volume = None
-                coarse_volume = None
                 block_coords = []
                 cache_key = None
+                mesh_sdf = None
 
                 if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                        sdf_data = mesh_sdf.to_kernel_data()
-                        sparse_volume = mesh_sdf.sparse_volume
-                        coarse_volume = mesh_sdf.coarse_volume
-                        block_coords = list(mesh_sdf.block_coords) if mesh_sdf.block_coords is not None else []
+                        if mesh_sdf.texture_block_coords is not None:
+                            block_coords = list(mesh_sdf.texture_block_coords)
+                        elif mesh_sdf.block_coords is not None:
+                            block_coords = list(mesh_sdf.block_coords)
+                        else:
+                            block_coords = []
                 elif is_hydroelastic and has_shape_collision:
-                    bake_scale = True
-                    # Keep voxel-size-driven generation independent from max_resolution.
                     effective_max_resolution = sdf_max_resolution
                     if sdf_target_voxel_size is None and effective_max_resolution is None:
                         effective_max_resolution = 64
                     cache_key = (
                         "primitive_generated",
                         shape_type,
-                        shape_margin,
                         shape_gap,
                         tuple(sdf_narrow_band_range),
                         sdf_target_voxel_size,
                         effective_max_resolution,
                         tuple(shape_scale),
                     )
-                    if cache_key not in sdf_cache:
-                        sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf_from_shape(
-                            shape_type=shape_type,
-                            shape_geo=None,
-                            shape_scale=shape_scale,
-                            shape_margin=shape_margin,
-                            narrow_band_distance=sdf_narrow_band_range,
-                            margin=shape_gap,
-                            target_voxel_size=sdf_target_voxel_size,
-                            max_resolution=effective_max_resolution,
-                            bake_scale=bake_scale,
-                            device=device,
-                        )
 
                 if cache_key is not None:
                     if cache_key in sdf_cache:
                         shape_sdf_index[i] = sdf_cache[cache_key]
                     else:
-                        sdf_idx = len(compact_sdf_data)
+                        sdf_idx = len(compact_texture_sdf_data)
                         sdf_cache[cache_key] = sdf_idx
                         shape_sdf_index[i] = sdf_idx
 
-                        compact_sdf_data.append(sdf_data)
-                        compact_sdf_volume.append(sparse_volume)
-                        compact_sdf_coarse_volume.append(coarse_volume)
+                        tex_block_coords = None
+                        if mesh_sdf is not None:
+                            tex_data = mesh_sdf.to_texture_kernel_data()
+                            if tex_data is not None:
+                                compact_texture_sdf_data.append(tex_data)
+                                compact_texture_sdf_coarse_textures.append(mesh_sdf._coarse_texture)
+                                compact_texture_sdf_subgrid_textures.append(mesh_sdf._subgrid_texture)
+                                compact_texture_sdf_subgrid_start_slots.append(tex_data.subgrid_start_slots)
+                                if mesh_sdf.texture_block_coords is not None:
+                                    tex_block_coords = mesh_sdf.texture_block_coords
+                            else:
+                                compact_texture_sdf_data.append(create_empty_texture_sdf_data())
+                                compact_texture_sdf_coarse_textures.append(None)
+                                compact_texture_sdf_subgrid_textures.append(None)
+                                compact_texture_sdf_subgrid_start_slots.append(None)
+                        else:
+                            prim_mesh = _create_primitive_mesh(shape_type, shape_scale)
+                            if prim_mesh is not None:
+                                prim_wp_mesh = wp.Mesh(
+                                    points=wp.array(prim_mesh.vertices, dtype=wp.vec3, device=device),
+                                    indices=wp.array(prim_mesh.indices.flatten(), dtype=wp.int32, device=device),
+                                    support_winding_number=True,
+                                )
+                                try:
+                                    tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
+                                        prim_wp_mesh,
+                                        margin=shape_gap,
+                                        narrow_band_range=tuple(sdf_narrow_band_range),
+                                        max_resolution=effective_max_resolution,
+                                        scale_baked=True,
+                                        device=device,
+                                    )
+                                except Exception as e:
+                                    warnings.warn(
+                                        f"Texture SDF construction failed for shape {i} "
+                                        f"(type={shape_type}): {e}. Falling back to BVH.",
+                                        stacklevel=2,
+                                    )
+                                    tex_data = create_empty_texture_sdf_data()
+                                    c_tex = None
+                                    s_tex = None
+                                    tex_bc = None
+                                compact_texture_sdf_data.append(tex_data)
+                                compact_texture_sdf_coarse_textures.append(c_tex)
+                                compact_texture_sdf_subgrid_textures.append(s_tex)
+                                compact_texture_sdf_subgrid_start_slots.append(
+                                    tex_data.subgrid_start_slots if c_tex is not None else None
+                                )
+                                tex_block_coords = tex_bc
+                            else:
+                                compact_texture_sdf_data.append(create_empty_texture_sdf_data())
+                                compact_texture_sdf_coarse_textures.append(None)
+                                compact_texture_sdf_subgrid_textures.append(None)
+                                compact_texture_sdf_subgrid_start_slots.append(None)
+
+                        final_block_coords = list(tex_block_coords) if tex_block_coords is not None else block_coords
                         block_start_idx = len(sdf_block_coords)
-                        sdf_block_coords.extend(block_coords)
+                        sdf_block_coords.extend(final_block_coords)
                         sdf_index2blocks.append([block_start_idx, len(sdf_block_coords)])
 
-            m.sdf_data = (
-                wp.array(compact_sdf_data, dtype=SDFData, device=device)
-                if compact_sdf_data
-                else wp.array([], dtype=SDFData, device=device)
-            )
-            m.sdf_volume = compact_sdf_volume
-            m.sdf_coarse_volume = compact_sdf_coarse_volume
             m.shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m.sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
             m.sdf_index2blocks = (
                 wp.array(sdf_index2blocks, dtype=wp.vec2i) if sdf_index2blocks else wp.array([], dtype=wp.vec2i)
             )
+            m.texture_sdf_data = (
+                wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
+                if compact_texture_sdf_data
+                else wp.array([], dtype=TextureSDFData, device=device)
+            )
+            m.texture_sdf_coarse_textures = compact_texture_sdf_coarse_textures
+            m.texture_sdf_subgrid_textures = compact_texture_sdf_subgrid_textures
+            m.texture_sdf_subgrid_start_slots = compact_texture_sdf_subgrid_start_slots
 
             # ---------------------
             # heightfield collision data

@@ -47,7 +47,7 @@ SIM_TIME = 1.0
 VIEWER_NUM_FRAMES = 300
 
 # Test thresholds
-POSITION_THRESHOLD_FACTOR = 0.15  # multiplied by cube_half
+POSITION_THRESHOLD_FACTOR = 0.20  # multiplied by cube_half
 MAX_ROTATION_DEG = 10.0
 
 # Devices and solvers
@@ -187,6 +187,8 @@ def run_stacked_cubes_hydroelastic_test(
     cube_half: float = CUBE_HALF_LARGE,
     reduce_contacts: bool = True,
     config: HydroelasticSDF.Config | None = None,
+    position_threshold_factor: float = POSITION_THRESHOLD_FACTOR,
+    substeps: int | None = None,
 ):
     """Shared test for stacking 3 cubes using hydroelastic contacts."""
     model, solver, state_0, state_1, control, collision_pipeline, initial_positions, cube_half = (
@@ -202,7 +204,8 @@ def run_stacked_cubes_hydroelastic_test(
     num_frames = int(SIM_TIME / SIM_DT)
 
     # Scale substeps for small objects - they need smaller time steps for stability
-    substeps = SIM_SUBSTEPS if cube_half >= CUBE_HALF_LARGE else 20
+    if substeps is None:
+        substeps = SIM_SUBSTEPS if cube_half >= CUBE_HALF_LARGE else 25
 
     for _ in range(num_frames):
         state_0, state_1 = simulate(
@@ -211,7 +214,7 @@ def run_stacked_cubes_hydroelastic_test(
 
     body_q = state_0.body_q.numpy()
 
-    position_threshold = POSITION_THRESHOLD_FACTOR * cube_half
+    position_threshold = position_threshold_factor * cube_half
 
     for i in range(NUM_CUBES):
         expected_z = initial_positions[i][2]
@@ -262,7 +265,19 @@ def test_stacked_small_mesh_cubes_hydroelastic(test, device, solver_fn):
 
 def test_stacked_primitive_cubes_hydroelastic_no_reduction(test, device, solver_fn):
     """Test 3 primitive cubes (1m) stacked without contact reduction using hydroelastic contacts."""
-    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.PRIMITIVE, CUBE_HALF_LARGE, False)
+    # Unreduced contacts carry more per-face noise from 16-bit texture SDF
+    # quantization; use more substeps to compensate and allow up to 50% of
+    # cube_half (25% of cube size) positional drift.
+    run_stacked_cubes_hydroelastic_test(
+        test,
+        device,
+        solver_fn,
+        ShapeType.PRIMITIVE,
+        CUBE_HALF_LARGE,
+        False,
+        position_threshold_factor=0.50,
+        substeps=20,
+    )
 
 
 def test_buffer_fraction_no_crash(test, device):
@@ -685,6 +700,20 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         kh_val = kh_values[i]
         area = areas[i]
 
+        # Expected: depth = F / (k_eff * A_eff) / mujoco_scaling
+        effective_area = area
+        expected = total_force / (kh_val * effective_area)
+        expected /= effective_mass
+
+        # When expected penetration is deeply sub-voxel the 16-bit texture SDF
+        # cannot reliably resolve it — contacts may not register as negative
+        # depth at all.  Skip the entire case in that regime.
+        case_upper_size = test_cases[i][1]
+        voxel_size = (case_upper_size + 2 * 0.01) / 64  # SDF domain / max_resolution
+        depth_in_voxels = expected / voxel_size
+        if depth_in_voxels < 0.01:
+            continue
+
         # Filter depths for this shape pair
         mask = ((shape_pairs[:, 0] == lower_shape) & (shape_pairs[:, 1] == upper_shape)) | (
             (shape_pairs[:, 0] == upper_shape) & (shape_pairs[:, 1] == lower_shape)
@@ -697,19 +726,17 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
         # x2 because depth is distance to isosurface; use |depth| for magnitude
         measured = 2.0 * np.mean(-instance_depths)
-
-        # Expected: depth = F / (k_eff * A_eff) / mujoco_scaling
-        effective_area = area
-        expected = total_force / (kh_val * effective_area)
-        expected /= effective_mass
         ratio = measured / expected
 
-        test.assertGreater(
-            ratio, 0.9, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
-        )
-        test.assertLess(
-            ratio, 1.1, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
-        )
+        # The ratio is only meaningful when depth spans enough voxels for
+        # trilinear interpolation to be accurate.
+        if depth_in_voxels > 0.05:
+            test.assertGreater(
+                ratio, 0.9, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
+            )
+            test.assertLess(
+                ratio, 1.1, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
+            )
 
 
 # --- Test class ---

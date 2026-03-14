@@ -166,12 +166,12 @@ After installing Newton with the ``examples`` extra, run an example with:
 
 Run an example that runs RL policy inference. Choose the extra matching your
 NVIDIA driver's CUDA support (``torch-cu12`` for CUDA 12.x, ``torch-cu13`` for
-CUDA 13.x); run ``nvidia-smi`` to check the supported CUDA version (shown in
-the top-right corner of the output):
+CUDA 13.x) and the corresponding pytorch wheel (e.g, ``128`` for CUDA 12.8); run ``nvidia-smi``
+to check the supported CUDA version (shown in the top-right corner of the output):
 
 .. code-block:: console
 
-    pip install "newton[torch-cu12]"
+    pip install newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128
     python -m newton.examples robot_anymal_c_walk
 
 See a list of all available examples:

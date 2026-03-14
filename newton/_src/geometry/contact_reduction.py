@@ -13,17 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Contact reduction for mesh collision using GPU shared memory.
+"""Contact reduction utilities for mesh collision.
 
-This module provides efficient contact reduction for mesh-plane and mesh-convex
-collisions where all contacts for a shape pair can be processed within a single
-GPU thread block using shared memory.
+This module provides constants, helper functions, and shared-memory utilities
+used by the contact reduction system. The reduction selects a representative
+subset (up to 240 contacts per pair) that preserves simulation stability.
 
 **Contact Reduction Strategy Overview:**
 
 When complex meshes collide, thousands of triangle pairs may generate contacts.
-Contact reduction selects a representative subset (up to 240 contacts per pair)
-that preserves simulation stability while keeping memory and computation bounded.
+Contact reduction selects a representative subset that preserves simulation
+stability while keeping memory and computation bounded.
 
 The reduction uses three complementary strategies:
 
@@ -53,14 +53,9 @@ The reduction uses three complementary strategies:
     Voxel slots:    100 slots
     Total:          240 slots per shape pair
 
-**Usage:**
-
-- This shared-memory approach is used for mesh-plane and mesh-convex contacts
-- For mesh-mesh (SDF) collisions, see ``contact_reduction_global.py`` which
-  uses a hashtable-based approach for contacts spanning multiple GPU blocks
-
 See Also:
-    :class:`ContactReductionFunctions` for the main API and detailed documentation.
+    :class:`GlobalContactReducer` in ``contact_reduction_global.py`` for the
+    hashtable-based approach used for mesh-mesh (SDF) collisions.
 """
 
 import warp as wp
@@ -81,36 +76,6 @@ __syncthreads();
 #endif
 """)
 def synchronize(): ...
-
-
-@wp.func
-def pack_value_thread_id(value: float, thread_id: int) -> wp.uint64:
-    """Pack float value and thread_id into uint64 for atomic argmax.
-
-    High 32 bits: float_flip(value) - makes floats comparable as unsigned ints
-    Low 32 bits: thread_id - for deterministic tie-breaking
-
-    atomicMax on this packed value will select:
-    1. The thread with the highest value
-    2. For equal values, the thread with the highest thread_id (deterministic)
-    """
-    return (wp.uint64(float_flip(value)) << wp.uint64(32)) | wp.uint64(thread_id)
-
-
-# Use native func because warp tries to convert 0xFFFFFFFF to int32 which is not the intended behavior
-@wp.func_native("""
-return static_cast<int32_t>(packed & 0xFFFFFFFFull);
-""")
-def unpack_thread_id(packed: wp.uint64) -> int: ...
-
-
-@wp.struct
-class ContactStruct:
-    position: wp.vec3
-    normal: wp.vec3
-    depth: wp.float32
-    feature: wp.int32  # Feature ID for deduplication (e.g., triangle index)
-    projection: wp.float32
 
 
 _mat20x3 = wp.types.matrix(shape=(20, 3), dtype=wp.float32)
@@ -336,64 +301,6 @@ def compute_voxel_index(
     return vx + vy * nx + vz * nx * ny
 
 
-def create_shared_memory_pointer_func_4_byte_aligned(
-    array_size: int,
-):
-    """Create a shared memory pointer function for a specific array size.
-
-    Args:
-        array_size: Number of int elements in the shared memory array.
-
-    Returns:
-        A Warp function that returns a pointer to shared memory
-    """
-
-    snippet = f"""
-#if defined(__CUDA_ARCH__)
-    constexpr int array_size = {array_size};
-    __shared__ int s[array_size];
-    auto ptr = &s[0];
-    return (uint64_t)ptr;
-#else
-    return (uint64_t)0;
-#endif
-    """
-
-    @wp.func_native(snippet)
-    def get_shared_memory_pointer() -> wp.uint64: ...
-
-    return get_shared_memory_pointer
-
-
-def create_shared_memory_pointer_func_8_byte_aligned(
-    array_size: int,
-):
-    """Create a shared memory pointer function for a specific array size.
-
-    Args:
-        array_size: Number of int elements in the shared memory array.
-
-    Returns:
-        A Warp function that returns a pointer to shared memory
-    """
-
-    snippet = f"""
-#if defined(__CUDA_ARCH__)
-    constexpr int array_size = {array_size};
-    __shared__ uint64_t s[array_size];
-    auto ptr = &s[0];
-    return (uint64_t)ptr;
-#else
-    return (uint64_t)0;
-#endif
-    """
-
-    @wp.func_native(snippet)
-    def get_shared_memory_pointer() -> wp.uint64: ...
-
-    return get_shared_memory_pointer
-
-
 def create_shared_memory_pointer_block_dim_func(
     add: int,
 ):
@@ -423,339 +330,35 @@ def create_shared_memory_pointer_block_dim_func(
     return get_shared_memory_pointer
 
 
-class ContactReductionFunctions:
-    """Reduces many candidate contacts to a representative subset using GPU shared memory.
+def create_shared_memory_pointer_block_dim_mul_func(
+    mul: int,
+):
+    """Create a shared memory pointer whose size scales with the block dimension.
 
-    When colliding complex meshes, thousands of triangle pairs may generate contacts.
-    This class provides functions to efficiently reduce them to a manageable set while
-    preserving contacts that are important for stable simulation.
+    Allocates ``WP_TILE_BLOCK_DIM * mul`` int32 elements of shared memory.
 
-    **Algorithm Overview:**
+    Args:
+        mul: Multiplier applied to WP_TILE_BLOCK_DIM.
 
-    The reduction uses three complementary strategies to select representative contacts:
-
-    1. **Spatial Extreme Slots** - Find the support polygon boundary per normal direction
-    2. **Per-Bin Max-Depth Slots** - Track deepest contact per normal direction
-    3. **Voxel-Based Depth Slots** - Track deepest contact per mesh region
-
-    Winners are determined via atomic operations in GPU shared memory. Contacts that
-    win multiple slots are deduplicated before output.
-
-    **Slot Layout (240 total slots per shape pair):**
-
-    ::
-
-        Per-bin slots:  20 bins x (6 spatial + 1 max-depth) = 140 slots
-        Voxel slots:    100 slots
-        Total:          240 slots
-
-    **1. Spatial Extreme Slots (6 per normal bin = 120 total):**
-
-    For contacts with depth < beta (near-penetrating), finds the most extreme contact
-    in each of 6 evenly-spaced 2D scan directions (60° apart) on the icosahedron face
-    plane. This builds the convex hull / support polygon of the contact patch, which
-    is critical for stable stacking and preventing objects from tipping.
-
-    ::
-
-        if depth < beta:
-            score = dot(projected_position_2d, scan_direction)  # higher wins
-
-    **2. Per-Bin Max-Depth Slots (1 per normal bin = 20 total):**
-
-    Each normal bin unconditionally tracks its deepest contact (most negative depth).
-    This ensures the most penetrated contact per normal direction is always kept,
-    regardless of the beta threshold. Critical for:
-
-    - **Gear-like contacts** where tooth surfaces have different normal orientations
-    - **Stable response** to deeply penetrating contacts from any direction
-
-    ::
-
-        score = -depth  # most negative depth wins (deepest penetration)
-
-    **3. Voxel-Based Depth Slots (100 total):**
-
-    The mesh is divided into a virtual voxel grid (up to 100 voxels based on local
-    AABB). Each voxel independently tracks its deepest contact, providing spatial
-    coverage across the mesh surface. This prevents:
-
-    - **Sudden contact jumps** when different mesh regions become deepest
-    - **Late contact detection** at mesh centers (contacts show up early, not just
-      after they become the global deepest)
-
-    ::
-
-        score = -depth  # most negative depth wins per voxel
-
-    **Why This Hybrid Approach:**
-
-    - **Spatial extremes alone** miss deeply penetrating contacts at the center
-    - **Max-depth alone** misses the support polygon boundary needed for stability
-    - **Voxels alone** don't capture normal-direction information for angled contacts
-    - **Combined** they provide robust contact selection for diverse scenarios:
-      flat stacking, gear meshing, screw threading, tilting objects, etc.
-
-    **Depth Threshold (Beta):**
-
-    Contacts with depth < 0.0001m (0.1mm) participate in spatial extreme competition.
-    This small positive threshold avoids contact flickering due to numerical noise
-    while effectively selecting only near-penetrating contacts for the support polygon.
-
-    The overall contact detection range is controlled by the contact margin parameter
-    on shapes, not by the reduction system.
-
-    See Also:
-        :class:`GlobalContactReducer` in ``contact_reduction_global.py`` for the
-        hashtable-based variant used for mesh-mesh (SDF) collisions.
+    Returns:
+        A Warp function that returns a pointer to shared memory
     """
 
-    BETA_THRESHOLD = 0.0001
-    """Penetration depth threshold for spatial extreme slot competition.
-
-    Only contacts with depth below this value (i.e., penetrating or near-touching)
-    compete for spatial extreme slots that build the support polygon boundary.
-    A small positive value (rather than zero) accounts for numerical tolerances,
-    preventing contact flickering when stacked objects have near-zero depths.
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    constexpr int array_size = WP_TILE_BLOCK_DIM * {mul};
+    __shared__ int s[array_size];
+    auto ptr = &s[0];
+    return (uint64_t)ptr;
+#else
+    return (uint64_t)0;
+#endif
     """
 
-    def __init__(self):
-        self.reduction_slot_count = compute_num_reduction_slots()
+    @wp.func_native(snippet)
+    def get_shared_memory_pointer() -> wp.uint64: ...
 
-        # Shared memory pointers
-        self.get_smem_slots_plus_1 = create_shared_memory_pointer_func_4_byte_aligned(self.reduction_slot_count + 1)
-        self.get_smem_slots_contacts = create_shared_memory_pointer_func_4_byte_aligned(self.reduction_slot_count * 9)
-        self.get_smem_reduction = create_shared_memory_pointer_func_8_byte_aligned(self.reduction_slot_count)
-
-        # Warp functions
-        self.store_reduced_contact = self._create_store_reduced_contact()
-        self.filter_unique_contacts = self._create_filter_unique_contacts()
-
-    def _create_store_reduced_contact(self):
-        """Create the store_reduced_contact warp function.
-
-        The returned function competes contacts for reduction slots using atomic max.
-        Each thread with a contact computes scores for all spatial directions
-        and atomically competes for the corresponding slots. Additionally, contacts
-        compete for voxel-based depth slots.
-
-        Winners write their contact to the shared buffer.
-        """
-        NUM_REDUCTION_SLOTS = self.reduction_slot_count
-        BETA = self.BETA_THRESHOLD
-        get_smem = self.get_smem_reduction
-        # Number of per-bin slots (6 spatial directions + 1 max-depth per bin)
-        num_per_bin_slots = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS + 1)
-
-        @wp.func
-        def store_reduced_contact(
-            thread_id: int,
-            active: bool,
-            c: ContactStruct,
-            buffer: wp.array(dtype=ContactStruct),
-            active_ids: wp.array(dtype=int),
-            empty_marker: float,
-            voxel_index: int,
-        ):
-            """Compete this thread's contact for reduction slots via atomic max.
-
-            Args:
-                thread_id: Thread index within the block
-                active: Whether this thread has a valid contact to store
-                c: Contact data (position, normal, depth, mode)
-                buffer: Shared memory buffer for winning contacts
-                active_ids: Tracks which slots contain valid contacts
-                empty_marker: Sentinel value indicating empty slots
-                voxel_index: Voxel index for the contact position (0 to NUM_VOXEL_DEPTH_SLOTS-1)
-            """
-            # Slot layout per bin: 6 spatial directions + 1 max-depth
-            slots_per_bin = wp.static(NUM_SPATIAL_DIRECTIONS + 1)
-
-            winner_slots = wp.array(
-                ptr=wp.static(get_smem)(),
-                shape=(NUM_REDUCTION_SLOTS,),
-                dtype=wp.uint64,
-            )
-
-            for i in range(thread_id, NUM_REDUCTION_SLOTS, wp.block_dim()):
-                winner_slots[i] = wp.uint64(0)
-            synchronize()
-
-            bin_id = 0
-            pos_2d = wp.vec2(0.0, 0.0)
-            if active:
-                bin_id = get_slot(c.normal)
-                # Project position to 2D plane once, reuse for all directions
-                pos_2d = project_point_to_plane(bin_id, c.position)
-
-            if active:
-                base_key = bin_id * slots_per_bin
-                # Compete for spatial direction slots (contacts with depth < beta)
-                use_beta = c.depth < wp.static(BETA)
-                for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                    if use_beta:
-                        dir_2d = get_spatial_direction_2d(dir_i)
-                        score = wp.dot(pos_2d, dir_2d)
-                        key = base_key + dir_i
-                        wp.atomic_max(winner_slots, key, pack_value_thread_id(score, thread_id))
-
-                # Compete for per-bin max-depth slot (last slot in bin)
-                max_depth_key = base_key + slots_per_bin - 1
-                # Use -depth as score so atomicMax selects the deepest (most negative depth)
-                wp.atomic_max(winner_slots, max_depth_key, pack_value_thread_id(-c.depth, thread_id))
-
-                # Compete for voxel-based depth slot
-                # Voxel slots start after per-bin slots
-                voxel_key = wp.static(num_per_bin_slots) + wp.clamp(
-                    voxel_index, 0, wp.static(NUM_VOXEL_DEPTH_SLOTS - 1)
-                )
-                wp.atomic_max(winner_slots, voxel_key, pack_value_thread_id(-c.depth, thread_id))
-            synchronize()
-
-            if active:
-                base_key = bin_id * slots_per_bin
-                # Check spatial direction slots
-                for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                    if use_beta:
-                        key = base_key + dir_i
-                        if unpack_thread_id(winner_slots[key]) == thread_id:
-                            p = buffer[key].projection
-                            if p == empty_marker:
-                                slot_id = wp.atomic_add(active_ids, NUM_REDUCTION_SLOTS, 1)
-                                if slot_id < NUM_REDUCTION_SLOTS:
-                                    active_ids[slot_id] = key
-                            dir_2d = get_spatial_direction_2d(dir_i)
-                            score = wp.dot(pos_2d, dir_2d)
-                            if score > p:
-                                c.projection = score
-                                buffer[key] = c
-
-                # Check per-bin max-depth slot
-                max_depth_key = base_key + slots_per_bin - 1
-                if unpack_thread_id(winner_slots[max_depth_key]) == thread_id:
-                    p = buffer[max_depth_key].projection
-                    if p == empty_marker:
-                        slot_id = wp.atomic_add(active_ids, NUM_REDUCTION_SLOTS, 1)
-                        if slot_id < NUM_REDUCTION_SLOTS:
-                            active_ids[slot_id] = max_depth_key
-                    score = -c.depth
-                    if score > p:
-                        c.projection = score
-                        buffer[max_depth_key] = c
-
-                # Check voxel depth slot
-                voxel_key = wp.static(num_per_bin_slots) + wp.clamp(
-                    voxel_index, 0, wp.static(NUM_VOXEL_DEPTH_SLOTS - 1)
-                )
-                if unpack_thread_id(winner_slots[voxel_key]) == thread_id:
-                    p = buffer[voxel_key].projection
-                    if p == empty_marker:
-                        slot_id = wp.atomic_add(active_ids, NUM_REDUCTION_SLOTS, 1)
-                        if slot_id < NUM_REDUCTION_SLOTS:
-                            active_ids[slot_id] = voxel_key
-                    score = -c.depth
-                    if score > p:
-                        c.projection = score
-                        buffer[voxel_key] = c
-            synchronize()
-
-        return store_reduced_contact
-
-    def _create_filter_unique_contacts(self):
-        """Create the filter_unique_contacts warp function.
-
-        The returned function removes duplicate contacts that won multiple slots
-        but originate from the same geometric feature (e.g., same triangle).
-        Only the first occurrence per feature is kept.
-        """
-        NUM_REDUCTION_SLOTS = self.reduction_slot_count
-        get_smem = self.get_smem_reduction
-        # Number of per-bin slots (6 spatial directions + 1 max-depth per bin)
-        num_per_bin_slots = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS + 1)
-
-        @wp.func
-        def filter_unique_contacts(
-            thread_id: int,
-            buffer: wp.array(dtype=ContactStruct),
-            active_ids: wp.array(dtype=int),
-            empty_marker: float,
-        ):
-            """Remove duplicate contacts, keeping first occurrence per feature.
-
-            Args:
-                thread_id: Thread index within the block
-                buffer: Shared memory buffer containing reduced contacts
-                active_ids: Output array of unique contact slot indices
-                empty_marker: Sentinel value indicating empty slots
-            """
-            # Slot layout per bin: 6 spatial directions + 1 max-depth
-            slots_per_bin = wp.static(NUM_SPATIAL_DIRECTIONS + 1)
-
-            keep_flags = wp.array(
-                ptr=wp.static(get_smem)(),
-                shape=(NUM_REDUCTION_SLOTS,),
-                dtype=wp.int32,
-            )
-
-            for i in range(thread_id, NUM_REDUCTION_SLOTS, wp.block_dim()):
-                keep_flags[i] = 0
-            synchronize()
-
-            # Phase 2a: Duplicate detection within each normal bin (20 threads active)
-            # Each bin is processed by one thread to find unique contacts
-            if thread_id < wp.static(NUM_NORMAL_BINS):
-                bin_id = thread_id
-                base_key = bin_id * slots_per_bin
-                for slot_i in range(slots_per_bin):
-                    key_i = base_key + slot_i
-                    if buffer[key_i].projection > empty_marker:
-                        feature_i = buffer[key_i].feature
-                        is_dup = int(0)
-                        for slot_j in range(slot_i):
-                            key_j = base_key + slot_j
-                            if buffer[key_j].projection > empty_marker and buffer[key_j].feature == feature_i:
-                                is_dup = 1
-                        if is_dup == 0:
-                            keep_flags[key_i] = 1
-            synchronize()
-
-            # Phase 2b: Duplicate detection for voxel slots
-            # We check if a voxel slot's feature already exists in per-bin slots or earlier voxel slots
-            # Use strided parallel processing
-            for voxel_slot in range(thread_id, wp.static(NUM_VOXEL_DEPTH_SLOTS), wp.block_dim()):
-                voxel_key = wp.static(num_per_bin_slots) + voxel_slot
-                if buffer[voxel_key].projection > empty_marker:
-                    feature_v = buffer[voxel_key].feature
-                    is_dup = int(0)
-
-                    # Check against all per-bin slots (spatial extremes + max-depth)
-                    for per_bin_key in range(wp.static(num_per_bin_slots)):
-                        if buffer[per_bin_key].projection > empty_marker and buffer[per_bin_key].feature == feature_v:
-                            is_dup = 1
-
-                    # Check against earlier voxel slots
-                    for earlier_voxel in range(voxel_slot):
-                        earlier_key = wp.static(num_per_bin_slots) + earlier_voxel
-                        if buffer[earlier_key].projection > empty_marker and buffer[earlier_key].feature == feature_v:
-                            is_dup = 1
-
-                    if is_dup == 0:
-                        keep_flags[voxel_key] = 1
-
-            # Reset counter for parallel compaction
-            if thread_id == 0:
-                active_ids[NUM_REDUCTION_SLOTS] = 0
-            synchronize()
-
-            # Phase 3: Parallel compaction - all threads participate
-            # Each thread checks its subset of slots and uses atomic_add for write index
-            for key in range(thread_id, NUM_REDUCTION_SLOTS, wp.block_dim()):
-                if keep_flags[key] == 1:
-                    write_idx = wp.atomic_add(active_ids, NUM_REDUCTION_SLOTS, 1)
-                    active_ids[write_idx] = key
-            synchronize()
-
-        return filter_unique_contacts
+    return get_shared_memory_pointer
 
 
 get_shared_memory_pointer_block_dim_plus_2_ints = create_shared_memory_pointer_block_dim_func(2)

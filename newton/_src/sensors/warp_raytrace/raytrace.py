@@ -53,7 +53,7 @@ def get_group_roots(
     return group_roots[world_index]
 
 
-def create_closest_hit_function(config: RenderContext.Config, state: RenderContext.State) -> wp.func:
+def create_closest_hit_function(config: RenderContext.Config, state: RenderContext.State) -> wp.Function:
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
@@ -347,7 +347,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
     return closest_hit
 
 
-def create_first_hit_function(config: RenderContext.Config, state: RenderContext.State) -> wp.func:
+def create_first_hit_function(config: RenderContext.Config, state: RenderContext.State) -> wp.Function:
     @wp.func
     def first_hit_shape(
         bvh_shapes_size: wp.int32,
