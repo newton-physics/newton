@@ -70,13 +70,12 @@ from newton._src.geometry.hashtable import (
     hashtable_find_or_insert,
 )
 
+from ..utils.heightfield import HeightfieldData, get_triangle_from_heightfield
 from .collision_core import (
     create_compute_gjk_mpr_contacts,
     get_triangle_shape_from_mesh,
 )
 from .contact_data import ContactData
-from .types import GeoType
-from ..utils.heightfield import HeightfieldData, get_triangle_from_heightfield
 from .contact_reduction import (
     NUM_NORMAL_BINS,
     NUM_SPATIAL_DIRECTIONS,
@@ -1221,9 +1220,7 @@ def mesh_triangle_contacts_to_reducer_kernel(
             # Heightfield triangle
             hfd = heightfield_data[shape_heightfield_index[shape_a]]
             X_ws_a = shape_transform[shape_a]
-            shape_data_a, v0_world = get_triangle_from_heightfield(
-                hfd, heightfield_elevations, X_ws_a, tri_idx
-            )
+            shape_data_a, v0_world = get_triangle_from_heightfield(hfd, heightfield_elevations, X_ws_a, tri_idx)
         else:
             # Mesh triangle (mesh_id already validated by midphase)
             mesh_id_a = shape_source[shape_a]
