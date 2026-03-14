@@ -15,10 +15,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import re
 import shutil
 import stat
+import threading
 import time
 from pathlib import Path
 
@@ -47,6 +50,65 @@ def _safe_rmtree(path):
     """Safely remove directory tree, handling Windows readonly files."""
     if os.path.exists(path):
         shutil.rmtree(path, onerror=_handle_remove_readonly)
+
+
+def _safe_rename(src, dst, attempts=5, delay=0.1):
+    """Rename src to dst, tolerating races where another process wins.
+
+    If *dst* already exists (``FileExistsError`` or ``ENOTEMPTY``), the call
+    returns silently — the caller should clean up *src*.  Transient OS errors
+    (e.g. Windows file-lock contention) are retried up to *attempts* times.
+    """
+    for i in range(attempts):
+        try:
+            os.rename(src, dst)
+            return
+        except FileExistsError:
+            return
+        except OSError as e:
+            if e.errno == errno.ENOTEMPTY:
+                return
+            if i < attempts - 1:
+                time.sleep(delay)
+            else:
+                raise
+
+
+def _temp_cache_path(cache_folder: Path) -> Path:
+    """Return a per-process, per-thread temp path next to *cache_folder*."""
+    return Path(f"{cache_folder}_p{os.getpid()}_t{threading.get_ident()}")
+
+
+_TEMP_DIR_RE = re.compile(r"_(?:stale_)?p\d+_t\d+$")
+
+
+def _cleanup_stale_temp_dirs(cache_folder: Path, max_age: float = 3600.0) -> None:
+    """Remove orphaned temp/stale directories left by crashed processes.
+
+    Scans the parent directory for siblings matching the temp dir naming pattern
+    (``*_p{pid}_t{tid}`` or ``*_stale_p{pid}_t{tid}``) whose mtime is older
+    than *max_age* seconds.  Safe to call concurrently — ``_safe_rmtree``
+    tolerates races.
+    """
+    parent = cache_folder.parent
+    prefix = cache_folder.name
+    now = time.time()
+    try:
+        for entry in parent.iterdir():
+            name = entry.name
+            if not name.startswith(prefix):
+                continue
+            suffix = name[len(prefix) :]
+            if not _TEMP_DIR_RE.match(suffix):
+                continue
+            try:
+                age = now - entry.stat().st_mtime
+            except OSError:
+                continue
+            if age > max_age:
+                _safe_rmtree(entry)
+    except OSError:
+        pass
 
 
 def _get_latest_commit_via_git(git_url: str, branch: str) -> str | None:
@@ -210,11 +272,10 @@ def download_git_folder(
                 return target_in_parent
             # If parent is stale, fall through to download fresh subfolder
 
-    # 1. Handle force_refresh
-    if force_refresh and cache_folder.exists():
-        _safe_rmtree(cache_folder)
+    # Clean up orphaned temp directories from crashed processes
+    _cleanup_stale_temp_dirs(cache_folder)
 
-    # 2. Check cache validity using Git
+    # Check cache validity using Git
     stamp_file = cache_folder / ".newton_last_check"
 
     is_cached = target_folder.exists() and (cache_folder / ".git").exists()
@@ -230,21 +291,24 @@ def download_git_folder(
             _touch(stamp_file)
             return target_folder
 
-        # Different commit detected: clear cache to refresh
+        # Different commit detected: will re-download below
         print(
             f"New version of {folder_path} found (cached: {str(current_commit)[:7] if current_commit else 'unknown'}, "
             f"latest: {latest_commit[:7]}). Refreshing..."
         )
-        _safe_rmtree(cache_folder)
 
-    # 3. Download if not cached (or if cache was just cleared)
+    # Download into a process/thread-unique temp directory, then rename
+    temp_dir = _temp_cache_path(cache_folder)
+    stale_dir = None
     try:
-        # Clone with sparse checkout and blob filter so only blobs for the
-        # requested folder are downloaded (instead of the entire repo).
+        # Clean up any stale temp dir from a previous crash
+        if temp_dir.exists():
+            _safe_rmtree(temp_dir)
+
         print(f"Cloning {git_url} (branch: {branch})...")
         repo = git.Repo.clone_from(
             git_url,
-            cache_folder,
+            temp_dir,
             branch=branch,
             depth=1,
             no_checkout=True,
@@ -252,31 +316,50 @@ def download_git_folder(
         )
 
         try:
-            # Narrow sparse checkout to just the target folder, then checkout.
             repo.git.sparse_checkout("set", folder_path)
             repo.git.checkout(branch)
         finally:
             repo.close()
 
-        # Verify the folder exists
-        if not target_folder.exists():
+        temp_target = temp_dir / folder_path
+        if not temp_target.exists():
             raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}")
 
-        _touch(stamp_file)
+        _touch(temp_dir / ".newton_last_check")
 
-        print(f"Successfully downloaded folder to: {target_folder}")
-        return target_folder
+        # Move stale cache out of the way (if any), then rename temp into place
+        stale_dir = Path(f"{cache_folder}_stale_p{os.getpid()}_t{threading.get_ident()}")
+        if stale_dir.exists():
+            _safe_rmtree(stale_dir)
+        if cache_folder.exists():
+            _safe_rename(cache_folder, stale_dir)
+        _safe_rename(temp_dir, cache_folder)
+        # Clean up stale dir; catch errors so a cleanup failure after a
+        # successful rename doesn't get misreported as a download failure.
+        try:
+            if stale_dir.exists():
+                _safe_rmtree(stale_dir)
+        except OSError:
+            pass  # cleaned up by _cleanup_stale_temp_dirs on next call
+
+        print(f"Successfully downloaded folder to: {cache_folder / folder_path}")
+        return cache_folder / folder_path
 
     except GitCommandError as e:
-        # Clean up on failure
-        if cache_folder.exists():
-            _safe_rmtree(cache_folder)
         raise RuntimeError(f"Git operation failed: {e}") from e
+    except RuntimeError:
+        raise
     except Exception as e:
-        # Clean up on failure
-        if cache_folder.exists():
-            _safe_rmtree(cache_folder)
         raise RuntimeError(f"Failed to download git folder: {e}") from e
+    finally:
+        # Clean up temp and stale dirs; catch errors to avoid masking the
+        # original exception if we're unwinding from a failure.
+        for d in (temp_dir, stale_dir):
+            try:
+                if d is not None and d.exists():
+                    _safe_rmtree(d)
+            except OSError:
+                pass
 
 
 def clear_git_cache(cache_dir: str | None = None) -> None:

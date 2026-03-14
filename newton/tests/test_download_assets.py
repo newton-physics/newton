@@ -13,17 +13,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import concurrent.futures
+import errno
+import os
 import shutil
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     import git
 except ImportError:
     git = None
 
-from newton._src.utils.download_assets import _safe_rmtree, download_git_folder
+from newton._src.utils.download_assets import (
+    _cleanup_stale_temp_dirs,
+    _safe_rename,
+    _safe_rmtree,
+    _temp_cache_path,
+    download_git_folder,
+)
 
 
 @unittest.skipIf(git is None or shutil.which("git") is None, "GitPython or git not available")
@@ -107,6 +119,178 @@ class TestDownloadAssets(unittest.TestCase):
         self.assertEqual(p2, p3)
         sha3 = self._cached_sha()
         self.assertEqual(sha2, sha3)
+
+    def test_concurrent_download(self):
+        """Multiple threads downloading the same asset do not corrupt the cache."""
+
+        def download():
+            p = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+            self.assertTrue(p.exists())
+            self.assertEqual((p / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(download) for _ in range(4)]
+            for f in concurrent.futures.as_completed(futures):
+                f.result()
+
+
+class TestSafeRename(unittest.TestCase):
+    def setUp(self):
+        self.base = tempfile.mkdtemp(prefix="nwtn_rename_")
+
+    def tearDown(self):
+        _safe_rmtree(self.base)
+
+    def test_rename_success(self):
+        """Rename succeeds when destination does not exist."""
+        src = os.path.join(self.base, "src_dir")
+        dst = os.path.join(self.base, "dst_dir")
+        os.makedirs(src)
+        Path(src, "file.txt").write_text("hello", encoding="utf-8")
+
+        _safe_rename(src, dst)
+
+        self.assertTrue(os.path.isdir(dst))
+        self.assertEqual(Path(dst, "file.txt").read_text(encoding="utf-8"), "hello")
+        self.assertFalse(os.path.exists(src))
+
+    def test_rename_destination_exists(self):
+        """Rename is a no-op when destination already exists."""
+        src = os.path.join(self.base, "src_dir")
+        dst = os.path.join(self.base, "dst_dir")
+        os.makedirs(src)
+        os.makedirs(dst)
+        Path(dst, "existing.txt").write_text("keep", encoding="utf-8")
+        Path(src, "new.txt").write_text("discard", encoding="utf-8")
+
+        _safe_rename(src, dst)
+
+        # Destination content unchanged
+        self.assertEqual(Path(dst, "existing.txt").read_text(encoding="utf-8"), "keep")
+        # Source still exists (caller is responsible for cleanup)
+        self.assertTrue(os.path.exists(src))
+
+    def test_rename_retries_on_transient_error(self):
+        """Transient OSError succeeds on retry."""
+        src = os.path.join(self.base, "src_dir")
+        dst = os.path.join(self.base, "dst_dir")
+        os.makedirs(src)
+
+        real_rename = os.rename
+        call_count = 0
+
+        def flaky_rename(s, d):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError(errno.EACCES, "transient lock")
+            return real_rename(s, d)
+
+        with mock.patch("os.rename", side_effect=flaky_rename):
+            _safe_rename(src, dst, attempts=3, delay=0)
+
+        self.assertTrue(os.path.isdir(dst))
+        self.assertEqual(call_count, 2)
+
+    def test_rename_raises_after_exhausting_retries(self):
+        """Raises OSError when all retry attempts are exhausted."""
+        src = os.path.join(self.base, "src_dir")
+        dst = os.path.join(self.base, "dst_dir")
+        os.makedirs(src)
+
+        with mock.patch("os.rename", side_effect=OSError(errno.EACCES, "persistent lock")):
+            with self.assertRaises(OSError):
+                _safe_rename(src, dst, attempts=3, delay=0)
+
+    def test_rename_enotempty_returns_silently(self):
+        """ENOTEMPTY is treated the same as FileExistsError."""
+        src = os.path.join(self.base, "src_dir")
+        dst = os.path.join(self.base, "dst_dir")
+        os.makedirs(src)
+        os.makedirs(dst)
+
+        with mock.patch("os.rename", side_effect=OSError(errno.ENOTEMPTY, "not empty")):
+            _safe_rename(src, dst)
+
+        # Both dirs still exist — caller cleans up src
+        self.assertTrue(os.path.isdir(src))
+        self.assertTrue(os.path.isdir(dst))
+
+
+class TestTempCachePath(unittest.TestCase):
+    def test_includes_pid_and_tid(self):
+        """Temp path includes PID and thread ID for uniqueness."""
+        base = Path("/tmp/cache_folder")
+        result = _temp_cache_path(base)
+        self.assertIn(f"_p{os.getpid()}", str(result))
+        self.assertIn(f"_t{threading.get_ident()}", str(result))
+
+    def test_different_threads_get_different_paths(self):
+        """Different threads produce different temp paths."""
+        base = Path("/tmp/cache_folder")
+        results = []
+
+        def collect():
+            results.append(_temp_cache_path(base))
+
+        t = threading.Thread(target=collect)
+        t.start()
+        t.join()
+        results.append(_temp_cache_path(base))
+
+        self.assertNotEqual(results[0], results[1])
+
+
+class TestCleanupStaleTempDirs(unittest.TestCase):
+    def setUp(self):
+        self.base = tempfile.mkdtemp(prefix="nwtn_cleanup_")
+        self.cache_folder = Path(self.base) / "repo_asset_abc12345"
+
+    def tearDown(self):
+        _safe_rmtree(self.base)
+
+    def test_removes_old_temp_dirs(self):
+        """Orphaned temp dirs older than max_age are removed."""
+        old_temp = Path(f"{self.cache_folder}_p99999_t99999")
+        old_temp.mkdir(parents=True)
+        # Backdate mtime by 2 hours
+        old_mtime = time.time() - 7200
+        os.utime(old_temp, (old_mtime, old_mtime))
+
+        _cleanup_stale_temp_dirs(self.cache_folder, max_age=3600)
+
+        self.assertFalse(old_temp.exists())
+
+    def test_removes_old_stale_dirs(self):
+        """Orphaned stale dirs older than max_age are removed."""
+        old_stale = Path(f"{self.cache_folder}_stale_p99999_t99999")
+        old_stale.mkdir(parents=True)
+        old_mtime = time.time() - 7200
+        os.utime(old_stale, (old_mtime, old_mtime))
+
+        _cleanup_stale_temp_dirs(self.cache_folder, max_age=3600)
+
+        self.assertFalse(old_stale.exists())
+
+    def test_preserves_recent_temp_dirs(self):
+        """Recent temp dirs (within max_age) are not removed."""
+        recent_temp = Path(f"{self.cache_folder}_p99999_t99999")
+        recent_temp.mkdir(parents=True)
+
+        _cleanup_stale_temp_dirs(self.cache_folder, max_age=3600)
+
+        self.assertTrue(recent_temp.exists())
+
+    def test_ignores_unrelated_dirs(self):
+        """Directories that don't match the temp pattern are untouched."""
+        unrelated = Path(self.base) / "repo_asset_abc12345_other"
+        unrelated.mkdir(parents=True)
+        old_mtime = time.time() - 7200
+        os.utime(unrelated, (old_mtime, old_mtime))
+
+        _cleanup_stale_temp_dirs(self.cache_folder, max_age=3600)
+
+        self.assertTrue(unrelated.exists())
 
 
 if __name__ == "__main__":
