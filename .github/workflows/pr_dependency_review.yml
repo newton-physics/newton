@@ -1,0 +1,44 @@
+name: Dependency Review
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "release-*"
+
+# Cancels in-progress runs of this workflow for the same pull request,
+# but allows parallel runs for pushes to the main branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - name: Dependency review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          show-openssf-scorecard: false
+          allow-licenses: >-
+            Apache-2.0,
+            MIT,
+            BSD-2-Clause,
+            BSD-2-Clause-Views,
+            BSD-3-Clause,
+            ISC,
+            MPL-2.0,
+            PSF-2.0,
+            Python-2.0,
+            Zlib,
+            CC0-1.0,
+            CC-BY-4.0
