@@ -13,8 +13,8 @@
 
 ### Changed
 
-- Unify heightfield and mesh collision pipeline paths, routing heightfield-convex pairs through the shared mesh midphase kernel
-- Replace per-shape `Model.shape_heightfield_data` with compact `Model.shape_heightfield_index` / `Model.heightfield_data` / `Model.heightfield_elevations`, matching the SDF indirection pattern
+- Unify heightfield and mesh collision pipeline paths; the separate `heightfield_midphase_kernel` and `shape_pairs_heightfield` buffer are removed in favor of the shared mesh midphase
+- Replace per-shape `Model.shape_heightfield_data` / `Model.heightfield_elevation_data` with compact `Model.shape_heightfield_index` / `Model.heightfield_data` / `Model.heightfield_elevations`, matching the SDF indirection pattern
 - Replace `Model.sdf_data` / `sdf_volume` / `sdf_coarse_volume` with texture-based equivalents (`texture_sdf_data`, `texture_sdf_coarse_textures`, `texture_sdf_subgrid_textures`)
 - Render inertia boxes as wireframe lines instead of solid boxes in the GL viewer to avoid occluding objects
 

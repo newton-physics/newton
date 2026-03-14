@@ -345,10 +345,10 @@ def heightfield_vs_convex_midphase(
     row_min_f = (aabb_lower[1] + hfd.hy) / dy
     row_max_f = (aabb_upper[1] + hfd.hy) / dy
 
-    col_min = wp.max(wp.int32(col_min_f), 0)
-    col_max = wp.min(wp.int32(col_max_f), hfd.ncol - 2)
-    row_min = wp.max(wp.int32(row_min_f), 0)
-    row_max = wp.min(wp.int32(row_max_f), hfd.nrow - 2)
+    col_min = wp.max(wp.int32(wp.floor(col_min_f)), 0)
+    col_max = wp.min(wp.int32(wp.floor(col_max_f)), hfd.ncol - 2)
+    row_min = wp.max(wp.int32(wp.floor(row_min_f)), 0)
+    row_max = wp.min(wp.int32(wp.floor(row_max_f)), hfd.nrow - 2)
 
     cols = hfd.ncol - 1
     for r in range(row_min, row_max + 1):
