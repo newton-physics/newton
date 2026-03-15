@@ -649,14 +649,13 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-        if solver_name != "vbd":  # VBD does not support revolute joints.
-            add_function_test(
-                TestKinematicLinksCanonical,
-                f"test_kinematic_revolute_root_pendulum_prescribed_motion_{solver_name}",
-                test_kinematic_revolute_root_pendulum_prescribed_motion,
-                devices=[device],
-                solver_fn=solver_fn,
-            )
+        add_function_test(
+            TestKinematicLinksCanonical,
+            f"test_kinematic_revolute_root_pendulum_prescribed_motion_{solver_name}",
+            test_kinematic_revolute_root_pendulum_prescribed_motion,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
         add_function_test(
             TestKinematicLinksCanonical,
             f"test_kinematic_fixed_root_static_force_immune_{solver_name}",
