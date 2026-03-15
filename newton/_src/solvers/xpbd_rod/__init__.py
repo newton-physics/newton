@@ -13,28 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .featherstone import SolverFeatherstone
-from .flags import SolverNotifyFlags
-from .implicit_mpm import SolverImplicitMPM
-from .kamino import SolverKamino
-from .mujoco import SolverMuJoCo
-from .semi_implicit import SolverSemiImplicit
-from .solver import SolverBase
-from .style3d.solver_style3d import SolverStyle3D
-from .vbd import SolverVBD
-from .xpbd import SolverXPBD
-from .xpbd_rod.solver_xpbd_rod import SolverXPBDRod
+"""
+XPBD Rod solver module.
+
+This module provides :func:`add_elastic_rod` for setting up Cosserat elastic
+rod assets. Use :class:`~newton.solvers.SolverXPBDRod` as the canonical public
+solver import path.
+"""
+
+from .builder import add_elastic_rod
+from .kernels_visualization import compute_director_lines_kernel
+from .solver_xpbd_rod import SolverXPBDRod
 
 __all__ = [
-    "SolverBase",
-    "SolverFeatherstone",
-    "SolverImplicitMPM",
-    "SolverKamino",
-    "SolverMuJoCo",
-    "SolverNotifyFlags",
-    "SolverSemiImplicit",
-    "SolverStyle3D",
-    "SolverVBD",
-    "SolverXPBD",
     "SolverXPBDRod",
+    "add_elastic_rod",
+    "compute_director_lines_kernel",
 ]
