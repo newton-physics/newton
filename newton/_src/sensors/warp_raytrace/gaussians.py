@@ -99,7 +99,7 @@ def ray_gsplat_hit_response(
     return 0.0, -1.0
 
 
-def create_shade_function(config: RenderContext.Config, state: RenderContext.State) -> wp.func:
+def create_shade_function(config: RenderContext.Config, state: RenderContext.State) -> wp.Function:
     @wp.func
     def shade(
         transform: wp.transformf,

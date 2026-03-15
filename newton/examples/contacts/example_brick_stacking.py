@@ -606,7 +606,7 @@ class Example:
             density=BRICK_DENSITY,
             ke=BRICK_KE,
             kd=BRICK_KD,
-            mu=0.5,
+            mu=0.7,
             margin=BRICK_MARGIN,
             gap=SDF_MARGIN,
         )
