@@ -19,6 +19,7 @@
 
 ### Deprecated
 
+- Deprecate `SensorTiledCamera.Config.colors_per_world` and `SensorTiledCamera.Config.colors_per_shape`; set colors directly on shape objects using `shape.color` instead
 ### Removed
 
 ### Fixed
