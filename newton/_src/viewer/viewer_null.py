@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import numpy as np
@@ -36,17 +37,32 @@ class ViewerNull(ViewerBase):
     stub implementations for all logging and frame management methods.
     """
 
-    def __init__(self, num_frames: int = 1000):
+    def __init__(
+        self,
+        num_frames: int = 1000,
+        benchmark_timeout: float | None = None,
+        benchmark_start_frame: int = 3,
+    ):
         """
         Initialize a no-op Viewer that runs for a fixed number of frames.
 
         Args:
             num_frames: The number of frames to run before stopping.
+            benchmark_timeout: If set, stop after this many seconds of
+                steady-state simulation (measured after warmup).
+            benchmark_start_frame: Number of warmup frames before benchmark
+                timing starts.
         """
         super().__init__()
 
         self.num_frames = num_frames
         self.frame_count = 0
+
+        self.benchmark_timeout = benchmark_timeout
+        self.benchmark_start_frame = benchmark_start_frame
+        self._bench_start_time: float | None = None
+        self._bench_frames = 0
+        self._bench_elapsed = 0.0
 
     @override
     def log_mesh(
@@ -117,15 +133,48 @@ class ViewerNull(ViewerBase):
         """
         self.frame_count += 1
 
+        if self.benchmark_timeout is not None:
+            if self.frame_count == self.benchmark_start_frame:
+                self._bench_start_time = time.perf_counter()
+            elif self._bench_start_time is not None:
+                self._bench_frames = self.frame_count - self.benchmark_start_frame
+                self._bench_elapsed = time.perf_counter() - self._bench_start_time
+
     @override
     def is_running(self) -> bool:
         """
         Check if the viewer should continue running.
 
         Returns:
-            bool: True if the frame count is less than the maximum number of frames.
+            bool: True if the frame count is less than the maximum number of frames
+            and the benchmark timeout (if any) has not been reached.
         """
-        return self.frame_count < self.num_frames
+        if self.frame_count >= self.num_frames:
+            return False
+        if (
+            self.benchmark_timeout is not None
+            and self._bench_start_time is not None
+            and self._bench_elapsed >= self.benchmark_timeout
+        ):
+            return False
+        return True
+
+    def benchmark_result(self) -> dict | None:
+        """Return benchmark results, or ``None`` if benchmarking was not enabled.
+
+        Returns:
+            Dictionary with ``fps``, ``frames``, and ``elapsed`` keys,
+            or ``None`` if ``benchmark_timeout`` was not set.
+        """
+        if self.benchmark_timeout is None:
+            return None
+        if self._bench_frames == 0 or self._bench_elapsed == 0.0:
+            return {"fps": 0.0, "frames": 0, "elapsed": 0.0}
+        return {
+            "fps": self._bench_frames / self._bench_elapsed,
+            "frames": self._bench_frames,
+            "elapsed": self._bench_elapsed,
+        }
 
     @override
     def close(self):

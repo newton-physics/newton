@@ -696,6 +696,7 @@ if __name__ == "__main__":
     # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=3850)
+    parser.set_defaults(benchmark_timeout=300)
     viewer, args = newton.examples.init(parser)
 
     # Create example and run
