@@ -1000,7 +1000,6 @@ class TestJointDriveBase(TestJointWithSimStepBase):
         sim.control.joint_target_pos.assign(np.full(num_dof, ctrl_target_pos, dtype=np.float32))
         sim.state_in.joint_q.assign(self._make_q_array(start_q, joint_type, motion_axis))
         sim.state_in.joint_qd.assign(self._make_qd_array(start_qd, joint_type, motion_axis))
-        sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         expected_qd_ctrl = self._expected_drive_qd(
             drive_ke, drive_kd, start_q, start_qd, ctrl_target_pos, dt, body_inertia
