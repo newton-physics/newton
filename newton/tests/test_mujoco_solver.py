@@ -4313,11 +4313,9 @@ class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes_separate_worlds_false(self):
         """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=False."""
         builder = newton.ModelBuilder()
-        # force the ModelBuilder to correct zero mass/inertia values
         builder.bound_inertia = 0.01
-        builder.bound_mass = 0.01
-        b0 = builder.add_link()
-        b1 = builder.add_link()
+        b0 = builder.add_link(mass=0.01)
+        b1 = builder.add_link(mass=0.01)
         j0 = builder.add_joint_revolute(-1, b0)
         j1 = builder.add_joint_revolute(b0, b1)
         builder.add_articulation([j0, j1])
@@ -4328,12 +4326,10 @@ class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes_separate_worlds_true(self):
         """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=True."""
         builder = newton.ModelBuilder()
-        # force the ModelBuilder to correct zero mass/inertia values
         builder.bound_inertia = 0.01
-        builder.bound_mass = 0.01
         builder.begin_world()
-        b0 = builder.add_link()
-        b1 = builder.add_link()
+        b0 = builder.add_link(mass=0.01)
+        b1 = builder.add_link(mass=0.01)
         j0 = builder.add_joint_revolute(-1, b0)
         j1 = builder.add_joint_revolute(b0, b1)
         builder.add_articulation([j0, j1])
@@ -5995,8 +5991,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):
         """Testing that loop joints are converted to equality constraints."""
         builder = newton.ModelBuilder()
-        b0 = builder.add_link()
-        b1 = builder.add_link()
+        b0 = builder.add_link(mass=0.01)
+        b1 = builder.add_link(mass=0.01)
         j0 = builder.add_joint_revolute(-1, b0)
         j1 = builder.add_joint_revolute(b0, b1)
         builder.add_articulation([j0, j1])
@@ -6040,9 +6036,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_mixed_loop_joints_and_equality_constraints(self):
         """Testing that loop joints and regular equality constraints are converted to equality constraints."""
         builder = newton.ModelBuilder()
-        b0 = builder.add_link()
-        b1 = builder.add_link()
-        b2 = builder.add_link()
+        b0 = builder.add_link(mass=0.01)
+        b1 = builder.add_link(mass=0.01)
+        b2 = builder.add_link(mass=0.01)
         j0 = builder.add_joint_revolute(-1, b0)
         j1 = builder.add_joint_revolute(-1, b1)
         j2 = builder.add_joint_revolute(b1, b2)

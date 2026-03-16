@@ -26,6 +26,10 @@
 ### Fixed
 
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
+- Unify CPU and GPU inertia validation to produce identical results for zero-mass bodies with `bound_mass`, singular inertia, non-symmetric tensors, and triangle-inequality boundary cases
+- Fix `UnboundLocalError` crash in detailed inertia validation when eigenvalue decomposition encounters NaN/Inf input
+- Handle NaN/Inf mass and inertia deterministically in both validation paths (zero out mass and inertia)
+- Update `ModelBuilder` internal state after fast-path (GPU kernel) inertia validation so it matches the returned `Model`
 - Fix MJCF mesh scale resolution to use the mesh asset's own class rather than the geom's default class, avoiding incorrect vertex scaling for models like Robotiq 2F-85 V4
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
