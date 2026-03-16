@@ -855,6 +855,9 @@ class TestJointArmatureFeatherstone(TestJointArmatureBase, unittest.TestCase):
 
 class TestJointFrictionMuJoCo(TestJointFrictionBase, unittest.TestCase):
     def _create_solver(self, model):
+        # MuJoCo implements friction via constraint forces that require multiple
+        # solver iterations to converge.  With iterations=1 the friction effect
+        # is too weak to observe reliably.
         return SolverMuJoCo(
             model,
             iterations=10,
