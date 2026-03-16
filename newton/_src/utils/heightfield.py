@@ -213,19 +213,17 @@ def sample_sdf_grad_heightfield(
 
 
 @wp.func
-def get_triangle_from_heightfield_cell(
+def get_triangle_shape_from_heightfield(
     hfd: HeightfieldData,
     elevation_data: wp.array(dtype=wp.float32),
     X_ws: wp.transform,
-    row: int,
-    col: int,
-    tri_sub: int,
+    tri_idx: int,
 ) -> tuple[GenericShapeData, wp.vec3]:
-    """Extract a triangle from a heightfield grid cell.
+    """Extract a triangle from a heightfield by packed triangle index.
 
-    Each grid cell (row, col) produces 2 triangles (tri_sub=0 or 1).
-    Returns (GenericShapeData, v0_world) in the same format as
-    get_triangle_shape_from_mesh, so GJK/MPR works unchanged.
+    ``tri_idx`` encodes ``(row * (ncol - 1) + col) * 2 + tri_sub``.
+    Returns ``(GenericShapeData, v0_world)`` in the same format as
+    :func:`get_triangle_shape_from_mesh`, so GJK/MPR works unchanged.
 
     Triangle layout for cell (row, col)::
 
@@ -237,6 +235,13 @@ def get_triangle_from_heightfield_cell(
         tri_sub=0: (p00, p10, p11)
         tri_sub=1: (p00, p11, p01)
     """
+    # Decode packed triangle index
+    cell_idx = tri_idx // 2
+    tri_sub = tri_idx - cell_idx * 2
+    cols = hfd.ncol - 1
+    row = cell_idx // cols
+    col = cell_idx - row * cols
+
     # Grid spacing
     dx = 2.0 * hfd.hx / wp.float32(hfd.ncol - 1)
     dy = 2.0 * hfd.hy / wp.float32(hfd.nrow - 1)
@@ -289,3 +294,67 @@ def get_triangle_from_heightfield_cell(
     shape_data.auxiliary = v2_world - v0_world  # C - A
 
     return shape_data, v0_world
+
+
+@wp.func
+def heightfield_vs_convex_midphase(
+    hfield_shape: int,
+    other_shape: int,
+    hfd: HeightfieldData,
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_collision_radius: wp.array(dtype=float),
+    shape_gap: wp.array(dtype=float),
+    triangle_pairs: wp.array(dtype=wp.vec3i),
+    triangle_pairs_count: wp.array(dtype=int),
+):
+    """Find heightfield triangles that overlap with a convex shape's bounding sphere.
+
+    Projects the convex shape onto the heightfield grid and emits triangle pairs
+    for each overlapping cell (two triangles per cell).
+
+    Args:
+        hfield_shape: Index of the heightfield shape.
+        other_shape: Index of the convex shape.
+        hfd: Heightfield data struct.
+        shape_transform: World-space transforms for all shapes.
+        shape_collision_radius: Bounding-sphere radii for all shapes.
+        shape_gap: Per-shape contact gaps.
+        triangle_pairs: Output buffer for ``(hfield_shape, other_shape, tri_idx)`` triples.
+        triangle_pairs_count: Atomic counter for emitted triangle pairs.
+    """
+    # Transform other shape's position to heightfield local space
+    X_hfield_ws = shape_transform[hfield_shape]
+    X_hfield_inv = wp.transform_inverse(X_hfield_ws)
+    X_other_ws = shape_transform[other_shape]
+    pos_in_hfield = wp.transform_point(X_hfield_inv, wp.transform_get_translation(X_other_ws))
+
+    # Conservative AABB using bounding sphere radius
+    radius = shape_collision_radius[other_shape]
+    gap_sum = shape_gap[hfield_shape] + shape_gap[other_shape]
+    extent = radius + gap_sum
+
+    aabb_lower = pos_in_hfield - wp.vec3(extent, extent, extent)
+    aabb_upper = pos_in_hfield + wp.vec3(extent, extent, extent)
+
+    # Map AABB to grid cell indices
+    dx = 2.0 * hfd.hx / wp.float32(hfd.ncol - 1)
+    dy = 2.0 * hfd.hy / wp.float32(hfd.nrow - 1)
+
+    col_min_f = (aabb_lower[0] + hfd.hx) / dx
+    col_max_f = (aabb_upper[0] + hfd.hx) / dx
+    row_min_f = (aabb_lower[1] + hfd.hy) / dy
+    row_max_f = (aabb_upper[1] + hfd.hy) / dy
+
+    col_min = wp.max(wp.int32(wp.floor(col_min_f)), 0)
+    col_max = wp.min(wp.int32(wp.floor(col_max_f)), hfd.ncol - 2)
+    row_min = wp.max(wp.int32(wp.floor(row_min_f)), 0)
+    row_max = wp.min(wp.int32(wp.floor(row_max_f)), hfd.nrow - 2)
+
+    cols = hfd.ncol - 1
+    for r in range(row_min, row_max + 1):
+        for c in range(col_min, col_max + 1):
+            for tri_sub in range(2):
+                tri_idx = (r * cols + c) * 2 + tri_sub
+                out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
+                if out_idx < triangle_pairs.shape[0]:
+                    triangle_pairs[out_idx] = wp.vec3i(hfield_shape, other_shape, tri_idx)

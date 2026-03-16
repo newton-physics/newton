@@ -3944,6 +3944,50 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             f"Sphere is floating above the plane. Final height: {final_height}",
         )
 
+    def test_efc_address_init(self):
+        """efc_address is -1 for inactive contacts after Newton-to-mujoco_warp conversion.
+
+        Regression: without initializing efc_address to -1 in write_contact, inactive
+        contacts (dist >= includemargin) retain stale efc_address values from prior
+        steps, corrupting contact force readback.  A tilted box on a ground plane with
+        margin > 0 produces a mix of active and inactive contacts.
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.margin = 0.05
+        builder.add_ground_plane()
+        tilt = wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.3)
+        b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.18), tilt))
+        builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        contacts = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        for _ in range(5):
+            state_in.clear_forces()
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, 0.002)
+            state_in, state_out = state_out, state_in
+
+        nacon = solver.mjw_data.nacon.numpy()[0]
+        self.assertGreater(nacon, 0)
+        dist = solver.mjw_data.contact.dist.numpy()[:nacon]
+        includemargin = solver.mjw_data.contact.includemargin.numpy()[:nacon]
+        efc_address = solver.mjw_data.contact.efc_address.numpy()[:nacon, 0]
+
+        inactive = (dist - includemargin) >= 0
+        self.assertGreater(inactive.sum(), 0, "No inactive contacts generated")
+        n_stale = int((efc_address[inactive] >= 0).sum())
+        self.assertEqual(n_stale, 0, f"{n_stale}/{inactive.sum()} inactive contacts have stale efc_address")
+
 
 class TestMuJoCoValidation(unittest.TestCase):
     """Test cases for SolverMuJoCo._validate_model_for_separate_worlds()."""
