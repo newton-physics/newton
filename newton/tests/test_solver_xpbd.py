@@ -460,20 +460,19 @@ def test_articulation_contact_drift(test, device):
 
     drift_x = abs(final_x - initial_x)
     drift_y = abs(final_y - initial_y)
+    drift_xy = float(np.hypot(drift_x, drift_y))
 
     # The root body should not drift more than 1 cm laterally over 10 seconds
     # (Z is up, so X and Y are the lateral axes)
     # Without the fix, Y drifts ~5.9 mm/s → ~5.9 cm over 10 seconds.
     max_drift = 0.01
     test.assertLess(
-        drift_x,
+        drift_xy,
         max_drift,
-        msg=f"Root body drifted {drift_x:.4f} m in X over 10 seconds (max allowed: {max_drift})",
-    )
-    test.assertLess(
-        drift_y,
-        max_drift,
-        msg=f"Root body drifted {drift_y:.4f} m in Y over 10 seconds (max allowed: {max_drift})",
+        msg=(
+            f"Root body drifted {drift_xy:.4f} m laterally over 10 seconds "
+            f"(dx={drift_x:.4f}, dy={drift_y:.4f}, max allowed: {max_drift})"
+        ),
     )
 
 
