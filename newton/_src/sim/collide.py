@@ -132,12 +132,11 @@ def write_contact(
     writer_data.out_point0[index] = wp.transform_point(X_bw_a, a_contact_world)
     writer_data.out_point1[index] = wp.transform_point(X_bw_b, b_contact_world)
 
-    # Match kernels.py convention
-    contact_normal = -contact_normal_a_to_b
+    contact_normal = contact_normal_a_to_b
 
-    # Offsets in body frames
-    writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, -offset_mag_a * contact_normal)
-    writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, offset_mag_b * contact_normal)
+    # Offsets in body frames (offset0 points toward B, offset1 points toward A)
+    writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, offset_mag_a * contact_normal)
+    writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, -offset_mag_b * contact_normal)
 
     writer_data.out_normal[index] = contact_normal
     writer_data.out_margin0[index] = offset_mag_a

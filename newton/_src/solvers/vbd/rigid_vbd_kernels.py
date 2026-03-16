@@ -1570,7 +1570,7 @@ def accumulate_body_body_contacts_per_body(
 
         cp0_local = rigid_contact_point0[contact_idx]
         cp1_local = rigid_contact_point1[contact_idx]
-        contact_normal = -rigid_contact_normal[contact_idx]
+        contact_normal = rigid_contact_normal[contact_idx]
         cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
         cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
         thickness = rigid_contact_margin0[contact_idx] + rigid_contact_margin1[contact_idx]
@@ -1702,8 +1702,7 @@ def compute_rigid_contact_forces(
     cp0_local = rigid_contact_point0[contact_idx]
     cp1_local = rigid_contact_point1[contact_idx]
 
-    # Solver convention: contact_normal = -rigid_contact_normal
-    contact_normal = -rigid_contact_normal[contact_idx]
+    contact_normal = rigid_contact_normal[contact_idx]
 
     # Static/kinematic shapes use shape_body == -1. In that case, contact points are already in world
     # frame for that side and must not index into body_q[-1].
@@ -2386,9 +2385,8 @@ def update_duals_body_body_contacts(
         p1_world = rigid_contact_point1[idx]
 
     # Compute penetration depth (constraint violation)
-    # Distance along the stored normal (normal points shape0 -> shape1)
-    # dist = dot(n, p0 - p1); positive implies separation along normal
-    d = p0_world - p1_world
+    # Distance along the A-to-B normal; positive implies separation
+    d = p1_world - p0_world
     dist = wp.dot(rigid_contact_normal[idx], d)
     thickness_total = rigid_contact_margin0[idx] + rigid_contact_margin1[idx]
     penetration = wp.max(0.0, thickness_total - dist)
