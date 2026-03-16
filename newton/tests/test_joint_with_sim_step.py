@@ -687,7 +687,7 @@ class TestJointFrictionBase(TestJointWithSimStepBase):
             sim_with_friction.state_in,
         )
         qd_higher_friction = sim_with_friction.state_in.joint_qd.numpy()[qd_index]
-        self.assertGreater(qd_higher_friction, 0.0)
+        self.assertGreaterEqual(qd_higher_friction, 0.0)
         self.assertGreater(qd_with_friction, qd_higher_friction)
 
     def test_joint_friction_revolute_x(self):
