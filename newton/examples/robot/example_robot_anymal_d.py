@@ -22,13 +22,13 @@
 #
 ###########################################################################
 
-import mujoco
 import warp as wp
 
 import newton
 import newton.examples
 import newton.utils
 from newton import JointTargetMode
+from newton.solvers import SolverMuJoCo
 
 
 class Example:
@@ -83,9 +83,9 @@ class Example:
 
         self.model = builder.finalize()
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
-        self.solver = newton.solvers.SolverMuJoCo(
+        self.solver = SolverMuJoCo(
             self.model,
-            cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
+            cone="elliptic",
             impratio=100,
             iterations=100,
             ls_iterations=50,

@@ -846,7 +846,7 @@ def _velocity_pd_kernel(
     joint_f[f_idx] = kp * (target - omega)
 
 
-def test_fourbar_linkage(test, device, solver_fn):
+def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
     def solve_fourbar(theta2, a, b, c, d):
         """Solve the Freudenstein equation for rocker angle theta4 given crank angle theta2.
 
@@ -939,14 +939,27 @@ def test_fourbar_linkage(test, device, solver_fn):
 
     builder.add_articulation([j0, j1, j2])
     # Loop closure
-    builder.add_equality_constraint_connect(body1=-1, body2=rocker_body, anchor=wp.vec3(d_link, 0.0, 0.0))
+    if use_loop_joint:
+        j_loop = builder.add_joint_revolute(
+            parent=-1,
+            child=rocker_body,
+            axis=(0, 0, 1),
+            parent_xform=wp.transform(wp.vec3(d_link, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(c_link / 2.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.joint_articulation[j_loop] = -1
+    else:
+        builder.add_equality_constraint_connect(body1=-1, body2=rocker_body, anchor=wp.vec3(d_link, 0.0, 0.0))
     model = builder.finalize(device=device)
 
     solver = solver_fn(model)
     # Stiffen equality constraint for tight loop closure
-    sr = solver.mjw_model.eq_solref.numpy()
-    sr[:] = [0.001, 1.0]
-    solver.mjw_model.eq_solref.assign(sr)
+    if solver.use_mujoco_cpu:
+        solver.mj_model.eq_solref[:] = [0.001, 1.0]
+    else:
+        sr = solver.mjw_model.eq_solref.numpy()
+        sr[:] = [0.001, 1.0]
+        solver.mjw_model.eq_solref.assign(sr)
 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -970,18 +983,29 @@ def test_fourbar_linkage(test, device, solver_fn):
     # Warmup
     solver.step(state, state, control, None, sim_dt)
 
-    with wp.ScopedCapture(device) as capture:
-        wp.launch(
-            _velocity_pd_kernel,
-            dim=1,
-            inputs=[state.joint_qd, control.joint_f, crank_qd_start, crank_qd_start, kp, omega_target],
-            device=device,
-        )
-        solver.step(state, state, control, None, sim_dt)
-    graph = capture.graph
+    use_graph = device.is_cuda
+    if use_graph:
+        with wp.ScopedCapture(device) as capture:
+            wp.launch(
+                _velocity_pd_kernel,
+                dim=1,
+                inputs=[state.joint_qd, control.joint_f, crank_qd_start, crank_qd_start, kp, omega_target],
+                device=device,
+            )
+            solver.step(state, state, control, None, sim_dt)
+        graph = capture.graph
 
     for step_i in range(num_steps - 1):
-        wp.capture_launch(graph)
+        if use_graph:
+            wp.capture_launch(graph)
+        else:
+            wp.launch(
+                _velocity_pd_kernel,
+                dim=1,
+                inputs=[state.joint_qd, control.joint_f, crank_qd_start, crank_qd_start, kp, omega_target],
+                device=device,
+            )
+            solver.step(state, state, control, None, sim_dt)
 
         if step_i < 20 or step_i % check_interval != 0:
             continue
@@ -1033,6 +1057,443 @@ def test_fourbar_linkage(test, device, solver_fn):
         theta2_final,
         1.9 * 2.0 * np.pi,
         msg=f"Crank only reached {theta2_final:.2f} rad ({theta2_final / (2 * np.pi):.1f} rev), expected ~2",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Revolute loop joint -- out-of-plane stability
+#
+# A four-bar linkage (world + crank + coupler + rocker) where the world->crank
+# joint is a BALL (3 rotational DOFs), placed diagonally from the revolute loop
+# closure at rocker->world.  The remaining two in-tree joints (crank->coupler,
+# coupler->rocker) are revolute Z.  Gravity has a Z component that tries to
+# buckle the mechanism out of plane.
+#
+# Why this cannot pass by accident:
+#   - The ball joint at world->crank gives the crank X/Y rotation DOFs that
+#     propagate through the revolute chain to the rocker.  Only the loop
+#     closure's second CONNECT can lock them.
+#   - With correct 2xCONNECT (revolute): the second CONNECT point along the Z
+#     axis constrains the out-of-plane rotation DOFs.  The mechanism is forced
+#     planar and Z displacement stays near zero.
+#   - With wrong 1xCONNECT (ball behaviour): only translational DOFs are
+#     constrained at the ground pivot.  The crank's out-of-plane DOFs are
+#     unconstrained, so Z-gravity buckles the entire mechanism dramatically.
+#   - With wrong WELD: the in-plane revolute DOF is also locked and the
+#     mechanism cannot swing at all, failing the in-plane displacement check.
+# ---------------------------------------------------------------------------
+
+
+def test_revolute_loop_joint(test, device, solver_fn):
+    # Proper four-bar linkage: 4 bodies (world + crank + coupler + rocker),
+    # 4 joints (3 in-tree + 1 loop).  The world->crank joint is a BALL,
+    # placed diagonally from the revolute loop closure at rocker->world.
+    # This gives the crank 3 rotational DOFs (X, Y, Z) where only Z is the
+    # intended four-bar motion.  The 2xCONNECT from the revolute loop must
+    # constrain the out-of-plane DOFs; a single CONNECT would leave them
+    # free, causing dramatic buckling under Z-gravity.
+    a_link, b_link, c_link, d_link = 0.2, 0.5, 0.4, 0.5
+    link_thickness = 0.02
+
+    # Solve initial four-bar configuration at theta2 = 0 (Freudenstein equation)
+    K1 = d_link / a_link
+    K2 = d_link / c_link
+    K3 = (a_link**2 - b_link**2 + c_link**2 + d_link**2) / (2.0 * a_link * c_link)
+    A = K1 - np.cos(0.0)
+    B = -np.sin(0.0)
+    C = K2 * np.cos(0.0) - K3
+    denom = np.sqrt(A**2 + B**2)
+    theta4 = np.arctan2(B, A) + np.arccos(np.clip(C / denom, -1.0, 1.0))
+    cx = d_link + c_link * np.cos(theta4) - a_link
+    cy = c_link * np.sin(theta4)
+    theta3_0 = np.arctan2(cy, cx)
+    rocker_dir = np.arctan2(
+        -b_link * np.sin(theta3_0),
+        d_link - a_link - b_link * np.cos(theta3_0),
+    )
+    delta_rocker = rocker_dir - theta3_0
+
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.density = 1000.0
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    crank_body = builder.add_link(xform=wp.transform_identity())
+    coupler_body = builder.add_link(xform=wp.transform_identity())
+    rocker_body = builder.add_link(xform=wp.transform_identity())
+    builder.add_shape_box(crank_body, hx=a_link / 2, hy=link_thickness, hz=link_thickness, cfg=cfg)
+    builder.add_shape_box(coupler_body, hx=b_link / 2, hy=link_thickness, hz=link_thickness, cfg=cfg)
+    builder.add_shape_box(rocker_body, hx=c_link / 2, hy=link_thickness, hz=link_thickness, cfg=cfg)
+
+    # Joint 0: world -> crank via BALL — diagonal to the loop joint.
+    # The ball joint gives the crank X/Y rotation DOFs that propagate through
+    # the revolute chain to the rocker.  Only the 2nd CONNECT from the loop
+    # closure can constrain these; a single CONNECT leaves them free.
+    j0 = builder.add_joint_ball(
+        parent=-1,
+        child=crank_body,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform(wp.vec3(-a_link / 2, 0, 0), wp.quat_identity()),
+    )
+    # Joint 1: crank -> coupler (revolute Z)
+    j1 = builder.add_joint_revolute(
+        parent=crank_body,
+        child=coupler_body,
+        axis=(0, 0, 1),
+        parent_xform=wp.transform(
+            wp.vec3(a_link / 2, 0, 0),
+            wp.quat_from_axis_angle(wp.vec3(0, 0, 1), float(theta3_0)),
+        ),
+        child_xform=wp.transform(wp.vec3(-b_link / 2, 0, 0), wp.quat_identity()),
+    )
+    # Joint 2: coupler -> rocker (revolute Z)
+    j2 = builder.add_joint_revolute(
+        parent=coupler_body,
+        child=rocker_body,
+        axis=(0, 0, 1),
+        parent_xform=wp.transform(
+            wp.vec3(b_link / 2, 0, 0),
+            wp.quat_from_axis_angle(wp.vec3(0, 0, 1), float(delta_rocker)),
+        ),
+        child_xform=wp.transform(wp.vec3(-c_link / 2, 0, 0), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1, j2])
+
+    # Loop closure: revolute Z from rocker back to world -> generates 2xCONNECT
+    j_loop = builder.add_joint_revolute(
+        parent=-1,
+        child=rocker_body,
+        axis=(0, 0, 1),
+        parent_xform=wp.transform(wp.vec3(d_link, 0, 0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(c_link / 2, 0, 0), wp.quat_identity()),
+    )
+    builder.joint_articulation[j_loop] = -1
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    if solver.use_mujoco_cpu:
+        solver.mj_model.eq_solref[:] = [0.001, 1.0]
+        solver.mj_model.opt.gravity[:] = [0.0, -9.81, -5.0]
+    else:
+        sr = solver.mjw_model.eq_solref.numpy()
+        sr[:] = [0.001, 1.0]
+        solver.mjw_model.eq_solref.assign(sr)
+        # Y-gravity swings the mechanism in-plane; Z-gravity tries to buckle it.
+        gravity = solver.mjw_model.opt.gravity.numpy()
+        gravity[0] = [0.0, -9.81, -5.0]
+        solver.mjw_model.opt.gravity.assign(gravity)
+
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    control = model.control()
+
+    # Give an initial angular velocity so the mechanism is in motion.
+    # j0 is a ball joint (3 DOFs: wx, wy, wz); set wz for in-plane spin.
+    qd = state.joint_qd.numpy()
+    qd_start = int(model.joint_qd_start.numpy()[j0])
+    qd[qd_start + 2] = 2.0 * np.pi  # wz = 1 rev/s
+    state.joint_qd.assign(qd)
+
+    sim_dt = 5e-4
+    num_steps = 2000
+    max_z = 0.0
+    max_crank_y = 0.0
+    for step_i in range(num_steps):
+        solver.step(state, state, control, None, sim_dt)
+        if step_i % 100 == 0:
+            bq = state.body_q.numpy()
+            max_z = max(max_z, abs(float(bq[rocker_body, 2])))
+            max_crank_y = max(max_crank_y, abs(float(bq[crank_body, 1])))
+
+    body_q = state.body_q.numpy()
+
+    # With correct revolute loop (2xCONNECT), Z stays ~0 despite Z gravity,
+    # because the second CONNECT constrains the ball joint's out-of-plane DOFs.
+    # With only 1 CONNECT the crank's out-of-plane DOFs are free and the
+    # entire mechanism buckles dramatically under Z-gravity.
+    test.assertLess(
+        max_z,
+        0.02,
+        msg=f"Revolute loop joint: max Z displacement {max_z:.4f} — "
+        f"mechanism buckled out of plane, loop closure likely missing "
+        f"the second CONNECT that constrains out-of-plane rotation",
+    )
+
+    # Confirm the mechanism actually swung in-plane (not trivially at rest).
+    # A wrong WELD would lock the revolute DOF too, keeping everything still.
+    test.assertGreater(
+        max_crank_y,
+        0.01,
+        msg=f"Revolute loop joint: crank max Y {max_crank_y:.4f} too small — "
+        f"mechanism did not swing, loop closure may be over-constraining "
+        f"(WELD instead of revolute)",
+    )
+
+    # Loop closure error: rocker far end should be at (d_link, 0, 0)
+    quat_r = body_q[rocker_body, 3:7]
+    rot_r = np.array(wp.quat_to_matrix(wp.quat(*quat_r.tolist()))).reshape(3, 3)
+    far_end = body_q[rocker_body, :3] + rot_r @ np.array([c_link / 2, 0, 0])
+    closure_err = np.linalg.norm(far_end - np.array([d_link, 0, 0]))
+    test.assertLess(
+        closure_err,
+        0.01,
+        msg=f"Revolute loop closure error {closure_err:.6f} m exceeds 10mm",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Ball loop joint -- conical pendulum orbit
+#
+# A pendulum body connected to the world via a free joint (in-tree, 6 DOFs)
+# and a ball loop joint at the pivot.  The ball loop must constrain only the
+# 3 translational DOFs, leaving all 3 rotational DOFs free.
+#
+# The pendulum starts tilted in X and is kicked in Z, creating nonzero
+# angular momentum about Y (gravity axis).  This forces a conical/rosette
+# orbit that spans both X and Z directions.
+#
+# Why this cannot pass by accident:
+#   - With correct 1xCONNECT (ball): all 3 rotations are free, so the
+#     pendulum orbits in 3D.  Both X and Z displacements are significant.
+#   - With wrong 2xCONNECT (revolute around any single axis): only 1
+#     rotational DOF is free.  The pendulum is confined to a plane, so
+#     at least one of X or Z displacement is suppressed.
+#   - With wrong WELD: all DOFs are locked, no motion at all.
+#   - Without any constraint: the body flies off.  The closure-error check
+#     catches that.
+# ---------------------------------------------------------------------------
+
+
+def test_ball_loop_joint(test, device, solver_fn):
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.density = 1000.0
+    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Y)
+
+    # A single link with COM at (0, -0.5, 0); ball pivot at origin.
+    link = builder.add_link(xform=wp.transform(wp.vec3(0.0, -0.5, 0.0), wp.quat_identity()))
+    builder.add_shape_box(link, hx=0.02, hy=0.25, hz=0.02, cfg=cfg)
+
+    # Free joint in tree gives the body all 6 DOFs.
+    j_free = builder.add_joint_free(parent=-1, child=link)
+    builder.add_articulation([j_free])
+
+    # Ball loop joint at origin — must constrain only translation (3 DOFs),
+    # leaving all 3 rotational DOFs free.
+    j_loop = builder.add_joint_ball(
+        parent=-1,
+        child=link,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform(wp.vec3(0.0, 0.25, 0.0), wp.quat_identity()),
+    )
+    builder.joint_articulation[j_loop] = -1
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    if solver.use_mujoco_cpu:
+        solver.mj_model.eq_solref[:] = [0.001, 1.0]
+    else:
+        sr = solver.mjw_model.eq_solref.numpy()
+        sr[:] = [0.001, 1.0]
+        solver.mjw_model.eq_solref.assign(sr)
+
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    # Tilt the pendulum in X, then give it tangential velocity in Z.
+    # This creates nonzero angular momentum about the Y (gravity) axis,
+    # so the pendulum orbits in a conical/rosette pattern instead of
+    # swinging in a plane.  A wrong 2xCONNECT (revolute) would confine
+    # the motion to a single plane, killing the orbit.
+    q = state.joint_q.numpy()
+    q_start = int(model.joint_q_start.numpy()[j_free])
+    q[q_start + 0] = 0.2  # offset x (tilt pendulum sideways)
+    q[q_start + 1] = -0.46  # offset y (adjust to keep ~0.5m length)
+    state.joint_q.assign(q)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    qd = state.joint_qd.numpy()
+    qd_start = int(model.joint_qd_start.numpy()[j_free])
+    qd[qd_start + 2] = 2.0  # vz (tangential to the tilt direction)
+    state.joint_qd.assign(qd)
+
+    control = model.control()
+    sim_dt = 1e-3
+    num_steps = 500
+
+    # Track max displacement in X and Z over the second half of the trajectory.
+    # Skip the first half so the initial X tilt doesn't count -- we want to
+    # see that the pendulum maintains displacement in BOTH axes as it orbits.
+    # A wrong 2xCONNECT (revolute) collapses X to zero almost immediately,
+    # confining the motion to the YZ plane.
+    max_x = 0.0
+    max_z = 0.0
+    half = num_steps // 2
+    for step_i in range(num_steps):
+        solver.step(state, state, control, None, sim_dt)
+        if step_i >= half and step_i % 50 == 0:
+            bq = state.body_q.numpy()
+            max_x = max(max_x, abs(float(bq[link, 0])))
+            max_z = max(max_z, abs(float(bq[link, 2])))
+
+    body_q = state.body_q.numpy()
+    pos = body_q[link, :3]
+
+    # Both X and Z must have significant displacement in the second half.
+    # An orbiting pendulum sweeps through both axes; a planar one stays
+    # near zero in the axis perpendicular to its plane.
+    test.assertGreater(
+        max_x,
+        0.05,
+        msg=f"Ball loop joint: max X {max_x:.4f} in second half too small -- orbit confined to a plane",
+    )
+    test.assertGreater(
+        max_z,
+        0.05,
+        msg=f"Ball loop joint: max Z {max_z:.4f} in second half too small -- orbit confined to a plane",
+    )
+
+    # Loop closure: the pivot end of the link should be near the origin.
+    # This would fail without any constraint (body flies away).
+    child_anchor_local = solver.mj_model.eq_data[0, 3:6]
+    quat = body_q[link, 3:7]
+    rot = np.array(wp.quat_to_matrix(wp.quat(*quat.tolist()))).reshape(3, 3)
+    pivot_end = pos + rot @ child_anchor_local
+    closure_err = np.linalg.norm(pivot_end)
+    test.assertLess(
+        closure_err,
+        0.01,
+        msg=f"Ball loop joint closure error {closure_err:.6f} m exceeds 10mm",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 13: Fixed loop joint — rigid L-shape under gravity
+#
+# An L-shaped structure: link_a hangs from world via revolute Z, link_b
+# extends sideways from link_a's end via a free joint (in-tree, 6 DOFs).
+# A fixed loop joint welds link_b to link_a's end.
+#
+# Why this cannot pass by accident:
+#   - link_b is on a free joint in the tree, so it has all 6 DOFs.  Only
+#     the fixed loop joint constrains it relative to link_a.
+#   - Gravity pulls link_b's COM downward.  Since link_b extends
+#     horizontally from the elbow, gravity creates a torque around the
+#     connection point.
+#   - With correct WELD: all 6 relative DOFs are locked.  link_b stays
+#     rigidly attached to link_a.  The relative orientation is preserved and
+#     the whole L-shape swings as a rigid body.
+#   - With wrong CONNECT: only 3 translational DOFs are locked.  link_b's 3
+#     rotational DOFs are free.  Gravity torque rotates link_b downward at
+#     the elbow, changing the relative orientation significantly.
+#   - With no constraint: link_b separates entirely.  The closure-error check
+#     catches that.
+#   - The in-plane swing check confirms the simulation actually ran (rules
+#     out trivially passing because nothing moved).
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_loop_joint(test, device, solver_fn):
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.density = 1000.0
+    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Y)
+
+    # link_a: vertical bar from (0,0,0) to (0,-0.5,0), COM at (0,-0.25,0)
+    # link_b: horizontal bar extending from link_a's bottom end,
+    #         COM at (0.25, -0.5, 0)
+    link_a = builder.add_link(xform=wp.transform(wp.vec3(0.0, -0.25, 0.0), wp.quat_identity()))
+    link_b = builder.add_link(xform=wp.transform(wp.vec3(0.25, -0.5, 0.0), wp.quat_identity()))
+    builder.add_shape_box(link_a, hx=0.02, hy=0.25, hz=0.02, cfg=cfg)
+    builder.add_shape_box(link_b, hx=0.25, hy=0.02, hz=0.02, cfg=cfg)
+
+    # In-tree: world -> link_a via revolute Z
+    j_rev = builder.add_joint_revolute(
+        parent=-1,
+        child=link_a,
+        axis=(0, 0, 1),
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform(wp.vec3(0.0, 0.25, 0.0), wp.quat_identity()),
+    )
+    # In-tree: link_b gets a free joint — all 6 DOFs unconstrained in the tree.
+    # Only the fixed loop joint below should lock link_b to link_a.
+    j_free = builder.add_joint_free(parent=-1, child=link_b)
+    builder.add_articulation([j_rev, j_free])
+
+    # Fixed loop joint at the elbow:
+    #   parent anchor = bottom of link_a  (0, -0.25, 0) in link_a's frame
+    #   child anchor  = left end of link_b (-0.25, 0, 0) in link_b's frame
+    j_loop = builder.add_joint_fixed(
+        parent=link_a,
+        child=link_b,
+        parent_xform=wp.transform(wp.vec3(0.0, -0.25, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(-0.25, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.joint_articulation[j_loop] = -1
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    if solver.use_mujoco_cpu:
+        solver.mj_model.eq_solref[:] = [0.001, 1.0]
+    else:
+        sr = solver.mjw_model.eq_solref.numpy()
+        sr[:] = [0.001, 1.0]
+        solver.mjw_model.eq_solref.assign(sr)
+
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    # Record initial relative orientation between link_a and link_b
+    body_q_init = state.body_q.numpy()
+    rot_a_init = np.array(wp.quat_to_matrix(wp.quat(*body_q_init[link_a, 3:7].tolist()))).reshape(3, 3)
+    rot_b_init = np.array(wp.quat_to_matrix(wp.quat(*body_q_init[link_b, 3:7].tolist()))).reshape(3, 3)
+    rel_rot_init = rot_a_init.T @ rot_b_init
+
+    control = model.control()
+    sim_dt = 1e-3
+    num_steps = 1000
+
+    for _ in range(num_steps):
+        solver.step(state, state, control, None, sim_dt)
+
+    body_q = state.body_q.numpy()
+
+    # Check that relative orientation is preserved (rotation locked by WELD).
+    # With a wrong CONNECT, gravity torque on link_b's offset COM would rotate
+    # it downward at the elbow, producing a large rotation difference.
+    rot_a = np.array(wp.quat_to_matrix(wp.quat(*body_q[link_a, 3:7].tolist()))).reshape(3, 3)
+    rot_b = np.array(wp.quat_to_matrix(wp.quat(*body_q[link_b, 3:7].tolist()))).reshape(3, 3)
+    rel_rot_final = rot_a.T @ rot_b
+    rot_diff = np.linalg.norm(rel_rot_final - rel_rot_init, "fro")
+    test.assertLess(
+        rot_diff,
+        0.05,
+        msg=f"Fixed loop joint: relative rotation changed by {rot_diff:.4f} — "
+        f"bodies rotating freely, constraint likely missing rotational lock "
+        f"(CONNECT instead of WELD)",
+    )
+
+    # Confirm the L-shape actually swung under gravity (simulation ran).
+    # A wrong WELD-everywhere would still pass the rotation check, but the
+    # free revolute joint j_rev should allow in-plane swinging.
+    pos_a = body_q[link_a, :3]
+    test.assertGreater(
+        abs(float(pos_a[0])),
+        0.01,
+        msg="Fixed loop joint: link_a didn't swing — simulation may not have run",
+    )
+
+    # Verify the relative position is preserved (WELD locks both translation and rotation).
+    # At t=0: link_b.pos - link_a.pos = (0.25, -0.25, 0).  After simulation this
+    # relative position (in link_a's frame) should be maintained by the WELD.
+    rel_pos_init = np.array([0.25, -0.25, 0.0])
+    rel_pos_final = rot_a.T @ (body_q[link_b, :3] - body_q[link_a, :3])
+    pos_err = np.linalg.norm(rel_pos_final - rel_pos_init)
+    test.assertLess(
+        pos_err,
+        0.02,
+        msg=f"Fixed loop joint: relative position drifted by {pos_err:.4f} — "
+        f"WELD constraint not maintaining translational lock",
     )
 
 
@@ -1240,16 +1701,56 @@ for device in devices:
             use_mujoco_cpu=False,
         )
 
-    # Kinematic loop test (CUDA only, uses CUDA graph for performance)
-    if device.is_cuda:
+    # Kinematic loop and loop joint constraint tests (MuJoCo only)
+    loop_solvers = {
+        "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
+            model, use_mujoco_cpu=True, iterations=100, ls_iterations=50
+        ),
+        "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
+            model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
+        ),
+    }
+    for solver_name, solver_fn in loop_solvers.items():
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        if not device.is_cuda and solver_name == "mujoco_warp":
+            continue
+
         add_function_test(
             TestPhysicsValidation,
-            "test_fourbar_linkage_mujoco_warp",
+            f"test_fourbar_linkage_{solver_name}",
             test_fourbar_linkage,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(
-                model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
-            ),
+            solver_fn=solver_fn,
+        )
+        add_function_test(
+            TestPhysicsValidation,
+            f"test_fourbar_linkage_loop_joint_{solver_name}",
+            test_fourbar_linkage,
+            devices=[device],
+            solver_fn=solver_fn,
+            use_loop_joint=True,
+        )
+        add_function_test(
+            TestPhysicsValidation,
+            f"test_revolute_loop_joint_{solver_name}",
+            test_revolute_loop_joint,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+        add_function_test(
+            TestPhysicsValidation,
+            f"test_ball_loop_joint_{solver_name}",
+            test_ball_loop_joint,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+        add_function_test(
+            TestPhysicsValidation,
+            f"test_fixed_loop_joint_{solver_name}",
+            test_fixed_loop_joint,
+            devices=[device],
+            solver_fn=solver_fn,
         )
 
 if __name__ == "__main__":

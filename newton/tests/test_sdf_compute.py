@@ -32,8 +32,12 @@ import warp as wp
 
 import newton
 from newton import GeoType, Mesh
-from newton._src.geometry.sdf_contact import sample_sdf_extrapolated, sample_sdf_grad_extrapolated
-from newton._src.geometry.sdf_utils import SDFData, compute_sdf_from_shape
+from newton._src.geometry.sdf_utils import (
+    SDFData,
+    compute_sdf_from_shape,
+    sample_sdf_extrapolated,
+    sample_sdf_grad_extrapolated,
+)
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 # Skip all tests in this module if CUDA is not available
@@ -1113,7 +1117,7 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
 
         # No compact SDF entry should exist for this shape
         self.assertEqual(int(model.shape_sdf_index.numpy()[0]), -1)
-        self.assertEqual(model.sdf_data.shape[0], 0)
+        self.assertEqual(model.texture_sdf_data.shape[0], 0)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_mesh_build_sdf_works_on_gpu(self):
@@ -1130,10 +1134,10 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         # Should work on GPU
         model = builder.finalize(device="cuda:0")
 
-        # SDF data should be populated in compact table
+        # Texture SDF data should be populated in compact table
         sdf_idx = int(model.shape_sdf_index.numpy()[0])
         self.assertGreaterEqual(sdf_idx, 0)
-        self.assertNotEqual(model.sdf_data.numpy()[sdf_idx]["sparse_sdf_ptr"], 0)
+        self.assertGreater(model.texture_sdf_data.shape[0], sdf_idx)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_mesh_build_sdf_guard_and_clear(self):
@@ -1223,7 +1227,7 @@ class TestSDFPublicApi(unittest.TestCase):
         model = builder.finalize(device="cuda:0")
         sdf_idx = int(model.shape_sdf_index.numpy()[0])
         self.assertGreaterEqual(sdf_idx, 0)
-        self.assertNotEqual(model.sdf_data.numpy()[sdf_idx]["sparse_sdf_ptr"], 0)
+        self.assertGreater(model.texture_sdf_data.shape[0], sdf_idx)
 
 
 class TestSDFNonUniformScaleBrickPyramid(unittest.TestCase):

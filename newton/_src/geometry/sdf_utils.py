@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -22,6 +23,9 @@ from ..core.types import MAXVAL, Axis, Devicelike, nparray
 from .kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_ellipsoid, sdf_sphere
 from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
 from .types import GeoType, Mesh
+
+if TYPE_CHECKING:
+    from .sdf_texture import TextureSDFData
 
 
 @wp.struct
@@ -52,6 +56,121 @@ class SDFData:
     scale_baked: wp.bool
 
 
+@wp.func
+def sample_sdf_extrapolated(
+    sdf_data: SDFData,
+    sdf_pos: wp.vec3,
+) -> float:
+    """Sample NanoVDB SDF with extrapolation for points outside the narrow band or extent.
+
+    Handles three cases:
+
+    1. Point in narrow band: returns sparse grid value directly.
+    2. Point inside extent but outside narrow band: returns coarse grid value.
+    3. Point outside extent: projects to boundary, returns value at boundary + distance to boundary.
+
+    Args:
+        sdf_data: SDFData struct containing sparse/coarse volumes and extent info.
+        sdf_pos: Query position in the SDF's local coordinate space [m].
+
+    Returns:
+        The signed distance value [m], extrapolated if necessary.
+    """
+    lower = sdf_data.center - sdf_data.half_extents
+    upper = sdf_data.center + sdf_data.half_extents
+
+    inside_extent = (
+        sdf_pos[0] >= lower[0]
+        and sdf_pos[0] <= upper[0]
+        and sdf_pos[1] >= lower[1]
+        and sdf_pos[1] <= upper[1]
+        and sdf_pos[2] >= lower[2]
+        and sdf_pos[2] <= upper[2]
+    )
+
+    if inside_extent:
+        sparse_idx = wp.volume_world_to_index(sdf_data.sparse_sdf_ptr, sdf_pos)
+        sparse_dist = wp.volume_sample_f(sdf_data.sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR)
+
+        if sparse_dist >= sdf_data.background_value * 0.99 or wp.isnan(sparse_dist):
+            coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, sdf_pos)
+            return wp.volume_sample_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
+        else:
+            return sparse_dist
+    else:
+        eps = 1e-2 * sdf_data.sparse_voxel_size
+        clamped_pos = wp.min(wp.max(sdf_pos, lower + eps), upper - eps)
+        dist_to_boundary = wp.length(sdf_pos - clamped_pos)
+
+        coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, clamped_pos)
+        boundary_dist = wp.volume_sample_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
+
+        return boundary_dist + dist_to_boundary
+
+
+@wp.func
+def sample_sdf_grad_extrapolated(
+    sdf_data: SDFData,
+    sdf_pos: wp.vec3,
+) -> tuple[float, wp.vec3]:
+    """Sample NanoVDB SDF with gradient, with extrapolation for points outside narrow band or extent.
+
+    Handles three cases:
+
+    1. Point in narrow band: returns sparse grid value and gradient directly.
+    2. Point inside extent but outside narrow band: returns coarse grid value and gradient.
+    3. Point outside extent: returns extrapolated distance and direction toward boundary.
+
+    Args:
+        sdf_data: SDFData struct containing sparse/coarse volumes and extent info.
+        sdf_pos: Query position in the SDF's local coordinate space [m].
+
+    Returns:
+        Tuple of (distance [m], gradient [unitless]) where gradient points toward increasing distance.
+    """
+    lower = sdf_data.center - sdf_data.half_extents
+    upper = sdf_data.center + sdf_data.half_extents
+
+    gradient = wp.vec3(0.0, 0.0, 0.0)
+
+    inside_extent = (
+        sdf_pos[0] >= lower[0]
+        and sdf_pos[0] <= upper[0]
+        and sdf_pos[1] >= lower[1]
+        and sdf_pos[1] <= upper[1]
+        and sdf_pos[2] >= lower[2]
+        and sdf_pos[2] <= upper[2]
+    )
+
+    if inside_extent:
+        sparse_idx = wp.volume_world_to_index(sdf_data.sparse_sdf_ptr, sdf_pos)
+        sparse_dist = wp.volume_sample_grad_f(sdf_data.sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR, gradient)
+
+        if sparse_dist >= sdf_data.background_value * 0.99 or wp.isnan(sparse_dist):
+            coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, sdf_pos)
+            coarse_dist = wp.volume_sample_grad_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR, gradient)
+            return coarse_dist, gradient
+        else:
+            return sparse_dist, gradient
+    else:
+        eps = 1e-2 * sdf_data.sparse_voxel_size
+        clamped_pos = wp.min(wp.max(sdf_pos, lower + eps), upper - eps)
+        diff = sdf_pos - clamped_pos
+        dist_to_boundary = wp.length(diff)
+
+        coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, clamped_pos)
+        boundary_dist = wp.volume_sample_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
+
+        extrapolated_dist = boundary_dist + dist_to_boundary
+
+        if dist_to_boundary > 0.0:
+            gradient = diff / dist_to_boundary
+        else:
+            wp.volume_sample_grad_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR, gradient)
+
+        return extrapolated_dist, gradient
+
+
 class SDF:
     """Opaque SDF container owning kernel payload and runtime references."""
 
@@ -62,6 +181,10 @@ class SDF:
         sparse_volume: wp.Volume | None = None,
         coarse_volume: wp.Volume | None = None,
         block_coords: nparray | Sequence[wp.vec3us] | None = None,
+        texture_block_coords: Sequence[wp.vec3us] | None = None,
+        texture_data: "TextureSDFData | None" = None,
+        _coarse_texture: wp.Texture3D | None = None,
+        _subgrid_texture: wp.Texture3D | None = None,
         _internal: bool = False,
     ):
         if not _internal:
@@ -72,10 +195,19 @@ class SDF:
         self.sparse_volume = sparse_volume
         self.coarse_volume = coarse_volume
         self.block_coords = block_coords
+        self.texture_block_coords = texture_block_coords
+        self.texture_data = texture_data
+        # Keep texture references alive to prevent GC
+        self._coarse_texture = _coarse_texture
+        self._subgrid_texture = _subgrid_texture
 
     def to_kernel_data(self) -> SDFData:
         """Return kernel-facing SDF payload."""
         return self.data
+
+    def to_texture_kernel_data(self) -> "TextureSDFData | None":
+        """Return texture SDF kernel payload, or ``None`` if unavailable."""
+        return self.texture_data
 
     def is_empty(self) -> bool:
         """Return True when this SDF has no sparse/coarse payload."""
@@ -199,11 +331,45 @@ class SDF:
             bake_scale=bake_scale,
             device=device,
         )
+
+        # Build texture SDF alongside NanoVDB
+        texture_data = None
+        coarse_texture = None
+        subgrid_texture = None
+        tex_block_coords = None
+        if wp.is_cuda_available():
+            from .sdf_texture import QuantizationMode, create_texture_sdf_from_mesh  # noqa: PLC0415
+
+            with wp.ScopedDevice(device):
+                verts = mesh.vertices * np.array(effective_scale)[None, :]
+                pos = wp.array(verts, dtype=wp.vec3)
+                indices = wp.array(mesh.indices, dtype=wp.int32)
+                tex_mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
+
+                signed_volume = compute_mesh_signed_volume(pos, indices)
+                winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+
+                res = effective_max_resolution if effective_max_resolution is not None else 64
+                texture_data, coarse_texture, subgrid_texture, tex_block_coords = create_texture_sdf_from_mesh(
+                    tex_mesh,
+                    margin=margin,
+                    narrow_band_range=narrow_band_range,
+                    max_resolution=res,
+                    quantization_mode=QuantizationMode.FLOAT32,
+                    winding_threshold=winding_threshold,
+                    scale_baked=bake_scale,
+                )
+                wp.synchronize()
+
         sdf = SDF(
             data=sdf_data,
             sparse_volume=sparse_volume,
             coarse_volume=coarse_volume,
             block_coords=block_coords,
+            texture_block_coords=tex_block_coords,
+            texture_data=texture_data,
+            _coarse_texture=coarse_texture,
+            _subgrid_texture=subgrid_texture,
             _internal=True,
         )
         sdf.validate()
@@ -219,6 +385,7 @@ class SDF:
         half_extents: Sequence[float] | None = None,
         background_value: float = MAXVAL,
         scale_baked: bool = False,
+        texture_data: "TextureSDFData | None" = None,
     ) -> "SDF":
         """Create an SDF from precomputed runtime resources."""
         sdf_data = create_empty_sdf_data()
@@ -242,6 +409,7 @@ class SDF:
             sparse_volume=sparse_volume,
             coarse_volume=coarse_volume,
             block_coords=block_coords,
+            texture_data=texture_data,
             _internal=True,
         )
         sdf.validate()

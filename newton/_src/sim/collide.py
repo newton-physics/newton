@@ -132,12 +132,11 @@ def write_contact(
     writer_data.out_point0[index] = wp.transform_point(X_bw_a, a_contact_world)
     writer_data.out_point1[index] = wp.transform_point(X_bw_b, b_contact_world)
 
-    # Match kernels.py convention
-    contact_normal = -contact_normal_a_to_b
+    contact_normal = contact_normal_a_to_b
 
-    # Offsets in body frames
-    writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, -offset_mag_a * contact_normal)
-    writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, offset_mag_b * contact_normal)
+    # Offsets in body frames (offset0 points toward B, offset1 points toward A)
+    writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, offset_mag_a * contact_normal)
+    writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, -offset_mag_b * contact_normal)
 
     writer_data.out_normal[index] = contact_normal
     writer_data.out_margin0[index] = offset_mag_a
@@ -574,10 +573,21 @@ class CollisionPipeline:
             # should not trigger mesh-only kernel setup/launches.
             has_meshes = False
             has_heightfields = False
+            use_lean_gjk_mpr = False
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 has_heightfields = bool((shape_types == int(GeoType.HFIELD)).any())
                 has_meshes = bool((shape_types == int(GeoType.MESH)).any())
+                # Use lean GJK/MPR kernel when scene has no capsules, ellipsoids,
+                # cylinders, or cones (which need full support function and axial
+                # rolling post-processing)
+                lean_unsupported = {
+                    int(GeoType.CAPSULE),
+                    int(GeoType.ELLIPSOID),
+                    int(GeoType.CYLINDER),
+                    int(GeoType.CONE),
+                }
+                use_lean_gjk_mpr = not bool(lean_unsupported & set(shape_types.tolist()))
 
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
@@ -595,6 +605,7 @@ class CollisionPipeline:
                 hydroelastic_sdf=hydroelastic_sdf,
                 has_meshes=has_meshes,
                 has_heightfields=has_heightfields,
+                use_lean_gjk_mpr=use_lean_gjk_mpr,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
 
@@ -813,8 +824,8 @@ class CollisionPipeline:
                 shape_data=self.geom_data,
                 shape_transform=self.geom_transform,
                 shape_source=model.shape_source_ptr,
-                sdf_data=model.sdf_data,
                 shape_sdf_index=model.shape_sdf_index,
+                texture_sdf_data=model.texture_sdf_data,
                 shape_gap=model.shape_gap,
                 shape_collision_radius=model.shape_collision_radius,
                 shape_flags=model.shape_flags,

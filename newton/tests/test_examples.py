@@ -708,6 +708,13 @@ add_example_test(
     test_options={"num-frames": 1200},
     use_viewer=True,
 )
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_pyramid",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
+    use_viewer=True,
+)
 
 
 class TestMultiphysicsExamples(unittest.TestCase):
