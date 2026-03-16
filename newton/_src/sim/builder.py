@@ -9881,10 +9881,8 @@ class ModelBuilder:
                     )
 
                     # Store corrected arrays for deferred builder state sync.
-                    # Reading correction_count or array data here would force a
-                    # GPU synchronization that blocks the pipeline, so we defer
-                    # the builder update and warning until _sync_body_state() is
-                    # called (either explicitly or on first builder access).
+                    # Reading correction_count here would force a GPU sync that
+                    # stalls the pipeline, so we defer to end of finalize().
                     self._deferred_body_mass = body_mass_array
                     self._deferred_body_inertia = body_inertia_array
                     self._deferred_body_inv_mass = body_inv_mass_array

@@ -475,7 +475,7 @@ class TestInertiaValidationParity(unittest.TestCase):
         with warnings.catch_warnings(record=True):
             model = builder.finalize()
 
-        # Builder state should match model state
+        # Builder state should match model state after detailed validation
         self.assertAlmostEqual(
             builder.body_mass[body_idx],
             float(model.body_mass.numpy()[body_idx]),
