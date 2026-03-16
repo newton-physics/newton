@@ -9880,51 +9880,16 @@ class ModelBuilder:
                         ],
                     )
 
-                    # Check if any corrections were made (single int transfer)
-                    num_corrections = int(correction_count.numpy()[0])
-                    if num_corrections > 0:
-                        warnings.warn(
-                            f"Inertia validation corrected {num_corrections} bodies. "
-                            f"Set validate_inertia_detailed=True for detailed per-body warnings.",
-                            stacklevel=2,
-                        )
-
-                        # Update builder state to match kernel output.
-                        # Scalar lists are rebuilt in bulk via .tolist() (fast).
-                        # mat33 lists require per-element construction but only
-                        # run when corrections were actually made.
-                        self.body_mass = body_mass_array.numpy().tolist()
-                        self.body_inv_mass = body_inv_mass_array.numpy().tolist()
-                        inertias_np = body_inertia_array.numpy()
-                        inv_inertias_np = body_inv_inertia_array.numpy()
-                        self.body_inertia = [
-                            wp.mat33(
-                                m[0][0],
-                                m[0][1],
-                                m[0][2],
-                                m[1][0],
-                                m[1][1],
-                                m[1][2],
-                                m[2][0],
-                                m[2][1],
-                                m[2][2],
-                            )
-                            for m in inertias_np
-                        ]
-                        self.body_inv_inertia = [
-                            wp.mat33(
-                                m[0][0],
-                                m[0][1],
-                                m[0][2],
-                                m[1][0],
-                                m[1][1],
-                                m[1][2],
-                                m[2][0],
-                                m[2][1],
-                                m[2][2],
-                            )
-                            for m in inv_inertias_np
-                        ]
+                    # Store corrected arrays for deferred builder state sync.
+                    # Reading correction_count or array data here would force a
+                    # GPU synchronization that blocks the pipeline, so we defer
+                    # the builder update and warning until _sync_body_state() is
+                    # called (either explicitly or on first builder access).
+                    self._deferred_body_mass = body_mass_array
+                    self._deferred_body_inertia = body_inertia_array
+                    self._deferred_body_inv_mass = body_inv_mass_array
+                    self._deferred_body_inv_inertia = body_inv_inertia_array
+                    self._deferred_correction_count = correction_count
 
                     # Use the corrected arrays directly on the Model
                     m.body_mass = body_mass_array
@@ -10118,6 +10083,7 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
+                self._sync_inertia_corrections()
                 return m
 
             # Resolve authoritative counts for custom frequencies
@@ -10209,7 +10175,56 @@ class ModelBuilder:
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
+            self._sync_inertia_corrections()
             return m
+
+    def _sync_inertia_corrections(self):
+        """Sync builder state from deferred fast-path inertia corrections.
+
+        Called at the end of :meth:`finalize` so that the GPU kernel has had
+        time to complete without blocking the pipeline earlier.
+        """
+        cc = getattr(self, "_deferred_correction_count", None)
+        if cc is None:
+            return
+
+        num_corrections = int(cc.numpy()[0])
+        if num_corrections > 0:
+            warnings.warn(
+                f"Inertia validation corrected {num_corrections} bodies. "
+                f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                stacklevel=3,
+            )
+            # Rebuild builder lists from corrected GPU arrays.
+            self.body_mass = self._deferred_body_mass.numpy().tolist()
+            self.body_inv_mass = self._deferred_body_inv_mass.numpy().tolist()
+            inertias_np = self._deferred_body_inertia.numpy()
+            inv_inertias_np = self._deferred_body_inv_inertia.numpy()
+            # fmt: off
+            self.body_inertia = [
+                wp.mat33(
+                    m[0][0], m[0][1], m[0][2],
+                    m[1][0], m[1][1], m[1][2],
+                    m[2][0], m[2][1], m[2][2],
+                )
+                for m in inertias_np
+            ]
+            self.body_inv_inertia = [
+                wp.mat33(
+                    m[0][0], m[0][1], m[0][2],
+                    m[1][0], m[1][1], m[1][2],
+                    m[2][0], m[2][1], m[2][2],
+                )
+                for m in inv_inertias_np
+            ]
+            # fmt: on
+
+        # Clear deferred state
+        del self._deferred_body_mass
+        del self._deferred_body_inertia
+        del self._deferred_body_inv_mass
+        del self._deferred_body_inv_inertia
+        del self._deferred_correction_count
 
     def _test_group_pair(self, group_a: int, group_b: int) -> bool:
         """Test if two collision groups should interact.
