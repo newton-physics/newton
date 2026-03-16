@@ -40,6 +40,7 @@ class ViewerNull(ViewerBase):
     def __init__(
         self,
         num_frames: int = 1000,
+        benchmark: bool = False,
         benchmark_timeout: float | None = None,
         benchmark_start_frame: int = 3,
     ):
@@ -48,8 +49,10 @@ class ViewerNull(ViewerBase):
 
         Args:
             num_frames: The number of frames to run before stopping.
+            benchmark: Enable benchmark timing (FPS measurement after warmup).
             benchmark_timeout: If set, stop after this many seconds of
-                steady-state simulation (measured after warmup).
+                steady-state simulation (measured after warmup). Implicitly
+                enables *benchmark*.
             benchmark_start_frame: Number of warmup frames before benchmark
                 timing starts.
         """
@@ -58,6 +61,7 @@ class ViewerNull(ViewerBase):
         self.num_frames = num_frames
         self.frame_count = 0
 
+        self.benchmark = benchmark or benchmark_timeout is not None
         self.benchmark_timeout = benchmark_timeout
         self.benchmark_start_frame = benchmark_start_frame
         self._bench_start_time: float | None = None
@@ -133,7 +137,7 @@ class ViewerNull(ViewerBase):
         """
         self.frame_count += 1
 
-        if self.benchmark_timeout is not None:
+        if self.benchmark:
             if self.frame_count == self.benchmark_start_frame:
                 self._bench_start_time = time.perf_counter()
             elif self._bench_start_time is not None:
@@ -164,9 +168,9 @@ class ViewerNull(ViewerBase):
 
         Returns:
             Dictionary with ``fps``, ``frames``, and ``elapsed`` keys,
-            or ``None`` if ``benchmark_timeout`` was not set.
+            or ``None`` if benchmarking is not enabled.
         """
-        if self.benchmark_timeout is None:
+        if not self.benchmark:
             return None
         if self._bench_frames == 0 or self._bench_elapsed == 0.0:
             return {"fps": 0.0, "frames": 0, "elapsed": 0.0}

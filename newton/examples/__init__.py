@@ -455,11 +455,11 @@ def create_parser():
     parser.add_argument(
         "--benchmark",
         type=float,
-        default=None,
+        default=False,
         nargs="?",
-        const=10.0,
+        const=None,
         metavar="SECONDS",
-        help="Run in benchmark mode: measure FPS over SECONDS seconds (default: 10) after a warmup period, then exit.",
+        help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
     )
 
     return parser
@@ -558,8 +558,7 @@ def init(parser=None):
         wp.set_device(args.device)
 
     # Benchmark mode forces null viewer
-    benchmark_timeout = getattr(args, "benchmark", None)
-    if benchmark_timeout is not None:
+    if args.benchmark is not False:
         args.viewer = "null"
 
     # Create viewer based on type
@@ -574,7 +573,8 @@ def init(parser=None):
     elif args.viewer == "null":
         viewer = newton.viewer.ViewerNull(
             num_frames=args.num_frames,
-            benchmark_timeout=benchmark_timeout,
+            benchmark=args.benchmark is not False,
+            benchmark_timeout=args.benchmark or None,
         )
     elif args.viewer == "viser":
         viewer = newton.viewer.ViewerViser()
