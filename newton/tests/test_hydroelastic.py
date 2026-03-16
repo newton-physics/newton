@@ -49,6 +49,7 @@ VIEWER_NUM_FRAMES = 300
 # Test thresholds
 POSITION_THRESHOLD_FACTOR = 0.20  # multiplied by cube_half
 MAX_ROTATION_DEG = 10.0
+SKIP_DEPTH_IN_VOXELS_THRESHOLD = 0.0
 
 # Devices and solvers
 cuda_devices = get_selected_cuda_test_devices()
@@ -494,6 +495,12 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
     penetrations = [0.0, 1e-4, 1e-3, 1e-2]
 
     for pen in penetrations:
+
+        voxel_size = (2 * cube_half + 2 * 0.01) / 64  # SDF domain / max_resolution
+        depth_in_voxels = pen / voxel_size
+        if depth_in_voxels < SKIP_DEPTH_IN_VOXELS_THRESHOLD:
+            continue
+
         sphere_z = rest_z - pen
         wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
 
@@ -766,7 +773,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         case_upper_size = test_cases[i][1]
         voxel_size = (case_upper_size + 2 * 0.01) / 64  # SDF domain / max_resolution
         depth_in_voxels = expected / voxel_size
-        if depth_in_voxels < 0.01:
+        if depth_in_voxels < SKIP_DEPTH_IN_VOXELS_THRESHOLD:
             continue
 
         # Filter depths for this shape pair
@@ -783,7 +790,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         measured = 2.0 * np.mean(-instance_depths)
         ratio = measured / expected
 
-        # We expect a ratio slightly > 1 due to non-uniform pressure distribution.
+        # We expect a ratio > 1 due to non-uniform pressure distribution.
         test.assertGreater(
             ratio, 1.0, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
         )
