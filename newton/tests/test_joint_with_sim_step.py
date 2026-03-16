@@ -80,7 +80,10 @@ class TestJointWithSimStepBase:
             armature: Armature value for the joint DOF [kg*m^2 or kg].
             body_inertia: Diagonal rotational inertia of the body [kg*m^2].
             joint_type: One of ``"revolute"``, ``"prismatic"``, ``"d6_revolute"``,
-                or ``"d6_prismatic"``.
+                ``"d6_prismatic"``, ``"d6_ball"``, or ``"ball"``.  The ``"ball"``
+                type uses :meth:`~newton.ModelBuilder.add_joint_ball` which only
+                supports ``armature`` and ``friction``; limit and drive parameters
+                are ignored.
             body_mass: Mass of the body [kg].
             motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
             limit_lower: Lower joint limit [m or rad]. None for unlimited.
@@ -188,6 +191,13 @@ class TestJointWithSimStepBase:
                     body,
                     angular_axes=[dof_x, dof_y, dof_z],
                 )
+        elif joint_type == "ball":
+            joint = builder.add_joint_ball(
+                parent=-1,
+                child=body,
+                armature=armature,
+                friction=friction,
+            )
         else:
             raise ValueError(joint_type)
         builder.add_articulation(joints=[joint])
@@ -365,6 +375,18 @@ class TestJointArmatureBase(TestJointWithSimStepBase):
     def test_armature_reduces_joint_speed_d6_ball_z(self):
         """Higher armature yields lower joint speed for a D6 ball joint about Z."""
         self._test_armature_reduces_joint_speed(joint_type="d6_ball", motion_axis=2)
+
+    def test_armature_reduces_joint_speed_ball_x(self):
+        """Higher armature yields lower joint speed for a ball joint about X."""
+        self._test_armature_reduces_joint_speed(joint_type="ball", motion_axis=0)
+
+    def test_armature_reduces_joint_speed_ball_y(self):
+        """Higher armature yields lower joint speed for a ball joint about Y."""
+        self._test_armature_reduces_joint_speed(joint_type="ball", motion_axis=1)
+
+    def test_armature_reduces_joint_speed_ball_z(self):
+        """Higher armature yields lower joint speed for a ball joint about Z."""
+        self._test_armature_reduces_joint_speed(joint_type="ball", motion_axis=2)
 
 
 class TestJointLimitBase(TestJointWithSimStepBase):
@@ -749,6 +771,18 @@ class TestJointFrictionBase(TestJointWithSimStepBase):
     def test_joint_friction_d6_ball_z(self):
         """Joint friction reduces velocity for a D6 ball joint about Z."""
         self._test_joint_friction(joint_type="d6_ball", motion_axis=2)
+
+    def test_joint_friction_ball_x(self):
+        """Joint friction reduces velocity for a ball joint about X."""
+        self._test_joint_friction(joint_type="ball", motion_axis=0)
+
+    def test_joint_friction_ball_y(self):
+        """Joint friction reduces velocity for a ball joint about Y."""
+        self._test_joint_friction(joint_type="ball", motion_axis=1)
+
+    def test_joint_friction_ball_z(self):
+        """Joint friction reduces velocity for a ball joint about Z."""
+        self._test_joint_friction(joint_type="ball", motion_axis=2)
 
 
 class TestJointLimitMuJoCo(TestJointLimitBase, unittest.TestCase):
