@@ -783,7 +783,7 @@ def validate_and_correct_inertia_kernel(
     balance_inertia: wp.bool,
     bound_mass: wp.float32,
     bound_inertia: wp.float32,
-    correction_flags: wp.array(dtype=wp.bool),  # Output: True if corrected, False otherwise
+    correction_count: wp.array(dtype=wp.int32),  # Output: atomic counter of corrected bodies
 ):
     """Warp kernel for parallel inertia validation and correction.
 
@@ -900,4 +900,5 @@ def validate_and_correct_inertia_kernel(
     else:
         body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-    correction_flags[tid] = was_corrected
+    if was_corrected:
+        wp.atomic_add(correction_count, 0, 1)

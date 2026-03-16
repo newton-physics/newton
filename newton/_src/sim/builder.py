@@ -9862,7 +9862,7 @@ class ModelBuilder:
                     body_inv_inertia_array = wp.array(
                         self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
                     )
-                    correction_flags = wp.zeros(len(self.body_mass), dtype=wp.bool)
+                    correction_count = wp.zeros(1, dtype=wp.int32)
 
                     # Launch validation kernel
                     wp.launch(
@@ -9876,12 +9876,12 @@ class ModelBuilder:
                             self.balance_inertia,
                             self.bound_mass if self.bound_mass is not None else 0.0,
                             self.bound_inertia if self.bound_inertia is not None else 0.0,
-                            correction_flags,
+                            correction_count,
                         ],
                     )
 
-                    # Check if any corrections were made
-                    num_corrections = int(np.sum(correction_flags.numpy()))
+                    # Check if any corrections were made (single int transfer)
+                    num_corrections = int(correction_count.numpy()[0])
                     if num_corrections > 0:
                         warnings.warn(
                             f"Inertia validation corrected {num_corrections} bodies. "
