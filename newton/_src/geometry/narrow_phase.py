@@ -68,7 +68,7 @@ from ..geometry.support_function import (
 from ..geometry.types import GeoType
 from ..utils.heightfield import (
     HeightfieldData,
-    get_triangle_from_heightfield,
+    get_triangle_shape_from_heightfield,
     heightfield_vs_convex_midphase,
 )
 
@@ -920,7 +920,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
                 # Heightfield triangle
                 hfd = heightfield_data[shape_heightfield_index[shape_a]]
                 X_ws_a = shape_transform[shape_a]
-                shape_data_a, v0_world = get_triangle_from_heightfield(hfd, heightfield_elevations, X_ws_a, tri_idx)
+                shape_data_a, v0_world = get_triangle_shape_from_heightfield(hfd, heightfield_elevations, X_ws_a, tri_idx)
             else:
                 # Mesh triangle
                 mesh_id_a = shape_source[shape_a]

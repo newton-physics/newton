@@ -213,7 +213,7 @@ def sample_sdf_grad_heightfield(
 
 
 @wp.func
-def get_triangle_from_heightfield(
+def get_triangle_shape_from_heightfield(
     hfd: HeightfieldData,
     elevation_data: wp.array(dtype=wp.float32),
     X_ws: wp.transform,
