@@ -142,7 +142,7 @@ class TestJointWithSimStepBase:
                 target_kd=target_kd,
                 target_pos=target_pos,
             )
-        elif joint_type in ("d6_prismatic", "d6_revolute", "ball"):
+        elif joint_type in ("d6_prismatic", "d6_revolute", "d6_ball"):
             dof_kwargs = {}
             if limit_lower is not None:
                 dof_kwargs["limit_lower"] = limit_lower
@@ -173,7 +173,7 @@ class TestJointWithSimStepBase:
                     body,
                     angular_axes=[dof_cfg],
                 )
-            elif joint_type == "ball":
+            elif joint_type == "d6_ball":
                 dof_x = newton.ModelBuilder.JointDofConfig(
                     axis=0, armature=armature, friction=friction, effort_limit=effort_limit, **dof_kwargs
                 )
@@ -203,20 +203,20 @@ class TestJointWithSimStepBase:
 
     def _qd_index(self, joint_type, motion_axis):
         """Return the index into ``joint_qd`` for the tested DOF."""
-        return motion_axis if joint_type == "ball" else 0
+        return motion_axis if joint_type == "d6_ball" else 0
 
     def _make_dof_array(self, value, joint_type, motion_axis):
         """Create a per-DOF array with ``value`` on the tested axis.
 
-        For ball joints (3 DOFs), returns a 3-element array with ``value`` at
-        ``motion_axis``.  For 1-DOF joints, returns a 1-element array.
+        For D6 ball joints (3 DOFs), returns a 3-element array with ``value``
+        at ``motion_axis``.  For 1-DOF joints, returns a 1-element array.
 
         Args:
             value: Scalar value to place on the tested axis.
             joint_type: Joint type string.
             motion_axis: Axis index (0=X, 1=Y, 2=Z).
         """
-        if joint_type == "ball":
+        if joint_type == "d6_ball":
             arr = np.zeros(3, dtype=np.float32)
             arr[motion_axis] = value
             return arr
@@ -242,7 +242,7 @@ class TestJointArmatureBase(TestJointWithSimStepBase):
 
         Args:
             joint_type: One of ``"revolute"``, ``"prismatic"``, ``"d6_revolute"``,
-                ``"d6_prismatic"``, or ``"ball"``.
+                ``"d6_prismatic"``, or ``"d6_ball"``.
             motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
         """
         dt = 0.01
@@ -264,7 +264,7 @@ class TestJointArmatureBase(TestJointWithSimStepBase):
             )
 
             # Apply a force to the joint for 1 sim step and measure the joint speed.
-            # For multi-DOF joints (ball), apply force only on the motion_axis DOF.
+            # For D6 ball joints, apply force only on the motion_axis DOF.
             num_dof = sim.state_in.joint_qd.numpy().shape[0]
             force_arr = self._make_force_array(force, joint_type, motion_axis, num_dof)
             sim.control.joint_f.assign(force_arr)
@@ -354,17 +354,17 @@ class TestJointArmatureBase(TestJointWithSimStepBase):
         """Higher armature yields lower joint speed for a D6 prismatic joint along Z."""
         self._test_armature_reduces_joint_speed(joint_type="d6_prismatic", motion_axis=2)
 
-    def test_armature_reduces_joint_speed_ball_x(self):
-        """Higher armature yields lower joint speed for a ball joint about X."""
-        self._test_armature_reduces_joint_speed(joint_type="ball", motion_axis=0)
+    def test_armature_reduces_joint_speed_d6_ball_x(self):
+        """Higher armature yields lower joint speed for a D6 ball joint about X."""
+        self._test_armature_reduces_joint_speed(joint_type="d6_ball", motion_axis=0)
 
-    def test_armature_reduces_joint_speed_ball_y(self):
-        """Higher armature yields lower joint speed for a ball joint about Y."""
-        self._test_armature_reduces_joint_speed(joint_type="ball", motion_axis=1)
+    def test_armature_reduces_joint_speed_d6_ball_y(self):
+        """Higher armature yields lower joint speed for a D6 ball joint about Y."""
+        self._test_armature_reduces_joint_speed(joint_type="d6_ball", motion_axis=1)
 
-    def test_armature_reduces_joint_speed_ball_z(self):
-        """Higher armature yields lower joint speed for a ball joint about Z."""
-        self._test_armature_reduces_joint_speed(joint_type="ball", motion_axis=2)
+    def test_armature_reduces_joint_speed_d6_ball_z(self):
+        """Higher armature yields lower joint speed for a D6 ball joint about Z."""
+        self._test_armature_reduces_joint_speed(joint_type="d6_ball", motion_axis=2)
 
 
 class TestJointLimitBase(TestJointWithSimStepBase):
@@ -395,7 +395,7 @@ class TestJointLimitBase(TestJointWithSimStepBase):
 
         Args:
             joint_type: One of ``"revolute"``, ``"prismatic"``, ``"d6_revolute"``,
-                ``"d6_prismatic"``, or ``"ball"``.
+                ``"d6_prismatic"``, or ``"d6_ball"``.
             motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
         """
         dt = 0.01
@@ -583,17 +583,17 @@ class TestJointLimitBase(TestJointWithSimStepBase):
         """Joint limit is enforced for a D6 prismatic joint along Z."""
         self._test_joint_limits(joint_type="d6_prismatic", motion_axis=2)
 
-    def test_joint_limits_ball_x(self):
-        """Joint limit is enforced for a ball joint about X."""
-        self._test_joint_limits(joint_type="ball", motion_axis=0)
+    def test_joint_limits_d6_ball_x(self):
+        """Joint limit is enforced for a D6 ball joint about X."""
+        self._test_joint_limits(joint_type="d6_ball", motion_axis=0)
 
-    def test_joint_limits_ball_y(self):
-        """Joint limit is enforced for a ball joint about Y."""
-        self._test_joint_limits(joint_type="ball", motion_axis=1)
+    def test_joint_limits_d6_ball_y(self):
+        """Joint limit is enforced for a D6 ball joint about Y."""
+        self._test_joint_limits(joint_type="d6_ball", motion_axis=1)
 
-    def test_joint_limits_ball_z(self):
-        """Joint limit is enforced for a ball joint about Z."""
-        self._test_joint_limits(joint_type="ball", motion_axis=2)
+    def test_joint_limits_d6_ball_z(self):
+        """Joint limit is enforced for a D6 ball joint about Z."""
+        self._test_joint_limits(joint_type="d6_ball", motion_axis=2)
 
 
 class TestJointFrictionBase(TestJointWithSimStepBase):
@@ -605,7 +605,7 @@ class TestJointFrictionBase(TestJointWithSimStepBase):
 
         Args:
             joint_type: One of ``"revolute"``, ``"prismatic"``, ``"d6_revolute"``,
-                ``"d6_prismatic"``, or ``"ball"``.
+                ``"d6_prismatic"``, or ``"d6_ball"``.
             motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
         """
         dt = 0.01
@@ -630,7 +630,7 @@ class TestJointFrictionBase(TestJointWithSimStepBase):
             friction=friction_value,
         )
 
-        # For multi-DOF joints (ball), apply force only on the motion_axis DOF.
+        # For D6 ball joints, apply force only on the motion_axis DOF.
         num_dof = sim_no_friction.state_in.joint_qd.numpy().shape[0]
         force_arr = self._make_force_array(force, joint_type, motion_axis, num_dof)
         qd_index = self._qd_index(joint_type, motion_axis)
@@ -738,17 +738,17 @@ class TestJointFrictionBase(TestJointWithSimStepBase):
         """Joint friction reduces velocity for a D6 prismatic joint along Z."""
         self._test_joint_friction(joint_type="d6_prismatic", motion_axis=2)
 
-    def test_joint_friction_ball_x(self):
-        """Joint friction reduces velocity for a ball joint about X."""
-        self._test_joint_friction(joint_type="ball", motion_axis=0)
+    def test_joint_friction_d6_ball_x(self):
+        """Joint friction reduces velocity for a D6 ball joint about X."""
+        self._test_joint_friction(joint_type="d6_ball", motion_axis=0)
 
-    def test_joint_friction_ball_y(self):
-        """Joint friction reduces velocity for a ball joint about Y."""
-        self._test_joint_friction(joint_type="ball", motion_axis=1)
+    def test_joint_friction_d6_ball_y(self):
+        """Joint friction reduces velocity for a D6 ball joint about Y."""
+        self._test_joint_friction(joint_type="d6_ball", motion_axis=1)
 
-    def test_joint_friction_ball_z(self):
-        """Joint friction reduces velocity for a ball joint about Z."""
-        self._test_joint_friction(joint_type="ball", motion_axis=2)
+    def test_joint_friction_d6_ball_z(self):
+        """Joint friction reduces velocity for a D6 ball joint about Z."""
+        self._test_joint_friction(joint_type="d6_ball", motion_axis=2)
 
 
 class TestJointLimitMuJoCo(TestJointLimitBase, unittest.TestCase):
@@ -842,7 +842,7 @@ class TestJointDriveBase(TestJointWithSimStepBase):
 
         Args:
             joint_type: One of ``"revolute"``, ``"prismatic"``, ``"d6_revolute"``,
-                ``"d6_prismatic"``, or ``"ball"``.
+                ``"d6_prismatic"``, or ``"d6_ball"``.
             motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
         """
         dt = 0.01
@@ -1095,17 +1095,17 @@ class TestJointDriveBase(TestJointWithSimStepBase):
         """Joint drive produces expected velocity for a D6 prismatic joint along Z."""
         self._test_joint_drive(joint_type="d6_prismatic", motion_axis=2)
 
-    def test_joint_drive_ball_x(self):
-        """Joint drive produces expected velocity for a ball joint about X."""
-        self._test_joint_drive(joint_type="ball", motion_axis=0)
+    def test_joint_drive_d6_ball_x(self):
+        """Joint drive produces expected velocity for a D6 ball joint about X."""
+        self._test_joint_drive(joint_type="d6_ball", motion_axis=0)
 
-    def test_joint_drive_ball_y(self):
-        """Joint drive produces expected velocity for a ball joint about Y."""
-        self._test_joint_drive(joint_type="ball", motion_axis=1)
+    def test_joint_drive_d6_ball_y(self):
+        """Joint drive produces expected velocity for a D6 ball joint about Y."""
+        self._test_joint_drive(joint_type="d6_ball", motion_axis=1)
 
-    def test_joint_drive_ball_z(self):
-        """Joint drive produces expected velocity for a ball joint about Z."""
-        self._test_joint_drive(joint_type="ball", motion_axis=2)
+    def test_joint_drive_d6_ball_z(self):
+        """Joint drive produces expected velocity for a D6 ball joint about Z."""
+        self._test_joint_drive(joint_type="d6_ball", motion_axis=2)
 
 
 class TestJointDriveFeatherstone(TestJointDriveBase, unittest.TestCase):
