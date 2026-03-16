@@ -587,6 +587,147 @@ add_function_test(
 
 
 # ============================================================================
+# Rigid Contact Normal Direction Tests
+# ============================================================================
+# These tests verify that Contacts.rigid_contact_normal points from shape 0
+# toward shape 1 (A-to-B convention) after running the full collision pipeline.
+
+
+class TestRigidContactNormal(unittest.TestCase):
+    pass
+
+
+def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
+    """Verify rigid_contact_normal on four sphere-pair scenarios.
+
+    All spheres have radius 0.5 and a per-shape gap of 0.05 (summed gap = 0.1).
+    The four pairs are spaced along the Y axis so they don't interact:
+
+    * Pair 0 - **overlap**: centers 0.6 apart  (penetration = -0.4)
+    * Pair 1 - **exact touch**: centers 1.0 apart  (penetration = 0.0)
+    * Pair 2 - **within gap**: centers 1.08 apart  (separation 0.08 < summed gap 0.1)
+    * Pair 3 - **separated**: centers 1.5 apart  (well outside gap, no contact)
+
+    For every contact produced the test checks:
+    1. Normal is unit length.
+    2. Normal points from shape 0 toward shape 1 (A-to-B convention).
+    3. Contact midpoint lies between the two sphere centers.
+
+    Pair 3 must produce zero contacts.
+    """
+    with wp.ScopedDevice(device):
+        radius = 0.5
+        gap = 0.05
+
+        pair_half_dists = [0.3, 0.5, 0.54, 0.75]
+        y_offsets = [0.0, 3.0, 6.0, 9.0]
+        expect_contact = [True, True, True, False]
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.rigid_gap = gap
+
+        positions = []
+        for half_dist, y in zip(pair_half_dists, y_offsets, strict=True):
+            pa = wp.vec3(-half_dist, y, 0.0)
+            pb = wp.vec3(half_dist, y, 0.0)
+            positions.append(pa)
+            positions.append(pb)
+
+            ba = builder.add_body(xform=wp.transform(pa))
+            builder.add_shape_sphere(body=ba, radius=radius)
+            bb = builder.add_body(xform=wp.transform(pb))
+            builder.add_shape_sphere(body=bb, radius=radius)
+
+        model = builder.finalize(device=device)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        count = contacts.rigid_contact_count.numpy()[0]
+        normals = contacts.rigid_contact_normal.numpy()[:count]
+        shape0s = contacts.rigid_contact_shape0.numpy()[:count]
+        shape1s = contacts.rigid_contact_shape1.numpy()[:count]
+        point0s = contacts.rigid_contact_point0.numpy()[:count]
+        point1s = contacts.rigid_contact_point1.numpy()[:count]
+
+        positions_np = np.array(positions, dtype=np.float32)
+
+        expected_contacting_pairs = sum(expect_contact)
+        contacts_per_pair: dict[int, list[int]] = {p: [] for p in range(4)}
+        for i in range(count):
+            s0 = int(shape0s[i])
+            pair_idx = s0 // 2
+            contacts_per_pair[pair_idx].append(i)
+
+        pairs_with_contacts = sum(1 for c in contacts_per_pair.values() if c)
+        test.assertEqual(
+            pairs_with_contacts,
+            expected_contacting_pairs,
+            f"Expected exactly {expected_contacting_pairs} pairs with contacts, got {pairs_with_contacts}",
+        )
+
+        for pair_idx in range(4):
+            pair_contacts = contacts_per_pair[pair_idx]
+            label = f"pair {pair_idx} (half_dist={pair_half_dists[pair_idx]})"
+
+            if not expect_contact[pair_idx]:
+                test.assertEqual(len(pair_contacts), 0, f"{label}: expected no contacts but got {len(pair_contacts)}")
+                continue
+
+            test.assertGreater(len(pair_contacts), 0, f"{label}: expected at least one contact")
+
+            for i in pair_contacts:
+                normal = normals[i]
+                s0 = int(shape0s[i])
+                s1 = int(shape1s[i])
+
+                normal_len = np.linalg.norm(normal)
+                test.assertAlmostEqual(
+                    normal_len,
+                    1.0,
+                    places=3,
+                    msg=f"{label} contact {i}: normal must be unit length (got {normal_len})",
+                )
+
+                center_a = positions_np[s0]
+                center_b = positions_np[s1]
+                expected_dir = center_b - center_a
+                expected_dir = expected_dir / np.linalg.norm(expected_dir)
+
+                dot = np.dot(normal, expected_dir)
+                test.assertGreater(
+                    dot,
+                    0.95,
+                    f"{label} contact {i}: normal must point from shape {s0} toward shape {s1} "
+                    f"(dot={dot:.4f}, normal={normal}, expected_dir={expected_dir})",
+                )
+
+                # point0/point1 are in body-local frames; transform to world
+                p0_world = point0s[i] + center_a
+                p1_world = point1s[i] + center_b
+                midpoint = (p0_world + p1_world) / 2.0
+                lo = min(center_a[0], center_b[0])
+                hi = max(center_a[0], center_b[0])
+                test.assertTrue(
+                    lo - 1e-3 <= midpoint[0] <= hi + 1e-3,
+                    f"{label} contact {i}: midpoint x={midpoint[0]:.4f} should lie between "
+                    f"center x=[{lo:.4f}, {hi:.4f}]",
+                )
+
+
+for bp_name in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestRigidContactNormal,
+        f"test_rigid_contact_normal_sphere_sphere_{bp_name}",
+        test_rigid_contact_normal_sphere_sphere,
+        devices=devices,
+        broad_phase=bp_name,
+    )
+
+
+# ============================================================================
 # Particle-Shape (Soft) Contact Tests
 # ============================================================================
 # These tests verify that particle-shape contacts are correctly generated
