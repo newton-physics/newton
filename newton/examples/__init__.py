@@ -454,7 +454,7 @@ def create_parser():
     )
     parser.add_argument(
         "--benchmark",
-        type=float,
+        type=int,
         default=False,
         nargs="?",
         const=None,
