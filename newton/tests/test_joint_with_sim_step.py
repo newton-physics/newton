@@ -962,6 +962,8 @@ class TestJointDriveBase(TestJointWithSimStepBase):
             sim.model.joint_target_ke.assign(np.full(num_dof, drive_ke, dtype=np.float32))
             sim.model.joint_target_pos.assign(np.full(num_dof, target_pos, dtype=np.float32))
             sim.model.joint_effort_limit.assign(np.full(num_dof, small_effort, dtype=np.float32))
+            # Re-derive control because the previous block set control.joint_target_pos directly.
+            sim.control = sim.model.control()
             sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
             sim.state_in.joint_qd.assign(self._make_dof_array(start_qd, joint_type, motion_axis))
             sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
