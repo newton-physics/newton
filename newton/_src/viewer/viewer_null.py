@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-import time
+import time as _time
 from typing import Any
 
 import numpy as np
@@ -139,10 +139,12 @@ class ViewerNull(ViewerBase):
 
         if self.benchmark:
             if self.frame_count == self.benchmark_start_frame:
-                self._bench_start_time = time.perf_counter()
+                wp.synchronize()
+                self._bench_start_time = _time.perf_counter()
             elif self._bench_start_time is not None:
+                wp.synchronize()
                 self._bench_frames = self.frame_count - self.benchmark_start_frame
-                self._bench_elapsed = time.perf_counter() - self._bench_start_time
+                self._bench_elapsed = _time.perf_counter() - self._bench_start_time
 
     @override
     def is_running(self) -> bool:
@@ -163,7 +165,7 @@ class ViewerNull(ViewerBase):
             return False
         return True
 
-    def benchmark_result(self) -> dict | None:
+    def benchmark_result(self) -> dict[str, float | int] | None:
         """Return benchmark results, or ``None`` if benchmarking was not enabled.
 
         Returns:

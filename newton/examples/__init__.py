@@ -250,7 +250,7 @@ class _ExampleBrowser:
         return new_example
 
 
-def _format_fps(fps):
+def _format_fps(fps: float) -> str:
     """Format an FPS value with sufficient significant digits."""
     if fps >= 10:
         return f"{fps:.1f}"
