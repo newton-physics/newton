@@ -105,13 +105,13 @@ def sample_texture(
     f: wp.int32,
     mesh_id: wp.int32,
 ) -> wp.vec3f:
-    tex_color = wp.vec3f(1.0, 1.0, 1.0)
+    DEFAULT_RETURN = wp.vec3f(1.0, 1.0, 1.0)
 
     if material_index == -1 or texture_index == -1:
-        return tex_color
+        return DEFAULT_RETURN
 
     if shape_type == GeoType.PLANE:
-        tex_color = sample_texture_plane(
+        return sample_texture_plane(
             hit_point,
             shape_transform,
             material_texture_repeat,
@@ -123,14 +123,14 @@ def sample_texture(
 
     if shape_type == GeoType.MESH:
         if f < 0 or mesh_id < 0 or not mesh_texcoord_offsets.shape[0]:
-            return tex_color
+            return DEFAULT_RETURN
 
         uv_base = mesh_texcoord_offsets[mesh_id]
 
         if mesh_texcoord.shape[0] <= uv_base:
-            return tex_color
+            return DEFAULT_RETURN
 
-        tex_color = sample_texture_mesh(
+        return sample_texture_mesh(
             u,
             v,
             uv_base,
@@ -144,4 +144,4 @@ def sample_texture(
             texture_width,
         )
 
-    return tex_color
+    return DEFAULT_RETURN

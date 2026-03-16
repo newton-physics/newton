@@ -23,7 +23,7 @@ import warp as wp
 
 from ..geometry import GeoType, ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, GaussianRenderMode, RenderContext, RenderLightType, RenderOrder
+from .warp_raytrace import GaussianRenderMode, RenderContext, RenderLightType, RenderOrder
 
 
 @wp.kernel(enable_backward=False)
@@ -126,7 +126,7 @@ class SensorTiledCamera:
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
     GaussianRenderMode = GaussianRenderMode
-    ClearData = ClearData
+    ClearData = RenderContext.ClearData
 
     DEFAULT_CLEAR_DATA = ClearData()
     GRAY_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
@@ -277,7 +277,7 @@ class SensorTiledCamera:
         normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None = None,
         albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         refit_bvh: bool = True,
-        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
+        clear_data: SensorTiledCamera.ClearData | None = DEFAULT_CLEAR_DATA,
     ):
         """Render output images for all worlds and cameras.
 
@@ -296,7 +296,7 @@ class SensorTiledCamera:
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for unshaded surface color. None to skip.
             refit_bvh: Refit the BVH before rendering.
-            clear_data: Values to clear output buffers with. None to skip clearing.
+            clear_data: Values to clear output buffers with.
                 See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
         """
         if state is not None:

@@ -76,59 +76,96 @@ class SensorTiledCameraBenchmark:
             self.tiled_camera_sensor.render_context.refit_bvh()
         self.timings["refit"] = timer.elapsed
 
-        for _ in range(iterations):
-            self.tiled_camera_sensor.update(
-                None,
-                self.camera_transforms,
-                self.camera_rays,
-                color_image=self.color_image,
-                depth_image=self.depth_image,
-                refit_bvh=False,
-            )
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_rendering_pixel(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
-        with wp.ScopedTimer("Rendering", synchronize=True, print=True) as timer:
+        for out_color, out_depth in [(True, True), (True, False), (False, True)]:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
                     None,
                     self.camera_transforms,
                     self.camera_rays,
-                    color_image=self.color_image,
-                    depth_image=self.depth_image,
+                    color_image=self.color_image if out_color else None,
+                    depth_image=self.depth_image if out_depth else None,
                     refit_bvh=False,
-                    clear_data=None,
                 )
-        self.timings["render_pixel"] = timer.elapsed
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_rendering_pixel(self, resolution: int, world_count: int, iterations: int):
+        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+        for out_color, out_depth in [(True, True), (True, False), (False, True)]:
+            with wp.ScopedTimer("Rendering", synchronize=True, print=True) as timer:
+                for _ in range(iterations):
+                    self.tiled_camera_sensor.update(
+                        None,
+                        self.camera_transforms,
+                        self.camera_rays,
+                        color_image=self.color_image if out_color else None,
+                        depth_image=self.depth_image if out_depth else None,
+                        refit_bvh=False,
+                        clear_data=None,
+                    )
+            self.timings[("render_pixel", out_color, out_depth)] = timer.elapsed
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_tiled(self, resolution: int, world_count: int, iterations: int):
         self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.TILED
         self.tiled_camera_sensor.render_context.config.tile_width = 8
         self.tiled_camera_sensor.render_context.config.tile_height = 8
-        with wp.ScopedTimer("Tiled Rendering", synchronize=True, print=False) as timer:
-            for _ in range(iterations):
-                self.tiled_camera_sensor.update(
-                    None,
-                    self.camera_transforms,
-                    self.camera_rays,
-                    color_image=self.color_image,
-                    depth_image=self.depth_image,
-                    refit_bvh=False,
-                    clear_data=None,
-                )
-        self.timings["render_tiled"] = timer.elapsed
+        for out_color, out_depth in [(True, True), (True, False), (False, True)]:
+            with wp.ScopedTimer("Tiled Rendering", synchronize=True, print=False) as timer:
+                for _ in range(iterations):
+                    self.tiled_camera_sensor.update(
+                        None,
+                        self.camera_transforms,
+                        self.camera_rays,
+                        color_image=self.color_image if out_color else None,
+                        depth_image=self.depth_image if out_depth else None,
+                        refit_bvh=False,
+                        clear_data=None,
+                    )
+            self.timings[("render_tiled", out_color, out_depth)] = timer.elapsed
 
     def teardown(self, resolution: int, world_count: int, iterations: int):
         print("")
         print("=== Benchmark Results (FPS) ===")
         if "refit" in self.timings:
             self.__print_timer("Refit BVH", self.timings["refit"], 1, self.tiled_camera_sensor)
-        if "render_pixel" in self.timings:
-            self.__print_timer("Rendering (Pixel)", self.timings["render_pixel"], iterations, self.tiled_camera_sensor)
-        if "render_tiled" in self.timings:
-            self.__print_timer("Rendering (Tiled)", self.timings["render_tiled"], iterations, self.tiled_camera_sensor)
+
+        if ("render_pixel", True, True) in self.timings:
+            self.__print_timer(
+                "Rendering (Pixel)", self.timings[("render_pixel", True, True)], iterations, self.tiled_camera_sensor
+            )
+        if ("render_pixel", True, False) in self.timings:
+            self.__print_timer(
+                "Rendering (Pixel) (Color Only)",
+                self.timings[("render_pixel", True, False)],
+                iterations,
+                self.tiled_camera_sensor,
+            )
+        if ("render_pixel", False, True) in self.timings:
+            self.__print_timer(
+                "Rendering (Pixel) (Depth Only)",
+                self.timings[("render_pixel", False, True)],
+                iterations,
+                self.tiled_camera_sensor,
+            )
+
+        if ("render_tiled", True, True) in self.timings:
+            self.__print_timer(
+                "Rendering (Tiled)", self.timings[("render_tiled", True, True)], iterations, self.tiled_camera_sensor
+            )
+        if ("render_tiled", True, False) in self.timings:
+            self.__print_timer(
+                "Rendering (Tiled) (Color Only)",
+                self.timings[("render_tiled", True, False)],
+                iterations,
+                self.tiled_camera_sensor,
+            )
+        if ("render_tiled", False, True) in self.timings:
+            self.__print_timer(
+                "Rendering (Tiled) (Depth Only)",
+                self.timings[("render_tiled", False, True)],
+                iterations,
+                self.tiled_camera_sensor,
+            )
 
         if os.environ.get("SAVE_IMAGES", "0") != "0":
             from PIL import Image  # noqa: PLC0415
@@ -146,7 +183,7 @@ class SensorTiledCameraBenchmark:
         average = f"{elapsed / iterations:.2f} ms"
         fps = f"({(1000.0 / (elapsed / iterations) * (sensor.render_context.world_count * camera_count)):,.2f} fps)"
 
-        print(f"{title} {'.' * (40 - len(title) - len(average))} {average} {fps if iterations > 1 else ''}")
+        print(f"{title} {'.' * (50 - len(title) - len(average))} {average} {fps if iterations > 1 else ''}")
 
 
 if __name__ == "__main__":
