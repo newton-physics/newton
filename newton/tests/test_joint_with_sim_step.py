@@ -211,22 +211,50 @@ class TestJointWithSimStepBase:
 
         return Sim(model, solver, state_in, state_out, control)
 
+    def _is_multi_dof(self, joint_type):
+        """Return whether the joint type has 3 DOFs."""
+        return joint_type in ("d6_ball", "ball")
+
     def _qd_index(self, joint_type, motion_axis):
         """Return the index into ``joint_qd`` for the tested DOF."""
-        return motion_axis if joint_type == "d6_ball" else 0
+        return motion_axis if self._is_multi_dof(joint_type) else 0
 
-    def _make_dof_array(self, value, joint_type, motion_axis):
-        """Create a per-DOF array with ``value`` on the tested axis.
+    def _make_q_array(self, value, joint_type, motion_axis):
+        """Create a ``joint_q`` array with ``value`` on the tested axis.
 
-        For D6 ball joints (3 DOFs), returns a 3-element array with ``value``
-        at ``motion_axis``.  For 1-DOF joints, returns a 1-element array.
+        For true ball joints (quaternion, 4 elements), returns the identity
+        quaternion ``[0, 0, 0, 1]`` (xyzw) — the ``value`` parameter is ignored
+        because quaternion coordinates cannot be set per-axis as a scalar.
+        For D6 ball joints (3 DOFs), returns a 3-element array.
+        For 1-DOF joints, returns a 1-element array.
 
         Args:
-            value: Scalar value to place on the tested axis.
+            value: Scalar position to place on the tested axis [rad or m].
             joint_type: Joint type string.
             motion_axis: Axis index (0=X, 1=Y, 2=Z).
         """
+        if joint_type == "ball":
+            if value != 0.0:
+                raise ValueError(f"Cannot set per-axis q={value} on a ball joint (quaternion representation)")
+            return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
         if joint_type == "d6_ball":
+            arr = np.zeros(3, dtype=np.float32)
+            arr[motion_axis] = value
+            return arr
+        return np.array([value], dtype=np.float32)
+
+    def _make_qd_array(self, value, joint_type, motion_axis):
+        """Create a ``joint_qd`` array with ``value`` on the tested axis.
+
+        For 3-DOF joints (``d6_ball``, ``ball``), returns a 3-element array with
+        ``value`` at ``motion_axis``.  For 1-DOF joints, returns a 1-element array.
+
+        Args:
+            value: Scalar velocity to place on the tested axis [rad/s or m/s].
+            joint_type: Joint type string.
+            motion_axis: Axis index (0=X, 1=Y, 2=Z).
+        """
+        if self._is_multi_dof(joint_type):
             arr = np.zeros(3, dtype=np.float32)
             arr[motion_axis] = value
             return arr
@@ -301,8 +329,8 @@ class TestJointArmatureBase(TestJointWithSimStepBase):
         armature_changed = 20.0
         armature_arr = np.full(num_dof, armature_changed, dtype=np.float32)
         sims[0].model.joint_armature.assign(armature_arr)
-        sims[0].state_in.joint_q.assign(self._make_dof_array(0.0, joint_type, motion_axis))
-        sims[0].state_in.joint_qd.assign(self._make_dof_array(0.0, joint_type, motion_axis))
+        sims[0].state_in.joint_q.assign(self._make_q_array(0.0, joint_type, motion_axis))
+        sims[0].state_in.joint_qd.assign(self._make_qd_array(0.0, joint_type, motion_axis))
 
         sims[0].solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         sims[0].control.joint_f.assign(force_arr)
@@ -453,8 +481,8 @@ class TestJointLimitBase(TestJointWithSimStepBase):
                 limit_upper=initial_limits_for_newton[i][1],
             )
             num_dof = sim.state_in.joint_qd.numpy().shape[0]
-            sim.state_in.joint_q.assign(self._make_dof_array(initial_start_qs[i], joint_type, motion_axis))
-            sim.state_in.joint_qd.assign(self._make_dof_array(initial_start_qds[i], joint_type, motion_axis))
+            sim.state_in.joint_q.assign(self._make_q_array(initial_start_qs[i], joint_type, motion_axis))
+            sim.state_in.joint_qd.assign(self._make_qd_array(initial_start_qds[i], joint_type, motion_axis))
 
             # Compute the expected velocity after applying the penalty force to repair the limit breach.
             ke = sim.model.joint_limit_ke.numpy()[qd_index]
@@ -484,8 +512,8 @@ class TestJointLimitBase(TestJointWithSimStepBase):
             else:
                 raise ValueError(f"Unexpected index {i}")
 
-            sim.state_in.joint_q.assign(self._make_dof_array(changed_start_qs[i], joint_type, motion_axis))
-            sim.state_in.joint_qd.assign(self._make_dof_array(changed_start_qds[i], joint_type, motion_axis))
+            sim.state_in.joint_q.assign(self._make_q_array(changed_start_qs[i], joint_type, motion_axis))
+            sim.state_in.joint_qd.assign(self._make_qd_array(changed_start_qds[i], joint_type, motion_axis))
             sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
             expected_qd = self._expected_limit_qd(
                 ke, kd, changed_start_qs[i], changed_start_qds[i], changed_limit_qs[i], dt, body_mass
@@ -506,8 +534,8 @@ class TestJointLimitBase(TestJointWithSimStepBase):
             # Remember that the limits are currently set to changed_limits_for_newton.
             changed_ke = ke * 2.0
             sim.model.joint_limit_ke.assign(np.full(num_dof, changed_ke, dtype=np.float32))
-            sim.state_in.joint_q.assign(self._make_dof_array(changed_start_qs[i], joint_type, motion_axis))
-            sim.state_in.joint_qd.assign(self._make_dof_array(changed_start_qds[i], joint_type, motion_axis))
+            sim.state_in.joint_q.assign(self._make_q_array(changed_start_qs[i], joint_type, motion_axis))
+            sim.state_in.joint_qd.assign(self._make_qd_array(changed_start_qds[i], joint_type, motion_axis))
             sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
             expected_qd = self._expected_limit_qd(
                 changed_ke, kd, changed_start_qs[i], changed_start_qds[i], changed_limit_qs[i], dt, body_mass
@@ -533,8 +561,8 @@ class TestJointLimitBase(TestJointWithSimStepBase):
                 start_qd_for_kd_test = -5.0 if changed_start_qs[i] > 0 else 5.0
                 sim.model.joint_limit_ke.assign(np.full(num_dof, changed_ke, dtype=np.float32))
                 sim.model.joint_limit_kd.assign(np.full(num_dof, changed_kd, dtype=np.float32))
-                sim.state_in.joint_q.assign(self._make_dof_array(changed_start_qs[i], joint_type, motion_axis))
-                sim.state_in.joint_qd.assign(self._make_dof_array(start_qd_for_kd_test, joint_type, motion_axis))
+                sim.state_in.joint_q.assign(self._make_q_array(changed_start_qs[i], joint_type, motion_axis))
+                sim.state_in.joint_qd.assign(self._make_qd_array(start_qd_for_kd_test, joint_type, motion_axis))
                 sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
                 expected_qd = self._expected_limit_qd(
                     changed_ke,
@@ -693,8 +721,8 @@ class TestJointFrictionBase(TestJointWithSimStepBase):
         # Increase friction at runtime and verify a larger reduction.
         higher_friction = friction_value * 3.0
         sim_with_friction.model.joint_friction.assign(np.full(num_dof, higher_friction, dtype=np.float32))
-        sim_with_friction.state_in.joint_q.assign(self._make_dof_array(0.0, joint_type, motion_axis))
-        sim_with_friction.state_in.joint_qd.assign(self._make_dof_array(0.0, joint_type, motion_axis))
+        sim_with_friction.state_in.joint_q.assign(self._make_q_array(0.0, joint_type, motion_axis))
+        sim_with_friction.state_in.joint_qd.assign(self._make_qd_array(0.0, joint_type, motion_axis))
         sim_with_friction.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         sim_with_friction.control.joint_f.assign(force_arr)
         sim_with_friction.solver.step(
@@ -899,8 +927,8 @@ class TestJointDriveBase(TestJointWithSimStepBase):
         )
         num_dof = sim.state_in.joint_qd.numpy().shape[0]
         qd_index = self._qd_index(joint_type, motion_axis)
-        sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
-        sim.state_in.joint_qd.assign(self._make_dof_array(start_qd, joint_type, motion_axis))
+        sim.state_in.joint_q.assign(self._make_q_array(start_q, joint_type, motion_axis))
+        sim.state_in.joint_qd.assign(self._make_qd_array(start_qd, joint_type, motion_axis))
 
         expected_qd = self._expected_drive_qd(drive_ke, drive_kd, start_q, start_qd, target_pos, dt, body_inertia)
 
@@ -918,8 +946,8 @@ class TestJointDriveBase(TestJointWithSimStepBase):
         # Higher drive stiffness should produce higher velocity toward target.
         higher_ke = drive_ke * 3.0
         sim.model.joint_target_ke.assign(np.full(num_dof, higher_ke, dtype=np.float32))
-        sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
-        sim.state_in.joint_qd.assign(self._make_dof_array(start_qd, joint_type, motion_axis))
+        sim.state_in.joint_q.assign(self._make_q_array(start_q, joint_type, motion_axis))
+        sim.state_in.joint_qd.assign(self._make_qd_array(start_qd, joint_type, motion_axis))
         sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         expected_qd2 = self._expected_drive_qd(higher_ke, drive_kd, start_q, start_qd, target_pos, dt, body_inertia)
@@ -942,8 +970,8 @@ class TestJointDriveBase(TestJointWithSimStepBase):
         sim.model.joint_target_ke.assign(np.full(num_dof, drive_ke, dtype=np.float32))
         sim.model.joint_target_pos.assign(np.full(num_dof, changed_target_pos, dtype=np.float32))
         sim.control = sim.model.control()
-        sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
-        sim.state_in.joint_qd.assign(self._make_dof_array(start_qd, joint_type, motion_axis))
+        sim.state_in.joint_q.assign(self._make_q_array(start_q, joint_type, motion_axis))
+        sim.state_in.joint_qd.assign(self._make_qd_array(start_qd, joint_type, motion_axis))
         sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         expected_qd_tp = self._expected_drive_qd(
@@ -967,8 +995,8 @@ class TestJointDriveBase(TestJointWithSimStepBase):
         # Set target_pos via Control instead of Model and verify the drive responds.
         ctrl_target_pos = 2.0
         sim.control.joint_target_pos.assign(np.full(num_dof, ctrl_target_pos, dtype=np.float32))
-        sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
-        sim.state_in.joint_qd.assign(self._make_dof_array(start_qd, joint_type, motion_axis))
+        sim.state_in.joint_q.assign(self._make_q_array(start_q, joint_type, motion_axis))
+        sim.state_in.joint_qd.assign(self._make_qd_array(start_qd, joint_type, motion_axis))
         sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         expected_qd_ctrl = self._expected_drive_qd(
@@ -998,8 +1026,8 @@ class TestJointDriveBase(TestJointWithSimStepBase):
             sim.model.joint_effort_limit.assign(np.full(num_dof, small_effort, dtype=np.float32))
             # Re-derive control because the previous block set control.joint_target_pos directly.
             sim.control = sim.model.control()
-            sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
-            sim.state_in.joint_qd.assign(self._make_dof_array(start_qd, joint_type, motion_axis))
+            sim.state_in.joint_q.assign(self._make_q_array(start_q, joint_type, motion_axis))
+            sim.state_in.joint_qd.assign(self._make_qd_array(start_qd, joint_type, motion_axis))
             sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
             unclamped_force = self._drive_force(drive_ke, drive_kd, start_q, start_qd, target_pos)
@@ -1033,8 +1061,8 @@ class TestJointDriveBase(TestJointWithSimStepBase):
         sim.model.joint_target_kd.assign(np.full(num_dof, higher_kd, dtype=np.float32))
         sim.model.joint_target_pos.assign(np.full(num_dof, target_pos, dtype=np.float32))
         sim.control = sim.model.control()
-        sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
-        sim.state_in.joint_qd.assign(self._make_dof_array(start_qd_for_kd, joint_type, motion_axis))
+        sim.state_in.joint_q.assign(self._make_q_array(start_q, joint_type, motion_axis))
+        sim.state_in.joint_qd.assign(self._make_qd_array(start_qd_for_kd, joint_type, motion_axis))
         sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         expected_qd_kd = self._expected_drive_qd(
@@ -1064,8 +1092,8 @@ class TestJointDriveBase(TestJointWithSimStepBase):
         sim.model.joint_target_kd.assign(np.full(num_dof, 0.0, dtype=np.float32))
         sim.control = sim.model.control()
         sim.control.joint_f.assign(self._make_force_array(joint_force, joint_type, motion_axis, num_dof))
-        sim.state_in.joint_q.assign(self._make_dof_array(start_q, joint_type, motion_axis))
-        sim.state_in.joint_qd.assign(self._make_dof_array(start_qd, joint_type, motion_axis))
+        sim.state_in.joint_q.assign(self._make_q_array(start_q, joint_type, motion_axis))
+        sim.state_in.joint_qd.assign(self._make_qd_array(start_qd, joint_type, motion_axis))
         sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         expected_qd_f = start_qd + dt * joint_force / body_inertia
