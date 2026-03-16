@@ -107,6 +107,8 @@ def write_contact(
     contact_solref_out[cid] = solref_in
     contact_solreffriction_out[cid] = solreffriction_in
     contact_solimp_out[cid] = solimp_in
+
+    # initialize constraint address to -1 (max 10 elements; populated during constraint generation)
     for i in range(contact_efc_address_out.shape[1]):
         contact_efc_address_out[cid, i] = -1
 
