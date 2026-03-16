@@ -495,7 +495,6 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
     penetrations = [0.0, 1e-4, 1e-3, 1e-2]
 
     for pen in penetrations:
-
         voxel_size = (2 * cube_half + 2 * 0.01) / 64  # SDF domain / max_resolution
         depth_in_voxels = pen / voxel_size
         if depth_in_voxels < SKIP_DEPTH_IN_VOXELS_THRESHOLD:
