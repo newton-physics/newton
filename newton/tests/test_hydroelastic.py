@@ -435,10 +435,10 @@ def _compute_net_force(contacts, model, state):
     off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
     p0w = p0 + off0
     p1w = p1 + off1
-    depth = np.einsum("ij,ij->i", p0w - p1w, normals) / 2.0
+    depth = np.einsum("ij,ij->i", p0w - p1w, -normals) / 2.0
     mask = (stiffness > 0) & (depth < 0)
     force_mag = stiffness[mask] * (-depth[mask])
-    return np.sum(force_mag[:, None] * normals[mask], axis=0)
+    return np.sum(force_mag[:, None] * (-normals[mask]), axis=0)
 
 
 def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: bool):
