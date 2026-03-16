@@ -353,7 +353,6 @@ class TestInertiaValidationParity(unittest.TestCase):
             results[mode] = {
                 "model_mass": float(model.body_mass.numpy()[body_idx]),
                 "model_inertia": np.array(model.body_inertia.numpy()[body_idx]),
-                "builder_mass": builder.body_mass[body_idx],
             }
         return results
 
@@ -461,26 +460,29 @@ class TestInertiaValidationParity(unittest.TestCase):
         self._assert_parity(results)
         np.testing.assert_allclose(results["detailed"]["model_inertia"], np.diag([2.0, 3.0, 4.0]), atol=1e-5)
 
-    def test_builder_state_updated_fast_path(self):
-        """Fast path should update builder state to match model state."""
-        builder = ModelBuilder()
-        builder.validate_inertia_detailed = False
+    def test_builder_state_unchanged_after_finalize(self):
+        """finalize() should not mutate builder state — corrections live only on the Model."""
+        for detailed in (True, False):
+            with self.subTest(detailed=detailed):
+                builder = ModelBuilder()
+                builder.validate_inertia_detailed = detailed
 
-        body_idx = builder.add_body(
-            mass=-1.0,
-            inertia=wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
-            label="test_body",
-        )
+                original_mass = -1.0
+                original_inertia = wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+                body_idx = builder.add_body(
+                    mass=original_mass,
+                    inertia=original_inertia,
+                    label="test_body",
+                )
 
-        with warnings.catch_warnings(record=True):
-            model = builder.finalize()
+                with warnings.catch_warnings(record=True):
+                    model = builder.finalize()
 
-        # Builder state should match model state after detailed validation
-        self.assertAlmostEqual(
-            builder.body_mass[body_idx],
-            float(model.body_mass.numpy()[body_idx]),
-            places=5,
-        )
+                # Builder retains original (uncorrected) values
+                self.assertEqual(builder.body_mass[body_idx], original_mass)
+
+                # Model has corrected values
+                self.assertAlmostEqual(float(model.body_mass.numpy()[body_idx]), 0.0, places=5)
 
 
 if __name__ == "__main__":

@@ -824,7 +824,9 @@ class ModelBuilder:
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
         When True, uses a CPU implementation that reports specific issues for each body.
-        Both modes produce semantically identical results and update the ModelBuilder's internal state.
+        Both modes produce semantically identical corrected values on the returned
+        :class:`Model`. Neither mode modifies the builder's internal state — corrected
+        values live only on the Model.
         Default: False."""
 
         # endregion
@@ -9821,41 +9823,47 @@ class ModelBuilder:
             # rigid bodies
 
             # Apply inertia verification and correction
-            # This catches negative masses/inertias and other critical issues
+            # This catches negative masses/inertias and other critical issues.
+            # Neither path mutates the builder — corrected values only appear
+            # on the returned Model so that finalize() is side-effect-free.
             if len(self.body_mass) > 0:
                 if self.validate_inertia_detailed:
-                    # Use detailed Python validation with per-body warnings
+                    # Use detailed Python validation with per-body warnings.
+                    # Build corrected copies without modifying builder lists.
+                    corrected_mass = list(self.body_mass)
+                    corrected_inertia = list(self.body_inertia)
+                    corrected_inv_mass = list(self.body_inv_mass)
+                    corrected_inv_inertia = list(self.body_inv_inertia)
+
                     for i in range(len(self.body_mass)):
                         mass = self.body_mass[i]
                         inertia = self.body_inertia[i]
                         body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
 
-                        corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
+                        new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
                             mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia, body_label
                         )
 
                         if was_corrected:
-                            self.body_mass[i] = corrected_mass
-                            self.body_inertia[i] = corrected_inertia
-                            # Update inverse mass and inertia
-                            if corrected_mass > 0.0:
-                                self.body_inv_mass[i] = 1.0 / corrected_mass
+                            corrected_mass[i] = new_mass
+                            corrected_inertia[i] = new_inertia
+                            if new_mass > 0.0:
+                                corrected_inv_mass[i] = 1.0 / new_mass
                             else:
-                                self.body_inv_mass[i] = 0.0
+                                corrected_inv_mass[i] = 0.0
 
-                            if any(x for x in corrected_inertia):
-                                self.body_inv_inertia[i] = wp.inverse(corrected_inertia)
+                            if any(x for x in new_inertia):
+                                corrected_inv_inertia[i] = wp.inverse(new_inertia)
                             else:
-                                self.body_inv_inertia[i] = corrected_inertia
+                                corrected_inv_inertia[i] = new_inertia
 
-                    # For detailed validation, create arrays from builder data (which were updated)
-                    m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    # Create arrays from corrected copies
+                    m.body_mass = wp.array(corrected_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inv_mass = wp.array(corrected_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inertia = wp.array(corrected_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    m.body_inv_inertia = wp.array(corrected_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
                 else:
                     # Use fast Warp kernel validation
-                    # First create arrays for the kernel
                     body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
                     body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
                     body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
@@ -9864,7 +9872,7 @@ class ModelBuilder:
                     )
                     correction_count = wp.zeros(1, dtype=wp.int32)
 
-                    # Launch validation kernel
+                    # Launch validation kernel (corrects arrays in-place on device)
                     wp.launch(
                         kernel=validate_and_correct_inertia_kernel,
                         dim=len(self.body_mass),
@@ -9880,16 +9888,18 @@ class ModelBuilder:
                         ],
                     )
 
-                    # Store corrected arrays for deferred builder state sync.
-                    # Reading correction_count here would force a GPU sync that
-                    # stalls the pipeline, so we defer to end of finalize().
-                    self._deferred_body_mass = body_mass_array
-                    self._deferred_body_inertia = body_inertia_array
-                    self._deferred_body_inv_mass = body_inv_mass_array
-                    self._deferred_body_inv_inertia = body_inv_inertia_array
-                    self._deferred_correction_count = correction_count
+                    # Check if any corrections were made (single int transfer)
+                    num_corrections = int(correction_count.numpy()[0])
+                    if num_corrections > 0:
+                        warnings.warn(
+                            f"Inertia validation corrected {num_corrections} bodies. "
+                            f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                            stacklevel=2,
+                        )
 
-                    # Use the corrected arrays directly on the Model
+                    # Use the corrected arrays directly on the Model.
+                    # Builder state is intentionally left unchanged — corrected
+                    # values live only on the returned Model.
                     m.body_mass = body_mass_array
                     m.body_inv_mass = body_inv_mass_array
                     m.body_inertia = body_inertia_array
@@ -10081,7 +10091,6 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
-                self._sync_inertia_corrections()
                 return m
 
             # Resolve authoritative counts for custom frequencies
@@ -10173,56 +10182,7 @@ class ModelBuilder:
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
-            self._sync_inertia_corrections()
             return m
-
-    def _sync_inertia_corrections(self):
-        """Sync builder state from deferred fast-path inertia corrections.
-
-        Called at the end of :meth:`finalize` so that the GPU kernel has had
-        time to complete without blocking the pipeline earlier.
-        """
-        cc = getattr(self, "_deferred_correction_count", None)
-        if cc is None:
-            return
-
-        num_corrections = int(cc.numpy()[0])
-        if num_corrections > 0:
-            warnings.warn(
-                f"Inertia validation corrected {num_corrections} bodies. "
-                f"Set validate_inertia_detailed=True for detailed per-body warnings.",
-                stacklevel=3,
-            )
-            # Rebuild builder lists from corrected GPU arrays.
-            self.body_mass = self._deferred_body_mass.numpy().tolist()
-            self.body_inv_mass = self._deferred_body_inv_mass.numpy().tolist()
-            inertias_np = self._deferred_body_inertia.numpy()
-            inv_inertias_np = self._deferred_body_inv_inertia.numpy()
-            # fmt: off
-            self.body_inertia = [
-                wp.mat33(
-                    m[0][0], m[0][1], m[0][2],
-                    m[1][0], m[1][1], m[1][2],
-                    m[2][0], m[2][1], m[2][2],
-                )
-                for m in inertias_np
-            ]
-            self.body_inv_inertia = [
-                wp.mat33(
-                    m[0][0], m[0][1], m[0][2],
-                    m[1][0], m[1][1], m[1][2],
-                    m[2][0], m[2][1], m[2][2],
-                )
-                for m in inv_inertias_np
-            ]
-            # fmt: on
-
-        # Clear deferred state
-        del self._deferred_body_mass
-        del self._deferred_body_inertia
-        del self._deferred_body_inv_mass
-        del self._deferred_body_inv_inertia
-        del self._deferred_correction_count
 
     def _test_group_pair(self, group_a: int, group_b: int) -> bool:
         """Test if two collision groups should interact.
