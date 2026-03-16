@@ -1627,7 +1627,8 @@ class Gaussian:
             sh_coeffs: Spherical harmonic coefficients, shape ``(N, C)``, float.
                 The number of coefficients *C* determines the SH degree
                 (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.).
-            sh_degree: Spherical harmonic degree, int.
+            sh_degree: Spherical harmonic degree.
+            min_response: Minimum response required for alpha testing.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -1714,7 +1715,7 @@ class Gaussian:
 
     @property
     def sh_degree(self) -> int:
-        """Spherical harmonics degree (0--3), int"""
+        """Spherical harmonics degree (0-3), int"""
         return self._sh_degree
 
     @property
@@ -1723,7 +1724,7 @@ class Gaussian:
         return self._min_response
 
     def _find_sh_degree(self) -> int:
-        """Spherical harmonics degree (0--3), inferred from *sh_coeffs* shape."""
+        """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
         # SH bands: degree 0 -> 1*3=3, degree 1 -> 4*3=12,
         #           degree 2 -> 9*3=27, degree 3 -> 16*3=48
