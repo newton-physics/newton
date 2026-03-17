@@ -81,6 +81,7 @@
 - Export `ViewerBase` from `newton.viewer` public API
 - Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
+- Add site-targeted actuator support to MuJoCo solver
 
 ### Changed
 
