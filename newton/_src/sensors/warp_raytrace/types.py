@@ -51,10 +51,11 @@ class GaussianRenderMode(enum.IntEnum):
 
 @wp.struct
 class MeshData:
-    """Per-mesh UV coordinate data used for texture mapping during raytracing.
+    """Per-mesh auxiliary vertex data for texture mapping and smooth shading.
 
     Attributes:
-        uvs: Per-vertex UV coordinates, shape ``[vertex_count, 2]``, dtype ``vec2``.
+        uvs: Per-vertex UV coordinates, shape ``[vertex_count, 2]``, dtype ``vec2f``.
+        normals: Per-vertex normals for smooth shading, shape ``[vertex_count, 3]``, dtype ``vec3f``.
     """
 
     uvs: wp.array(dtype=wp.vec2f)

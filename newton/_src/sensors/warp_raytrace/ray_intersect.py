@@ -364,9 +364,7 @@ def ray_intersect_mesh_any(
     mesh_id: wp.uint64,
     max_t: wp.float32,
 ) -> float:
-    """Returns intersection information at which a ray intersects with a mesh.
-
-    Requires wp.Mesh be constructed and their ids to be passed"""
+    """Return the distance to the nearest mesh intersection, or ``-1.0`` if no hit."""
 
     ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
 
