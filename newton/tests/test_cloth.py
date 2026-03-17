@@ -1179,7 +1179,6 @@ def test_cloth_enable_tri_contact(test, device, solver):
 
     # examine that the vertical coordinate of the last particle is negative
     final_pos = example.state0.particle_q.numpy()
-    print("final_pos", final_pos[-1, 1])
     test.assertTrue(final_pos[-1, 1] < 0.0)
 
 
