@@ -519,18 +519,29 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             # (both normal bin and voxel bin) that map to this normal bin.
             anchor_depth = max_pen_depth  # Anchor uses max penetration depth (positive magnitude)
             entry_total_depth = total_depth_reduced[entry_idx]
-            total_depth_with_anchor = entry_total_depth + wp.float32(add_anchor) * anchor_depth
+
+            # Compute normal matching rotation quaternion from pre-accumulated
+            rotation_q = wp.quat_identity()
+            nbin_normal_sum = total_normal_reduced[entry_idx]
+            if wp.static(normal_matching) and has_reliable_agg_direction:
+                rotation_q = _compute_normal_matching_rotation(nbin_normal_sum, agg_force_vec, agg_force_mag)
+
+            # When normal matching is enabled, use |total_normal_reduced| as the
+            # effective depth denominator.  This compensates for the magnitude loss
+            # caused by cancellation in the depth-weighted normal sum so that
+            # F_reduced = k_eff * agg_force exactly.
+            if wp.static(normal_matching):
+                effective_depth = wp.length(nbin_normal_sum)
+                if effective_depth < wp.static(EPS_LARGE):
+                    effective_depth = entry_total_depth
+            else:
+                effective_depth = entry_total_depth
+            total_depth_with_anchor = effective_depth + wp.float32(add_anchor) * anchor_depth
 
             # Compute shared stiffness: c_stiffness = k_eff * |agg_force| / total_depth
             shared_stiffness = float(0.0)
             if agg_force_mag > wp.static(EPS_SMALL) and total_depth_with_anchor > 0.0:
                 shared_stiffness = k_eff_first * agg_force_mag / total_depth_with_anchor
-
-            # Compute normal matching rotation quaternion from pre-accumulated
-            rotation_q = wp.quat_identity()
-            if wp.static(normal_matching) and has_reliable_agg_direction:
-                nbin_normal_sum = total_normal_reduced[entry_idx]
-                rotation_q = _compute_normal_matching_rotation(nbin_normal_sum, agg_force_vec, agg_force_mag)
 
             # Get transform and gap sum (same for all contacts in the entry)
             transform_b = shape_transform[shape_b_first]
@@ -586,7 +597,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                             final_normal = wp.normalize(wp.quat_rotate(voxel_rot_q, contact_normal))
 
                         # Stiffness from the normal bin's aggregate
-                        nbin_total_depth = total_depth_reduced[nbin_entry_idx]
+                        if wp.static(normal_matching):
+                            nbin_effective_depth = wp.length(total_normal_reduced[nbin_entry_idx])
+                            if nbin_effective_depth < wp.static(EPS_LARGE):
+                                nbin_effective_depth = total_depth_reduced[nbin_entry_idx]
+                        else:
+                            nbin_effective_depth = total_depth_reduced[nbin_entry_idx]
                         if wp.static(anchor_contact) and nbin_agg_mag > wp.static(EPS_LARGE):
                             nbin_anchor_depth = float(0.0)
                             nbin_max_depth_value = ht_values[
@@ -599,10 +615,10 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                                     nbin_anchor_depth = -nbin_max_depth
 
                             if weight_sum[nbin_entry_idx] > wp.static(EPS_SMALL) and nbin_anchor_depth > 0.0:
-                                nbin_total_depth = nbin_total_depth + nbin_anchor_depth
+                                nbin_effective_depth = nbin_effective_depth + nbin_anchor_depth
 
-                        if nbin_agg_mag > wp.static(EPS_SMALL) and nbin_total_depth > 0.0:
-                            c_stiffness = k_eff_first * nbin_agg_mag / nbin_total_depth
+                        if nbin_agg_mag > wp.static(EPS_SMALL) and nbin_effective_depth > 0.0:
+                            c_stiffness = k_eff_first * nbin_agg_mag / nbin_effective_depth
                         else:
                             c_stiffness = area_i * k_eff_first
                     elif depth < 0.0:
