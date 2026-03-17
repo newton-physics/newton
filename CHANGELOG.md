@@ -22,6 +22,7 @@
 - Add MPM beam twist, snow ball, and viscous coiling examples
 - Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
 - Add `enable_ambient_lighting` and `enable_particles` options to `SensorTiledCamera.Config`
+- Add site-targeted actuator support to MuJoCo solver
 
 ### Changed
 
