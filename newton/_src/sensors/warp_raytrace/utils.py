@@ -351,14 +351,22 @@ class Utils:
         checkerboard = (
             (np.arange(resolution) // checker_size)[:, None] + (np.arange(resolution) // checker_size)
         ) % 2 == 0
-        pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).reshape(-1)
+
+        pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32)
 
         texture_ids = np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32)
 
         self.__checkerboard_data = TextureData()
-        self.__checkerboard_data.width = resolution
-        self.__checkerboard_data.height = resolution
-        self.__checkerboard_data.pixels = wp.array(pixels, dtype=wp.uint32, device=self.__render_context.device)
+        self.__checkerboard_data.texture = wp.Texture2D(
+            pixels.view(np.uint8).reshape(resolution, resolution, 4),
+            filter_mode=wp.TextureFilterMode.CLOSEST,
+            address_mode=wp.TextureAddressMode.WRAP,
+            normalized_coords=True,
+            dtype=wp.uint8,
+            num_channels=4,
+            device=self.__render_context.device,
+        )
+
         self.__checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
         self.__render_context.config.enable_textures = True

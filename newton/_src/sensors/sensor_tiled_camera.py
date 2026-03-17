@@ -565,12 +565,16 @@ class SensorTiledCamera:
                         texture_hashes[shape.texture_hash] = len(self.__texture_data)
 
                         data = TextureData()
-                        data.width = pixels.shape[1]
-                        data.height = pixels.shape[0]
-                        data.repeat = wp.vec2f(1.0, 1.0)
-                        data.pixels = wp.array(
-                            pixels.view(np.uint32).reshape(-1), dtype=wp.uint32, device=self.render_context.device
+                        data.texture = wp.Texture2D(
+                            pixels.view(np.uint8),
+                            filter_mode=wp.TextureFilterMode.LINEAR,
+                            address_mode=wp.TextureAddressMode.WRAP,
+                            normalized_coords=True,
+                            dtype=wp.uint8,
+                            num_channels=4,
+                            device=self.render_context.device,
                         )
+                        data.repeat = wp.vec2f(1.0, 1.0)
                         self.__texture_data.append(data)
 
                     texture_data_ids.append(texture_hashes[shape.texture_hash])

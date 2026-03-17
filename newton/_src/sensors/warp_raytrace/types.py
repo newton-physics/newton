@@ -64,17 +64,12 @@ class MeshData:
 class TextureData:
     """Texture image data for surface shading during raytracing.
 
-    Pixel data is stored as packed RGBA ``uint32`` values in
-    row-major order.
+    Uses a hardware-accelerated ``wp.Texture2D`` with bilinear filtering.
 
     Attributes:
-        width: Texture width in pixels.
-        height: Texture height in pixels.
-        pixels: Packed RGBA pixel data, shape ``[width * height]``, dtype ``uint32``.
+        texture: 2D Texture as ``wp.Texture2D``.
         repeat: UV tiling factors along U and V axes.
     """
 
-    width: wp.int32
-    height: wp.int32
-    pixels: wp.array(dtype=wp.uint32)
+    texture: wp.Texture2D
     repeat: wp.vec2f

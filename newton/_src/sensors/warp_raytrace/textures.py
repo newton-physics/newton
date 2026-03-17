@@ -20,15 +20,14 @@ from .types import MeshData, TextureData
 
 
 @wp.func
-def sample_texture_2d(uv: wp.vec2f, texture_data: TextureData) -> wp.vec3f:
-    px = wp.clamp(wp.int32(uv[0] * wp.float32(texture_data.width)), 0, texture_data.width - 1)
-    py = wp.clamp(wp.int32(uv[1] * wp.float32(texture_data.height)), 0, texture_data.height - 1)
+def flip_v(uv: wp.vec2f) -> wp.vec2f:
+    return wp.vec2f(uv[0], 1.0 - uv[1])
 
-    packed_rgba = texture_data.pixels[py * texture_data.width + px]
-    r = wp.float32(packed_rgba & wp.uint32(0xFF)) / 255.0
-    g = wp.float32((packed_rgba >> wp.uint32(8)) & wp.uint32(0xFF)) / 255.0
-    b = wp.float32((packed_rgba >> wp.uint32(16)) & wp.uint32(0xFF)) / 255.0
-    return wp.vec3f(r, g, b)
+
+@wp.func
+def sample_texture_2d(uv: wp.vec2f, texture_data: TextureData) -> wp.vec3f:
+    color = wp.texture_sample(texture_data.texture, uv, dtype=wp.vec4f)
+    return wp.vec3f(color[0], color[1], color[2])
 
 
 @wp.func
@@ -39,12 +38,8 @@ def sample_texture_plane(
 ) -> wp.vec3f:
     inv_transform = wp.transform_inverse(shape_transform)
     local = wp.transform_point(inv_transform, hit_point)
-    u = local[0] * texture_data.repeat[0]
-    v = local[1] * texture_data.repeat[1]
-    u = u - wp.floor(u)
-    v = v - wp.floor(v)
-    v = 1.0 - v
-    return sample_texture_2d(wp.vec2f(u, v), texture_data)
+    uv = wp.vec2f(local[0], local[1])
+    return sample_texture_2d(flip_v(wp.cw_mul(uv, texture_data.repeat)), texture_data)
 
 
 @wp.func
@@ -60,12 +55,7 @@ def sample_texture_mesh(
     uv1 = mesh_data.uvs[face_id * 3 + 0]
     uv2 = mesh_data.uvs[face_id * 3 + 1]
     uv = uv0 * bw + uv1 * bary_u + uv2 * bary_v
-    u = uv[0] * texture_data.repeat[0]
-    v = uv[1] * texture_data.repeat[1]
-    u = u - wp.floor(u)
-    v = v - wp.floor(v)
-    v = 1.0 - v
-    return sample_texture_2d(wp.vec2f(u, v), texture_data)
+    return sample_texture_2d(flip_v(wp.cw_mul(uv, texture_data.repeat)), texture_data)
 
 
 @wp.func
@@ -77,8 +67,8 @@ def sample_texture(
     mesh_data: wp.array(dtype=MeshData),
     mesh_data_index: wp.int32,
     hit_point: wp.vec3f,
-    u: wp.float32,
-    v: wp.float32,
+    bary_u: wp.float32,
+    bary_v: wp.float32,
     face_id: wp.int32,
 ) -> wp.vec3f:
     tex_color = wp.vec3f(1.0, 1.0, 1.0)
@@ -96,6 +86,8 @@ def sample_texture(
         if mesh_data[mesh_data_index].uvs.shape[0] == 0:
             return tex_color
 
-        tex_color = sample_texture_mesh(u, v, face_id, mesh_data[mesh_data_index], texture_data[texture_index])
+        tex_color = sample_texture_mesh(
+            bary_u, bary_v, face_id, mesh_data[mesh_data_index], texture_data[texture_index]
+        )
 
     return tex_color
