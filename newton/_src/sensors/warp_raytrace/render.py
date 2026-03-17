@@ -21,7 +21,7 @@ import warp as wp
 
 from ...geometry import Gaussian, GeoType
 from . import lighting, raytrace, textures, tiling
-from .types import RenderOrder
+from .types import MeshData, RenderOrder, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -50,14 +50,12 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
         shape_enabled: wp.array(dtype=wp.uint32),
         shape_types: wp.array(dtype=wp.int32),
         shape_indices: wp.array(dtype=wp.int32),
-        shape_textures: wp.array(dtype=wp.int32),
         shape_sizes: wp.array(dtype=wp.vec3f),
         shape_colors: wp.array(dtype=wp.vec4f),
         shape_transforms: wp.array(dtype=wp.transformf),
         shape_source_ptr: wp.array(dtype=wp.uint64),
-        # Meshes
-        mesh_texcoord: wp.array(dtype=wp.vec2f),
-        mesh_texcoord_offsets: wp.array(dtype=wp.int32),
+        shape_texture_ids: wp.array(dtype=wp.int32),
+        shape_mesh_data_ids: wp.array(dtype=wp.int32),
         # Particle BVH
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
@@ -67,13 +65,12 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
         particles_radius: wp.array(dtype=wp.float32),
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
+        # Meshes
+        mesh_data: wp.array(dtype=MeshData),
         # Gaussians
         gaussians_data: wp.array(dtype=Gaussian.Data),
         # Textures
-        texture_offsets: wp.array(dtype=wp.int32),
-        texture_data: wp.array(dtype=wp.uint32),
-        texture_height: wp.array(dtype=wp.int32),
-        texture_width: wp.array(dtype=wp.int32),
+        texture_data: wp.array(dtype=TextureData),
         # Lights
         light_active: wp.array(dtype=wp.bool),
         light_type: wp.array(dtype=wp.int32),
@@ -179,24 +176,19 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
             base_color = wp.vec3f(color[0], color[1], color[2])
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                texture_index = shape_textures[closest_hit.shape_index]
+                texture_index = shape_texture_ids[closest_hit.shape_index]
                 if texture_index > -1:
                     tex_color = textures.sample_texture(
                         shape_types[closest_hit.shape_index],
                         shape_transforms[closest_hit.shape_index],
-                        texture_index,
-                        wp.vec2f(1.0, 1.0),
-                        texture_offsets[texture_index],
                         texture_data,
-                        texture_height[texture_index],
-                        texture_width[texture_index],
-                        mesh_texcoord,
-                        mesh_texcoord_offsets,
+                        texture_index,
+                        mesh_data,
+                        shape_mesh_data_ids[closest_hit.shape_index],
                         hit_point,
                         closest_hit.bary_u,
                         closest_hit.bary_v,
                         closest_hit.face_idx,
-                        closest_hit.shape_mesh_index,
                     )
 
                     base_color = wp.vec3f(

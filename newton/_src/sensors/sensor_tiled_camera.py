@@ -24,7 +24,15 @@ import warp as wp
 from ..geometry import GeoType, Mesh, ShapeFlags
 from ..sim import Model, State
 from ..utils import load_texture
-from .warp_raytrace import ClearData, GaussianRenderMode, RenderContext, RenderLightType, RenderOrder
+from .warp_raytrace import (
+    ClearData,
+    GaussianRenderMode,
+    MeshData,
+    RenderContext,
+    RenderLightType,
+    RenderOrder,
+    TextureData,
+)
 
 
 @wp.kernel(enable_backward=False)
@@ -526,10 +534,10 @@ class SensorTiledCamera:
     def __load_textures(self, config: Config):
         """Load mesh textures and UV data into the render context.
 
-        Deduplicates textures by hash and meshes by identity, packing all texture
-        pixel data into a single flat buffer and all UV coordinates into a single
-        texcoord array. Per-shape index arrays map each shape to its texture and
-        UV offset (``-1`` when absent).
+        Deduplicates textures by hash and meshes by identity, storing each
+        unique texture as a :class:`TextureData` struct and each unique set of
+        UVs as a :class:`MeshData` struct.  Per-shape index arrays map each
+        shape to its texture and mesh data entry (``-1`` when absent).
 
         Args:
             config: Sensor configuration controlling whether textures are enabled.
@@ -537,74 +545,61 @@ class SensorTiledCamera:
         if not config.enable_textures and not config.checkerboard_texture:
             return
 
-        textures = []
+        self.__mesh_data = []
+        self.__texture_data = []
+
         texture_hashes = {}
-
-        num_pixel_total = 0
-        num_uvs_total = 0
-
-        mesh_texcoords = []
-        mesh_texcoord_offsets = []
         mesh_hashes = {}
 
-        texture_ids = []
+        mesh_data_ids = []
+        texture_data_ids = []
+
         for shape in self.model.shape_source:
             if isinstance(shape, Mesh):
                 if shape.texture is not None and not config.checkerboard_texture:
                     if shape.texture_hash not in texture_hashes:
-                        data = load_texture(shape.texture)
-                        if data is None:
+                        pixels = load_texture(shape.texture)
+                        if pixels is None:
                             raise ValueError(f"Failed to load texture: {shape.texture}")
 
-                        texture_hashes[shape.texture_hash] = len(textures)
-                        num_pixel_total += data.shape[0] * data.shape[1]
-                        textures.append(data)
-                    texture_ids.append(texture_hashes[shape.texture_hash])
+                        texture_hashes[shape.texture_hash] = len(self.__texture_data)
+
+                        data = TextureData()
+                        data.width = pixels.shape[1]
+                        data.height = pixels.shape[0]
+                        data.repeat = wp.vec2f(1.0, 1.0)
+                        data.pixels = wp.array(
+                            pixels.view(np.uint32).reshape(-1), dtype=wp.uint32, device=self.render_context.device
+                        )
+                        self.__texture_data.append(data)
+
+                    texture_data_ids.append(texture_hashes[shape.texture_hash])
                 else:
-                    texture_ids.append(-1)
+                    texture_data_ids.append(-1)
 
                 if shape.uvs is not None:
                     if shape not in mesh_hashes:
-                        mesh_hashes[shape] = num_uvs_total
-                        num_uvs_total += len(shape.uvs)
-                        mesh_texcoords.append(shape.uvs)
-                    mesh_texcoord_offsets.append(mesh_hashes[shape])
+                        mesh_hashes[shape] = len(self.__mesh_data)
+
+                        data = MeshData()
+                        data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.render_context.device)
+                        self.__mesh_data.append(data)
+
+                    mesh_data_ids.append(mesh_hashes[shape])
                 else:
-                    mesh_texcoord_offsets.append(-1)
+                    mesh_data_ids.append(-1)
             else:
-                texture_ids.append(-1)
-                mesh_texcoord_offsets.append(-1)
+                texture_data_ids.append(-1)
+                mesh_data_ids.append(-1)
 
-        if mesh_texcoords:
-            mesh_texcoords = np.concatenate(mesh_texcoords)
-
-        num_textures = len(textures)
-        texture_width = np.empty(num_textures, dtype=np.int32)
-        texture_height = np.empty(num_textures, dtype=np.int32)
-        texture_data = np.empty(num_pixel_total, dtype=np.uint32)
-        texture_offsets = np.empty(num_textures, dtype=np.int32)
-
-        offset = 0
-        for i, texture in enumerate(textures):
-            width = texture.shape[1]
-            height = texture.shape[0]
-            data = texture.view(np.uint32).reshape(width * height)
-
-            texture_width[i] = width
-            texture_height[i] = height
-            texture_data[offset : offset + data.size] = data
-            texture_offsets[i] = offset
-
-            offset += data.size
-
-        self.render_context.texture_data = wp.array(texture_data, dtype=wp.uint32, device=self.render_context.device)
-        self.render_context.texture_offsets = wp.array(
-            texture_offsets, dtype=wp.int32, device=self.render_context.device
+        self.render_context.texture_data = wp.array(
+            self.__texture_data, dtype=TextureData, device=self.render_context.device
         )
-        self.render_context.texture_width = wp.array(texture_width, dtype=wp.int32, device=self.render_context.device)
-        self.render_context.texture_height = wp.array(texture_height, dtype=wp.int32, device=self.render_context.device)
-        self.render_context.shape_textures = wp.array(texture_ids, dtype=wp.int32, device=self.render_context.device)
-        self.render_context.mesh_texcoord = wp.array(mesh_texcoords, dtype=wp.vec2f, device=self.render_context.device)
-        self.render_context.mesh_texcoord_offsets = wp.array(
-            mesh_texcoord_offsets, dtype=wp.int32, device=self.render_context.device
+        self.render_context.shape_texture_ids = wp.array(
+            texture_data_ids, dtype=wp.int32, device=self.render_context.device
+        )
+
+        self.render_context.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.render_context.device)
+        self.render_context.shape_mesh_data_ids = wp.array(
+            mesh_data_ids, dtype=wp.int32, device=self.render_context.device
         )

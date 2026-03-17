@@ -24,7 +24,7 @@ import warp as wp
 from ...core import MAXVAL
 from ...geometry import Gaussian, GeoType
 from . import gaussians
-from .types import RenderLightType
+from .types import RenderLightType, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -351,22 +351,22 @@ class Utils:
         checkerboard = (
             (np.arange(resolution) // checker_size)[:, None] + (np.arange(resolution) // checker_size)
         ) % 2 == 0
-        pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).flatten()
+        pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).reshape(-1)
+
+        texture_ids = np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32)
+
+        self.__checkerboard_data = TextureData()
+        self.__checkerboard_data.width = resolution
+        self.__checkerboard_data.height = resolution
+        self.__checkerboard_data.pixels = wp.array(pixels, dtype=wp.uint32, device=self.__render_context.device)
+        self.__checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
         self.__render_context.config.enable_textures = True
-        self.__render_context.texture_data = wp.array(pixels, dtype=wp.uint32, device=self.__render_context.device)
-        self.__render_context.texture_offsets = wp.array([0], dtype=wp.int32, device=self.__render_context.device)
-        self.__render_context.texture_width = wp.array(
-            [resolution], dtype=wp.int32, device=self.__render_context.device
+        self.__render_context.texture_data = wp.array(
+            [self.__checkerboard_data], dtype=TextureData, device=self.__render_context.device
         )
-        self.__render_context.texture_height = wp.array(
-            [resolution], dtype=wp.int32, device=self.__render_context.device
-        )
-
-        self.__render_context.shape_textures = wp.array(
-            np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32),
-            dtype=wp.int32,
-            device=self.__render_context.device,
+        self.__render_context.shape_texture_ids = wp.array(
+            texture_ids, dtype=wp.int32, device=self.__render_context.device
         )
 
     def __reshape_buffer_for_flatten(

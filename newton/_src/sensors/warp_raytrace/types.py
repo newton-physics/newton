@@ -15,6 +15,8 @@
 
 import enum
 
+import warp as wp
+
 
 class RenderLightType(enum.IntEnum):
     """Light types supported by the Warp raytracer."""
@@ -45,3 +47,34 @@ class GaussianRenderMode(enum.IntEnum):
 
     QUALITY = 1
     """Quality Render Mode, collect hits until minimum transmittance is reached"""
+
+
+@wp.struct
+class MeshData:
+    """Per-mesh UV coordinate data used for texture mapping during raytracing.
+
+    Attributes:
+        uvs: Per-vertex UV coordinates, shape ``[vertex_count, 2]``, dtype ``vec2``.
+    """
+
+    uvs: wp.array(dtype=wp.vec2f)
+
+
+@wp.struct
+class TextureData:
+    """Texture image data for surface shading during raytracing.
+
+    Pixel data is stored as packed RGBA ``uint32`` values in
+    row-major order.
+
+    Attributes:
+        width: Texture width in pixels.
+        height: Texture height in pixels.
+        pixels: Packed RGBA pixel data, shape ``[width * height]``, dtype ``uint32``.
+        repeat: UV tiling factors along U and V axes.
+    """
+
+    width: wp.int32
+    height: wp.int32
+    pixels: wp.array(dtype=wp.uint32)
+    repeat: wp.vec2f

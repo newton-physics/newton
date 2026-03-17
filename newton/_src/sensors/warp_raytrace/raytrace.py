@@ -40,7 +40,6 @@ class ClosestHit:
     bary_u: wp.float32
     bary_v: wp.float32
     face_idx: wp.int32
-    shape_mesh_index: wp.int32
     color: wp.vec3f
 
 
@@ -93,17 +92,15 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                     hit_u = wp.float32(0.0)
                     hit_v = wp.float32(0.0)
                     hit_face_id = wp.int32(-1)
-                    hit_mesh_id = wp.int32(-1)
                     hit_color = wp.vec3f(0.0)
 
                     if shape_types[si] == GeoType.MESH:
-                        hit_mesh_id = shape_indices[si]
                         geom_hit, hit_u, hit_v, hit_face_id = ray_intersect.ray_intersect_mesh(
                             shape_transforms[si],
                             shape_sizes[si],
                             ray_origin_world,
                             ray_dir_world,
-                            shape_source_ptr[hit_mesh_id],
+                            shape_source_ptr[shape_indices[si]],
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
                         )
@@ -178,7 +175,6 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                         closest_hit.bary_u = hit_u
                         closest_hit.bary_v = hit_v
                         closest_hit.face_idx = hit_face_id
-                        closest_hit.shape_mesh_index = hit_mesh_id
                         closest_hit.color = hit_color
 
                 # Temporary workaround. Warp BVH queries share some stack data,
@@ -209,7 +205,6 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             closest_hit.bary_u = hit_u
                             closest_hit.bary_v = hit_v
                             closest_hit.face_idx = hit_face_id
-                            closest_hit.shape_mesh_index = hit_mesh_id
                             closest_hit.color = hit_color
 
         return closest_hit
@@ -247,7 +242,6 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                         closest_hit.distance = geom_hit.distance
                         closest_hit.normal = geom_hit.normal
                         closest_hit.shape_index = PARTICLES_SHAPE_ID
-                        closest_hit.shape_mesh_index = -1
 
         return closest_hit
 
@@ -273,7 +267,6 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                 closest_hit.bary_u = bary_u
                 closest_hit.bary_v = bary_v
                 closest_hit.face_idx = face_idx
-                closest_hit.shape_mesh_index = -1
 
         return closest_hit
 
@@ -307,7 +300,6 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         closest_hit.bary_u = wp.float32(0.0)
         closest_hit.bary_v = wp.float32(0.0)
         closest_hit.face_idx = wp.int32(-1)
-        closest_hit.shape_mesh_index = wp.int32(-1)
         closest_hit.color = wp.vec3f(0.0)
 
         closest_hit = closest_hit_triangle_mesh(closest_hit, triangle_mesh_id, ray_origin_world, ray_dir_world)
