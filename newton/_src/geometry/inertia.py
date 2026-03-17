@@ -634,6 +634,14 @@ def verify_and_correct_inertia(
     # Format body identifier for warnings
     body_id = f" for body '{body_label}'" if body_label else ""
 
+    # Check for NaN/Inf in mass or inertia
+    if not np.isfinite(mass) or not np.all(np.isfinite(inertia_array)):
+        warnings.warn(
+            f"NaN/Inf detected in mass or inertia{body_id}, zeroing out mass and inertia",
+            stacklevel=2,
+        )
+        return 0.0, wp.mat33(np.zeros((3, 3))), True
+
     # Check and correct mass
     if mass < 0:
         warnings.warn(f"Negative mass {mass} detected{body_id}, setting to 0", stacklevel=2)
@@ -652,20 +660,21 @@ def verify_and_correct_inertia(
             was_corrected = True
         return corrected_mass, wp.mat33(corrected_inertia), was_corrected
 
-    # Check that inertia matrix is symmetric
-    if not np.allclose(inertia_array, inertia_array.T):
+    # Unconditionally symmetrize inertia matrix (idempotent for symmetric tensors)
+    symmetrized = (inertia_array + inertia_array.T) / 2
+    if not np.allclose(inertia_array, symmetrized):
         warnings.warn(f"Inertia matrix{body_id} is not symmetric, making it symmetric", stacklevel=2)
-        corrected_inertia = (inertia_array + inertia_array.T) / 2
         was_corrected = True
+    corrected_inertia = symmetrized
 
     # Compute eigenvalues (principal moments) for validation
     try:
         eigenvalues = np.linalg.eigvals(corrected_inertia)
 
-        # Check for negative eigenvalues
-        if np.any(eigenvalues < 0):
+        # Check for negative or near-zero eigenvalues (ensure positive-definite)
+        if np.any(eigenvalues < 1e-6):
             warnings.warn(
-                f"Negative eigenvalues detected{body_id}: {eigenvalues}, making positive definite",
+                f"Non-positive eigenvalues detected{body_id}: {eigenvalues}, making positive definite",
                 stacklevel=2,
             )
             # Make positive definite by adjusting eigenvalues
@@ -693,7 +702,8 @@ def verify_and_correct_inertia(
 
         # Check triangle inequality on principal moments
         # For a physically valid inertia tensor: I1 + I2 >= I3 (with tolerance)
-        has_violations = I1 + I2 < I3 - 1e-10
+        # Use 1e-6 tolerance to match float32 precision used by the Warp kernel path
+        has_violations = I1 + I2 < I3 - 1e-6
 
     except np.linalg.LinAlgError:
         warnings.warn(f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal", stacklevel=2)
@@ -705,6 +715,7 @@ def verify_and_correct_inertia(
         corrected_inertia = np.eye(3) * (trace / 3.0)
         has_violations = False
         principal_moments = [trace / 3.0, trace / 3.0, trace / 3.0]
+        eigenvalues = np.array(principal_moments)
 
     if has_violations:
         warnings.warn(
@@ -772,7 +783,7 @@ def validate_and_correct_inertia_kernel(
     balance_inertia: wp.bool,
     bound_mass: wp.float32,
     bound_inertia: wp.float32,
-    correction_flags: wp.array(dtype=wp.bool),  # Output: True if corrected, False otherwise
+    correction_count: wp.array(dtype=wp.int32),  # Output: atomic counter of corrected bodies
 ):
     """Warp kernel for parallel inertia validation and correction.
 
@@ -786,13 +797,30 @@ def validate_and_correct_inertia_kernel(
     inertia = body_inertia[tid]
     was_corrected = False
 
+    # Detect NaN/Inf in mass or any inertia coefficient and zero out
+    if (
+        not wp.isfinite(mass)
+        or not wp.isfinite(inertia[0, 0])
+        or not wp.isfinite(inertia[0, 1])
+        or not wp.isfinite(inertia[0, 2])
+        or not wp.isfinite(inertia[1, 0])
+        or not wp.isfinite(inertia[1, 1])
+        or not wp.isfinite(inertia[1, 2])
+        or not wp.isfinite(inertia[2, 0])
+        or not wp.isfinite(inertia[2, 1])
+        or not wp.isfinite(inertia[2, 2])
+    ):
+        mass = 0.0
+        inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        was_corrected = True
+
     # Check for negative mass
     if mass < 0.0:
         mass = 0.0
         was_corrected = True
 
-    # Apply mass bound
-    if bound_mass > 0.0 and mass < bound_mass:
+    # Apply mass bound (only to positive mass; zero mass means static/fixed body)
+    if bound_mass > 0.0 and mass < bound_mass and mass > 0.0:
         mass = bound_mass
         was_corrected = True
 
@@ -801,6 +829,22 @@ def validate_and_correct_inertia_kernel(
         was_corrected = was_corrected or (wp.ddot(inertia, inertia) > 0.0)
         inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     else:
+        # Symmetrize inertia matrix: (I + I^T) / 2
+        sym = wp.mat33(
+            inertia[0, 0],
+            (inertia[0, 1] + inertia[1, 0]) * 0.5,
+            (inertia[0, 2] + inertia[2, 0]) * 0.5,
+            (inertia[0, 1] + inertia[1, 0]) * 0.5,
+            inertia[1, 1],
+            (inertia[1, 2] + inertia[2, 1]) * 0.5,
+            (inertia[0, 2] + inertia[2, 0]) * 0.5,
+            (inertia[1, 2] + inertia[2, 1]) * 0.5,
+            inertia[2, 2],
+        )
+        if wp.ddot(inertia - sym, inertia - sym) > 0.0:
+            was_corrected = True
+        inertia = sym
+
         # Use eigendecomposition for proper validation
         _eigvecs, eigvals = wp.eig3(inertia)
 
@@ -813,9 +857,9 @@ def validate_and_correct_inertia_kernel(
             if I1 > I2:
                 I1, I2 = I2, I1
 
-        # Check for negative eigenvalues
-        if I1 < 0.0:
-            adjustment = -I1 + 1e-6
+        # Check for negative or near-zero eigenvalues (ensure positive-definite)
+        if I1 < 1.0e-6:
+            adjustment = -I1 + 1.0e-6
             # Add scalar to all eigenvalues
             I1 += adjustment
             I2 += adjustment
@@ -833,10 +877,9 @@ def validate_and_correct_inertia_kernel(
             was_corrected = True
 
         # Check triangle inequality: I1 + I2 >= I3 (with tolerance)
-        # Use larger tolerance for float32 precision
-        if balance_inertia and (I1 + I2 < I3 - 1e-6):
+        if balance_inertia and (I1 + I2 < I3 - 1.0e-6):
             deficit = I3 - I1 - I2
-            adjustment = deficit + 1e-6
+            adjustment = deficit + 1.0e-6
             # Add scalar*I to fix triangle inequality
             inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
             was_corrected = True
@@ -857,4 +900,5 @@ def validate_and_correct_inertia_kernel(
     else:
         body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-    correction_flags[tid] = was_corrected
+    if was_corrected:
+        wp.atomic_add(correction_count, 0, 1)

@@ -904,6 +904,7 @@ def apply_joint_forces(
     body_q: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     joint_type: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -916,7 +917,9 @@ def apply_joint_forces(
 ):
     tid = wp.tid()
     type = joint_type[tid]
-    if type == JointType.FIXED:
+    if not joint_enabled[tid]:
+        return
+    if type == JointType.FIXED or type == JointType.CABLE:
         return
 
     # rigid body indices of the child and parent
@@ -2120,7 +2123,7 @@ def solve_body_contact_positions(
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
 
     thickness = contact_thickness0[tid] + contact_thickness1[tid]
-    n = -contact_normal[tid]
+    n = contact_normal[tid]
     d = wp.dot(n, bx_b - bx_a) - thickness
 
     if d >= 0.0:
@@ -2425,7 +2428,7 @@ def apply_rigid_restitution(
 
     thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
-    d = -wp.dot(n, bx_b - bx_a) - thickness
+    d = wp.dot(n, bx_b - bx_a) - thickness
     if d >= 0.0:
         return
 
@@ -2443,9 +2446,6 @@ def apply_rigid_restitution(
         rxn_a = wp.quat_rotate_inv(q_a, wp.cross(r_a, n))
         # Eq. 2
         inv_mass_a = m_inv_a + wp.dot(rxn_a, I_inv_a * rxn_a)
-        # if contact_inv_weight:
-        #     if contact_inv_weight[body_a] > 0.0:
-        #         inv_mass_a *= contact_inv_weight[body_a]
         inv_mass += inv_mass_a
     if body_b >= 0:
         world_idx_b = body_world[body_b]
@@ -2456,17 +2456,14 @@ def apply_rigid_restitution(
         rxn_b = wp.quat_rotate_inv(q_b, wp.cross(r_b, n))
         # Eq. 3
         inv_mass_b = m_inv_b + wp.dot(rxn_b, I_inv_b * rxn_b)
-        # if contact_inv_weight:
-        #     if contact_inv_weight[body_b] > 0.0:
-        #         inv_mass_b *= contact_inv_weight[body_b]
         inv_mass += inv_mass_b
 
     if inv_mass == 0.0:
         return
 
-    # Eq. 29
-    rel_vel_old = wp.dot(n, v_a - v_b)
-    rel_vel_new = wp.dot(n, v_a_new - v_b_new)
+    # Eq. 29 — relative velocity of B w.r.t. A along the A-to-B normal
+    rel_vel_old = wp.dot(n, v_b - v_a)
+    rel_vel_new = wp.dot(n, v_b_new - v_a_new)
 
     if rel_vel_old >= 0.0:
         return
@@ -2474,21 +2471,15 @@ def apply_rigid_restitution(
     # Eq. 34
     dv = (-rel_vel_new - restitution * rel_vel_old) / inv_mass
 
-    # Eq. 33
+    # Eq. 33 — push A in -n direction, B in +n direction
     if body_a >= 0:
-        dv_a = dv
-        # if contact_inv_weight:
-        #     if contact_inv_weight[body_a] > 0.0:
-        #         dv_a *= contact_inv_weight[body_a]
+        dv_a = -dv
         q_a = wp.transform_get_rotation(X_wb_a_prev)
         dq = wp.quat_rotate(q_a, I_inv_a * rxn_a * dv_a)
         wp.atomic_add(deltas, body_a, wp.spatial_vector(n * m_inv_a * dv_a, dq))
 
     if body_b >= 0:
-        dv_b = -dv
-        # if contact_inv_weight:
-        #     if contact_inv_weight[body_b] > 0.0:
-        #         dv_b *= contact_inv_weight[body_b]
+        dv_b = dv
         q_b = wp.transform_get_rotation(X_wb_b_prev)
         dq = wp.quat_rotate(q_b, I_inv_b * rxn_b * dv_b)
         wp.atomic_add(deltas, body_b, wp.spatial_vector(n * m_inv_b * dv_b, dq))
