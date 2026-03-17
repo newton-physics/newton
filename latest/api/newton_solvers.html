@@ -969,7 +969,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
-<td><p>❌</p></td>
+<td><p>✅</p></td>
 <td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p>REVOLUTE</p></th>
@@ -977,7 +977,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
-<td><p>❌</p></td>
+<td><p>✅</p></td>
 <td><p>✅</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p>BALL</p></th>
@@ -1017,7 +1017,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
-<td><p>❌</p></td>
+<td><p>✅</p></td>
 <td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p>CABLE</p></th>
@@ -1052,7 +1052,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>❌</p></td>
-<td><p>❌</p></td>
+<td><p>✅</p></td>
 <td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a></p></th>
@@ -1076,7 +1076,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 <td><p>✅ <sup>2</sup></p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
-<td><p>❌</p></td>
+<td><p>✅</p></td>
 <td><p>✅</p></td>
 </tr>
 <tr class="row-even"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_limit_ke" title="newton.Model.joint_limit_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_ke</span></code></a> / <a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_limit_kd" title="newton.Model.joint_limit_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_kd</span></code></a></p></th>
@@ -1084,7 +1084,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 <td><p>✅ <sup>2</sup></p></td>
 <td><p>❌</p></td>
 <td><p>✅</p></td>
-<td><p>❌</p></td>
+<td><p>✅ <sup>4</sup></p></td>
 <td><p>❌</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_effort_limit" title="newton.Model.joint_effort_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_effort_limit</span></code></a></p></th>
@@ -1127,7 +1127,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 <td><p>✅ <sup>2</sup></p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
-<td><p>🟨 <sup>4</sup></p></td>
+<td><p>✅ <sup>4</sup></p></td>
 <td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><th class="stub"><p><a class="reference internal" href="_generated/newton.Model.html#newton.Model.joint_target_mode" title="newton.Model.joint_target_mode"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_mode</span></code></a></p></th>
@@ -1143,7 +1143,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 <td><p>✅</p></td>
 <td><p>✅</p></td>
 <td><p>✅</p></td>
-<td><p>❌</p></td>
+<td><p>✅</p></td>
 <td><p>✅</p></td>
 </tr>
 </tbody>
@@ -1183,7 +1183,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
 </div>
 <div class="line-block">
 <div class="line"><sup>3</sup> Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.</div>
-<div class="line"><sup>4</sup> Used for CABLE joints only (as stretch/bend stiffness and damping).</div>
+<div class="line"><sup>4</sup> VBD interprets <code class="docutils literal notranslate"><span class="pre">joint_target_kd</span></code> and <code class="docutils literal notranslate"><span class="pre">joint_limit_kd</span></code> as dimensionless Rayleigh damping coefficients (<code class="docutils literal notranslate"><span class="pre">D</span> <span class="pre">=</span> <span class="pre">kd</span> <span class="pre">*</span> <span class="pre">ke</span></code>), not absolute units.</div>
 </div>
 </section>
 <section id="differentiability">
