@@ -535,9 +535,6 @@ class SensorTiledCamera:
         Args:
             config: Sensor configuration controlling whether textures are enabled.
         """
-        if not config.enable_textures and not config.checkerboard_texture:
-            return
-
         self.__mesh_data = []
         self.__texture_data = []
 
@@ -549,7 +546,7 @@ class SensorTiledCamera:
 
         for shape in self.model.shape_source:
             if isinstance(shape, Mesh):
-                if shape.texture is not None and not config.checkerboard_texture:
+                if shape.texture is not None and (config.enable_textures or not config.checkerboard_texture):
                     if shape.texture_hash not in texture_hashes:
                         pixels = load_texture(shape.texture)
                         if pixels is None:
