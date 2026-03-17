@@ -1409,7 +1409,7 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         fov_delta = scroll_y * 2.0
@@ -1436,7 +1436,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         import pyglet
@@ -1481,7 +1481,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         import pyglet
@@ -1515,6 +1515,32 @@ class ViewerGL(ViewerBase):
         """
         pass
 
+    def _ui_is_capturing_mouse(self) -> bool:
+        """Return whether the UI wants to consume mouse input this frame."""
+        if not self.ui:
+            return False
+
+        if hasattr(self.ui, "is_capturing_mouse"):
+            return bool(self.ui.is_capturing_mouse())
+
+        if hasattr(self.ui, "is_capturing"):
+            return bool(self.ui.is_capturing())
+
+        return False
+
+    def _ui_is_capturing_keyboard(self) -> bool:
+        """Return whether the UI wants to consume keyboard input this frame."""
+        if not self.ui:
+            return False
+
+        if hasattr(self.ui, "is_capturing_keyboard"):
+            return bool(self.ui.is_capturing_keyboard())
+
+        if hasattr(self.ui, "is_capturing"):
+            return bool(self.ui.is_capturing())
+
+        return False
+
     def on_key_press(self, symbol: int, modifiers: int):
         """
         Handle key press events for UI and simulation control.
@@ -1523,7 +1549,7 @@ class ViewerGL(ViewerBase):
             symbol: Key symbol.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_keyboard():
             return
 
         try:
@@ -1615,7 +1641,7 @@ class ViewerGL(ViewerBase):
         Args:
             dt: Time delta since last update.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_keyboard():
             return
 
         # camera-relative basis
