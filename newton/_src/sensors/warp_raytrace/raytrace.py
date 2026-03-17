@@ -21,6 +21,7 @@ import warp as wp
 
 from ...geometry import Gaussian, GeoType, raycast
 from . import gaussians, ray_intersect
+from .types import MeshData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -64,10 +65,11 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         world_index: wp.int32,
         shape_enabled: wp.array(dtype=wp.uint32),
         shape_types: wp.array(dtype=wp.int32),
-        shape_indices: wp.array(dtype=wp.int32),
         shape_sizes: wp.array(dtype=wp.vec3f),
         shape_transforms: wp.array(dtype=wp.transformf),
         shape_source_ptr: wp.array(dtype=wp.uint64),
+        shape_mesh_data_ids: wp.array(dtype=wp.int32),
+        mesh_data: wp.array(dtype=MeshData),
         gaussians_data: wp.array(dtype=Gaussian.Data),
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
@@ -100,7 +102,9 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             shape_sizes[si],
                             ray_origin_world,
                             ray_dir_world,
-                            shape_source_ptr[shape_indices[si]],
+                            shape_source_ptr[si],
+                            shape_mesh_data_ids[si],
+                            mesh_data,
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
                         )
@@ -158,7 +162,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                         if num_gaussians_hit < wp.static(state.num_gaussians):
                             gaussians_hit[num_gaussians_hit] = si
                             num_gaussians_hit += 1
-                            # gaussian_id = shape_source_ptr[shape_indices[si]]
+                            # gaussian_id = shape_source_ptr[si]
                             # geom_hit, hit_color = shade_gaussians(
                             #     shape_transforms[si],
                             #     shape_sizes[si],
@@ -188,7 +192,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                     for gi in range(num_gaussians_hit):
                         si = gaussians_hit[gi]
 
-                        gaussian_id = shape_source_ptr[shape_indices[si]]
+                        gaussian_id = shape_source_ptr[si]
                         geom_hit, hit_color = shade_gaussians(
                             shape_transforms[si],
                             shape_sizes[si],
@@ -282,10 +286,11 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         max_distance: wp.float32,
         shape_enabled: wp.array(dtype=wp.uint32),
         shape_types: wp.array(dtype=wp.int32),
-        shape_indices: wp.array(dtype=wp.int32),
         shape_sizes: wp.array(dtype=wp.vec3f),
         shape_transforms: wp.array(dtype=wp.transformf),
         shape_source_ptr: wp.array(dtype=wp.uint64),
+        shape_mesh_data_ids: wp.array(dtype=wp.int32),
+        mesh_data: wp.array(dtype=MeshData),
         particles_position: wp.array(dtype=wp.vec3f),
         particles_radius: wp.array(dtype=wp.float32),
         triangle_mesh_id: wp.uint64,
@@ -312,10 +317,11 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
             world_index,
             shape_enabled,
             shape_types,
-            shape_indices,
             shape_sizes,
             shape_transforms,
             shape_source_ptr,
+            shape_mesh_data_ids,
+            mesh_data,
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
@@ -348,7 +354,6 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         world_index: wp.int32,
         shape_enabled: wp.array(dtype=wp.uint32),
         shape_types: wp.array(dtype=wp.int32),
-        shape_indices: wp.array(dtype=wp.int32),
         shape_sizes: wp.array(dtype=wp.vec3f),
         shape_transforms: wp.array(dtype=wp.transformf),
         shape_source_ptr: wp.array(dtype=wp.uint64),
@@ -371,17 +376,14 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                     dist = wp.float32(-1)
 
                     if shape_types[si] == GeoType.MESH:
-                        geom_hit, _u, _v, _f = ray_intersect.ray_intersect_mesh(
+                        dist = ray_intersect.ray_intersect_mesh_any(
                             shape_transforms[si],
                             shape_sizes[si],
                             ray_origin_world,
                             ray_dir_world,
-                            shape_source_ptr[shape_indices[si]],
-                            wp.static(config.enable_backface_culling),
+                            shape_source_ptr[si],
                             max_dist,
                         )
-                        if geom_hit.hit:
-                            dist = geom_hit.distance
                     elif shape_types[si] == GeoType.PLANE:
                         dist = ray_intersect.ray_intersect_plane(
                             shape_transforms[si],
@@ -490,7 +492,6 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         world_index: wp.int32,
         shape_enabled: wp.array(dtype=wp.uint32),
         shape_types: wp.array(dtype=wp.int32),
-        shape_indices: wp.array(dtype=wp.int32),
         shape_sizes: wp.array(dtype=wp.vec3f),
         shape_transforms: wp.array(dtype=wp.transformf),
         shape_source_ptr: wp.array(dtype=wp.uint64),
@@ -511,7 +512,6 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
             world_index,
             shape_enabled,
             shape_types,
-            shape_indices,
             shape_sizes,
             shape_transforms,
             shape_source_ptr,

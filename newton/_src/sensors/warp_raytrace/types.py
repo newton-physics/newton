@@ -58,6 +58,7 @@ class MeshData:
     """
 
     uvs: wp.array(dtype=wp.vec2f)
+    normals: wp.array(dtype=wp.vec3f)
 
 
 @wp.struct

@@ -95,7 +95,6 @@ class RenderContext:
 
         self.shape_enabled: wp.array(dtype=wp.uint32) = None
         self.shape_types: wp.array(dtype=wp.int32) = None
-        self.shape_indices: wp.array(dtype=wp.int32) = None
         self.shape_sizes: wp.array(dtype=wp.vec3f) = None
         self.shape_transforms: wp.array(dtype=wp.transformf) = None
         self.shape_colors: wp.array(dtype=wp.vec4f) = None
@@ -260,7 +259,6 @@ class RenderContext:
                     # Shapes
                     self.shape_enabled,
                     self.shape_types,
-                    self.shape_indices,
                     self.shape_sizes,
                     self.shape_colors,
                     self.shape_transforms,
@@ -446,7 +444,6 @@ class RenderContext:
                 self.shape_world_index,
                 self.shape_enabled,
                 self.shape_types,
-                self.shape_indices,
                 self.shape_sizes,
                 self.shape_transforms,
                 self.shape_bounds,

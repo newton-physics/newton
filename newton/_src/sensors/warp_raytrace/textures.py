@@ -47,14 +47,15 @@ def sample_texture_mesh(
     bary_u: wp.float32,
     bary_v: wp.float32,
     face_id: wp.int32,
+    mesh_id: wp.uint64,
     mesh_data: MeshData,
     texture_data: TextureData,
 ) -> wp.vec3f:
     bary_w = 1.0 - bary_u - bary_v
-    uv0 = mesh_data.uvs[face_id * 3 + 0]
-    uv1 = mesh_data.uvs[face_id * 3 + 1]
-    uv2 = mesh_data.uvs[face_id * 3 + 2]
-    uv = uv0 * bary_u + uv1 * bary_v + uv2 * bary_w
+    uv0 = wp.mesh_get_index(mesh_id, face_id * 3 + 0)
+    uv1 = wp.mesh_get_index(mesh_id, face_id * 3 + 1)
+    uv2 = wp.mesh_get_index(mesh_id, face_id * 3 + 2)
+    uv = mesh_data.uvs[uv0] * bary_u + mesh_data.uvs[uv1] * bary_v + mesh_data.uvs[uv2] * bary_w
     return sample_texture_2d(flip_v(wp.cw_mul(uv, texture_data.repeat)), texture_data)
 
 
@@ -64,6 +65,7 @@ def sample_texture(
     shape_transform: wp.transformf,
     texture_data: wp.array(dtype=TextureData),
     texture_index: wp.int32,
+    mesh_id: wp.uint64,
     mesh_data: wp.array(dtype=MeshData),
     mesh_data_index: wp.int32,
     hit_point: wp.vec3f,
@@ -87,7 +89,7 @@ def sample_texture(
             return tex_color
 
         tex_color = sample_texture_mesh(
-            bary_u, bary_v, face_id, mesh_data[mesh_data_index], texture_data[texture_index]
+            bary_u, bary_v, face_id, mesh_id, mesh_data[mesh_data_index], texture_data[texture_index]
         )
 
     return tex_color

@@ -84,12 +84,9 @@ def compute_enabled_shapes(
     shape_type: wp.array(dtype=wp.int32),
     shape_flags: wp.array(dtype=wp.int32),
     out_shape_enabled: wp.array(dtype=wp.uint32),
-    out_mesh_indices: wp.array(dtype=wp.int32),
     out_shape_enabled_count: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-
-    out_mesh_indices[tid] = tid
 
     if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
         return
@@ -184,9 +181,6 @@ class SensorTiledCamera:
             device=self.model.device,
         )
         self.render_context.shape_source_ptr = model.shape_source_ptr
-        self.render_context.shape_indices = wp.empty(
-            self.model.shape_count, dtype=wp.int32, device=self.render_context.device
-        )
         self.render_context.shape_bounds = wp.empty(
             (self.model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.render_context.device
         )
@@ -214,7 +208,7 @@ class SensorTiledCamera:
         self.render_context.shape_world_index = self.model.shape_world
         self.render_context.gaussians_data = self.model.gaussians_data
 
-        self.__load_textures(config)
+        self.__load_texture_and_mesh_data(config)
 
         colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(self.model.shape_source)]
         self.render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.render_context.device)
@@ -227,7 +221,6 @@ class SensorTiledCamera:
                 model.shape_type,
                 model.shape_flags,
                 self.render_context.shape_enabled,
-                self.render_context.shape_indices,
                 num_enabled_shapes,
             ],
             device=self.render_context.device,
@@ -531,12 +524,12 @@ class SensorTiledCamera:
             return color
         return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
 
-    def __load_textures(self, config: Config):
-        """Load mesh textures and UV data into the render context.
+    def __load_texture_and_mesh_data(self, config: Config):
+        """Load textures and mesh data into the render context.
 
         Deduplicates textures by hash and meshes by identity, storing each
-        unique texture as a :class:`TextureData` struct and each unique set of
-        UVs as a :class:`MeshData` struct.  Per-shape index arrays map each
+        unique texture as a :class:`TextureData` struct and each unique Mesh
+        as a :class:`MeshData` struct.  Per-shape index arrays map each
         shape to its texture and mesh data entry (``-1`` when absent).
 
         Args:
@@ -581,12 +574,15 @@ class SensorTiledCamera:
                 else:
                     texture_data_ids.append(-1)
 
-                if shape.uvs is not None:
+                if shape.uvs is not None or shape.normals is not None:
                     if shape not in mesh_hashes:
                         mesh_hashes[shape] = len(self.__mesh_data)
 
                         data = MeshData()
-                        data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.render_context.device)
+                        if shape.uvs is not None:
+                            data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.render_context.device)
+                        if shape.normals is not None:
+                            data.normals = wp.array(shape.normals, dtype=wp.vec3f, device=self.render_context.device)
                         self.__mesh_data.append(data)
 
                     mesh_data_ids.append(mesh_hashes[shape])
