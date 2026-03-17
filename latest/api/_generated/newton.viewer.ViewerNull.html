@@ -811,7 +811,7 @@
 <h1>newton.viewer.ViewerNull<a class="headerlink" href="#newton-viewer-viewernull" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.viewer.ViewerNull">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerNull</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_frames</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer_null.py#L29"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerNull" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerNull</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_frames</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">benchmark</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">benchmark_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">benchmark_start_frame</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer_null.py#L30"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerNull" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerBase</span></code></p>
 <p>A no-operation (no-op) viewer implementation for Newton.</p>
 <p>This class provides a minimal, non-interactive viewer that does not perform any rendering
@@ -822,11 +822,19 @@ stub implementations for all logging and frame management methods.</p>
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerNull.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_frames</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerNull.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_frames</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">benchmark</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">benchmark_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">benchmark_start_frame</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerNull.__init__" title="Link to this definition">#</a></dt>
 <dd><p>Initialize a no-op Viewer that runs for a fixed number of frames.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>num_frames</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The number of frames to run before stopping.</p>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>num_frames</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The number of frames to run before stopping.</p></li>
+<li><p><strong>benchmark</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Enable benchmark timing (FPS measurement after warmup).</p></li>
+<li><p><strong>benchmark_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – If set, stop after this many seconds of
+steady-state simulation (measured after warmup). Implicitly
+enables <em>benchmark</em>.</p></li>
+<li><p><strong>benchmark_start_frame</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of warmup frames before benchmark
+timing starts.</p></li>
+</ul>
 </dd>
 </dl>
 </dd></dl>
@@ -854,6 +862,21 @@ stub implementations for all logging and frame management methods.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.viewer.ViewerNull.benchmark_result">
+<span class="sig-name descname"><span class="pre">benchmark_result</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerNull.benchmark_result" title="Link to this definition">#</a></dt>
+<dd><p>Return benchmark results, or <code class="docutils literal notranslate"><span class="pre">None</span></code> if benchmarking was not enabled.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Dictionary with <code class="docutils literal notranslate"><span class="pre">fps</span></code>, <code class="docutils literal notranslate"><span class="pre">frames</span></code>, and <code class="docutils literal notranslate"><span class="pre">elapsed</span></code> keys,
+or <code class="docutils literal notranslate"><span class="pre">None</span></code> if benchmarking is not enabled.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)">dict</a>[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)">str</a>, <a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)">float</a> | <a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)">int</a>] | None</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerNull.close">
 <span class="sig-name descname"><span class="pre">close</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerNull.close" title="Link to this definition">#</a></dt>
 <dd><p>No-op implementation for closing the viewer.</p>
@@ -871,7 +894,8 @@ stub implementations for all logging and frame management methods.</p>
 <dd><p>Check if the viewer should continue running.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p>True if the frame count is less than the maximum number of frames.</p>
+<dd class="field-odd"><p>True if the frame count is less than the maximum number of frames
+and the benchmark timeout (if any) has not been reached.</p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
 <dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)">bool</a></p>
@@ -1012,6 +1036,7 @@ stub implementations for all logging and frame management methods.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerNull.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerNull.apply_forces"><code class="docutils literal notranslate"><span class="pre">apply_forces()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerNull.begin_frame"><code class="docutils literal notranslate"><span class="pre">begin_frame()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerNull.benchmark_result"><code class="docutils literal notranslate"><span class="pre">benchmark_result()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerNull.close"><code class="docutils literal notranslate"><span class="pre">close()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerNull.end_frame"><code class="docutils literal notranslate"><span class="pre">end_frame()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerNull.is_running"><code class="docutils literal notranslate"><span class="pre">is_running()</span></code></a></li>
