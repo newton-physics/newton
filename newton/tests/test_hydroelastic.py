@@ -49,7 +49,6 @@ VIEWER_NUM_FRAMES = 300
 # Test thresholds
 POSITION_THRESHOLD_FACTOR = 0.20  # multiplied by cube_half
 MAX_ROTATION_DEG = 10.0
-SKIP_DEPTH_IN_VOXELS_THRESHOLD = 0.0
 
 # Devices and solvers
 cuda_devices = get_selected_cuda_test_devices()
@@ -116,7 +115,6 @@ def build_stacked_cubes_scene(
     builder = newton.ModelBuilder()
     if shape_type == ShapeType.PRIMITIVE:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-            margin=1e-5,
             mu=0.5,
             sdf_max_resolution=32,
             is_hydroelastic=True,
@@ -125,7 +123,6 @@ def build_stacked_cubes_scene(
         )
     else:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-            margin=1e-5,
             mu=0.5,
             is_hydroelastic=True,
             gap=contact_gap,
@@ -447,13 +444,13 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
     cube_half = 0.1
     sphere_radius = 0.1
     narrow_band = cube_half * 0.4
-    contact_margin = cube_half * 0.4
+    contact_gap = cube_half * 0.4
 
     shape_cfg = newton.ModelBuilder.ShapeConfig(
         sdf_max_resolution=64,
         is_hydroelastic=True,
         sdf_narrow_band_range=(-narrow_band, narrow_band),
-        gap=contact_margin,
+        gap=contact_gap,
         kh=1e9,
     )
     builder = newton.ModelBuilder()
@@ -495,11 +492,6 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
     penetrations = [0.0, 1e-4, 1e-3, 1e-2]
 
     for pen in penetrations:
-        voxel_size = (2 * cube_half + 2 * 0.01) / 64  # SDF domain / max_resolution
-        depth_in_voxels = pen / voxel_size
-        if depth_in_voxels < SKIP_DEPTH_IN_VOXELS_THRESHOLD:
-            continue
-
         sphere_z = rest_z - pen
         wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
 
@@ -632,7 +624,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         I_m_upper = wp.mat33(inertia_upper, 0.0, 0.0, 0.0, inertia_upper, 0.0, 0.0, 0.0, inertia_upper)
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
-            margin=1e-5,
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.1, 0.1),
@@ -765,15 +756,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         effective_area = area
         expected = total_force / (kh_val * effective_area)
         expected /= effective_mass
-
-        # When expected penetration is deeply sub-voxel the 16-bit texture SDF
-        # cannot reliably resolve it — contacts may not register as negative
-        # depth at all.  Skip the entire case in that regime.
-        case_upper_size = test_cases[i][1]
-        voxel_size = (case_upper_size + 2 * 0.01) / 64  # SDF domain / max_resolution
-        depth_in_voxels = expected / voxel_size
-        if depth_in_voxels < SKIP_DEPTH_IN_VOXELS_THRESHOLD:
-            continue
 
         # Filter depths for this shape pair
         mask = ((shape_pairs[:, 0] == lower_shape) & (shape_pairs[:, 1] == upper_shape)) | (
