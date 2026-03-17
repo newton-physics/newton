@@ -40,7 +40,6 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.update_step_interval = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
@@ -55,7 +54,7 @@ class Example:
         quadruped.default_joint_cfg.armature = 0.01
 
         if self.solver_type == "vbd":
-            quadruped.default_joint_cfg.target_ke = 1.0e6
+            quadruped.default_joint_cfg.target_ke = 2000.0
             quadruped.default_joint_cfg.target_kd = 1.0e-3
             quadruped.default_joint_cfg.limit_kd = 1.0e-5
             quadruped.default_shape_cfg.ke = 1.0e7
@@ -64,9 +63,6 @@ class Example:
         else:
             quadruped.default_joint_cfg.target_ke = 2000.0
             quadruped.default_joint_cfg.target_kd = 1.0
-            quadruped.default_shape_cfg.ke = 1.0e4
-            quadruped.default_shape_cfg.kd = 1.0e2
-            quadruped.default_shape_cfg.kf = 1.0e2
             quadruped.default_shape_cfg.mu = 1.0
 
         # parse the URDF file
@@ -96,8 +92,10 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
         if self.solver_type == "vbd":
-            self.solver = newton.solvers.SolverVBD(self.model, iterations=1, rigid_contact_k_start=1.0e5)
+            self.update_step_interval = 10
+            self.solver = newton.solvers.SolverVBD(self.model, iterations=1, rigid_contact_k_start=1.0e6)
         else:
+            self.update_step_interval = 1
             self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()

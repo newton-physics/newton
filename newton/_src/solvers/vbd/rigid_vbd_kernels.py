@@ -971,6 +971,7 @@ def evaluate_joint_force_hessian(
     joint_limit_ke: wp.array(dtype=float),
     joint_limit_kd: wp.array(dtype=float),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_rest_angle: wp.array(dtype=float),
     dt: float,
 ):
     """Compute AVBD joint force and Hessian contributions for one body.
@@ -1263,12 +1264,13 @@ def evaluate_joint_force_hessian(
                 kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             theta = wp.dot(kappa, a)
+            theta_abs = theta + joint_rest_angle[dof_idx]
             omega_p = quat_velocity(q_wp, q_wp_prev, dt)
             omega_c = quat_velocity(q_wc, q_wc_prev, dt)
             dkappa_dt = compute_kappa_dot_analytic(q_wp, q_wc, q_wp_rest, q_wc_rest, omega_p, omega_c, kappa)
             dtheta_dt = wp.dot(dkappa_dt, a)
 
-            mode, err_pos = resolve_drive_limit_mode(theta, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
@@ -1586,10 +1588,11 @@ def evaluate_joint_force_hessian(
                     if has_drive or has_limits:
                         a = wp.normalize(joint_axis[dof_idx])
                         theta = wp.dot(kappa, a)
+                        theta_abs = theta + joint_rest_angle[dof_idx]
                         dtheta_dt = wp.dot(dkappa_dt, a)
 
                         mode, err_pos = resolve_drive_limit_mode(
-                            theta, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                            theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
                         )
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
@@ -2539,6 +2542,7 @@ def solve_rigid_body(
     joint_limit_ke: wp.array(dtype=float),
     joint_limit_kd: wp.array(dtype=float),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_rest_angle: wp.array(dtype=float),
     external_forces: wp.array(dtype=wp.vec3),
     external_torques: wp.array(dtype=wp.vec3),
     external_hessian_ll: wp.array(dtype=wp.mat33),  # Linear-linear block from rigid contacts
@@ -2705,6 +2709,7 @@ def solve_rigid_body(
             joint_limit_ke,
             joint_limit_kd,
             joint_dof_dim,
+            joint_rest_angle,
             dt,
         )
 
@@ -2820,6 +2825,7 @@ def update_duals_joint(
     beta: float,
     joint_penalty_k: wp.array(dtype=float),  # input/output
     joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_rest_angle: wp.array(dtype=float),
     # Drive/limit parameters for adaptive drive/limit penalty growth
     joint_target_ke: wp.array(dtype=float),
     joint_target_pos: wp.array(dtype=float),
@@ -3010,8 +3016,9 @@ def update_duals_joint(
 
         if has_drive or has_limits:
             theta = wp.dot(kappa, a)
+            theta_abs = theta + joint_rest_angle[dof_idx]
             target_pos = joint_target_pos[dof_idx]
-            mode, err_pos = resolve_drive_limit_mode(theta, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             i_dl = c_start + 2
             k_dl = joint_penalty_k[i_dl]
             C_dl = wp.abs(err_pos)
@@ -3150,9 +3157,10 @@ def update_duals_joint(
                 if has_drive or has_limits:
                     a_dl = wp.normalize(joint_axis[dof_idx])
                     theta = wp.dot(kappa, a_dl)
+                    theta_abs = theta + joint_rest_angle[dof_idx]
                     target_pos_dl = joint_target_pos[dof_idx]
                     mode, err_pos = resolve_drive_limit_mode(
-                        theta, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
+                        theta_abs, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
                     )
                     i_dl = c_start + 2 + lin_count + ai
                     k_dl = joint_penalty_k[i_dl]

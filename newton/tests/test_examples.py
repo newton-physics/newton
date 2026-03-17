@@ -218,6 +218,17 @@ add_example_test(
     test_options_cpu={"world_count": 16},
     test_options_cuda={"world_count": 64},
     use_viewer=True,
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_urdf",
+    devices=test_devices,
+    test_options={"num-frames": 200, "solver": "vbd"},
+    test_options_cpu={"world_count": 16},
+    test_options_cuda={"world_count": 64},
+    use_viewer=True,
+    test_suffix="vbd",
 )
 
 add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)

@@ -138,6 +138,11 @@ class SolverVBD(SolverBase):
 
         Call :meth:`newton.ModelBuilder.color` to automatically color both particles and rigid bodies.
 
+        VBD uses ``model.body_q`` as the structural rest pose and reads
+        ``model.joint_q`` for drive/limit rest-angle offsets. The body
+        transforms must match the joint angles at solver creation time
+        (see example below).
+
     Example
     -------
 
@@ -518,6 +523,7 @@ class SolverVBD(SolverBase):
             # Joint constraint layout + penalties (solver constraint scalars)
             self._init_joint_constraint_layout()
             self.joint_penalty_k = self._init_joint_penalty_k(rigid_joint_linear_k_start, rigid_joint_angular_k_start)
+            self.joint_rest_angle = self._init_joint_rest_angle()
 
             # Contact penalties (adaptive penalties for body-body contacts)
             if model.shape_count > 0:
@@ -907,6 +913,54 @@ class SolverVBD(SolverBase):
             self.joint_penalty_k_max = wp.array(joint_k_max_np, dtype=float, device=self.device)
             self.joint_penalty_kd = wp.array(joint_kd_np, dtype=float, device=self.device)
             return wp.array(joint_k0_np, dtype=float, device=self.device)
+
+    def _init_joint_rest_angle(self):
+        """Compute per-DOF rest-pose joint angles from ``model.joint_q``.
+
+        VBD computes angular joint angles via ``kappa`` (rotation vector relative to
+        the rest pose stored in ``model.body_q``). After ``eval_fk(model, ..., model)``,
+        the rest pose encodes the initial joint configuration, so ``kappa = 0`` at the
+        initial angles. Drive targets and limits, however, are specified in absolute
+        joint coordinates. This array stores the rest-pose angle offset per DOF so that
+        ``theta_abs = theta + joint_rest_angle[dof_idx]`` converts rest-relative
+        ``theta`` back to absolute coordinates for drive/limit comparison.
+
+        Only angular DOFs of REVOLUTE and D6 joints need nonzero entries. Linear DOFs
+        (PRISMATIC, D6 linear) use absolute geometric measurements (``d_along``) and
+        are unaffected — their entries are left at 0.
+        """
+        dof_count = self.model.joint_dof_count
+        rest_angle_np = np.zeros(dof_count, dtype=float)
+
+        with wp.ScopedDevice("cpu"):
+            jt_cpu = self.model.joint_type.to("cpu")
+            jq_cpu = self.model.joint_q.to("cpu")
+            jq_start_cpu = self.model.joint_q_start.to("cpu")
+            jqd_start_cpu = self.model.joint_qd_start.to("cpu")
+            jdof_dim_cpu = self.model.joint_dof_dim.to("cpu")
+
+            jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
+            jq = jq_cpu.numpy() if hasattr(jq_cpu, "numpy") else np.asarray(jq_cpu, dtype=float)
+            jq_start = jq_start_cpu.numpy() if hasattr(jq_start_cpu, "numpy") else np.asarray(jq_start_cpu, dtype=int)
+            jqd_start = (
+                jqd_start_cpu.numpy() if hasattr(jqd_start_cpu, "numpy") else np.asarray(jqd_start_cpu, dtype=int)
+            )
+            jdof_dim = jdof_dim_cpu.numpy() if hasattr(jdof_dim_cpu, "numpy") else np.asarray(jdof_dim_cpu, dtype=int)
+
+            for j in range(self.model.joint_count):
+                if jt[j] == JointType.REVOLUTE:
+                    q_start = int(jq_start[j])
+                    qd_start = int(jqd_start[j])
+                    rest_angle_np[qd_start] = float(jq[q_start])
+                elif jt[j] == JointType.D6:
+                    q_start = int(jq_start[j])
+                    qd_start = int(jqd_start[j])
+                    lin_count = int(jdof_dim[j, 0])
+                    ang_count = int(jdof_dim[j, 1])
+                    for ai in range(ang_count):
+                        rest_angle_np[qd_start + lin_count + ai] = float(jq[q_start + lin_count + ai])
+
+        return wp.array(rest_angle_np, dtype=float, device=self.device)
 
     def _init_dahl_params(self, eps_max_input, tau_input, model):
         """
@@ -2036,6 +2090,7 @@ class SolverVBD(SolverBase):
                     model.joint_limit_ke,
                     model.joint_limit_kd,
                     model.joint_dof_dim,
+                    self.joint_rest_angle,
                     self.body_forces,
                     self.body_torques,
                     self.body_hessian_ll,
@@ -2128,6 +2183,7 @@ class SolverVBD(SolverBase):
                     self.avbd_beta,
                     self.joint_penalty_k,  # input/output
                     model.joint_dof_dim,
+                    self.joint_rest_angle,
                     # Drive/limit parameters for adaptive drive/limit penalty growth
                     model.joint_target_ke,
                     control.joint_target_pos,
