@@ -55,7 +55,7 @@ importers = [
     "meshio>=5.3.0",               # alternative mesh file loader (fallback)
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
     "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs (package://, model://)
-    "open3d>=0.18.0; python_version < '3.14' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for importing Gaussian .ply files where wheels are available
+    "open3d>=0.18.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for importing Gaussian .ply files where wheels are available (no 3.13 wheels yet)
 
     # USD core libraries
     "usd-core>=25.5 ; platform_machine != 'aarch64' and python_version < '3.14'",
@@ -67,7 +67,7 @@ importers = [
 
 # Remeshing dependencies (for SurfaceReconstructor)
 remesh = [
-    "open3d>=0.18.0; python_version < '3.14' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for Poisson surface reconstruction where wheels are available
+    "open3d>=0.18.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for Poisson surface reconstruction where wheels are available (no 3.13 wheels yet)
     "pyfqmr>=0.5.0",               # for fast mesh simplification
 ]
 
