@@ -230,6 +230,7 @@ class SensorContact:
 
     - **Sensing object** -- body or shape carrying a contact sensor.
     - **Counterpart** -- the other body or shape in a contact interaction.
+
     .. rubric:: Construction and update order
 
     ``SensorContact`` requests the ``force`` extended attribute from the model at init, so a :class:`~newton.Contacts`
