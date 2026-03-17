@@ -91,7 +91,7 @@ class SensorTiledCameraBenchmark:
     def time_rendering_pixel(self, resolution: int, world_count: int, iterations: int):
         self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
-            with wp.ScopedTimer("Rendering", synchronize=True, print=True) as timer:
+            with wp.ScopedTimer("Rendering", synchronize=True, print=False) as timer:
                 for _ in range(iterations):
                     self.tiled_camera_sensor.update(
                         None,
@@ -100,7 +100,6 @@ class SensorTiledCameraBenchmark:
                         color_image=self.color_image if out_color else None,
                         depth_image=self.depth_image if out_depth else None,
                         refit_bvh=False,
-                        clear_data=None,
                     )
             self.timings[("render_pixel", out_color, out_depth)] = timer.elapsed
 
@@ -119,7 +118,6 @@ class SensorTiledCameraBenchmark:
                         color_image=self.color_image if out_color else None,
                         depth_image=self.depth_image if out_depth else None,
                         refit_bvh=False,
-                        clear_data=None,
                     )
             self.timings[("render_tiled", out_color, out_depth)] = timer.elapsed
 
