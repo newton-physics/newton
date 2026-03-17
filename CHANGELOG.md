@@ -11,6 +11,7 @@
 - Support kinematic bodies in VBD solver
 - Add brick stacking example
 - Add box pyramid example and ASV benchmark for dense convex-on-convex contacts
+- Add `snap_to` argument to `ViewerGL.log_gizmo()` to snap gizmos to a target world transform when the user releases them
 
 ### Changed
 

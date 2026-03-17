@@ -842,8 +842,8 @@ class ViewerBase(ABC):
         Args:
             name: The name of the gizmo.
             transform: The transform of the gizmo.
-            snap_to: Optional world transform to snap to when user interaction
-                with this gizmo ends.
+            snap_to: Optional world transform to snap to when this gizmo is
+                released by the user.
         """
         return
 
