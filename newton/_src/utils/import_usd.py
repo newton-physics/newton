@@ -15,13 +15,16 @@
 
 from __future__ import annotations
 
+import collections
 import datetime
 import itertools
 import os
+import posixpath
 import re
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urljoin
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -37,7 +40,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.joints import JointTargetMode
+from ..sim.enums import JointTargetMode
 from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -173,11 +176,17 @@ def parse_usd(
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
         load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-        hide_collision_shapes: If True, collision shapes are hidden. Default is False.
+        hide_collision_shapes: If True, collision shapes on bodies that already
+            have visual-only geometry are hidden. Collision shapes on bodies
+            without visual-only geometry remain visible as a rendering fallback.
+            Mesh colliders with authored PBR material data (texture,
+            roughness, or metallic) also remain visible so collision-only
+            render meshes are not lost.
+            Default is False.
         force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
-            ``hide_collision_shapes=True`` still takes precedence and will suppress
-            the VISIBLE flag even when this option is set. Default is False.
+            ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
+            colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -198,7 +207,7 @@ def parse_usd(
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
     Returns:
-        dict: Dictionary with the following entries:
+        The returned mapping has the following entries:
 
         .. list-table::
             :widths: 25 75
@@ -269,6 +278,7 @@ def parse_usd(
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
+    default_joint_velocity_limit = builder.default_joint_cfg.velocity_limit
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -337,7 +347,7 @@ def parse_usd(
     # cache for resolved material properties (keyed by prim path)
     material_props_cache: dict[str, dict[str, Any]] = {}
     # cache for mesh data loaded from USD prims
-    mesh_cache: dict[tuple[str, bool], Mesh] = {}
+    mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -387,7 +397,63 @@ def parse_usd(
         mesh_cache[key] = mesh
         return mesh
 
+    def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
+        """Load a renderable mesh without changing physics mass properties."""
+        material_props = _get_material_props_cached(prim)
+        texture = material_props.get("texture")
+        physics_mesh = _get_mesh_cached(prim)
+        if texture is not None:
+            render_mesh = _get_mesh_cached(prim, load_uvs=True)
+            # Texture UV expansion is render-only. Preserve the collision mesh's
+            # mass/inertia so visibility changes do not perturb simulation.
+            mesh = Mesh(
+                render_mesh.vertices,
+                render_mesh.indices,
+                normals=render_mesh.normals,
+                uvs=render_mesh.uvs,
+                compute_inertia=False,
+                is_solid=physics_mesh.is_solid,
+                maxhullvert=physics_mesh.maxhullvert,
+                sdf=physics_mesh.sdf,
+            )
+            mesh.mass = physics_mesh.mass
+            mesh.com = physics_mesh.com
+            mesh.inertia = physics_mesh.inertia
+            mesh.has_inertia = physics_mesh.has_inertia
+        else:
+            mesh = physics_mesh.copy(recompute_inertia=False)
+        if texture:
+            mesh.texture = texture
+        if mesh.texture is not None and mesh.uvs is None:
+            warnings.warn(
+                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                stacklevel=2,
+            )
+            mesh.texture = None
+        if material_props.get("color") is not None and mesh.texture is None:
+            mesh.color = material_props["color"]
+        if material_props.get("roughness") is not None:
+            mesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            mesh.metallic = material_props["metallic"]
+        return mesh
+
+    def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
+        # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
+        return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
+
     bodies_with_visual_shapes: set[int] = set()
+
+    def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
+        prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
+        if articulation_root_xform is not None:
+            rebase_mat = _xform_to_mat44(wp.transform_inverse(articulation_root_xform))
+            prim_world_mat = rebase_mat @ prim_world_mat
+        if incoming_world_xform is not None:
+            # Apply the incoming world transform in model space (static shapes or when using body_xform).
+            incoming_mat = _xform_to_mat44(incoming_world_xform)
+            prim_world_mat = incoming_mat @ prim_world_mat
+        return prim_world_mat
 
     def _load_visual_shapes_impl(
         parent_body_id: int,
@@ -414,14 +480,11 @@ def parse_usd(
         if any(re.match(path, path_name) for path in ignore_paths):
             return
 
-        prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
-        if articulation_root_xform is not None:
-            rebase_mat = _xform_to_mat44(wp.transform_inverse(articulation_root_xform))
-            prim_world_mat = rebase_mat @ prim_world_mat
-        if incoming_world_xform is not None and (parent_body_id == -1 or body_xform is not None):
-            # Apply the incoming world transform in model space (static shapes or when using body_xform).
-            incoming_mat = _xform_to_mat44(incoming_world_xform)
-            prim_world_mat = incoming_mat @ prim_world_mat
+        prim_world_mat = _get_prim_world_mat(
+            prim,
+            articulation_root_xform,
+            incoming_world_xform if (parent_body_id == -1 or body_xform is not None) else None,
+        )
         if body_xform is not None:
             # Use the body transform used by the builder to avoid USD/physics pose mismatches.
             body_world_mat = _xform_to_mat44(body_xform)
@@ -541,30 +604,22 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "mesh":
-                # Resolve material properties first (cached) to determine if we need UVs
-                material_props = _get_material_props_cached(prim)
-                texture = material_props.get("texture")
-                # Only load UVs if we have a texture to avoid expensive faceVarying expansion
-                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None))
-                if texture:
-                    mesh.texture = texture
-                if mesh.texture is not None and mesh.uvs is None:
-                    warnings.warn(
-                        f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                        stacklevel=2,
-                    )
-                    mesh.texture = None
-                if material_props.get("color") is not None and mesh.texture is None:
-                    mesh.color = material_props["color"]
-                if material_props.get("roughness") is not None:
-                    mesh.roughness = material_props["roughness"]
-                if material_props.get("metallic") is not None:
-                    mesh.metallic = material_props["metallic"]
+                mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
                     scale=scale,
                     mesh=mesh,
+                    cfg=visual_shape_cfg,
+                    label=path_name,
+                )
+            elif type_name == "particlefield3dgaussiansplat":
+                gaussian = usd.get_gaussian(prim)
+                shape_id = builder.add_shape_gaussian(
+                    parent_body_id,
+                    gaussian=gaussian,
+                    xform=xform,
+                    scale=scale,
                     cfg=visual_shape_cfg,
                     label=path_name,
                 )
@@ -588,6 +643,7 @@ def parse_usd(
         label: str,
         armature: float,
         articulation_root_xform: wp.transform | None = None,
+        is_kinematic: bool = False,
     ) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
         # Extract custom attributes for this body
@@ -599,6 +655,7 @@ def parse_usd(
             xform=xform,
             label=label,
             armature=armature,
+            is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
         path_body_map[label] = b
@@ -633,14 +690,24 @@ def parse_usd(
             (prim, physics_scene_prim), "newton:armature", builder.default_body_armature
         )
 
+        is_kinematic = rigid_body_desc.kinematicBody
+
         if add_body_to_builder:
-            return add_body(prim, origin, path, body_armature, articulation_root_xform=articulation_root_xform)
+            return add_body(
+                prim,
+                origin,
+                path,
+                body_armature,
+                articulation_root_xform=articulation_root_xform,
+                is_kinematic=is_kinematic,
+            )
         else:
             result = {
                 "prim": prim,
                 "xform": origin,
                 "label": path,
                 "armature": body_armature,
+                "is_kinematic": is_kinematic,
             }
             if articulation_root_xform is not None:
                 result["articulation_root_xform"] = articulation_root_xform
@@ -703,6 +770,13 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
+        joint_velocity_limit = R.get_value(
+            joint_prim,
+            prim_type=PrimType.JOINT,
+            key="velocity_limit",
+            default=None,
+            verbose=verbose,
+        )
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
@@ -750,6 +824,7 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
+            joint_params["velocity_limit"] = joint_velocity_limit
             if joint_desc.drive.enabled:
                 target_vel = joint_desc.drive.targetVelocity
                 target_pos = joint_desc.drive.targetPosition
@@ -802,6 +877,8 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
+                if joint_params["velocity_limit"] is not None:
+                    joint_params["velocity_limit"] *= DegreesToRadian
 
                 joint_index = builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -927,6 +1004,9 @@ def parse_usd(
                             target_kd=target_kd,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            velocity_limit=joint_velocity_limit
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
@@ -979,6 +1059,9 @@ def parse_usd(
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            velocity_limit=joint_velocity_limit * DegreesToRadian
+                            if joint_velocity_limit is not None
+                            else default_joint_velocity_limit,
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
@@ -1739,18 +1822,25 @@ def parse_usd(
         if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
             continue
         # Skip body-to-world joints (where one body is empty/world) only when
-        # FREE joints will be auto-inserted for remaining bodies.
-        # When no_articulations=True and has_joints=True, FREE joints are NOT
-        # auto-inserted, so we should parse body-to-world joints in that case.
+        # FREE joints will be auto-inserted for remaining bodies — but always
+        # keep body-to-world FIXED joints so the body is properly welded to
+        # world instead of receiving an incorrect FREE base joint.
         body0_path = str(joint_desc.body0)
         body1_path = str(joint_desc.body1)
         is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
+        is_fixed_joint = joint_desc.type == UsdPhysics.ObjectType.FixedJoint
         free_joints_auto_inserted = not (no_articulations and has_joints)
-        if is_body_to_world and free_joints_auto_inserted:
+        if is_body_to_world and free_joints_auto_inserted and not is_fixed_joint:
             continue
         try:
-            parse_joint(joint_desc, incoming_xform=incoming_world_xform)
-            orphan_joints.append(joint_path)
+            joint_index = parse_joint(joint_desc, incoming_xform=incoming_world_xform)
+            # Handle body-to-world FIXED joints separately to ensure proper welding.
+            # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
+            if joint_index is not None and is_body_to_world and is_fixed_joint:
+                child_body = builder.joint_child[joint_index]
+                builder.add_articulation([joint_index], label=builder.body_label[child_body])
+            else:
+                orphan_joints.append(joint_path)
         except ValueError as exc:
             if verbose:
                 print(f"Skipping joint {joint_path}: {exc}")
@@ -2001,16 +2091,46 @@ def parse_usd(
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
 
+                has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
+                collider_has_visual_material = (
+                    key == UsdPhysics.ObjectType.MeshShape
+                    and _has_visual_material_properties(_get_material_props_cached(prim))
+                )
+
+                hide_collider_for_body = (
+                    hide_collision_shapes and has_body_visual_shapes and not collider_has_visual_material
+                )
+                show_collider_by_policy = should_show_collider(
+                    force_show_colliders,
+                    has_visual_shapes=has_body_visual_shapes,
+                )
+                collider_is_visible = (
+                    show_collider_by_policy or collider_has_visual_material
+                ) and not hide_collider_for_body
+
+                shape_ke = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="ke",
+                    verbose=verbose,
+                )
+                if shape_ke is None:
+                    shape_ke = builder.default_shape_cfg.ke
+                shape_kd = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="kd",
+                    verbose=verbose,
+                )
+                if shape_kd is None:
+                    shape_kd = builder.default_shape_cfg.kd
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
-                        ke=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_ke", builder.default_shape_cfg.ke
-                        ),
-                        kd=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_kd", builder.default_shape_cfg.kd
-                        ),
+                        ke=shape_ke,
+                        kd=shape_kd,
                         kf=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
                         ),
@@ -2025,11 +2145,7 @@ def parse_usd(
                         mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
-                        is_visible=should_show_collider(
-                            force_show_colliders,
-                            has_visual_shapes=load_visual_shapes and body_id in bodies_with_visual_shapes,
-                        )
-                        and not hide_collision_shapes,
+                        is_visible=collider_is_visible,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2092,7 +2208,12 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    mesh = _get_mesh_cached(prim)
+                    if collider_is_visible:
+                        # Visible colliders should render with the same visual material metadata
+                        # as visual-only mesh imports.
+                        mesh = _get_mesh_with_visual_material(prim, path_name=path)
+                    else:
+                        mesh = _get_mesh_cached(prim)
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
@@ -2220,6 +2341,45 @@ def parse_usd(
                 for shape1 in builder.body_shapes[body1]:
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
+
+    # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
+    if load_visual_shapes:
+        prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
+        for gaussian_prim in prims:
+            if str(gaussian_prim.GetPath()).startswith("/Prototypes/"):
+                continue
+
+            if gaussian_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                prims.PruneChildren()
+                continue
+
+            if str(gaussian_prim.GetTypeName()) != "ParticleField3DGaussianSplat":
+                continue
+
+            gaussian_path = str(gaussian_prim.GetPath())
+            if gaussian_path in path_shape_map:
+                continue
+            if any(re.match(p, gaussian_path) for p in ignore_paths):
+                continue
+
+            body_id = -1
+
+            prim_world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+
+            g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
+            gaussian = usd.get_gaussian(gaussian_prim)
+            shape_id = builder.add_shape_gaussian(
+                body_id,
+                gaussian=gaussian,
+                xform=wp.transform(g_pos, g_rot),
+                scale=g_scale,
+                cfg=visual_shape_cfg,
+                label=gaussian_path,
+            )
+            path_shape_map[gaussian_path] = shape_id
+            path_shape_scale[gaussian_path] = g_scale
+            if verbose:
+                print(f"Added Gaussian splat shape {gaussian_path} with id {shape_id}.")
 
     def _zero_mass_information():
         """Create a reusable zero-contribution collider mass payload for callback fallback."""
@@ -2691,7 +2851,8 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
-    response = requests.get(url, allow_redirects=True)
+    request_timeout_s = 30
+    response = requests.get(url, allow_redirects=True, timeout=request_timeout_s)
     if response.status_code != 200:
         raise RuntimeError(f"Failed to download USD file. Status code: {response.status_code}")
     file = response.content
@@ -2716,40 +2877,64 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             f.write(stage_str)
             print(f"Exported USDA file to {usda_filename}.")
 
-    # parse referenced USD files like `references = @./franka_collisions.usd@`
-    downloaded = set()
-    for match in re.finditer(r"references.=.@(.*?)@", stage_str):
-        refname = match.group(1)
-        if refname.startswith("./"):
-            refname = refname[2:]
-        if refname in downloaded:
+    # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
+    # Each entry in the queue is (resolved_url, cache_relative_path).
+    downloaded_urls: set[str] = {url}
+    pending: collections.deque[tuple[str, str]] = collections.deque()
+
+    def _extract_references(layer_str, parent_url_folder, parent_local_folder):
+        """Extract reference paths from a USD layer string and queue them for download."""
+        for match in re.finditer(r"references.=.@(.*?)@", layer_str):
+            raw_ref = match.group(1)
+            ref_url = urljoin(parent_url_folder + "/", raw_ref)
+            local_path = os.path.normpath(os.path.join(parent_local_folder, raw_ref))
+            if os.path.isabs(local_path) or local_path.startswith(".."):
+                print(f"Skipping reference that escapes target folder: {raw_ref}")
+                continue
+            if ref_url not in downloaded_urls:
+                pending.append((ref_url, local_path))
+
+    _extract_references(stage_str, url_folder, "")
+
+    while pending:
+        ref_url, local_path = pending.popleft()
+        if ref_url in downloaded_urls:
             continue
+        downloaded_urls.add(ref_url)
         try:
-            response = requests.get(f"{url_folder}/{refname}", allow_redirects=True)
+            response = requests.get(ref_url, allow_redirects=True, timeout=request_timeout_s)
             if response.status_code != 200:
-                print(f"Failed to download reference {refname}. Status code: {response.status_code}")
+                print(f"Failed to download reference {local_path}. Status code: {response.status_code}")
                 continue
             file = response.content
-            refdir = os.path.dirname(refname)
-            if refdir:
-                os.makedirs(os.path.join(target_folder_name, refdir), exist_ok=True)
-            ref_filename = os.path.join(target_folder_name, refname)
+            local_dir = os.path.dirname(local_path)
+            if local_dir:
+                os.makedirs(os.path.join(target_folder_name, local_dir), exist_ok=True)
+            ref_filename = os.path.join(target_folder_name, local_path)
             if not os.path.exists(ref_filename):
                 with open(ref_filename, "wb") as f:
                     f.write(file)
-            downloaded.add(refname)
-            print(f"Downloaded USD reference {refname} to {ref_filename}.")
+            print(f"Downloaded USD reference {local_path} to {ref_filename}.")
+
+            ref_stage = Usd.Stage.Open(ref_filename, Usd.Stage.LoadNone)
+            ref_stage_str = ref_stage.GetRootLayer().ExportToString()
+
             if export_usda:
-                ref_stage = Usd.Stage.Open(ref_filename, Usd.Stage.LoadNone)
-                ref_stage_str = ref_stage.GetRootLayer().ExportToString()
-                base = os.path.basename(ref_filename)
-                base_name = dot.join(base.split(dot)[:-1])
-                usda_filename = os.path.join(target_folder_name, base_name + ".usda")
+                ref_base = os.path.basename(ref_filename)
+                ref_base_name = dot.join(ref_base.split(dot)[:-1])
+                usda_filename = (
+                    os.path.join(target_folder_name, local_dir, ref_base_name + ".usda")
+                    if local_dir
+                    else os.path.join(target_folder_name, ref_base_name + ".usda")
+                )
                 with open(usda_filename, "w") as f:
                     f.write(ref_stage_str)
                     print(f"Exported USDA file to {usda_filename}.")
+
+            # Recurse: resolve references relative to this file's location
+            _extract_references(ref_stage_str, posixpath.dirname(ref_url), local_dir)
         except Exception:
-            print(f"Failed to download {refname}.")
+            print(f"Failed to download {local_path}.")
     return target_filename
 
 

@@ -35,9 +35,11 @@ from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_in
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
 from .types import (
+    Gaussian,
     GeoType,
     Heightfield,
     Mesh,
+    TetMesh,
 )
 from .utils import compute_shape_radius
 
@@ -46,11 +48,13 @@ __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
+    "Gaussian",
     "GeoType",
     "Heightfield",
     "Mesh",
     "ParticleFlags",
     "ShapeFlags",
+    "TetMesh",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",

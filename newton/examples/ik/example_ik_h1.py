@@ -35,7 +35,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -57,6 +57,13 @@ class Example:
         self.model = h1.finalize()
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(3.0, 1.3, 1.7), -12.0, -153.0)
+
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(4.0, 0.0, 1.2),
+            pitch=0.0,
+            yaw=-180.0,
+        )
 
         # states
         self.state = self.model.state()
@@ -181,5 +188,5 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)

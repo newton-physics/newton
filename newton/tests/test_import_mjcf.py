@@ -261,8 +261,6 @@ class TestImportMjcfBasic(unittest.TestCase):
 
     def test_site_euler_sequence_matches_mujoco(self):
         """Non-default compiler eulerseq should match MuJoCo site orientation."""
-        import mujoco
-
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
     <compiler angle="radian" eulerseq="zyx"/>
@@ -281,7 +279,9 @@ class TestImportMjcfBasic(unittest.TestCase):
         site_idx = site_indices[0]
         newton_xyzw = np.array(builder.shape_transform[site_idx][3:7], dtype=np.float64)
 
-        native_wxyz = np.array(mujoco.MjModel.from_xml_string(mjcf_content).site_quat[0], dtype=np.float64)
+        native_wxyz = np.array(
+            SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf_content).site_quat[0], dtype=np.float64
+        )
         native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
 
         same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
@@ -706,6 +706,169 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
 
+class TestImportMjcfMeshScale(unittest.TestCase):
+    """Tests for MJCF mesh scale resolution from default classes."""
+
+    _OBJ_TRIANGLE = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+
+    def _build(self, mjcf_content: str) -> newton.ModelBuilder:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            mesh_path = os.path.join(tmpdir, "mesh.obj")
+            with open(mesh_path, "w") as f:
+                f.write(self._OBJ_TRIANGLE)
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf_path, parse_meshes=True)
+        return builder
+
+    def _mesh_extent(self, builder: newton.ModelBuilder, shape_idx: int = 0) -> float:
+        """Return the vertex extent (max - min) of a mesh shape."""
+        v = np.asarray(builder.shape_source[shape_idx].vertices)
+        return float(v.max() - v.min())
+
+    def test_mesh_no_class_no_explicit_scale(self):
+        """Mesh with no class and no explicit scale uses default (1,1,1)."""
+        builder = self._build("""\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 1.0, places=5)
+
+    def test_mesh_explicit_scale_on_asset(self):
+        """Explicit scale on <asset><mesh> is applied to vertices."""
+        builder = self._build("""\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj" scale="0.5 0.5 0.5"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
+
+    def test_mesh_inherits_scale_from_own_class(self):
+        """Mesh with class="X" inherits scale from <default class="X"><mesh scale="..."/>."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="scaled">
+      <mesh scale="2 2 2"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="scaled"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 2.0, places=5)
+
+    def test_mesh_explicit_scale_overrides_class_default(self):
+        """Explicit scale on <mesh> overrides the class default."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="scaled">
+      <mesh scale="2 2 2"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="scaled" scale="3 3 3"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 3.0, places=5)
+
+    def test_mesh_inherits_scale_from_global_default(self):
+        """Mesh with no class inherits from the root <default><mesh scale="..."/>."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <mesh scale="0.25 0.25 0.25"/>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.25, places=5)
+
+    def test_geom_class_mesh_scale_does_not_leak_to_asset(self):
+        """Geom's default class mesh scale must NOT override the asset mesh's scale.
+
+        Reproduces issue #2034: Robotiq 2F-85 V4 gripper from MuJoCo Menagerie.
+        The MJCF has <default class="robot"><mesh scale="0.001"/> but the
+        <asset><mesh> elements have no class, so they should load at scale=(1,1,1).
+        """
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="robot">
+      <mesh scale="0.001 0.001 0.001"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body childclass="robot">
+      <geom class="visual" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        # Asset mesh has no class → scale=(1,1,1), NOT 0.001 from the geom's class.
+        self.assertAlmostEqual(self._mesh_extent(builder), 1.0, places=5)
+
+    def test_geom_class_mesh_scale_applied_when_asset_has_same_class(self):
+        """When the asset mesh references the same class, its scale IS applied."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="robot">
+      <mesh scale="0.5 0.5 0.5"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="robot"/>
+  </asset>
+  <worldbody>
+    <body childclass="robot">
+      <geom class="visual" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
+
+
 class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
@@ -1093,7 +1256,7 @@ class TestImportMjcfGeometry(unittest.TestCase):
             builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
-        import mujoco
+        mujoco = SolverMuJoCo._mujoco
 
         tendon_names = [
             mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, i) for i in range(solver.mj_model.ntendon)
@@ -2217,6 +2380,295 @@ class TestImportMjcfGeometry(unittest.TestCase):
             err_msg="body_com must match <inertial> pos, not be shifted by frame geoms with explicit mass",
         )
         self.assertAlmostEqual(builder.body_mass[body_idx], 5.0, places=5)
+
+    # ------------------------------------------------------------------
+    # Mesh fitting (type="box|sphere|capsule" mesh="...")
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_box_stl(path, hx=1.0, hy=0.5, hz=2.0, cx=0.0, cy=0.0, cz=0.0):
+        """Write a binary STL box with given half-extents centred at (cx, cy, cz)."""
+        # 12 triangles for an axis-aligned box
+        tris = []
+        for sign in (-1, 1):
+            for axis in range(3):
+                v = [None, None, None, None]
+                # Build a face perpendicular to *axis* at *sign* distance.
+                u, w = (axis + 1) % 3, (axis + 2) % 3
+                c = [cx, cy, cz]
+                h = [hx, hy, hz]
+                for i, (su, sw) in enumerate([(1, 1), (-1, 1), (-1, -1), (1, -1)]):
+                    v[i] = [c[0], c[1], c[2]]
+                    v[i][axis] = c[axis] + sign * h[axis]
+                    v[i][u] = c[u] + su * h[u]
+                    v[i][w] = c[w] + sw * h[w]
+                if sign > 0:
+                    tris.append((v[0], v[1], v[2]))
+                    tris.append((v[0], v[2], v[3]))
+                else:
+                    tris.append((v[0], v[2], v[1]))
+                    tris.append((v[0], v[3], v[2]))
+        with open(path, "wb") as f:
+            f.write(b"\0" * 80)
+            f.write(struct.pack("<I", len(tris)))
+            for tri in tris:
+                f.write(struct.pack("<fff", 0, 0, 0))
+                for v in tri:
+                    f.write(struct.pack("<fff", *v))
+                f.write(struct.pack("<H", 0))
+
+    def test_fit_box_to_mesh_aabb(self):
+        """type='box' mesh='...' with fitaabb='true' produces a box matching the mesh AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            # shape_scale stores (hx, hy, hz)
+            s = builder.shape_scale[0]
+            np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
+
+    def test_fit_sphere_to_mesh_aabb(self):
+        """type='sphere' mesh='...' with fitaabb='true' uses max half-extent as radius."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="sphere" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.SPHERE)
+            # Sphere radius = max(1.0, 0.5, 2.0) = 2.0
+            s = builder.shape_scale[0]
+            self.assertAlmostEqual(s[0], 2.0, places=4)
+
+    def test_fit_capsule_to_mesh_aabb(self):
+        """type='capsule' mesh='...' with fitaabb='true' fits capsule to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="capsule" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.CAPSULE)
+            s = builder.shape_scale[0]
+            # radius = max(1.0, 0.5) = 1.0, half_height = 2.0 - 1.0 = 1.0
+            self.assertAlmostEqual(s[0], 1.0, places=4)
+            self.assertAlmostEqual(s[1], 1.0, places=4)
+
+    def test_fit_box_to_mesh_inertia(self):
+        """type='box' mesh='...' with fitaabb='false' (default) uses equivalent inertia box."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            # Asymmetric box offset from the origin to exercise axis ordering
+            # and COM translation.
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0, cx=3.0, cy=0.0, cz=0.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            s = builder.shape_scale[0]
+            # Half-extents are sorted ascending: (0.5, 1.0, 2.0)
+            np.testing.assert_allclose([s[0], s[1], s[2]], [0.5, 1.0, 2.0], atol=0.05)
+            # Shape transform should include the COM offset (3, 0, 0)
+            t = builder.shape_transform[0]
+            self.assertAlmostEqual(t.p[0], 3.0, places=1)
+
+    def test_fit_box_to_mesh_inertia_rotated(self):
+        """Inertia-box fitting aligns the primitive to the principal axes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "rotated.stl")
+            # Write an axis-aligned box and then rotate its vertices 45 deg
+            # around Z so the principal axes are no longer axis-aligned.
+            hx, hy, hz = 2.0, 0.5, 1.0
+            angle = np.pi / 4.0
+            cos_a, sin_a = np.cos(angle), np.sin(angle)
+            tris = []
+            for sign in (-1, 1):
+                for axis in range(3):
+                    v = [None, None, None, None]
+                    u, w = (axis + 1) % 3, (axis + 2) % 3
+                    h = [hx, hy, hz]
+                    for i, (su, sw) in enumerate([(1, 1), (-1, 1), (-1, -1), (1, -1)]):
+                        p = [0.0, 0.0, 0.0]
+                        p[axis] = sign * h[axis]
+                        p[u] = su * h[u]
+                        p[w] = sw * h[w]
+                        # Rotate around Z.
+                        rx = cos_a * p[0] - sin_a * p[1]
+                        ry = sin_a * p[0] + cos_a * p[1]
+                        v[i] = [rx, ry, p[2]]
+                    if sign > 0:
+                        tris.append((v[0], v[1], v[2]))
+                        tris.append((v[0], v[2], v[3]))
+                    else:
+                        tris.append((v[0], v[2], v[1]))
+                        tris.append((v[0], v[3], v[2]))
+            with open(stl_path, "wb") as f:
+                f.write(b"\0" * 80)
+                f.write(struct.pack("<I", len(tris)))
+                for tri in tris:
+                    f.write(struct.pack("<fff", 0, 0, 0))
+                    for vert in tri:
+                        f.write(struct.pack("<fff", *vert))
+                    f.write(struct.pack("<H", 0))
+
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="rot" file="rotated.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="rot"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            s = builder.shape_scale[0]
+            # Sorted half-extents should match the original box dims.
+            np.testing.assert_allclose(sorted([s[0], s[1], s[2]]), [0.5, 1.0, 2.0], atol=0.05)
+            # Eigenvector signs are platform-dependent, so just verify the
+            # rotation is non-trivial.  Warp XYZW identity = [0, 0, 0, 1].
+            t = builder.shape_transform[0]
+            q = t.q
+            q_np = np.array([q[0], q[1], q[2], q[3]])
+            self.assertFalse(
+                np.allclose(np.abs(q_np), [0, 0, 0, 1], atol=0.1),
+                "Expected non-identity rotation for rotated mesh",
+            )
+
+    def test_fit_with_fitscale(self):
+        """fitscale attribute scales the fitted primitive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box" fitscale="2.0"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            s = builder.shape_scale[0]
+            np.testing.assert_allclose([s[0], s[1], s[2]], [2.0, 1.0, 4.0], atol=1e-4)
+
+    def test_fit_cylinder_to_mesh_aabb(self):
+        """type='cylinder' mesh='...' with fitaabb='true' fits cylinder to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="cylinder" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.CYLINDER)
+            s = builder.shape_scale[0]
+            # radius = max(1.0, 0.5) = 1.0, half_height = 2.0 (no cap subtraction)
+            self.assertAlmostEqual(s[0], 1.0, places=4)
+            self.assertAlmostEqual(s[1], 2.0, places=4)
+
+    def test_fit_ellipsoid_to_mesh_aabb(self):
+        """type='ellipsoid' mesh='...' with fitaabb='true' fits ellipsoid to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="ellipsoid" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.ELLIPSOID)
+            s = builder.shape_scale[0]
+            # Ellipsoid uses AABB half-extents directly: (1.0, 0.5, 2.0)
+            np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
+
+    def test_mesh_without_explicit_type_stays_mesh(self):
+        """A geom with mesh= but no type= should still be treated as a mesh shape."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=1.0, hz=1.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.MESH)
 
 
 class TestImportMjcfSolverParams(unittest.TestCase):
@@ -3698,7 +4150,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
     def test_actuator_mode_inference_from_actuator_type(self):
         """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
-        from newton._src.sim.joints import JointTargetMode  # noqa: PLC0415
+        from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
 
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_actuator_modes">

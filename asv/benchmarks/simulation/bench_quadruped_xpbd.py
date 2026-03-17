@@ -16,9 +16,11 @@
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
+wp.config.enable_backward = False
 wp.config.quiet = True
 
 import newton
+import newton.examples
 from newton.examples.basic.example_basic_urdf import Example
 
 
@@ -28,7 +30,12 @@ class FastExampleQuadrupedXPBD:
 
     def setup(self):
         self.num_frames = 1000
-        self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), 200)
+        if hasattr(newton.examples, "default_args") and hasattr(Example, "create_parser"):
+            args = newton.examples.default_args(Example.create_parser())
+            args.world_count = 200
+            self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), args)
+        else:
+            self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), 200)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

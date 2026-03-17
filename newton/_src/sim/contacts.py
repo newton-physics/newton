@@ -116,7 +116,7 @@ class Contacts:
             self.rigid_contact_offset1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Contact offset on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Contact normal direction [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            """Contact normal pointing from shape 0 toward shape 1 (A-to-B) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_margin0 = wp.zeros(rigid_contact_max, dtype=wp.float32)
             """Contact margin for shape 0 [m], shape (rigid_contact_max,), dtype float."""
             self.rigid_contact_margin1 = wp.zeros(rigid_contact_max, dtype=wp.float32)

@@ -31,7 +31,11 @@ class FastExampleClothManipulation:
 
     def setup(self):
         self.num_frames = 30
-        self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames))
+        if hasattr(newton.examples, "default_args"):
+            args = newton.examples.default_args()
+        else:
+            args = None
+        self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames), args)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
@@ -46,7 +50,11 @@ class FastExampleClothTwist:
 
     def setup(self):
         self.num_frames = 100
-        self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames))
+        if hasattr(newton.examples, "default_args"):
+            args = newton.examples.default_args()
+        else:
+            args = None
+        self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames), args)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

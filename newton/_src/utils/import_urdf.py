@@ -29,7 +29,7 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import Mesh
 from ..sim import ModelBuilder
-from ..sim.joints import JointTargetMode
+from ..sim.enums import JointTargetMode
 from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
 from .mesh import load_meshes_from_file

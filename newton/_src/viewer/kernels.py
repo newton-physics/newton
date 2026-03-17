@@ -35,6 +35,7 @@ class PickingState:
 @wp.kernel
 def compute_pick_state_kernel(
     body_q: wp.array(dtype=wp.transform),
+    body_flags: wp.array(dtype=int),
     body_index: int,
     hit_point_world: wp.vec3,
     # output
@@ -45,6 +46,9 @@ def compute_pick_state_kernel(
     Initialize the pick state when a body is first picked.
     """
     if body_index < 0:
+        return
+    if body_flags[body_index] & newton.BodyFlags.KINEMATIC:
+        pick_body[0] = -1
         return
 
     # store body index
@@ -73,11 +77,14 @@ def apply_picking_force_kernel(
     body_f: wp.array(dtype=wp.spatial_vector),
     pick_body_arr: wp.array(dtype=int),
     pick_state: wp.array(dtype=PickingState),
+    body_flags: wp.array(dtype=int),
     body_com: wp.array(dtype=wp.vec3),
     body_mass: wp.array(dtype=float),
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
+        return
+    if body_flags[pick_body] & newton.BodyFlags.KINEMATIC:
         return
 
     pick_pos_local = pick_state[0].picked_point_local
@@ -325,7 +332,8 @@ def compute_joint_basis_lines(
 
     joint_t = joint_type[joint_id]
     if (
-        joint_t != int(newton.JointType.REVOLUTE)
+        joint_t != int(newton.JointType.PRISMATIC)
+        and joint_t != int(newton.JointType.REVOLUTE)
         and joint_t != int(newton.JointType.D6)
         and joint_t != int(newton.JointType.CABLE)
         and joint_t != int(newton.JointType.BALL)
@@ -391,6 +399,179 @@ def compute_com_positions(
     if world_offsets and world_idx >= 0 and world_idx < world_offsets.shape[0]:
         world_com = world_com + world_offsets[world_idx]
     com_positions[tid] = world_com
+
+
+@wp.kernel
+def compute_inertia_box_lines(
+    body_q: wp.array(dtype=wp.transform),
+    body_com: wp.array(dtype=wp.vec3),
+    body_inertia: wp.array(dtype=wp.mat33),
+    body_inv_mass: wp.array(dtype=float),
+    body_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
+    max_worlds: int,
+    color: wp.vec3,
+    # outputs: 12 lines per body
+    line_starts: wp.array(dtype=wp.vec3),
+    line_ends: wp.array(dtype=wp.vec3),
+    line_colors: wp.array(dtype=wp.vec3),
+):
+    """Compute wireframe edges for inertia boxes. 12 edges per body."""
+    tid = wp.tid()
+    body_id = tid // 12
+    edge_id = tid % 12
+
+    nan_line = wp.vec3(wp.nan, wp.nan, wp.nan)
+    zero_color = wp.vec3(0.0, 0.0, 0.0)
+
+    # Skip bodies from worlds beyond max_worlds limit
+    world_idx = body_world[body_id]
+    if max_worlds >= 0 and world_idx >= 0 and world_idx >= max_worlds:
+        line_starts[tid] = nan_line
+        line_ends[tid] = nan_line
+        line_colors[tid] = zero_color
+        return
+
+    inv_m = body_inv_mass[body_id]
+    if inv_m == 0.0:
+        line_starts[tid] = nan_line
+        line_ends[tid] = nan_line
+        line_colors[tid] = zero_color
+        return
+
+    # Compute principal inertia axes and extents
+    rot, principal_inertia = wp.eig3(body_inertia[body_id])
+
+    box_inertia = principal_inertia * inv_m * (12.0 / 8.0)
+    sx = wp.sqrt(wp.abs(box_inertia[2] + box_inertia[1] - box_inertia[0]))
+    sy = wp.sqrt(wp.abs(box_inertia[0] + box_inertia[2] - box_inertia[1]))
+    sz = wp.sqrt(wp.abs(box_inertia[1] + box_inertia[0] - box_inertia[2]))
+
+    # Box edges: pairs of corner indices
+    # Corners: 0=(-,-,-) 1=(+,-,-) 2=(+,+,-) 3=(-,+,-)
+    #          4=(-,-,+) 5=(+,-,+) 6=(+,+,+) 7=(-,+,+)
+    # Bottom face edges (0-3), top face edges (4-7), vertical edges (8-11)
+    c0x = float(0.0)
+    c0y = float(0.0)
+    c0z = float(0.0)
+    c1x = float(0.0)
+    c1y = float(0.0)
+    c1z = float(0.0)
+
+    if edge_id == 0:  # 0-1
+        c0x = -sx
+        c0y = -sy
+        c0z = -sz
+        c1x = sx
+        c1y = -sy
+        c1z = -sz
+    elif edge_id == 1:  # 1-2
+        c0x = sx
+        c0y = -sy
+        c0z = -sz
+        c1x = sx
+        c1y = sy
+        c1z = -sz
+    elif edge_id == 2:  # 2-3
+        c0x = sx
+        c0y = sy
+        c0z = -sz
+        c1x = -sx
+        c1y = sy
+        c1z = -sz
+    elif edge_id == 3:  # 3-0
+        c0x = -sx
+        c0y = sy
+        c0z = -sz
+        c1x = -sx
+        c1y = -sy
+        c1z = -sz
+    elif edge_id == 4:  # 4-5
+        c0x = -sx
+        c0y = -sy
+        c0z = sz
+        c1x = sx
+        c1y = -sy
+        c1z = sz
+    elif edge_id == 5:  # 5-6
+        c0x = sx
+        c0y = -sy
+        c0z = sz
+        c1x = sx
+        c1y = sy
+        c1z = sz
+    elif edge_id == 6:  # 6-7
+        c0x = sx
+        c0y = sy
+        c0z = sz
+        c1x = -sx
+        c1y = sy
+        c1z = sz
+    elif edge_id == 7:  # 7-4
+        c0x = -sx
+        c0y = sy
+        c0z = sz
+        c1x = -sx
+        c1y = -sy
+        c1z = sz
+    elif edge_id == 8:  # 0-4
+        c0x = -sx
+        c0y = -sy
+        c0z = -sz
+        c1x = -sx
+        c1y = -sy
+        c1z = sz
+    elif edge_id == 9:  # 1-5
+        c0x = sx
+        c0y = -sy
+        c0z = -sz
+        c1x = sx
+        c1y = -sy
+        c1z = sz
+    elif edge_id == 10:  # 2-6
+        c0x = sx
+        c0y = sy
+        c0z = -sz
+        c1x = sx
+        c1y = sy
+        c1z = sz
+    elif edge_id == 11:  # 3-7
+        c0x = -sx
+        c0y = sy
+        c0z = -sz
+        c1x = -sx
+        c1y = sy
+        c1z = sz
+
+    local0 = wp.vec3(c0x, c0y, c0z)
+    local1 = wp.vec3(c1x, c1y, c1z)
+
+    # Transform from inertia-principal frame to body COM frame
+    inertia_rot = wp.quat_from_matrix(rot)
+    local0 = wp.quat_rotate(inertia_rot, local0)
+    local1 = wp.quat_rotate(inertia_rot, local1)
+
+    # Transform from COM frame to world frame
+    body_tf = body_q[body_id]
+    body_rot = wp.transform_get_rotation(body_tf)
+    body_pos = wp.transform_get_translation(body_tf)
+    com = body_com[body_id]
+
+    # COM offset in world frame
+    world_com = body_pos + wp.quat_rotate(body_rot, com)
+
+    world0 = world_com + wp.quat_rotate(body_rot, local0)
+    world1 = world_com + wp.quat_rotate(body_rot, local1)
+
+    # Apply world offset
+    if world_offsets and world_idx >= 0 and world_idx < world_offsets.shape[0]:
+        offset = world_offsets[world_idx]
+        world0 = world0 + offset
+        world1 = world1 + offset
+
+    line_starts[tid] = world0
+    line_ends[tid] = world1
+    line_colors[tid] = color
 
 
 @wp.func

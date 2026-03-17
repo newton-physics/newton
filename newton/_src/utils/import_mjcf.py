@@ -29,6 +29,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
+from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -361,9 +362,11 @@ def parse_mjcf(
         euler_seq = ["xyz".index(c) for c in compiler.attrib.get("eulerseq", "xyz").lower()]
         mesh_dir = compiler.attrib.get("meshdir", ".")
         texture_dir = compiler.attrib.get("texturedir", mesh_dir)
+        fitaabb = compiler.attrib.get("fitaabb", "false").lower() == "true"
     else:
         mesh_dir = "."
         texture_dir = "."
+        fitaabb = False
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -382,6 +385,58 @@ def parse_mjcf(
                         if key in builder.custom_attributes:
                             builder.custom_attributes[key].values[0] = value
 
+    class_parent = {}
+    class_children = {}
+    class_defaults = {"__all__": {}}
+
+    def get_class(element) -> str:
+        return element.get("class", "__all__")
+
+    def parse_default(node, parent):
+        nonlocal class_parent
+        nonlocal class_children
+        nonlocal class_defaults
+        class_name = "__all__"
+        if "class" in node.attrib:
+            class_name = node.attrib["class"]
+            class_parent[class_name] = parent
+            parent = parent or "__all__"
+            if parent not in class_children:
+                class_children[parent] = []
+            class_children[parent].append(class_name)
+
+        if class_name not in class_defaults:
+            class_defaults[class_name] = {}
+        for child in node:
+            if child.tag == "default":
+                parse_default(child, node.get("class"))
+            else:
+                class_defaults[class_name][child.tag] = child.attrib
+
+    for default in root.findall("default"):
+        parse_default(default, None)
+
+    def merge_attrib(default_attrib: dict, incoming_attrib: dict) -> dict:
+        attrib = default_attrib.copy()
+        for key, value in incoming_attrib.items():
+            if key in attrib:
+                if isinstance(attrib[key], dict):
+                    attrib[key] = merge_attrib(attrib[key], value)
+                else:
+                    attrib[key] = value
+            else:
+                attrib[key] = value
+        return attrib
+
+    def resolve_defaults(class_name):
+        if class_name in class_children:
+            for child_name in class_children[class_name]:
+                if class_name in class_defaults and child_name in class_defaults:
+                    class_defaults[child_name] = merge_attrib(class_defaults[class_name], class_defaults[child_name])
+                resolve_defaults(child_name)
+
+    resolve_defaults("__all__")
+
     mesh_assets = {}
     texture_assets = {}
     material_assets = {}
@@ -393,11 +448,15 @@ def parse_mjcf(
                 # handle stl relative paths
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
+                # resolve mesh element's class defaults
+                mesh_class = mesh.attrib.get("class", "__all__")
+                mesh_defaults = class_defaults.get(mesh_class, {}).get("mesh", {})
+                mesh_attrib = merge_attrib(mesh_defaults, mesh.attrib)
                 name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
-                s = mesh.attrib.get("scale", "1.0 1.0 1.0")
+                s = mesh_attrib.get("scale", "1.0 1.0 1.0")
                 s = np.fromstring(s, sep=" ", dtype=np.float32)
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
-                maxhullvert = int(mesh.attrib.get("maxhullvert", str(mesh_maxhullvert)))
+                maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
                 mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
@@ -452,58 +511,6 @@ def parse_mjcf(
                 "file": file_path,
                 "elevation": elevation_data,
             }
-
-    class_parent = {}
-    class_children = {}
-    class_defaults = {"__all__": {}}
-
-    def get_class(element) -> str:
-        return element.get("class", "__all__")
-
-    def parse_default(node, parent):
-        nonlocal class_parent
-        nonlocal class_children
-        nonlocal class_defaults
-        class_name = "__all__"
-        if "class" in node.attrib:
-            class_name = node.attrib["class"]
-            class_parent[class_name] = parent
-            parent = parent or "__all__"
-            if parent not in class_children:
-                class_children[parent] = []
-            class_children[parent].append(class_name)
-
-        if class_name not in class_defaults:
-            class_defaults[class_name] = {}
-        for child in node:
-            if child.tag == "default":
-                parse_default(child, node.get("class"))
-            else:
-                class_defaults[class_name][child.tag] = child.attrib
-
-    for default in root.findall("default"):
-        parse_default(default, None)
-
-    def merge_attrib(default_attrib: dict, incoming_attrib: dict) -> dict:
-        attrib = default_attrib.copy()
-        for key, value in incoming_attrib.items():
-            if key in attrib:
-                if isinstance(attrib[key], dict):
-                    attrib[key] = merge_attrib(attrib[key], value)
-                else:
-                    attrib[key] = value
-            else:
-                attrib[key] = value
-        return attrib
-
-    def resolve_defaults(class_name):
-        if class_name in class_children:
-            for child_name in class_children[class_name]:
-                if class_name in class_defaults and child_name in class_defaults:
-                    class_defaults[child_name] = merge_attrib(class_defaults[class_name], class_defaults[child_name])
-                resolve_defaults(child_name)
-
-    resolve_defaults("__all__")
 
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     xform = xform * axis_xform
@@ -601,8 +608,12 @@ def parse_mjcf(
 
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
             geom_type = geom_attrib.get("type", "sphere")
+            fit_to_mesh = False
             if "mesh" in geom_attrib:
-                geom_type = "mesh"
+                if "type" in geom_attrib and geom_type in {"sphere", "capsule", "cylinder", "ellipsoid", "box"}:
+                    fit_to_mesh = True
+                else:
+                    geom_type = "mesh"
             if "hfield" in geom_attrib:
                 geom_type = "hfield"
 
@@ -720,6 +731,116 @@ def parse_mjcf(
                     # Pass texture path directly for lazy loading by the viewer
                     texture = texture_asset["file"]
 
+            # Fit primitive to mesh: load mesh vertices, compute fitted sizes,
+            # and override geom_size / tf so the primitive handlers below work
+            # transparently.
+            if fit_to_mesh:
+                mesh_name = geom_attrib.get("mesh")
+                if mesh_name is None or mesh_name not in mesh_assets:
+                    if verbose:
+                        print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
+                    continue
+                else:
+                    stl_file = mesh_assets[mesh_name]["file"]
+                    if "mesh" in geom_defaults:
+                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[mesh_name]["scale"])
+                    else:
+                        mesh_scale = mesh_assets[mesh_name]["scale"]
+                    scaling = np.array(mesh_scale) * scale
+                    maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
+
+                    m_meshes = load_meshes_from_file(
+                        stl_file,
+                        scale=scaling,
+                        maxhullvert=maxhullvert,
+                    )
+                    # Combine all sub-meshes into one vertex array for fitting.
+                    all_vertices = np.concatenate([m.vertices for m in m_meshes], axis=0)
+
+                    fitscale = parse_float(geom_attrib, "fitscale", 1.0)
+
+                    if fitaabb:
+                        # AABB mode: compute axis-aligned bounding box.
+                        aabb_min, aabb_max = compute_aabb(all_vertices)
+                        center = (aabb_min + aabb_max) / 2.0
+                        half_sizes = (aabb_max - aabb_min) / 2.0
+
+                        if geom_type == "sphere":
+                            geom_size = np.array([np.max(half_sizes)]) * fitscale
+                        elif geom_type in {"capsule", "cylinder"}:
+                            r = max(half_sizes[0], half_sizes[1])
+                            h = half_sizes[2]
+                            if geom_type == "capsule":
+                                h = max(h - r, 0.0)
+                            geom_size = np.array([r, h]) * fitscale
+                        elif geom_type in {"box", "ellipsoid"}:
+                            geom_size = half_sizes * fitscale
+                        else:
+                            if verbose:
+                                print(f"Warning: unsupported fit type {geom_type} for {geom_name}")
+                            fit_to_mesh = False
+
+                        if fit_to_mesh:
+                            # Shift the geom origin to the AABB center.
+                            center_offset = wp.vec3(*center)
+                            tf = tf * wp.transform(center_offset, wp.quat_identity())
+                    else:
+                        # Equivalent inertia box mode (default): compute the box whose
+                        # inertia tensor matches the mesh.
+                        all_indices = np.concatenate(
+                            [
+                                m.indices.reshape(-1, 3) + offset
+                                for m, offset in zip(
+                                    m_meshes,
+                                    np.cumsum([0] + [len(m.vertices) for m in m_meshes[:-1]]),
+                                    strict=True,
+                                )
+                            ],
+                            axis=0,
+                        ).flatten()
+
+                        com, half_extents, principal_rot = compute_inertia_box_mesh(all_vertices, all_indices)
+                        # Sort half-extents so the largest is last (Z), matching MuJoCo's
+                        # convention where capsule/cylinder axis aligns with Z.
+                        he_arr = np.array([*half_extents])
+                        sort_order = np.argsort(he_arr)
+                        he = he_arr[sort_order]
+
+                        if geom_type == "sphere":
+                            geom_size = np.array([np.mean(he)]) * fitscale
+                        elif geom_type in {"capsule", "cylinder"}:
+                            r = (he[0] + he[1]) / 2.0
+                            h = he[2]
+                            if geom_type == "capsule":
+                                # Subtract r/2 (not full r) to match MuJoCo.
+                                h = max(h - r / 2.0, 0.0)
+                            geom_size = np.array([r, h]) * fitscale
+                        elif geom_type in {"box", "ellipsoid"}:
+                            geom_size = he * fitscale
+                        else:
+                            if verbose:
+                                print(f"Warning: unsupported fit type {geom_type} for {geom_name}")
+                            fit_to_mesh = False
+
+                        if fit_to_mesh:
+                            # Build a rotation that maps the sorted principal axes
+                            # to the standard frame (X, Y, Z).  The eigenvectors in
+                            # principal_rot are in the original eigenvalue order; we
+                            # need to reorder columns to match the sorted half-extents.
+                            # Rows of warp mat33 = basis vectors of the rotated frame.
+                            rot_mat = np.array(wp.quat_to_matrix(principal_rot)).reshape(3, 3)
+                            # rot_mat rows are the principal axes; reorder them so
+                            # the axis with the largest half-extent becomes row 2 (Z).
+                            sorted_mat = rot_mat[sort_order, :]
+                            if np.linalg.det(sorted_mat) < 0:
+                                sorted_mat[0, :] = -sorted_mat[0, :]
+                            fit_rot = wp.quat_from_matrix(wp.mat33(*sorted_mat.flatten().tolist()))
+
+                            # Shift the geom origin to the mesh COM and rotate to
+                            # the principal-axis frame.
+                            center_offset = wp.vec3(*com)
+                            tf = tf * wp.transform(center_offset, fit_rot)
+
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
                     xform=tf,
@@ -749,10 +870,7 @@ def parse_mjcf(
                         print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
                     continue
                 stl_file = mesh_assets[geom_attrib["mesh"]]["file"]
-                if "mesh" in geom_defaults:
-                    mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[geom_attrib["mesh"]]["scale"])
-                else:
-                    mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
+                mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
                 scaling = np.array(mesh_scale) * scale
                 # as per the Mujoco XML reference, ignore geom size attribute
                 assert len(geom_size) == 3, "need to specify size for mesh geom"

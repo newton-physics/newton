@@ -22,7 +22,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import EqType, JointTargetMode, JointType
+from ...sim import BodyFlags, EqType, JointTargetMode, JointType
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
@@ -90,6 +90,7 @@ def write_contact(
     contact_solimp_out: wp.array(dtype=vec5),
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_efc_address_out: wp.array2d(dtype=int),
     contact_worldid_out: wp.array(dtype=int),
 ):
     # See function write_contact in mujoco_warp, file collision_primitive.py
@@ -106,6 +107,10 @@ def write_contact(
     contact_solref_out[cid] = solref_in
     contact_solreffriction_out[cid] = solreffriction_in
     contact_solimp_out[cid] = solimp_in
+
+    # initialize constraint address to -1 (max 10 elements; populated during constraint generation)
+    for i in range(contact_efc_address_out.shape[1]):
+        contact_efc_address_out[cid, i] = -1
 
 
 @wp.func
@@ -243,6 +248,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_solimp_out: wp.array(dtype=vec5),
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_efc_address_out: wp.array2d(dtype=int),
     contact_worldid_out: wp.array(dtype=int),
     # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
     nworld_in: int,
@@ -300,7 +306,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         rigid_contact_margin1[tid] - shape_margin[shape_b]
     )
 
-    n = -rigid_contact_normal[tid]
+    n = rigid_contact_normal[tid]
     dist = wp.dot(n, bx_b - bx_a) - radius_eff
 
     # Contact position: use midpoint between contact points (as in XPBD kernel)
@@ -392,6 +398,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         contact_solimp_out=contact_solimp_out,
         contact_dim_out=contact_dim_out,
         contact_geom_out=contact_geom_out,
+        contact_efc_address_out=contact_efc_address_out,
         contact_worldid_out=contact_worldid_out,
     )
 
@@ -408,17 +415,40 @@ def convert_mj_coords_to_warp_kernel(
     joint_child: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
     dof_ref: wp.array(dtype=wp.float32),
+    body_flags: wp.array(dtype=wp.int32),
+    joint_q_in: wp.array(dtype=wp.float32),
+    joint_qd_in: wp.array(dtype=wp.float32),
+    mj_q_start: wp.array(dtype=wp.int32),
+    mj_qd_start: wp.array(dtype=wp.int32),
     # outputs
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
 
-    type = joint_type[jntid]
-    q_i = joint_q_start[jntid]
-    qd_i = joint_qd_start[jntid]
-    wq_i = joint_q_start[joints_per_world * worldid + jntid]
-    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    joint_id = joints_per_world * worldid + jntid
+
+    # Skip loop joints — they have no MuJoCo qpos/qvel entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
+    type = joint_type[joint_id]
+    wq_i = joint_q_start[joint_id]
+    wqd_i = joint_qd_start[joint_id]
+    child = joint_child[joint_id]
+
+    if (body_flags[child] & BodyFlags.KINEMATIC) != 0:
+        # Previous joint states pass through for kinematic bodies
+        wq_end = joint_q_start[joint_id + 1]
+        for i in range(wq_i, wq_end):
+            joint_q[i] = joint_q_in[i]
+
+        wqd_end = joint_qd_start[joint_id + 1]
+        for i in range(wqd_i, wqd_end):
+            joint_qd[i] = joint_qd_in[i]
+        return
 
     if type == JointType.FREE:
         # convert position components
@@ -450,7 +480,6 @@ def convert_mj_coords_to_warp_kernel(
         w_world = wp.quat_rotate(rot, w_body)
 
         # Get CoM offset in world frame
-        child = joint_child[jntid]
         com_local = body_com[child]
         com_world = wp.quat_rotate(rot, com_local)
 
@@ -485,7 +514,7 @@ def convert_mj_coords_to_warp_kernel(
             # convert velocity components
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
     else:
-        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
             ref = float(0.0)
             if dof_ref:
@@ -508,15 +537,21 @@ def convert_warp_coords_to_mj_kernel(
     joint_child: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
     dof_ref: wp.array(dtype=wp.float32),
+    mj_q_start: wp.array(dtype=wp.int32),
+    mj_qd_start: wp.array(dtype=wp.int32),
     # outputs
     qpos: wp.array2d(dtype=wp.float32),
     qvel: wp.array2d(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
 
+    # Skip loop joints — they have no MuJoCo qpos/qvel entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
     type = joint_type[jntid]
-    q_i = joint_q_start[jntid]
-    qd_i = joint_qd_start[jntid]
     wq_i = joint_q_start[joints_per_world * worldid + jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
@@ -602,6 +637,7 @@ def sync_qpos0_kernel(
     body_q: wp.array(dtype=wp.transform),
     dof_ref: wp.array(dtype=wp.float32),
     dof_springref: wp.array(dtype=wp.float32),
+    mj_q_start: wp.array(dtype=wp.int32),
     # outputs
     qpos0: wp.array2d(dtype=wp.float32),
     qpos_spring: wp.array2d(dtype=wp.float32),
@@ -614,8 +650,12 @@ def sync_qpos0_kernel(
     """
     worldid, jntid = wp.tid()
 
+    # Skip loop joints — they have no MuJoCo qpos entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
     type = joint_type[jntid]
-    q_i = joint_q_start[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
     if type == JointType.FREE:
@@ -700,7 +740,7 @@ def convert_mjw_contacts_to_newton_kernel(
 
     rigid_contact_shape0[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[0]]
     rigid_contact_shape1[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[1]]
-    rigid_contact_normal[contact_idx] = -normal
+    rigid_contact_normal[contact_idx] = normal
 
     if contact_force:
         efc_address0 = mj_contact_efc_address[contact_idx, 0]
@@ -781,6 +821,7 @@ def apply_mjc_control_kernel(
 @wp.kernel
 def apply_mjc_body_f_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
     body_f: wp.array(dtype=wp.spatial_vector),
     # outputs
     xfrc_applied: wp.array2d(dtype=wp.spatial_vector),
@@ -792,29 +833,47 @@ def apply_mjc_body_f_kernel(
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body >= 0:
-        f = body_f[newton_body]
-        v = wp.vec3(f[0], f[1], f[2])
-        w = wp.vec3(f[3], f[4], f[5])
-        xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+        xfrc_applied[world, mjc_body] = wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
+        return
+
+    f = body_f[newton_body]
+    v = wp.vec3(f[0], f[1], f[2])
+    w = wp.vec3(f[3], f[4], f[5])
+    xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
 
 
 @wp.kernel
 def apply_mjc_qfrc_kernel(
     joint_f: wp.array(dtype=wp.float32),
     joint_type: wp.array(dtype=wp.int32),
+    joint_child: wp.array(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array2d(dtype=wp.int32),
     joints_per_world: int,
+    mj_qd_start: wp.array(dtype=wp.int32),
     # outputs
     qfrc_applied: wp.array2d(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
-    # q_i = joint_q_start[jntid]
-    qd_i = joint_qd_start[jntid]
-    # wq_i = joint_q_start[joints_per_world * worldid + jntid]
+
+    # Skip loop joints — they have no MuJoCo DOF entries
+    qd_i = mj_qd_start[jntid]
+    if qd_i < 0:
+        return
+
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    joint_id = joints_per_world * worldid + jntid
     jtype = joint_type[jntid]
+    dof_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+
+    for i in range(dof_count):
+        qfrc_applied[worldid, qd_i + i] = 0.0
+
+    if (body_flags[joint_child[joint_id]] & BodyFlags.KINEMATIC) != 0:
+        return
+
     # Free/DISTANCE joint forces are routed via xfrc_applied in a separate kernel
     # to preserve COM-wrench semantics; skip them here.
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
@@ -824,13 +883,14 @@ def apply_mjc_qfrc_kernel(
         qfrc_applied[worldid, qd_i + 1] = joint_f[wqd_i + 1]
         qfrc_applied[worldid, qd_i + 2] = joint_f[wqd_i + 2]
     else:
-        for i in range(joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]):
+        for i in range(dof_count):
             qfrc_applied[worldid, qd_i + i] = joint_f[wqd_i + i]
 
 
 @wp.kernel
 def apply_mjc_free_joint_f_to_body_f_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
     body_free_qd_start: wp.array(dtype=wp.int32),
     joint_f: wp.array(dtype=wp.float32),
     # outputs
@@ -838,7 +898,7 @@ def apply_mjc_free_joint_f_to_body_f_kernel(
 ):
     worldid, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[worldid, mjc_body]
-    if newton_body < 0:
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
         return
 
     qd_start = body_free_qd_start[newton_body]
@@ -1395,6 +1455,8 @@ def update_ctrl_direct_actuator_properties_kernel(
 @wp.kernel
 def update_dof_properties_kernel(
     mjc_dof_to_newton_dof: wp.array2d(dtype=wp.int32),
+    newton_dof_to_body: wp.array(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
     joint_damping: wp.array(dtype=float),
@@ -1411,13 +1473,16 @@ def update_dof_properties_kernel(
 
     Iterates over MuJoCo DOFs [world, dof], looks up Newton DOF,
     and copies armature, friction, damping, solimp, solref.
+    Armature updates are skipped for DOFs whose child body is marked kinematic.
     """
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
 
-    dof_armature[world, mjc_dof] = joint_armature[newton_dof]
+    newton_body = newton_dof_to_body[newton_dof]
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) == 0:
+        dof_armature[world, mjc_dof] = joint_armature[newton_dof]
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
@@ -1425,6 +1490,34 @@ def update_dof_properties_kernel(
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
     if dof_solref:
         dof_solref_out[world, mjc_dof] = dof_solref[newton_dof]
+
+
+@wp.kernel
+def update_body_properties_kernel(
+    mjc_dof_to_newton_dof: wp.array2d(dtype=wp.int32),
+    newton_dof_to_body: wp.array(dtype=wp.int32),
+    body_flags: wp.array(dtype=wp.int32),
+    joint_armature: wp.array(dtype=float),
+    kinematic_armature: float,
+    # outputs
+    dof_armature: wp.array2d(dtype=float),
+):
+    """Update MuJoCo dof_armature from Newton body flags.
+
+    For each MuJoCo DOF, the mapped Newton child body controls armature source:
+    - kinematic body -> ``kinematic_armature``
+    - dynamic body   -> Newton ``joint_armature``
+    """
+    world, mjc_dof = wp.tid()
+    newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
+    if newton_dof < 0:
+        return
+
+    newton_body = newton_dof_to_body[newton_dof]
+    if newton_body >= 0 and (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+        dof_armature[world, mjc_dof] = kinematic_armature
+    else:
+        dof_armature[world, mjc_dof] = joint_armature[newton_dof]
 
 
 @wp.kernel
@@ -1488,26 +1581,20 @@ def update_mocap_transforms_kernel(
     mocap_pos: wp.array2d(dtype=wp.vec3),
     mocap_quat: wp.array2d(dtype=wp.quat),
 ):
-    """Update mocap body positions and orientations from Newton joint data.
+    """Update MuJoCo mocap body transforms from Newton joint data.
 
-    Iterates over MuJoCo mocap bodies [world, mocap_idx].
-    Mocap bodies are fixed-base articulations with no MuJoCo joint.
+    Iterates over MuJoCo mocap bodies [world, mocap_idx]. Each mocap body maps
+    to a fixed Newton joint and is updated from ``joint_X_p * inv(joint_X_c)``.
     """
     world, mocap_idx = wp.tid()
-
-    # Get the Newton joint index for this mocap body
     newton_jnt = mjc_mocap_to_newton_jnt[world, mocap_idx]
     if newton_jnt < 0:
         return
 
-    # Get transforms from Newton
     parent_xform = newton_joint_X_p[newton_jnt]
     child_xform = newton_joint_X_c[newton_jnt]
-
-    # Compute body transform: X_p * inv(X_c)
     tf = parent_xform * wp.transform_inverse(child_xform)
 
-    # Update mocap position and orientation
     mocap_pos[world, mocap_idx] = tf.p
     mocap_quat[world, mocap_idx] = quat_xyzw_to_wxyz(tf.q)
 
@@ -1535,7 +1622,7 @@ def update_joint_transforms_kernel(
     - Updates MuJoCo body_pos/body_quat from Newton joint transforms
     - Updates MuJoCo jnt_pos and jnt_axis
 
-    Note: Mocap bodies are handled by update_mocap_transforms_kernel.
+    Free joints are skipped because their motion is encoded directly in qpos/qvel.
     """
     world, mjc_jnt = wp.tid()
 
@@ -1560,8 +1647,6 @@ def update_joint_transforms_kernel(
     tf = parent_xform * wp.transform_inverse(child_xform)
 
     # Get the MuJoCo body for this joint and update its transform
-    # Note: Mocap bodies don't have MuJoCo joints, so they're handled
-    # separately by update_mocap_transforms_kernel
     mjc_body = mjc_jnt_bodyid[mjc_jnt]
     body_pos[world, mjc_body] = tf.p
     body_quat[world, mjc_body] = quat_xyzw_to_wxyz(tf.q)
@@ -2008,6 +2093,8 @@ def convert_qfrc_actuator_from_mj_kernel(
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_child: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
+    mj_q_start: wp.array(dtype=wp.int32),
+    mj_qd_start: wp.array(dtype=wp.int32),
     # output
     qfrc_actuator: wp.array(dtype=wp.float32),
 ):
@@ -2021,8 +2108,12 @@ def convert_qfrc_actuator_from_mj_kernel(
     """
     worldid, jntid = wp.tid()
 
-    q_i = joint_q_start[jntid]
-    qd_i = joint_qd_start[jntid]
+    # Skip loop joints — they have no MuJoCo DOF entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
     type = joint_type[jntid]
