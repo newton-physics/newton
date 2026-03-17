@@ -717,7 +717,8 @@ def compute_mesh_mesh_block_offsets(
     shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
     shape_pairs_mesh_mesh_count: wp.array(dtype=int),
     shape_source: wp.array(dtype=wp.uint64),
-    shape_heightfield_data: wp.array(dtype=HeightfieldData),
+    shape_heightfield_index: wp.array(dtype=wp.int32),
+    heightfield_data: wp.array(dtype=HeightfieldData),
     target_blocks: int,
     block_offsets: wp.array(dtype=wp.int32),
 ):
@@ -747,7 +748,7 @@ def compute_mesh_mesh_block_offsets(
             is_hfield = has_hfield and mode == 0
             shape_idx = pair[mode]
             if is_hfield:
-                hfd = shape_heightfield_data[shape_idx]
+                hfd = heightfield_data[shape_heightfield_index[shape_idx]]
                 total_tris += get_triangle_count(GeoType.HFIELD, wp.uint64(0), hfd)
             else:
                 mesh_id = shape_source[shape_idx]
@@ -771,7 +772,7 @@ def compute_mesh_mesh_block_offsets(
             is_hfield = has_hfield and mode == 0
             shape_idx = pair[mode]
             if is_hfield:
-                hfd = shape_heightfield_data[shape_idx]
+                hfd = heightfield_data[shape_heightfield_index[shape_idx]]
                 pair_tris += get_triangle_count(GeoType.HFIELD, wp.uint64(0), hfd)
             else:
                 mesh_id = shape_source[shape_idx]
@@ -802,8 +803,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         _shape_voxel_resolution: wp.array(dtype=wp.vec3i),
         shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_mesh_count: wp.array(dtype=int),
-        shape_heightfield_data: wp.array(dtype=HeightfieldData),
-        heightfield_elevation_data: wp.array(dtype=wp.float32),
+        shape_heightfield_index: wp.array(dtype=wp.int32),
+        heightfield_data: wp.array(dtype=HeightfieldData),
+        heightfield_elevations: wp.array(dtype=wp.float32),
         writer_data: Any,
         total_num_blocks: int,
     ):
@@ -850,9 +852,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 hfd_sdf = HeightfieldData()
                 if wp.static(enable_heightfields):
                     if tri_is_hfield:
-                        hfd_tri = shape_heightfield_data[tri_shape]
+                        hfd_tri = heightfield_data[shape_heightfield_index[tri_shape]]
                     if sdf_is_hfield:
-                        hfd_sdf = shape_heightfield_data[sdf_shape]
+                        hfd_sdf = heightfield_data[shape_heightfield_index[sdf_shape]]
 
                 # SDF availability: heightfields always use on-the-fly evaluation
                 use_bvh_for_sdf = False
@@ -936,7 +938,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         sdf_type,
                         hfd_tri,
                         hfd_sdf,
-                        heightfield_elevation_data,
+                        heightfield_elevations,
                         vertex_cache,
                     )
 
@@ -957,7 +959,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             use_bvh_for_sdf,
                             sdf_is_hfield,
                             hfd_sdf,
-                            heightfield_elevation_data,
+                            heightfield_elevations,
                         )
 
                         dist, direction = scale_sdf_result_to_world(
@@ -1024,8 +1026,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
         shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_mesh_count: wp.array(dtype=int),
-        shape_heightfield_data: wp.array(dtype=HeightfieldData),
-        heightfield_elevation_data: wp.array(dtype=wp.float32),
+        shape_heightfield_index: wp.array(dtype=wp.int32),
+        heightfield_data: wp.array(dtype=HeightfieldData),
+        heightfield_elevations: wp.array(dtype=wp.float32),
         block_offsets: wp.array(dtype=wp.int32),
         reducer_data: GlobalContactReducerData,
         total_num_blocks: int,
@@ -1092,9 +1095,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 hfd_sdf = HeightfieldData()
                 if wp.static(enable_heightfields):
                     if tri_is_hfield:
-                        hfd_tri = shape_heightfield_data[tri_shape]
+                        hfd_tri = heightfield_data[shape_heightfield_index[tri_shape]]
                     if sdf_is_hfield:
-                        hfd_sdf = shape_heightfield_data[sdf_shape]
+                        hfd_sdf = heightfield_data[shape_heightfield_index[sdf_shape]]
 
                 use_bvh_for_sdf = False
                 if not sdf_is_hfield:
@@ -1183,7 +1186,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         sdf_type,
                         hfd_tri,
                         hfd_sdf,
-                        heightfield_elevation_data,
+                        heightfield_elevations,
                         vertex_cache,
                     )
 
@@ -1204,7 +1207,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             use_bvh_for_sdf,
                             sdf_is_hfield,
                             hfd_sdf,
-                            heightfield_elevation_data,
+                            heightfield_elevations,
                         )
 
                         dist, direction = scale_sdf_result_to_world(

@@ -822,10 +822,11 @@ class ModelBuilder:
 
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
-        When False, uses a fast GPU kernel that reports only the total number of corrected bodies
-        and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).
-        When True, uses a CPU implementation that reports specific issues for each body and updates
-        the ModelBuilder's internal state.
+        When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
+        When True, uses a CPU implementation that reports specific issues for each body.
+        Both modes produce semantically identical corrected values on the returned
+        :class:`Model`. Neither mode modifies the builder's internal state — corrected
+        values live only on the Model.
         Default: False."""
 
         # endregion
@@ -9725,13 +9726,13 @@ class ModelBuilder:
                     "contacts between heightfield pairs will be skipped.",
                     stacklevel=2,
                 )
-            if has_heightfields:
-                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+            from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
-                hfield_data_list = []
-                elevation_chunks = []
-                offset = 0
-                empty_hfield = create_empty_heightfield_data()
+            compact_heightfield_data = []
+            elevation_chunks = []
+            shape_heightfield_index = [-1] * len(self.shape_type)
+            offset = 0
+            if has_heightfields:
                 for i in range(len(self.shape_type)):
                     if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
                         hf = self.shape_source[i]
@@ -9743,26 +9744,26 @@ class ModelBuilder:
                         hd.hy = hf.hy
                         hd.min_z = hf.min_z
                         hd.max_z = hf.max_z
-                        hfield_data_list.append(hd)
+                        shape_heightfield_index[i] = len(compact_heightfield_data)
+                        compact_heightfield_data.append(hd)
                         elevation_chunks.append(hf.data.flatten())
                         offset += hf.nrow * hf.ncol
-                    else:
-                        hfield_data_list.append(empty_hfield)
-                m.shape_heightfield_data = wp.array(hfield_data_list, dtype=HeightfieldData, device=device)
-                if elevation_chunks:
-                    m.heightfield_elevation_data = wp.array(
-                        np.concatenate(elevation_chunks), dtype=wp.float32, device=device
-                    )
-                else:
-                    m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
-            else:
-                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
-                empty_hfield = create_empty_heightfield_data()
-                m.shape_heightfield_data = wp.array(
-                    [empty_hfield] * max(len(self.shape_type), 1), dtype=HeightfieldData, device=device
-                )
-                m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
+            m.shape_heightfield_index = wp.array(
+                shape_heightfield_index if shape_heightfield_index else [-1],
+                dtype=wp.int32,
+                device=device,
+            )
+            m.heightfield_data = (
+                wp.array(compact_heightfield_data, dtype=HeightfieldData, device=device)
+                if compact_heightfield_data
+                else wp.array([create_empty_heightfield_data()], dtype=HeightfieldData, device=device)
+            )
+            m.heightfield_elevations = (
+                wp.array(np.concatenate(elevation_chunks), dtype=wp.float32, device=device)
+                if elevation_chunks
+                else wp.zeros(1, dtype=wp.float32, device=device)
+            )
 
             # ---------------------
             # springs
@@ -9822,50 +9823,56 @@ class ModelBuilder:
             # rigid bodies
 
             # Apply inertia verification and correction
-            # This catches negative masses/inertias and other critical issues
+            # This catches negative masses/inertias and other critical issues.
+            # Neither path mutates the builder — corrected values only appear
+            # on the returned Model so that finalize() is side-effect-free.
             if len(self.body_mass) > 0:
                 if self.validate_inertia_detailed:
-                    # Use detailed Python validation with per-body warnings
+                    # Use detailed Python validation with per-body warnings.
+                    # Build corrected copies without modifying builder lists.
+                    corrected_mass = list(self.body_mass)
+                    corrected_inertia = list(self.body_inertia)
+                    corrected_inv_mass = list(self.body_inv_mass)
+                    corrected_inv_inertia = list(self.body_inv_inertia)
+
                     for i in range(len(self.body_mass)):
                         mass = self.body_mass[i]
                         inertia = self.body_inertia[i]
                         body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
 
-                        corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
+                        new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
                             mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia, body_label
                         )
 
                         if was_corrected:
-                            self.body_mass[i] = corrected_mass
-                            self.body_inertia[i] = corrected_inertia
-                            # Update inverse mass and inertia
-                            if corrected_mass > 0.0:
-                                self.body_inv_mass[i] = 1.0 / corrected_mass
+                            corrected_mass[i] = new_mass
+                            corrected_inertia[i] = new_inertia
+                            if new_mass > 0.0:
+                                corrected_inv_mass[i] = 1.0 / new_mass
                             else:
-                                self.body_inv_mass[i] = 0.0
+                                corrected_inv_mass[i] = 0.0
 
-                            if any(x for x in corrected_inertia):
-                                self.body_inv_inertia[i] = wp.inverse(corrected_inertia)
+                            if any(x for x in new_inertia):
+                                corrected_inv_inertia[i] = wp.inverse(new_inertia)
                             else:
-                                self.body_inv_inertia[i] = corrected_inertia
+                                corrected_inv_inertia[i] = new_inertia
 
-                    # For detailed validation, create arrays from builder data (which were updated)
-                    m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    # Create arrays from corrected copies
+                    m.body_mass = wp.array(corrected_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inv_mass = wp.array(corrected_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inertia = wp.array(corrected_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    m.body_inv_inertia = wp.array(corrected_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
                 else:
                     # Use fast Warp kernel validation
-                    # First create arrays for the kernel
                     body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
                     body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
                     body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
                     body_inv_inertia_array = wp.array(
                         self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
                     )
-                    correction_flags = wp.zeros(len(self.body_mass), dtype=wp.bool)
+                    correction_count = wp.zeros(1, dtype=wp.int32)
 
-                    # Launch validation kernel
+                    # Launch validation kernel (corrects arrays in-place on device)
                     wp.launch(
                         kernel=validate_and_correct_inertia_kernel,
                         dim=len(self.body_mass),
@@ -9877,12 +9884,12 @@ class ModelBuilder:
                             self.balance_inertia,
                             self.bound_mass if self.bound_mass is not None else 0.0,
                             self.bound_inertia if self.bound_inertia is not None else 0.0,
-                            correction_flags,
+                            correction_count,
                         ],
                     )
 
-                    # Check if any corrections were made
-                    num_corrections = int(np.sum(correction_flags.numpy()))
+                    # Check if any corrections were made (single int transfer)
+                    num_corrections = int(correction_count.numpy()[0])
                     if num_corrections > 0:
                         warnings.warn(
                             f"Inertia validation corrected {num_corrections} bodies. "
@@ -9890,8 +9897,9 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-                    # Directly use the corrected arrays on the Model (avoids double allocation)
-                    # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
+                    # Use the corrected arrays directly on the Model.
+                    # Builder state is intentionally left unchanged — corrected
+                    # values live only on the returned Model.
                     m.body_mass = body_mass_array
                     m.body_inv_mass = body_inv_mass_array
                     m.body_inertia = body_inertia_array

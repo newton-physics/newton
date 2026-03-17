@@ -904,6 +904,7 @@ def apply_joint_forces(
     body_q: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     joint_type: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -916,7 +917,9 @@ def apply_joint_forces(
 ):
     tid = wp.tid()
     type = joint_type[tid]
-    if type == JointType.FIXED:
+    if not joint_enabled[tid]:
+        return
+    if type == JointType.FIXED or type == JointType.CABLE:
         return
 
     # rigid body indices of the child and parent

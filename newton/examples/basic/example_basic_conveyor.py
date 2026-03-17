@@ -195,17 +195,22 @@ class Example:
 
         belt_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.2,
-            ke=3.0e3,
-            kd=150.0,
+            ke=1.0e3,  # vbd only
+            kd=1.0e-1,  # vbd only
             collision_group=BELT_COLLISION_GROUP,
         )
         rail_cfg = newton.ModelBuilder.ShapeConfig(
             mu=0.8,
-            ke=3.0e3,
-            kd=150.0,
+            ke=1.0e3,  # vbd only
+            kd=1.0e-1,  # vbd only
             collision_group=RAIL_COLLISION_GROUP,
         )
-        bag_cfg = newton.ModelBuilder.ShapeConfig(mu=1.0, ke=2.0e3, kd=180.0, restitution=0.0)
+        bag_cfg = newton.ModelBuilder.ShapeConfig(
+            mu=1.0,
+            ke=1.0e3,  # vbd only
+            kd=1.0e-1,  # vbd only
+            restitution=0.0,
+        )  # xpbd only
 
         belt_inner_radius = BELT_RING_RADIUS - BELT_HALF_WIDTH
         belt_outer_radius = BELT_RING_RADIUS + BELT_HALF_WIDTH
@@ -329,9 +334,14 @@ class Example:
             builder.add_articulation([builder.add_joint_free(bag_body)], label=f"bag_{i}")
             self.bag_bodies.append(bag_body)
 
+        builder.color()
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+        if solver_type == "vbd":
+            self.solver = newton.solvers.SolverVBD(self.model)
+        else:
+            self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -421,6 +431,13 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--solver",
+        type=str,
+        choices=["xpbd", "vbd"],
+        default="xpbd",
+        help="Solver backend to use.",
+    )
     parser.add_argument(
         "--belt-speed",
         type=float,
