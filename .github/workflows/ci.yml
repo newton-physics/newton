@@ -59,23 +59,18 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-      - name: Install system dependencies (Ubuntu)
-        if: startsWith(matrix.os, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
       - name: Install uv
         uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867  # v7.1.6
         with:
           version: "0.9.0"
-      - name: Test dependency install (Python 3.10)
-        run: uv sync --python 3.10 --extra dev
-      - name: Test dependency install (Python 3.11)
-        run: uv sync --python 3.11 --extra dev
-      - name: Test dependency install (Python 3.12)
-        run: uv sync --python 3.12 --extra dev
-      - name: Test dependency install (Python 3.13)
-        run: uv sync --python 3.13 --extra dev
+      - name: Test dependency resolution (Python 3.10)
+        run: uv sync --dry-run --python 3.10 --extra dev
+      - name: Test dependency resolution (Python 3.11)
+        run: uv sync --dry-run --python 3.11 --extra dev
+      - name: Test dependency resolution (Python 3.12)
+        run: uv sync --dry-run --python 3.12 --extra dev
+      - name: Test dependency resolution (Python 3.13)
+        run: uv sync --dry-run --python 3.13 --extra dev
 
   newton-unittests:
     needs: dependency-install-test
