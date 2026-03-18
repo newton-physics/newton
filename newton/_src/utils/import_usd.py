@@ -2730,9 +2730,6 @@ def parse_usd(
         from newton_actuators import parse_actuator_prim  # noqa: PLC0415
     except ImportError:
         parse_actuator_prim = None
-        print(
-            "Warning: newton-actuators not found; actuator prims will be skipped. Install with: pip install newton[sim]"
-        )
 
     actuator_count = 0
     if parse_actuator_prim is not None:
@@ -2749,6 +2746,15 @@ def parse_usd(
             if dof_indices:
                 builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
                 actuator_count += 1
+    else:
+        # TODO: Replace this string-based type name check with a proper schema query
+        # once the Newton actuator USD schema is merged
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            if prim.GetTypeName() == "Actuator":
+                raise ImportError(
+                    f"USD stage contains actuator prims (e.g. {prim.GetPath()}) but newton-actuators is not installed. "
+                    "Install with: pip install newton[sim]"
+                )
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 
