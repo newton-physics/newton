@@ -1836,6 +1836,8 @@ class SolverImplicitMPM(SolverBase):
         model: newton.Model,
         config: Config,
         temporary_store: fem.TemporaryStore | None = None,
+        verbose: bool | None = None,
+        enable_timers: bool = False,
     ):
         super().__init__(model)
 
@@ -1845,8 +1847,8 @@ class SolverImplicitMPM(SolverBase):
         self.tolerance = float(config.tolerance)
 
         self.temporary_store = temporary_store
-        self.verbose = wp.config.verbose
-        self.enable_timers = False
+        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.enable_timers = enable_timers
 
         self.velocity_basis = "Q1"
         self.strain_basis = config.strain_basis
@@ -1898,6 +1900,12 @@ class SolverImplicitMPM(SolverBase):
             self._require_velocity_space_fields(self._scratchpad, self._mpm_model.has_compliant_particles)
             self._require_collision_space_fields(self._scratchpad, self._last_step_data)
             self._require_strain_space_fields(self._scratchpad, self._last_step_data)
+
+        self._velocity_nodes_per_strain_sample = (
+            self._scratchpad.velocity_nodes_per_element
+            if self.strain_basis != "Q1" and self.velocity_basis == "Q1"
+            else -1
+        )
 
     def setup_collider(
         self,
@@ -2676,7 +2684,6 @@ class SolverImplicitMPM(SolverBase):
     ):
         """Build the elasticity and compliance system."""
 
-        model = self.model
         mpm_model = self._mpm_model
 
         if not mpm_model.has_compliant_particles:
@@ -2854,6 +2861,7 @@ class SolverImplicitMPM(SolverBase):
                 output_dtype=float,
                 output=scratch.strain_matrix,
                 temporary_store=self.temporary_store,
+                bsr_options={"prune_numerical_zeros": self._velocity_nodes_per_strain_sample < 0},
             )
 
     def _build_strain_eigenbasis(
@@ -3040,7 +3048,7 @@ class SolverImplicitMPM(SolverBase):
                 stress=scratch.stress_field.dof_values,
                 has_viscosity=self._mpm_model.has_viscosity,
                 has_dilatancy=self._mpm_model.has_dilatancy,
-                strain_velocity_node_count=self._velocity_nodes_per_strain_sample(),
+                strain_velocity_node_count=self._velocity_nodes_per_strain_sample,
             )
             collision_data = CollisionData(
                 collider_mat=scratch.collider_matrix,
@@ -3299,9 +3307,6 @@ class SolverImplicitMPM(SolverBase):
                     scratch.stress_field,
                     dest=last_step_data.ws_stress_field,
                 )
-
-    def _velocity_nodes_per_strain_sample(self):
-        return -1 if self.strain_basis == "Q1" else self._scratchpad.velocity_nodes_per_element
 
     def _max_colors(self):
         if not self.coloring:

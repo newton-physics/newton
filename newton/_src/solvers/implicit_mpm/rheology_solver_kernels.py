@@ -225,6 +225,11 @@ def compute_delassus_diagonal(
     delassus_rotation[tau_i] = wp.transpose(ev[1:6, 1:6])
 
 
+@wp.func
+def unilateral_offset_to_strain_rhs(offset: float):
+    return fem.SymmetricTensorMapper.value_to_dof_3d(offset * (2.0 / 3.0) * wp.identity(n=3, dtype=float))
+
+
 @wp.kernel
 def preprocess_stress_and_strain(
     unilateral_strain_offset: wp.array(dtype=float),
@@ -249,7 +254,7 @@ def preprocess_stress_and_strain(
         # add unilateral strain offset to strain rhs
         # will be removed in postprocess_stress_and_strain
         b = strain_rhs[tau_i]
-        b += fem.SymmetricTensorMapper.value_to_dof_3d(offset / 3.0 * wp.identity(n=3, dtype=float))
+        b += unilateral_offset_to_strain_rhs(offset)
         strain_rhs[tau_i] = b
 
         yield_params[1] = 0.0  # disable cohesion if offset > 0 (not compact)
@@ -287,9 +292,7 @@ def postprocess_stress_and_strain(
     tau_i = wp.tid()
 
     minus_elastic_strain = strain_rhs[tau_i]
-    minus_elastic_strain -= fem.SymmetricTensorMapper.value_to_dof_3d(
-        unilateral_strain_offset[tau_i] / 3.0 * wp.identity(n=3, dtype=float)
-    )
+    minus_elastic_strain -= unilateral_offset_to_strain_rhs(unilateral_strain_offset[tau_i])
     comp_block_beg = compliance_mat_offsets[tau_i]
     comp_block_end = compliance_mat_offsets[tau_i + 1]
     for b in range(comp_block_beg, comp_block_end):
@@ -692,15 +695,14 @@ def make_apply_stress_delta(strain_velocity_node_count: int = -1):
             for bk in range(strain_velocity_node_count):
                 b = block_beg + bk
                 u_i = strain_mat_columns[b]
-                delta_u = _symmetric_part_transposed_op(strain_mat_values[b], delta_stress)
-                velocities[u_i] += inv_mass_matrix[u_i] * delta_u
+                delta_u = inv_mass_matrix[u_i] * _symmetric_part_transposed_op(strain_mat_values[b], delta_stress)
+                velocities[u_i] += delta_u
         else:
             block_end = strain_mat_offsets[tau_i + 1]
             for b in range(block_beg, block_end):
                 u_i = strain_mat_columns[b]
-                strain_val = strain_mat_values[b]
-                delta_u = _symmetric_part_transposed_op(strain_val, delta_stress)
-                velocities[u_i] += inv_mass_matrix[u_i] * delta_u
+                delta_u = inv_mass_matrix[u_i] * _symmetric_part_transposed_op(strain_mat_values[b], delta_stress)
+                velocities[u_i] += delta_u
 
     return apply_stress_delta_impl
 
