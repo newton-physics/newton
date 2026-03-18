@@ -152,6 +152,7 @@ uniform float diffuse_scale;
 uniform float specular_scale;
 uniform bool spotlight_enabled;
 uniform float shadow_extents;
+uniform float exposure;
 
 const float PI = 3.14159265359;
 
@@ -407,7 +408,7 @@ void main()
     color = mix(color, pow(fogColor, vec3(2.2)), fog_factor);
 
     // ACES filmic tone mapping
-    color = color * 1.6; // exposure
+    color = color * exposure;
     vec3 x = color;
     color = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
     color = clamp(color, 0.0, 1.0);
@@ -573,6 +574,7 @@ class ShaderShape(ShaderGL):
             self.loc_specular_scale = self._get_uniform_location("specular_scale")
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
+            self.loc_exposure = self._get_uniform_location("exposure")
 
     def update(
         self,
@@ -595,6 +597,7 @@ class ShaderShape(ShaderGL):
         specular_scale: float = 1.0,
         spotlight_enabled: bool = True,
         shadow_extents: float = 10.0,
+        exposure: float = 1.6,
     ):
         """Update all shader uniforms."""
         with self:
@@ -613,6 +616,7 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1f(self.loc_specular_scale, specular_scale)
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
+            self._gl.glUniform1f(self.loc_exposure, exposure)
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)

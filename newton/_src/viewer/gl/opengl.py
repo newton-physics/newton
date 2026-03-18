@@ -904,6 +904,7 @@ class RendererGL:
         self._specular_scale = 1.0
         self.spotlight_enabled = True
         self._shadow_extents = 10.0
+        self._exposure = 1.6
 
         # Hemispherical ambient light colors, interpolated by dot(N, up).
         # Decoupled from the sky background so the visible sky can be a
@@ -1082,6 +1083,14 @@ class RendererGL:
     @shadow_extents.setter
     def shadow_extents(self, value: float):
         self._shadow_extents = max(float(value), 1e-4)
+
+    @property
+    def exposure(self) -> float:
+        return self._exposure
+
+    @exposure.setter
+    def exposure(self, value: float):
+        self._exposure = max(float(value), 0.0)
 
     def update(self):
         self._make_current()
@@ -1721,6 +1730,7 @@ class RendererGL:
             specular_scale=self.specular_scale,
             spotlight_enabled=self.spotlight_enabled,
             shadow_extents=self.shadow_extents,
+            exposure=self.exposure,
         )
 
         with self._shape_shader:

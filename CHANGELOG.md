@@ -11,6 +11,7 @@
 - Support kinematic bodies in VBD solver
 - Add brick stacking example
 - Add box pyramid example and ASV benchmark for dense convex-on-convex contacts
+- Add `exposure` property to GL renderer
 
 ### Changed
 
