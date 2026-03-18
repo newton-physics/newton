@@ -19,7 +19,7 @@ import warp.sparse as wps
 
 import newton
 
-from .solve_rheology import solve_coulomb_isotropic
+from .contact_solver_kernels import solve_coulomb_isotropic
 
 __all__ = [
     "Collider",

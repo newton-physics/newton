@@ -28,13 +28,12 @@ from newton._src.solvers.implicit_mpm.rheology_solver_kernels import (
     solve_flow_rule_camclay,
     vec6,
 )
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # Base flow rule solver (no viscosity); used by most tests.
 solve_flow_rule = make_solve_flow_rule(has_viscosity=False, has_dilatancy=True)
 # Viscosity-aware variant; used by the dispatch/viscosity tests.
 solve_flow_rule_viscous = make_solve_flow_rule(has_viscosity=True, has_dilatancy=True)
-
-from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
 

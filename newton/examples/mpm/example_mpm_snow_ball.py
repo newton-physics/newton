@@ -206,7 +206,8 @@ class Example:
 
         # add jitter: uniformly sample displacement in each axis in [-0.5*radius, 0.5*radius]
         jitter_scale = 1.0 * (spacing / 2.0)  # radius = spacing/2
-        all_pos += np.random.uniform(-jitter_scale, jitter_scale, size=all_pos.shape)
+        rng = np.random.default_rng()
+        all_pos += rng.uniform(-jitter_scale, jitter_scale, size=all_pos.shape)
 
         # Calculate mass
         # Total volume approx = Area * thickness

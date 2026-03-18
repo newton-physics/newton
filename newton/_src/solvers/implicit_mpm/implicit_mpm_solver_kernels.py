@@ -23,7 +23,7 @@ from warp.types import type_size
 import newton
 
 from .implicit_mpm_model import MaterialParameters
-from .solve_rheology import YieldParamVec, project_stress
+from .rheology_solver_kernels import YieldParamVec, project_stress
 
 wp.set_module_options({"enable_backward": False})
 
@@ -647,7 +647,6 @@ def rotate_matrix_rows(
             val += ev[elt_node, k] * mat_values[block_k]
 
     mat_values_out[block] = val
-
 
 
 def make_rotate_vectors(nodes_per_element: int):

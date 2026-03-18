@@ -15,13 +15,13 @@
 
 """Implicit MPM solver."""
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as wps
-import warnings
 
 import newton
 
@@ -81,8 +81,8 @@ from .implicit_mpm_solver_kernels import (
     scatter_field_dof_values,
     strain_delta_form,
     strain_rhs,
-    update_particle_strains,
     update_particle_frames,
+    update_particle_strains,
 )
 
 
@@ -1824,7 +1824,6 @@ class SolverImplicitMPM(SolverBase):
         scratch: ImplicitMPMScratchpad,
         inv_cell_volume: float,
     ):
-        model = self.model
         mpm_model = self._mpm_model
 
         with self._timer("Interpolated yield parameters"):

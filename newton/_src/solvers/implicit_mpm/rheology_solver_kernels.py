@@ -503,7 +503,7 @@ def solve_flow_rule_camclay(
     r_T = r_0
     r_T[0] = 0.0
 
-    ys, dys, r_N_min, r_N_max = shear_yield_stress_camclay(yield_params, r_N0)
+    ys, _dys, r_N_min, r_N_max = shear_yield_stress_camclay(yield_params, r_N0)
 
     if r_N_max <= 0.0:
         return b
@@ -643,9 +643,9 @@ def project_stress(
     r_T[0] = 0.0
 
     if wp.static(_USE_CAM_CLAY):
-        ys, dys, pmin, pmax = shear_yield_stress_camclay(yield_params, r_N)
+        ys, _dys, pmin, pmax = shear_yield_stress_camclay(yield_params, r_N)
     else:
-        ys, dys, pmin, pmax = shear_yield_stress(yield_params, r_N)
+        ys, _dys, pmin, pmax = shear_yield_stress(yield_params, r_N)
 
     r_T_n2 = wp.length_sq(r_T)
     if r_T_n2 > ys * ys:

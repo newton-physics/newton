@@ -29,25 +29,23 @@ from .contact_solver_kernels import (
     apply_subgrid_impulse_warmstart,
     compute_collider_delassus_diagonal,
     compute_collider_inv_mass,
-    solve_coulomb_isotropic,
     solve_nodal_friction,
     solve_subgrid_friction,
 )
 from .rheology_solver_kernels import (
     YieldParamVec,
-    make_gs_solve_kernel,
-    make_jacobi_solve_kernel,
     apply_stress_delta_jacobi,
     apply_stress_gs,
     apply_velocity_delta,
     compute_delassus_diagonal,
     evaluate_strain_residual,
     jacobi_preconditioner,
+    make_gs_solve_kernel,
+    make_jacobi_solve_kernel,
     mat13,
     mat55,
     postprocess_stress_and_strain,
     preprocess_stress_and_strain,
-    project_stress,
     vec6,
 )
 
