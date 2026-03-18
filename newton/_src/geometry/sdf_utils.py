@@ -288,6 +288,7 @@ class SDF:
         margin: float = 0.05,
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
+        texture_format: str = "uint16",
     ) -> "SDF":
         """Create an SDF from a mesh in local mesh coordinates.
 
@@ -312,6 +313,10 @@ class SDF:
                 resulting SDF. Required for hydroelastic collision with
                 non-unit shape scale. Defaults to ``None`` (no scale baking;
                 scale applied at runtime).
+            texture_format: Subgrid texture storage format. ``"uint16"``
+                (default) uses 16-bit normalized textures for half the memory
+                of ``"float32"`` with negligible precision loss. ``"uint8"``
+                uses 8-bit textures for minimum memory.
 
         Returns:
             A validated :class:`SDF` runtime handle with sparse/coarse volumes.
@@ -340,6 +345,15 @@ class SDF:
         if wp.is_cuda_available():
             from .sdf_texture import QuantizationMode, create_texture_sdf_from_mesh  # noqa: PLC0415
 
+            _tex_fmt_map = {
+                "float32": QuantizationMode.FLOAT32,
+                "uint16": QuantizationMode.UINT16,
+                "uint8": QuantizationMode.UINT8,
+            }
+            if texture_format not in _tex_fmt_map:
+                raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_tex_fmt_map)}.")
+            qmode = _tex_fmt_map[texture_format]
+
             with wp.ScopedDevice(device):
                 verts = mesh.vertices * np.array(effective_scale)[None, :]
                 pos = wp.array(verts, dtype=wp.vec3)
@@ -355,7 +369,7 @@ class SDF:
                     margin=margin,
                     narrow_band_range=narrow_band_range,
                     max_resolution=res,
-                    quantization_mode=QuantizationMode.FLOAT32,
+                    quantization_mode=qmode,
                     winding_threshold=winding_threshold,
                     scale_baked=bake_scale,
                 )

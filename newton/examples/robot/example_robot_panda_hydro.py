@@ -231,7 +231,7 @@ class Example:
             self.object_body_local = builder.add_body(xform=object_xform, label="object")
             builder.add_shape_capsule(body=self.object_body_local, radius=radius, half_height=length / 2, cfg=pen_cfg)
             self.grasping_offset = [-0.03, 0.0, 0.13]
-            self.place_offset = -0.0
+            self.place_offset = -0.02
 
         elif self.scene == SceneType.CUBE:
             size = 0.04
@@ -240,7 +240,7 @@ class Example:
             self.object_body_local = builder.add_body(xform=object_xform, label="object")
             builder.add_shape_box(body=self.object_body_local, hx=size / 2, hy=size / 2, hz=size / 2)
             self.grasping_offset = [0.03, 0.0, 0.14]
-            self.place_offset = 0.02
+            self.place_offset = 0.0
 
         if self.put_in_cup:
             self.cup_pos = [0.13, -0.5, box_size + 0.1]
@@ -513,7 +513,7 @@ class Example:
         ]
 
         if self.put_in_cup:
-            loose_pos = 0.72
+            loose_pos = 0.71
             wps = []
             cup_pos_higher = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest])
             cup_pos_lower = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest - 0.1])

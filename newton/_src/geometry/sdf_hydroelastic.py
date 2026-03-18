@@ -68,7 +68,7 @@ from .contact_reduction_hydroelastic import (
 )
 from .hashtable import hashtable_find_or_insert
 from .sdf_mc import get_mc_tables, get_triangle_fraction
-from .sdf_texture import TextureSDFData, texture_sample_sdf
+from .sdf_texture import TextureSDFData, texture_sample_sdf, texture_sample_sdf_at_voxel
 from .utils import scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -1040,7 +1040,7 @@ def sdf_diff_sdf(
     )
     pointA_world = wp.transform_point(transfA, local_pos_a)
     pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
-    valA = texture_sample_sdf(sdfA_data, local_pos_a)
+    valA = texture_sample_sdf_at_voxel(sdfA_data, x_id, y_id, z_id)
     valB = texture_sample_sdf(sdfB_data, pointB)
 
     is_valid = not (wp.isnan(valA) or wp.isnan(valB))
