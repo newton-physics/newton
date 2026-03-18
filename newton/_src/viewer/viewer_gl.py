@@ -30,6 +30,7 @@ from ..core.types import nparray, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
+from .gl.imgui_compat import color_edit3_tuple
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
@@ -1692,11 +1693,13 @@ class ViewerGL(ViewerBase):
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
                 # Light color
-                changed, self.renderer._light_color = imgui.color_edit3("Light Color", self.renderer._light_color)
+                changed, self.renderer._light_color = color_edit3_tuple(
+                    imgui, "Light Color", self.renderer._light_color
+                )
                 # Sky color
-                changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", self.renderer.sky_upper)
+                changed, self.renderer.sky_upper = color_edit3_tuple(imgui, "Sky Color", self.renderer.sky_upper)
                 # Ground color
-                changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", self.renderer.sky_lower)
+                changed, self.renderer.sky_lower = color_edit3_tuple(imgui, "Ground Color", self.renderer.sky_lower)
 
             # Wind Effects section
             if self.wind is not None:
