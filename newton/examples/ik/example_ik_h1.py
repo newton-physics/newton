@@ -58,13 +58,6 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(3.0, 1.3, 1.7), -12.0, -153.0)
 
-        # Set camera to view the scene
-        self.viewer.set_camera(
-            pos=wp.vec3(4.0, 0.0, 1.2),
-            pitch=0.0,
-            yaw=-180.0,
-        )
-
         # states
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
