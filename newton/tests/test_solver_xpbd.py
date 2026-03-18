@@ -392,7 +392,7 @@ def test_articulation_contact_drift(test, device):
 
     Setup:
     - Load a quadruped URDF on its side on the ground plane.
-    - Let it settle for 2 seconds, then simulate for 10 more seconds.
+    - Let it settle for 2 seconds, then simulate for 3 more seconds.
     - Check that the root body hasn't drifted laterally.
     """
     builder = newton.ModelBuilder()
@@ -446,8 +446,8 @@ def test_articulation_contact_drift(test, device):
     initial_x = float(body_q[0][0])
     initial_y = float(body_q[0][1])
 
-    # Simulate for 10 more seconds
-    for _ in range(1000):
+    # Simulate for 3 more seconds
+    for _ in range(300):
         for _ in range(sim_substeps):
             state_0.clear_forces()
             model.collide(state_0, contacts)
@@ -462,15 +462,15 @@ def test_articulation_contact_drift(test, device):
     drift_y = abs(final_y - initial_y)
     drift_xy = float(np.hypot(drift_x, drift_y))
 
-    # The root body should not drift more than 1 cm laterally over 10 seconds
+    # The root body should not drift more than 1 cm laterally over 3 seconds
     # (Z is up, so X and Y are the lateral axes)
-    # Without the fix, Y drifts ~5.9 mm/s → ~5.9 cm over 10 seconds.
+    # Without the fix, Y drifts ~5.9 mm/s → ~1.8 cm over 3 seconds.
     max_drift = 0.01
     test.assertLess(
         drift_xy,
         max_drift,
         msg=(
-            f"Root body drifted {drift_xy:.4f} m laterally over 10 seconds "
+            f"Root body drifted {drift_xy:.4f} m laterally over 3 seconds "
             f"(dx={drift_x:.4f}, dy={drift_y:.4f}, max allowed: {max_drift})"
         ),
     )

@@ -538,7 +538,7 @@ class SolverXPBD(SolverBase):
                         )
 
                     if model.joint_count:
-                        if requires_grad and i > 0:
+                        if requires_grad:
                             body_deltas = wp.zeros_like(body_deltas)
                         else:
                             body_deltas.zero_()
