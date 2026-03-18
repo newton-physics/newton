@@ -23,7 +23,7 @@ import warp as wp
 
 from ..geometry import GeoType, Mesh, ShapeFlags
 from ..sim import Model, State
-from ..utils import load_texture
+from ..utils import load_texture, normalize_texture
 from .warp_raytrace import (
     ClearData,
     GaussianRenderMode,
@@ -552,11 +552,16 @@ class SensorTiledCamera:
                         if pixels is None:
                             raise ValueError(f"Failed to load texture: {shape.texture}")
 
+                        # Normalize texture to ensure a consistent channel layout and dtype
+                        pixels = normalize_texture(pixels, require_channels=True)
+                        if pixels.dtype != np.uint8:
+                            pixels = pixels.astype(np.uint8, copy=False)
+
                         texture_hashes[shape.texture_hash] = len(self.__texture_data)
 
                         data = TextureData()
                         data.texture = wp.Texture2D(
-                            pixels.view(np.uint8),
+                            pixels,
                             filter_mode=wp.TextureFilterMode.LINEAR,
                             address_mode=wp.TextureAddressMode.WRAP,
                             normalized_coords=True,

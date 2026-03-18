@@ -781,6 +781,12 @@ class Mesh:
 
     @property
     def texture_hash(self) -> int:
+        """Content-based hash of the assigned texture.
+
+        Returns a stable integer hash derived from the texture data.
+        The value is lazily computed and cached until :attr:`texture`
+        is reassigned.
+        """
         return self._compute_texture_hash()
 
     def _compute_texture_hash(self) -> int:
