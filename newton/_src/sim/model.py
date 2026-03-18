@@ -464,7 +464,13 @@ class Model:
         self.joint_target_ke: wp.array(dtype=wp.float32) | None = None
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd: wp.array(dtype=wp.float32) | None = None
-        """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
+        """Joint damping for target tracking. **Note:** Interpretation varies by solver:
+
+        - **MuJoCo/SemiImplicit/Featherstone:** Absolute damping [N·s/m or N·m·s/rad]
+        - **VBD:** Dimensionless Rayleigh coefficient (effective damping = kd × ke)
+        - **XPBD:** Raw damping, internally normalized by ke (gamma = kd / ke)
+
+        Shape [joint_dof_count], float. See solver documentation for details."""
         self.joint_effort_limit: wp.array(dtype=wp.float32) | None = None
         """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_velocity_limit: wp.array(dtype=wp.float32) | None = None
@@ -482,7 +488,13 @@ class Model:
         self.joint_limit_ke: wp.array(dtype=wp.float32) | None = None
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd: wp.array(dtype=wp.float32) | None = None
-        """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        """Joint position limit damping. **Note:** Interpretation varies by solver:
+
+        - **MuJoCo/SemiImplicit/Featherstone:** Absolute damping [N·s/m or N·m·s/rad]
+        - **VBD:** Dimensionless Rayleigh coefficient (effective damping = kd × ke)
+        - **XPBD:** Raw damping, internally normalized by ke (gamma = kd / ke)
+
+        Shape [joint_dof_count], float. See solver documentation for details."""
         self.joint_twist_lower: wp.array(dtype=wp.float32) | None = None
         """Joint lower twist limit [rad], shape [joint_count], float."""
         self.joint_twist_upper: wp.array(dtype=wp.float32) | None = None
