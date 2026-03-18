@@ -3043,6 +3043,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_data.contact.solimp,
                 self.mjw_data.contact.dim,
                 self.mjw_data.contact.geom,
+                self.mjw_data.contact.efc_address,
                 self.mjw_data.contact.worldid,
                 # Data to clear
                 self.mjw_data.nworld,

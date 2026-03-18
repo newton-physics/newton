@@ -75,7 +75,7 @@ class TestInertiaValidation(unittest.TestCase):
             self.assertTrue(inertia_array[1, 1] >= 0)
             self.assertTrue(inertia_array[2, 2] >= 0)
             self.assertTrue(len(w) > 0)
-            self.assertIn("Negative eigenvalues detected", str(w[0].message))
+            self.assertIn("Non-positive eigenvalues detected", str(w[0].message))
 
     def test_inertia_bound(self):
         """Test that inertia diagonal elements below bound are clamped."""
@@ -256,6 +256,233 @@ class TestInertiaValidation(unittest.TestCase):
             # Mass should be corrected to 0
             body_mass = model.body_mass.numpy()[body_idx]
             self.assertEqual(body_mass, 0.0)
+
+    def test_nan_mass(self):
+        """Test that NaN mass is handled without crashing."""
+        mass = float("nan")
+        inertia = wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+
+        with warnings.catch_warnings(record=True) as w:
+            corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(mass, inertia)
+
+            self.assertTrue(was_corrected)
+            self.assertEqual(corrected_mass, 0.0)
+            self.assertTrue(np.allclose(np.array(corrected_inertia), 0.0))
+            self.assertTrue(len(w) > 0)
+            self.assertIn("NaN/Inf", str(w[0].message))
+
+    def test_nan_inertia(self):
+        """Test that NaN inertia is handled without crashing."""
+        mass = 1.0
+        inertia = wp.mat33([[float("nan"), 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+
+        with warnings.catch_warnings(record=True) as w:
+            corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(mass, inertia)
+
+            self.assertTrue(was_corrected)
+            self.assertEqual(corrected_mass, 0.0)
+            self.assertTrue(np.allclose(np.array(corrected_inertia), 0.0))
+            self.assertTrue(len(w) > 0)
+            self.assertIn("NaN/Inf", str(w[0].message))
+
+    def test_inf_inertia(self):
+        """Test that Inf inertia is handled without crashing."""
+        mass = 1.0
+        inertia = wp.mat33([[float("inf"), 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+
+        with warnings.catch_warnings(record=True) as w:
+            corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(mass, inertia)
+
+            self.assertTrue(was_corrected)
+            self.assertEqual(corrected_mass, 0.0)
+            self.assertTrue(np.allclose(np.array(corrected_inertia), 0.0))
+            self.assertTrue(len(w) > 0)
+            self.assertIn("NaN/Inf", str(w[0].message))
+
+    def test_zero_mass_not_overridden_by_bound(self):
+        """Test that zero mass is not overridden by bound_mass (zero = static body)."""
+        mass = 0.0
+        bound_mass = 1.0
+        inertia = wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+
+        with warnings.catch_warnings(record=True):
+            corrected_mass, _corrected_inertia, _was_corrected = verify_and_correct_inertia(
+                mass, inertia, bound_mass=bound_mass
+            )
+
+            self.assertEqual(corrected_mass, 0.0)
+
+    def test_singular_inertia_repaired(self):
+        """Test that singular inertia for positive-mass body is made positive-definite."""
+        mass = 1.0
+        inertia = wp.mat33([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+
+        with warnings.catch_warnings(record=True):
+            corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(mass, inertia)
+
+            self.assertTrue(was_corrected)
+            self.assertEqual(corrected_mass, mass)
+            inertia_array = np.array(corrected_inertia).reshape(3, 3)
+            eigenvalues = np.linalg.eigvals(inertia_array)
+            self.assertTrue(np.all(eigenvalues > 0))
+
+
+class TestInertiaValidationParity(unittest.TestCase):
+    """Test that CPU (detailed) and GPU (fast) validation paths produce identical results."""
+
+    def _finalize_both_paths(self, mass, inertia, bound_mass=None, bound_inertia=None, balance_inertia=True):
+        """Helper to finalize a single-body model with both validation paths and return results."""
+        results = {}
+        for detailed in [True, False]:
+            builder = ModelBuilder()
+            builder.balance_inertia = balance_inertia
+            builder.bound_mass = bound_mass
+            builder.bound_inertia = bound_inertia
+            builder.validate_inertia_detailed = detailed
+
+            body_idx = builder.add_body(
+                mass=mass,
+                inertia=wp.mat33(np.array(inertia, dtype=np.float32)),
+                label="test_body",
+            )
+
+            with warnings.catch_warnings(record=True):
+                model = builder.finalize()
+
+            mode = "detailed" if detailed else "fast"
+            results[mode] = {
+                "model_mass": float(model.body_mass.numpy()[body_idx]),
+                "model_inertia": np.array(model.body_inertia.numpy()[body_idx]),
+            }
+        return results
+
+    def _assert_parity(self, results, atol=1e-5):
+        """Assert that detailed and fast results match."""
+        np.testing.assert_allclose(
+            results["detailed"]["model_mass"],
+            results["fast"]["model_mass"],
+            atol=atol,
+            err_msg="Model mass mismatch between detailed and fast paths",
+        )
+        np.testing.assert_allclose(
+            results["detailed"]["model_inertia"],
+            results["fast"]["model_inertia"],
+            atol=atol,
+            err_msg="Model inertia mismatch between detailed and fast paths",
+        )
+
+    def test_parity_negative_mass(self):
+        """Both paths should correct negative mass identically."""
+        results = self._finalize_both_paths(mass=-5.0, inertia=np.diag([1.0, 1.0, 1.0]))
+        self._assert_parity(results)
+        self.assertEqual(results["detailed"]["model_mass"], 0.0)
+
+    def test_parity_zero_mass_with_bound(self):
+        """Zero mass must stay zero even with bound_mass set."""
+        results = self._finalize_both_paths(mass=0.0, inertia=np.diag([1.0, 1.0, 1.0]), bound_mass=0.1)
+        self._assert_parity(results)
+        self.assertEqual(results["detailed"]["model_mass"], 0.0)
+        self.assertEqual(results["fast"]["model_mass"], 0.0)
+
+    def test_parity_positive_mass_below_bound(self):
+        """Both paths should clamp positive mass below bound identically."""
+        results = self._finalize_both_paths(mass=0.05, inertia=np.diag([1.0, 1.0, 1.0]), bound_mass=0.1)
+        self._assert_parity(results)
+        self.assertAlmostEqual(results["detailed"]["model_mass"], 0.1, places=5)
+
+    def test_parity_negative_mass_with_bound(self):
+        """Negative mass should become zero, not bound_mass."""
+        results = self._finalize_both_paths(mass=-1.0, inertia=np.diag([1.0, 1.0, 1.0]), bound_mass=0.1)
+        self._assert_parity(results)
+        self.assertEqual(results["detailed"]["model_mass"], 0.0)
+
+    def test_parity_singular_inertia(self):
+        """Both paths should repair singular inertia for positive-mass bodies."""
+        results = self._finalize_both_paths(mass=1.0, inertia=np.zeros((3, 3)))
+        self._assert_parity(results)
+        # Inertia should be positive-definite
+        eigenvalues = np.linalg.eigvals(results["detailed"]["model_inertia"])
+        self.assertTrue(np.all(eigenvalues > 0))
+
+    def test_parity_semidefinite_inertia(self):
+        """Both paths should repair semi-definite inertia (one zero eigenvalue)."""
+        results = self._finalize_both_paths(mass=1.0, inertia=np.diag([0.0, 1.0, 1.0]))
+        self._assert_parity(results)
+
+    def test_parity_nonsymmetric_inertia(self):
+        """Both paths should symmetrize non-symmetric inertia."""
+        inertia = np.array([[1.0, 2.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        results = self._finalize_both_paths(mass=1.0, inertia=inertia)
+        self._assert_parity(results)
+        # Result should be symmetric
+        inertia = results["detailed"]["model_inertia"]
+        np.testing.assert_allclose(inertia, inertia.T, atol=1e-6)
+
+    def test_parity_exact_triangle_boundary(self):
+        """Exact triangle equality diag(1,1,2) should be a no-op in both paths."""
+        results = self._finalize_both_paths(mass=1.0, inertia=np.diag([1.0, 1.0, 2.0]))
+        self._assert_parity(results)
+
+    def test_parity_triangle_inequality_violation(self):
+        """Both paths should correct triangle inequality violations identically."""
+        results = self._finalize_both_paths(mass=1.0, inertia=np.diag([0.1, 0.1, 10.0]))
+        self._assert_parity(results)
+
+    def test_parity_near_boundary_triangle(self):
+        """Near-boundary triangle cases should get consistent corrections."""
+        results = self._finalize_both_paths(mass=1.0, inertia=np.diag([1.0, 1.0, 2.001]))
+        self._assert_parity(results)
+
+    def test_parity_nan_mass(self):
+        """Both paths should handle NaN mass identically (zero out)."""
+        results = self._finalize_both_paths(mass=float("nan"), inertia=np.diag([1.0, 1.0, 1.0]))
+        self._assert_parity(results)
+        self.assertEqual(results["detailed"]["model_mass"], 0.0)
+
+    def test_parity_nan_inertia(self):
+        """Both paths should handle NaN inertia identically."""
+        inertia = np.diag([float("nan"), 1.0, 1.0])
+        results = self._finalize_both_paths(mass=1.0, inertia=inertia)
+        self._assert_parity(results)
+        self.assertEqual(results["detailed"]["model_mass"], 0.0)
+
+    def test_parity_inf_inertia(self):
+        """Both paths should handle Inf inertia identically."""
+        inertia = np.diag([float("inf"), 1.0, 1.0])
+        results = self._finalize_both_paths(mass=1.0, inertia=inertia)
+        self._assert_parity(results)
+        self.assertEqual(results["detailed"]["model_mass"], 0.0)
+
+    def test_parity_valid_inertia(self):
+        """Valid inertia should pass through unchanged in both paths."""
+        inertia = np.diag([2.0, 3.0, 4.0])
+        results = self._finalize_both_paths(mass=1.0, inertia=inertia)
+        self._assert_parity(results)
+        np.testing.assert_allclose(results["detailed"]["model_inertia"], np.diag([2.0, 3.0, 4.0]), atol=1e-5)
+
+    def test_builder_state_unchanged_after_finalize(self):
+        """finalize() should not mutate builder state — corrections live only on the Model."""
+        for detailed in (True, False):
+            with self.subTest(detailed=detailed):
+                builder = ModelBuilder()
+                builder.validate_inertia_detailed = detailed
+
+                original_mass = -1.0
+                original_inertia = wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+                body_idx = builder.add_body(
+                    mass=original_mass,
+                    inertia=original_inertia,
+                    label="test_body",
+                )
+
+                with warnings.catch_warnings(record=True):
+                    model = builder.finalize()
+
+                # Builder retains original (uncorrected) values
+                self.assertEqual(builder.body_mass[body_idx], original_mass)
+
+                # Model has corrected values
+                self.assertAlmostEqual(float(model.body_mass.numpy()[body_idx]), 0.0, places=5)
 
 
 if __name__ == "__main__":

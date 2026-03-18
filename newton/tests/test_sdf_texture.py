@@ -180,8 +180,9 @@ def _build_texture_and_nanovdb(mesh, resolution=64, margin=0.05, narrow_band_ran
         device=device,
     )
 
-    # Build NanoVDB SDF
+    # Build NanoVDB SDF on the same device so volume pointers are valid
     mesh.build_sdf(
+        device=device,
         max_resolution=resolution,
         narrow_band_range=narrow_band_range,
         margin=margin,
@@ -413,7 +414,7 @@ def test_texture_sdf_multi_resolution(test, device):
 
     # Build NanoVDB reference at high resolution
     mesh_copy = _create_box_mesh()
-    mesh_copy.build_sdf(max_resolution=256, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    mesh_copy.build_sdf(device=device, max_resolution=256, narrow_band_range=(-0.1, 0.1), margin=0.05)
     ref_data = mesh_copy.sdf.to_kernel_data()
     ref_results = wp.zeros(500, dtype=float, device=device)
     wp.launch(_sample_nanovdb_value_kernel, dim=500, inputs=[ref_data, query_points, ref_results], device=device)
@@ -458,7 +459,7 @@ def test_texture_sdf_in_model(test, device):
     for i in range(2):
         body = builder.add_body(xform=wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0)))
         mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
-        mesh.build_sdf(max_resolution=8)
+        mesh.build_sdf(device=device, max_resolution=8)
         builder.add_shape_mesh(body, mesh=mesh)
 
     model = builder.finalize(device=device)
@@ -677,7 +678,7 @@ def test_texture_sdf_scale_baked(test, device):
 def test_texture_sdf_from_volume(test, device):
     """Build texture SDF from NanoVDB volumes and verify sampling."""
     mesh = _create_box_mesh()
-    mesh.build_sdf(max_resolution=32, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    mesh.build_sdf(device=device, max_resolution=32, narrow_band_range=(-0.1, 0.1), margin=0.05)
 
     sdf = mesh.sdf
     sdf_data = sdf.to_kernel_data()

@@ -90,6 +90,7 @@ def write_contact(
     contact_solimp_out: wp.array(dtype=vec5),
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_efc_address_out: wp.array2d(dtype=int),
     contact_worldid_out: wp.array(dtype=int),
 ):
     # See function write_contact in mujoco_warp, file collision_primitive.py
@@ -106,6 +107,10 @@ def write_contact(
     contact_solref_out[cid] = solref_in
     contact_solreffriction_out[cid] = solreffriction_in
     contact_solimp_out[cid] = solimp_in
+
+    # initialize constraint address to -1 (max 10 elements; populated during constraint generation)
+    for i in range(contact_efc_address_out.shape[1]):
+        contact_efc_address_out[cid, i] = -1
 
 
 @wp.func
@@ -243,6 +248,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_solimp_out: wp.array(dtype=vec5),
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_efc_address_out: wp.array2d(dtype=int),
     contact_worldid_out: wp.array(dtype=int),
     # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
     nworld_in: int,
@@ -392,6 +398,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         contact_solimp_out=contact_solimp_out,
         contact_dim_out=contact_dim_out,
         contact_geom_out=contact_geom_out,
+        contact_efc_address_out=contact_efc_address_out,
         contact_worldid_out=contact_worldid_out,
     )
 

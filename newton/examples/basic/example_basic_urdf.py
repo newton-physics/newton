@@ -43,6 +43,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        self.solver_type = args.solver if hasattr(args, "solver") and args.solver else "xpbd"
 
         self.viewer = viewer
 
@@ -51,12 +52,18 @@ class Example:
         # set default parameters for the quadruped
         quadruped.default_body_armature = 0.01
         quadruped.default_joint_cfg.armature = 0.01
-        quadruped.default_joint_cfg.target_ke = 2000.0
-        quadruped.default_joint_cfg.target_kd = 1.0
-        quadruped.default_shape_cfg.ke = 1.0e4
-        quadruped.default_shape_cfg.kd = 1.0e2
-        quadruped.default_shape_cfg.kf = 1.0e2
-        quadruped.default_shape_cfg.mu = 1.0
+
+        if self.solver_type == "vbd":
+            quadruped.default_joint_cfg.target_ke = 2000.0
+            quadruped.default_joint_cfg.target_kd = 1.0e-3
+            quadruped.default_joint_cfg.limit_kd = 1.0e-5
+            quadruped.default_shape_cfg.ke = 1.0e7
+            quadruped.default_shape_cfg.kd = 1.0e-1
+            quadruped.default_shape_cfg.mu = 1.0
+        else:
+            quadruped.default_joint_cfg.target_ke = 2000.0
+            quadruped.default_joint_cfg.target_kd = 1.0
+            quadruped.default_shape_cfg.mu = 1.0
 
         # parse the URDF file
         quadruped.add_urdf(
@@ -76,19 +83,24 @@ class Example:
 
         # use the builder.replicate() function to create N copies of the world
         scene.replicate(quadruped, self.world_count)
-        scene.add_ground_plane()
 
-        # finalize model
+        scene.add_ground_plane(cfg=quadruped.default_shape_cfg)
+        if self.solver_type == "vbd":
+            scene.color()
+
         self.model = scene.finalize()
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        if self.solver_type == "vbd":
+            self.update_step_interval = 10
+            self.solver = newton.solvers.SolverVBD(self.model, iterations=1, rigid_contact_k_start=1.0e6)
+        else:
+            self.update_step_interval = 1
+            self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-
-        # not required for MuJoCo, but required for other solvers
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.contacts = self.model.contacts()
 
@@ -106,13 +118,19 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
+            update_step_history = (substep % self.update_step_interval) == 0
+            if update_step_history:
+                self.model.collide(self.state_0, self.contacts)
+
+            if self.solver_type == "vbd":
+                self.solver.set_rigid_history_update(update_step_history)
+
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -155,6 +173,13 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=100)
+        parser.add_argument(
+            "--solver",
+            type=str,
+            default="xpbd",
+            choices=["vbd", "xpbd"],
+            help="Solver type: xpbd (default) or vbd",
+        )
         return parser
 
 

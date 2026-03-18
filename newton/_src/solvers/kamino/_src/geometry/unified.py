@@ -608,8 +608,9 @@ class CollisionPipelineUnifiedKamino:
             self.shape_collision_aabb_lower = wp.empty(shape=(0,), dtype=wp.vec3)
             self.shape_collision_aabb_upper = wp.empty(shape=(0,), dtype=wp.vec3)
             self.shape_voxel_resolution = wp.empty(shape=(0,), dtype=wp.vec3i)
-            self.shape_heightfield_data = None  # TODO
-            self.heightfield_elevation_data = None  # TODO
+            self.shape_heightfield_index = None  # TODO
+            self.heightfield_data = None  # TODO
+            self.heightfield_elevations = None  # TODO
 
         # Initialize the broad-phase backend depending on the selected mode
         match self._broadphase:
@@ -871,8 +872,9 @@ class CollisionPipelineUnifiedKamino:
             shape_collision_aabb_lower=self.shape_collision_aabb_lower,
             shape_collision_aabb_upper=self.shape_collision_aabb_upper,
             shape_voxel_resolution=self.shape_voxel_resolution,
-            shape_heightfield_data=self.shape_heightfield_data,
-            heightfield_elevation_data=self.heightfield_elevation_data,
+            shape_heightfield_index=self.shape_heightfield_index,
+            heightfield_data=self.heightfield_data,
+            heightfield_elevations=self.heightfield_elevations,
             writer_data=writer_data,
             device=self._device,
         )

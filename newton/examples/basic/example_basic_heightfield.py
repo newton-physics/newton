@@ -62,7 +62,7 @@ class Example:
         builder.add_shape_heightfield(heightfield=hfield)
 
         # Drop several spheres onto the terrain
-        drop_z = 3.0
+        drop_z = 1.0
         self.sphere_bodies = []
         positions = [
             (-2.0, -2.0),
@@ -80,9 +80,11 @@ class Example:
 
         self.model = builder.finalize()
 
+        self.use_mujoco_contacts = False
         if self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model)
-            self.contacts = None
+            self.use_mujoco_contacts = True
+            self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
             self.contacts = self.model.contacts()
@@ -104,13 +106,15 @@ class Example:
             self.graph = None
 
     def simulate(self):
+        if not self.use_mujoco_contacts:
+            self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            if self.contacts is not None:
-                self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
+        if self.use_mujoco_contacts:
+            self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
@@ -122,6 +126,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test_final(self):

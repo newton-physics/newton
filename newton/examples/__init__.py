@@ -250,6 +250,15 @@ class _ExampleBrowser:
         return new_example
 
 
+def _format_fps(fps: float) -> str:
+    """Format an FPS value with sufficient significant digits."""
+    if fps >= 10:
+        return f"{fps:.1f}"
+    if fps >= 1:
+        return f"{fps:.2f}"
+    return f"{fps:.3f}"
+
+
 def run(example, args):
     viewer = example.viewer
     example_class = type(example)
@@ -293,6 +302,13 @@ def run(example, args):
             raise NotImplementedError("Example does not have a test_final or test_post_step method")
 
     viewer.close()
+
+    if hasattr(viewer, "benchmark_result"):
+        result = viewer.benchmark_result()
+        if result is not None:
+            print(
+                f"Benchmark: {_format_fps(result['fps'])} FPS ({result['frames']} frames in {result['elapsed']:.2f}s)"
+            )
 
     if perform_test:
         # generic tests for finiteness of Newton objects
@@ -436,6 +452,15 @@ def create_parser():
         default=False,
         help="Suppress Warp compilation messages.",
     )
+    parser.add_argument(
+        "--benchmark",
+        type=int,
+        default=False,
+        nargs="?",
+        const=None,
+        metavar="SECONDS",
+        help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
+    )
 
     return parser
 
@@ -532,6 +557,10 @@ def init(parser=None):
     if args.device:
         wp.set_device(args.device)
 
+    # Benchmark mode forces null viewer
+    if args.benchmark is not False:
+        args.viewer = "null"
+
     # Create viewer based on type
     if args.viewer == "gl":
         viewer = newton.viewer.ViewerGL(headless=args.headless)
@@ -542,7 +571,11 @@ def init(parser=None):
     elif args.viewer == "rerun":
         viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
     elif args.viewer == "null":
-        viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
+        viewer = newton.viewer.ViewerNull(
+            num_frames=args.num_frames,
+            benchmark=args.benchmark is not False,
+            benchmark_timeout=args.benchmark or None,
+        )
     elif args.viewer == "viser":
         viewer = newton.viewer.ViewerViser()
     else:

@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -26,7 +27,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.types import MAXVAL, nparray
+from ..core.types import MAXVAL, Axis, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -471,9 +472,9 @@ class ViewerBase(ABC):
             self.log_lines("/contacts", None, None, None)
             return
 
-        # Get contact count (handle case where it might be zero)
-        num_contacts = contacts.rigid_contact_count.numpy()[0]
+        # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
+        num_contacts = min(int(contacts.rigid_contact_count.numpy()[0]), max_contacts)
 
         # Ensure we have buffers for line endpoints
         if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
@@ -834,13 +835,20 @@ class ViewerBase(ABC):
         self,
         name: str,
         transform: wp.transform,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
     ):
-        """
-        Log a gizmo GUI element for the given name and transform.
+        """Log a gizmo GUI element for the given name and transform.
 
         Args:
             name: The name of the gizmo.
             transform: The transform of the gizmo.
+            translate: Axes on which the translation handles are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all translation handles.
+            rotate: Axes on which the rotation rings are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all rotation rings.
         """
         return
 
