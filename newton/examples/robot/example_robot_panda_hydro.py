@@ -79,7 +79,7 @@ class Example:
 
         sdf_max_resolution = 64
         sdf_narrow_band_range = (-0.01, 0.01)
-        
+
         shape_cfg = newton.ModelBuilder.ShapeConfig(
             kh=1e11,
             gap=0.01,
@@ -88,7 +88,12 @@ class Example:
         )
         # meshes need explicit call to build_sdf with sdf parameters, while primitive sdf are configured directly via shape config flags
         shape_cfg_meshes = replace(shape_cfg, is_hydroelastic=True)
-        shape_cfg_primitives = replace(shape_cfg, is_hydroelastic=True, sdf_max_resolution=sdf_max_resolution, sdf_narrow_band_range=sdf_narrow_band_range)
+        shape_cfg_primitives = replace(
+            shape_cfg,
+            is_hydroelastic=True,
+            sdf_max_resolution=sdf_max_resolution,
+            sdf_narrow_band_range=sdf_narrow_band_range,
+        )
 
         builder = newton.ModelBuilder()
         # URDF mesh colliders are imported as plain meshes; keep hydroelastic disabled
@@ -218,7 +223,9 @@ class Example:
                 wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2),
             )
             self.object_body_local = builder.add_body(xform=object_xform, label="object")
-            builder.add_shape_capsule(body=self.object_body_local, radius=radius, half_height=length / 2, cfg=shape_cfg_primitives)
+            builder.add_shape_capsule(
+                body=self.object_body_local, radius=radius, half_height=length / 2, cfg=shape_cfg_primitives
+            )
             self.grasping_offset = [-0.03, 0.0, 0.13]
             self.place_offset = -0.02
 
@@ -227,7 +234,9 @@ class Example:
             self.object_pos = [0.0, -0.5, 2 * box_size + 0.5 * size]
             object_xform = wp.transform(wp.vec3(self.object_pos), wp.quat_identity())
             self.object_body_local = builder.add_body(xform=object_xform, label="object")
-            builder.add_shape_box(body=self.object_body_local, hx=size / 2, hy=size / 2, hz=size / 2, cfg=shape_cfg_primitives)
+            builder.add_shape_box(
+                body=self.object_body_local, hx=size / 2, hy=size / 2, hz=size / 2, cfg=shape_cfg_primitives
+            )
             self.grasping_offset = [0.03, 0.0, 0.14]
             self.place_offset = 0.0
 
