@@ -18,7 +18,7 @@ from __future__ import annotations
 import ctypes
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from importlib import metadata
 from typing import Any, Literal
 
@@ -28,7 +28,7 @@ import warp as wp
 import newton as nt
 from newton.selection import ArticulationView
 
-from ..core.types import nparray, override
+from ..core.types import Axis, nparray, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
@@ -267,6 +267,7 @@ class ViewerGL(ViewerBase):
             self.ui = None
         self._gizmo_log = None
         self._gizmo_active = {}
+        self.gizmo_is_using = False
 
         # Performance tracking
         self._fps_history = []
@@ -353,6 +354,9 @@ class ViewerGL(ViewerBase):
         self,
         name: str,
         transform: wp.transform,
+        *,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
         snap_to: wp.transform | None = None,
     ):
         """Log or update a transform gizmo for the current frame.
@@ -360,11 +364,35 @@ class ViewerGL(ViewerBase):
         Args:
             name: Unique gizmo path/name.
             transform: Gizmo world transform.
+            translate: Axes on which the translation handles are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all translation handles.
+            rotate: Axes on which the rotation rings are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all rotation rings.
             snap_to: Optional world transform to snap to when this gizmo is
                 released by the user.
         """
-        # Store for this frame; call this every frame you want it drawn/active
-        self._gizmo_log[name] = {"transform": transform, "snap_to": snap_to}
+        axis_order = (Axis.X, Axis.Y, Axis.Z)
+
+        if translate is None:
+            t = axis_order
+        else:
+            translate_axes = {Axis.from_any(axis) for axis in translate}
+            t = tuple(axis for axis in axis_order if axis in translate_axes)
+
+        if rotate is None:
+            r = axis_order
+        else:
+            rotate_axes = {Axis.from_any(axis) for axis in rotate}
+            r = tuple(axis for axis in axis_order if axis in rotate_axes)
+
+        self._gizmo_log[name] = {
+            "transform": transform,
+            "snap_to": snap_to,
+            "translate": t,
+            "rotate": r,
+        }
 
     @override
     def clear_model(self):
@@ -1725,10 +1753,12 @@ class ViewerGL(ViewerBase):
             self._frame_count = 0
 
     def _render_gizmos(self):
+        self.gizmo_is_using = False
         if not self._gizmo_log:
             self._gizmo_active.clear()
             return
         if not self.ui:
+            self._gizmo_active.clear()
             return
 
         giz = self.ui.giz
@@ -1740,6 +1770,7 @@ class ViewerGL(ViewerBase):
         giz.set_gizmo_size_clip_space(0.07)
         giz.set_axis_limit(0.0)
         giz.set_plane_limit(0.0)
+        giz.allow_axis_flip(False)
 
         # Camera matrices
         view = self.camera.get_view_matrix().reshape(4, 4).transpose()
@@ -1756,31 +1787,63 @@ class ViewerGL(ViewerBase):
             except Exception:
                 return False
 
+        view_ = m44_to_mat16(view)
+        proj_ = m44_to_mat16(proj)
+
+        axis_translate = {
+            Axis.X: giz.OPERATION.translate_x,
+            Axis.Y: giz.OPERATION.translate_y,
+            Axis.Z: giz.OPERATION.translate_z,
+        }
+        axis_rotate = {
+            Axis.X: giz.OPERATION.rotate_x,
+            Axis.Y: giz.OPERATION.rotate_y,
+            Axis.Z: giz.OPERATION.rotate_z,
+        }
+
         # Draw & mutate each gizmo
         logged_ids = set()
         for gid, gizmo_data in self._gizmo_log.items():
             logged_ids.add(gid)
             transform = gizmo_data["transform"]
             snap_to = gizmo_data["snap_to"]
+            translate = gizmo_data["translate"]
+            rotate = gizmo_data["rotate"]
+
+            # Use compound ops when all axes are active (includes plane handles).
+            if len(translate) == 3:
+                t_ops = (giz.OPERATION.translate,)
+            else:
+                t_ops = tuple(axis_translate[a] for a in translate)
+
+            if len(rotate) == 3:
+                r_ops = (giz.OPERATION.rotate,)
+            else:
+                r_ops = tuple(axis_rotate[a] for a in rotate)
+
+            ops = t_ops + r_ops
+            was_active = self._gizmo_active.get(gid, False)
+            if not ops:
+                if was_active and snap_to is not None:
+                    transform[:] = snap_to
+                self._gizmo_active[gid] = False
+                continue
+
             giz.push_id(str(gid))
 
             M = wp.transform_to_matrix(transform)
-
-            view_ = m44_to_mat16(view)
-            proj_ = m44_to_mat16(proj)
             M_ = m44_to_mat16(M)
-
             before_values = np.asarray(M_.values, dtype=np.float32).copy()
 
-            rotate_active = giz.manipulate(view_, proj_, giz.OPERATION.rotate, giz.MODE.world, M_, None, None)
-            translate_active = giz.manipulate(view_, proj_, giz.OPERATION.translate, giz.MODE.world, M_, None, None)
+            op_active = False
+            for op in ops:
+                op_active = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_active
 
             after_values = np.asarray(M_.values, dtype=np.float32)
             moved_this_frame = bool(np.any(np.abs(after_values - before_values) > 1.0e-8))
 
-            is_active = moved_this_frame or safe_bool(rotate_active) or safe_bool(translate_active)
+            is_active = moved_this_frame or op_active
 
-            was_active = self._gizmo_active.get(gid, False)
             if was_active and not is_active and snap_to is not None:
                 transform[:] = snap_to
             else:
@@ -1795,6 +1858,8 @@ class ViewerGL(ViewerBase):
         for gid in tuple(self._gizmo_active):
             if gid not in logged_ids:
                 del self._gizmo_active[gid]
+
+        self.gizmo_is_using = giz.is_using_any()
 
     def _render_ui(self):
         """

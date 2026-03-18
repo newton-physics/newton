@@ -12,6 +12,8 @@
 - Add brick stacking example
 - Add box pyramid example and ASV benchmark for dense convex-on-convex contacts
 - Add `snap_to` argument to `ViewerGL.log_gizmo()` to snap gizmos to a target world transform when the user releases them
+- Expose `gizmo_is_using` attribute to detect whether a gizmo is actively being dragged
+- Add per-axis gizmo filtering via `translate`/`rotate` parameters on `log_gizmo`
 
 ### Changed
 
