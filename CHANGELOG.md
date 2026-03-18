@@ -14,6 +14,9 @@
 - Add `exposure` property to GL renderer
 - Expose `gizmo_is_using` attribute to detect whether a gizmo is actively being dragged
 - Add per-axis gizmo filtering via `translate`/`rotate` parameters on `log_gizmo`
+- Add configurable velocity basis for implicit MPM (`velocity_basis`, default `"Q1"`) with GIMP quadrature option (`integration_scheme="gimp"`)
+- Add plastic viscosity, dilatancy, hardening and softening rate as per-particle MPM material properties (`mpm:viscosity`, `mpm:dilatancy`)
+- Add MPM beam twist, snow ball, and viscous coiling examples
 
 ### Changed
 
@@ -23,6 +26,9 @@
 - Replace `Model.sdf_data` / `sdf_volume` / `sdf_coarse_volume` with texture-based equivalents (`texture_sdf_data`, `texture_sdf_coarse_textures`, `texture_sdf_subgrid_textures`)
 - Render inertia boxes as wireframe lines instead of solid boxes in the GL viewer to avoid occluding objects
 - Upgrade GL viewer lighting from Blinn-Phong to Cook-Torrance PBR with GGX distribution, Schlick-GGX geometry, Fresnel-weighted ambient, and ACES filmic tone mapping
+- Change implicit MPM residual computation to consider both infinity and l2 norm
+- Change implicit MPM hardening law from exponential to hyperbolic sine (`sinh(-h * log(Jp))`), no longer scales elastic modulus
+- Change implicit MPM collider velocity mode names: `"forward"` / `"backward"` replace `"instantaneous"` / `"finite_difference"`
 
 ### Deprecated
 
@@ -44,6 +50,7 @@
 - Fix loop joint coordinate mapping in the MuJoCo solver so joints after a loop joint read/write at correct qpos/qvel offsets
 - Fix viewer crash when contact buffer overflows by clamping contact count to buffer size
 - Decompose loop joint constraints by DOF type (WELD for fixed, CONNECT-pair for revolute, single CONNECT for ball) instead of always emitting 2x CONNECT
+- Implicit MPM solver now use `mass=0` for kinematic particles instead of `ACTIVE` flag
 
 ## [1.0.0] - 2026-03-10
 

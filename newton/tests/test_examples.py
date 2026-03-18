@@ -694,6 +694,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_viscous",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30, "voxel-size": 0.01},
+    use_viewer=True,
+)
+
 
 class TestContactsExamples(unittest.TestCase):
     pass

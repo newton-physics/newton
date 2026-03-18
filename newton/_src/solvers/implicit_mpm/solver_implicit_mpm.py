@@ -23,6 +23,7 @@ import warp as wp
 import warp.fem as fem
 import warp.sparse as wps
 from warp.types import type_size
+import warnings
 
 import newton
 
@@ -50,9 +51,6 @@ MAX_PRINCIPAL_STRAIN = wp.constant(100.0)
 MIN_HARDENING_JP = wp.constant(0.1)
 """Minimum hardening for the elastic model (determinant of the plastic deformation gradient)"""
 
-MAX_HARDENING_JP = wp.constant(4.0)
-"""Maximum hardening for the elastic model (determinant of the plastic deformation gradient)"""
-
 MIN_JP_DELTA = wp.constant(0.01)
 """Minimum delta for the plastic deformation gradient"""
 
@@ -64,6 +62,15 @@ _INFINITY = wp.constant(1.0e12)
 
 _EPSILON = wp.constant(1.0 / _INFINITY)
 """Value below which quantities are considered zero"""
+
+_QR_TOLERANCE = wp.constant(1.0e-12)
+"""Convergence tolerance for the QR eigenvalue decomposition"""
+
+_NAN_THRESHOLD = wp.constant(1.0e16)
+"""Threshold above which eigenvalue results are considered NaN/divergent"""
+
+_EIGENVALUE_FLOOR = wp.constant(1.0e-6)
+"""Eigenvalues at or below this value are treated as zero (mode is dropped)"""
 
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
@@ -124,6 +131,10 @@ def integrate_mass(
     inv_cell_volume: float,
     particle_density: wp.array(dtype=float),
 ):
+    # Particles with density == 0 are kinematic boundary conditions: they contribute
+    # infinite mass so the grid velocity at their location is prescribed.
+    # This is distinct from ~ACTIVE particles (checked in advect/strain updates),
+    # which are completely ignored during transfers.
     density = wp.where(particle_density[s.qp_index] > 0.0, particle_density[s.qp_index], _INFINITY)
     return phi(s) * density * inv_cell_volume
 
@@ -207,6 +218,8 @@ def get_elastic_parameters(
     material_parameters: MaterialParameters,
     particle_Jp: wp.array(dtype=float),
 ):
+    # Hardening only affects yield parameters, not elastic stiffness.
+    # This separates the elastic response from the plastic history.
     E = material_parameters.young_modulus[i]
     nu = material_parameters.poisson_ratio[i]
     d = material_parameters.damping[i]
@@ -376,6 +389,8 @@ def update_particle_strains(
     particle_Jp_new = particle_Jp_prev[s.qp_index] * wp.clamp(delta_Jp, MIN_JP_DELTA, MAX_JP_DELTA)
 
     # elastic strain
+    # The skew-symmetric part of the velocity gradient is used as a linearized
+    # approximation of the finite rotation increment (matches standard deformation gradient update).
     prev_strain = elastic_strain_prev[s.qp_index]
     vel_grad = fem.grad(grid_vel, s)
     skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
@@ -459,7 +474,9 @@ def strain_delta_form(
     domain: fem.Domain,
     inv_cell_volume: float,
 ):
-    return wp.trace(fem.grad(u, s)) * tau(s) * (dt * inv_cell_volume)
+    # The full strain matrix can be recovered from this divergence
+    # see _symmetric_part_op in rheology_solver_kernels.py
+    return fem.div(u, s) * tau(s) * (dt * inv_cell_volume)
 
 
 @wp.kernel
@@ -578,16 +595,16 @@ def _compute_eigenvalues(
 
     else:
         diag_block = values[diag_index]
-        scales, ev = fem.linalg.symmetric_eigenvalues_qr(diag_block, 1.0e-12)
+        scales, ev = fem.linalg.symmetric_eigenvalues_qr(diag_block, _QR_TOLERANCE)
 
         # symmetric_eigenvalues_qr may return nans for small coefficients
-        if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(scales) < 1.0e16):
+        if not (wp.ddot(ev, ev) < _NAN_THRESHOLD and wp.length_sq(scales) < _NAN_THRESHOLD):
             scales = wp.get_diag(diag_block)
             ev = wp.identity(n=scales.length, dtype=float)
 
         nodes_per_elt = eigenvectors.shape[1]
         for k in range(scales.length):
-            if scales[k] <= 1.0e-6:
+            if scales[k] <= _EIGENVALUE_FLOOR:
                 scales[k] = 1.0
                 ev_s = 0.0
             else:
@@ -708,57 +725,6 @@ def make_inverse_rotate_vectors(nodes_per_element: int):
         stress_tile = wp.tile_load(stress, shape=(nodes_per_element, 6), offset=(elem * nodes_per_element, 0))
         rotated_stress = wp.tile_matmul(ev_t, stress_tile)
         wp.tile_store(stress, rotated_stress, offset=(elem * nodes_per_element, 0))
-
-        plastic_strain_tile = wp.tile_load(
-            plastic_strain, shape=(nodes_per_element, 6), offset=(elem * nodes_per_element, 0)
-        )
-        rotated_plastic_strain = wp.tile_matmul(ev_t, plastic_strain_tile)
-        wp.tile_store(plastic_strain, rotated_plastic_strain, offset=(elem * nodes_per_element, 0))
-
-        elastic_strain_tile = wp.tile_load(
-            elastic_strain, shape=(nodes_per_element, 6), offset=(elem * nodes_per_element, 0)
-        )
-        rotated_elastic_strain = wp.tile_matmul(ev_t, elastic_strain_tile)
-        wp.tile_store(elastic_strain, rotated_elastic_strain, offset=(elem * nodes_per_element, 0))
-
-    return inverse_rotate_vectors
-
-
-def make_rotate_vectors_v2(nodes_per_element: int):
-    @fem.cache.dynamic_kernel(suffix=nodes_per_element)
-    def rotate_vectors(
-        eigenvectors: wp.array3d(dtype=float),
-        plastic_strain: wp.array2d(dtype=float),
-        elastic_strain: wp.array2d(dtype=float),
-    ):
-        elem = wp.tid()
-        ev = wp.tile_load(eigenvectors[elem], shape=(nodes_per_element, nodes_per_element))
-
-        plastic_strain_tile = wp.tile_load(
-            plastic_strain, shape=(nodes_per_element, 6), offset=(elem * nodes_per_element, 0)
-        )
-        rotated_plastic_strain = wp.tile_matmul(ev, plastic_strain_tile)
-        wp.tile_store(plastic_strain, rotated_plastic_strain, offset=(elem * nodes_per_element, 0))
-
-        elastic_strain_tile = wp.tile_load(
-            elastic_strain, shape=(nodes_per_element, 6), offset=(elem * nodes_per_element, 0)
-        )
-        rotated_elastic_strain = wp.tile_matmul(ev, elastic_strain_tile)
-        wp.tile_store(elastic_strain, rotated_elastic_strain, offset=(elem * nodes_per_element, 0))
-
-    return rotate_vectors
-
-
-def make_inverse_rotate_vectors_v2(nodes_per_element: int):
-    @fem.cache.dynamic_kernel(suffix=nodes_per_element)
-    def inverse_rotate_vectors(
-        eigenvectors: wp.array3d(dtype=float),
-        plastic_strain: wp.array2d(dtype=float),
-        elastic_strain: wp.array2d(dtype=float),
-    ):
-        elem = wp.tid()
-
-        ev_t = wp.tile_transpose(wp.tile_load(eigenvectors[elem], shape=(nodes_per_element, nodes_per_element)))
 
         plastic_strain_tile = wp.tile_load(
             plastic_strain, shape=(nodes_per_element, 6), offset=(elem * nodes_per_element, 0)
@@ -1881,10 +1847,20 @@ class SolverImplicitMPM(SolverBase):
         self.collider_normal_from_sdf_gradient = config.collider_normal_from_sdf_gradient
         self.collider_basis = config.collider_basis
 
-        # For backward compatibility
+        # Map deprecated aliases to canonical values
         if config.collider_velocity_mode == "finite_difference":
+            warnings.warn(
+                "collider_velocity_mode='finite_difference' is deprecated, use 'backward' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             self.collider_velocity_mode = "backward"
         elif config.collider_velocity_mode == "instantaneous":
+            warnings.warn(
+                "collider_velocity_mode='instantaneous' is deprecated, use 'forward' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             self.collider_velocity_mode = "forward"
         else:
             if config.collider_velocity_mode not in ("forward", "backward"):
