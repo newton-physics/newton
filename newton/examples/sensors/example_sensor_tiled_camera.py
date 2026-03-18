@@ -211,6 +211,7 @@ class Example:
                 default_light_shadows=True,
                 checkerboard_texture=True,
                 backface_culling=True,
+                colors_per_shape=True,
             ),
         )
 
