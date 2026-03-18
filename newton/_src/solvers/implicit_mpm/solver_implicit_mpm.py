@@ -3040,7 +3040,7 @@ class SolverImplicitMPM(SolverBase):
                 stress=scratch.stress_field.dof_values,
                 has_viscosity=self._mpm_model.has_viscosity,
                 has_dilatancy=self._mpm_model.has_dilatancy,
-                max_velocity_node_count=self._max_velocity_nodes_per_strain_sample(),
+                strain_velocity_node_count=self._velocity_nodes_per_strain_sample(),
             )
             collision_data = CollisionData(
                 collider_mat=scratch.collider_matrix,
@@ -3300,11 +3300,13 @@ class SolverImplicitMPM(SolverBase):
                     dest=last_step_data.ws_stress_field,
                 )
 
-    def _max_velocity_nodes_per_strain_sample(self):
-        return 27 if self.strain_basis == "Q1" else self._scratchpad.velocity_nodes_per_element
+    def _velocity_nodes_per_strain_sample(self):
+        return -1 if self.strain_basis == "Q1" else self._scratchpad.velocity_nodes_per_element
 
     def _max_colors(self):
-        return self._max_velocity_nodes_per_strain_sample() if self.coloring else 0
+        if not self.coloring:
+            return 0
+        return 27 if self.strain_basis == "Q1" else self._scratchpad.velocity_nodes_per_element
 
     def _compute_coloring(
         self,

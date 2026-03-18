@@ -147,12 +147,14 @@ class Example:
         # Ring 1: inner top
         # Ring 2: outer top
         # Ring 3: outer bottom (aperture)
-        vertices = np.vstack([
-            ring(aperture_radius, z_offset),
-            ring(top_radius, z_offset + height),
-            ring(top_radius + thickness, z_offset + height),
-            ring(aperture_radius + thickness, z_offset),
-        ]).astype(np.float32)
+        vertices = np.vstack(
+            [
+                ring(aperture_radius, z_offset),
+                ring(top_radius, z_offset + height),
+                ring(top_radius + thickness, z_offset + height),
+                ring(aperture_radius + thickness, z_offset),
+            ]
+        ).astype(np.float32)
 
         indices = []
         for i in range(n):

@@ -18,7 +18,7 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.implicit_mpm.solve_rheology import (
+from newton._src.solvers.implicit_mpm.rheology_solver_kernels import (
     YieldParamVec,
     get_dilatancy,
     make_solve_flow_rule,
