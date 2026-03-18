@@ -1262,6 +1262,7 @@ class RendererGL:
             self.app.event_loop.dispatch_event("on_exit")
             self.app.platform_event_loop.stop()
 
+        RendererGL._fallback_texture = None
         self.window.close()
 
     def _setup_window_callbacks(self):
