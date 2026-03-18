@@ -103,6 +103,9 @@ class Example:
         if self.renderer is not None:
             ui.separator()
             ui.text("Renderer Settings")
+            changed, value = ui.slider_float("Exposure", self.renderer.exposure, 0.0, 5.0)
+            if changed:
+                self.renderer.exposure = value
             changed, value = ui.slider_float("Diffuse Scale", self.renderer.diffuse_scale, 0.0, 5.0)
             if changed:
                 self.renderer.diffuse_scale = value

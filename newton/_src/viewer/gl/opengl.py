@@ -904,6 +904,14 @@ class RendererGL:
         self._specular_scale = 1.0
         self.spotlight_enabled = True
         self._shadow_extents = 10.0
+        self._exposure = 1.6
+
+        # Hemispherical ambient light colors, interpolated by dot(N, up).
+        # Decoupled from the sky background so the visible sky can be a
+        # saturated blue while the ambient fill stays neutral — a stand-in
+        # for a proper irradiance map that we don't precompute yet.
+        self.ambient_sky = (0.8, 0.8, 0.85)
+        self.ambient_ground = (0.3, 0.3, 0.35)
 
         # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
         # that pyglet creates via XWayland. Force GLX so both libraries agree.
@@ -1075,6 +1083,14 @@ class RendererGL:
     @shadow_extents.setter
     def shadow_extents(self, value: float):
         self._shadow_extents = max(float(value), 1e-4)
+
+    @property
+    def exposure(self) -> float:
+        return self._exposure
+
+    @exposure.setter
+    def exposure(self, value: float):
+        self._exposure = max(float(value), 0.0)
 
     def update(self):
         self._make_current()
@@ -1705,8 +1721,8 @@ class RendererGL:
             shadow_texture=self._shadow_texture,
             light_space_matrix=self._light_space_matrix,
             light_color=self._light_color,
-            sky_color=self.sky_upper,
-            ground_color=self.sky_lower,
+            sky_color=self.ambient_sky,
+            ground_color=self.ambient_ground,
             env_texture=self._env_texture,
             env_intensity=self._env_intensity,
             shadow_radius=self.shadow_radius,
@@ -1714,6 +1730,7 @@ class RendererGL:
             specular_scale=self.specular_scale,
             spotlight_enabled=self.spotlight_enabled,
             shadow_extents=self.shadow_extents,
+            exposure=self.exposure,
         )
 
         with self._shape_shader:
