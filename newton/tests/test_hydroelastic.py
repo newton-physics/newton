@@ -443,14 +443,12 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
     """Reduced hydroelastic forces must match the unreduced reference."""
     cube_half = 0.1
     sphere_radius = 0.1
-    narrow_band = cube_half * 0.4
-    contact_gap = cube_half * 0.4
 
     shape_cfg = newton.ModelBuilder.ShapeConfig(
-        sdf_max_resolution=64,
+        sdf_max_resolution=128,
         is_hydroelastic=True,
-        sdf_narrow_band_range=(-narrow_band, narrow_band),
-        gap=contact_gap,
+        sdf_narrow_band_range=(-0.01, 0.01),
+        gap=0.01,
         kh=1e9,
     )
     builder = newton.ModelBuilder()
@@ -485,7 +483,7 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
         anchor_contact=False,
     )
     pipe_red = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_reduced)
-    pipe_unr = newton.CollisionPipeline(model, rigid_contact_max=15000, sdf_hydroelastic_config=cfg_unreduced)
+    pipe_unr = newton.CollisionPipeline(model, rigid_contact_max=20000, sdf_hydroelastic_config=cfg_unreduced)
     contacts_red = pipe_red.contacts()
     contacts_unr = pipe_unr.contacts()
 
