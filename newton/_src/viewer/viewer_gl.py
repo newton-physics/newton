@@ -1779,11 +1779,6 @@ class ViewerGL(ViewerBase):
             moved_this_frame = bool(np.any(np.abs(after_values - before_values) > 1.0e-8))
 
             is_active = moved_this_frame or safe_bool(rotate_active) or safe_bool(translate_active)
-            try:
-                if hasattr(giz, "is_using"):
-                    is_active = is_active or bool(giz.is_using())
-            except Exception:
-                pass
 
             was_active = self._gizmo_active.get(gid, False)
             if was_active and not is_active and snap_to is not None:
