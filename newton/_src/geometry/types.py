@@ -678,6 +678,7 @@ class Mesh:
         margin: float | None = None,
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
+        texture_format: str = "uint16",
     ) -> "SDF":
         """Build and attach an SDF for this mesh.
 
@@ -702,6 +703,11 @@ class Mesh:
                 and ``scale_baked`` is set to ``True`` in the resulting SDF.
                 Required for hydroelastic collision with non-unit shape scale.
                 Defaults to ``None`` (no scale baking, scale applied at runtime).
+            texture_format: Subgrid texture storage format for the SDF.
+                ``"uint16"`` (default) stores subgrid voxels in 16-bit
+                normalized textures (half the memory of float32).
+                ``"float32"`` stores full-precision values. ``"uint8"`` uses
+                8-bit textures for minimum memory at lower precision.
 
         Returns:
             The attached :class:`SDF` instance.
@@ -711,6 +717,10 @@ class Mesh:
         """
         if self.sdf is not None:
             raise RuntimeError("Mesh already has an SDF. Call clear_sdf() before rebuilding.")
+
+        _valid_tex_fmts = ("float32", "uint16", "uint8")
+        if texture_format not in _valid_tex_fmts:
+            raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_valid_tex_fmts)}.")
 
         from .sdf_utils import SDF  # noqa: PLC0415
 
@@ -723,6 +733,7 @@ class Mesh:
             margin=margin if margin is not None else 0.05,
             shape_margin=shape_margin,
             scale=scale,
+            texture_format=texture_format,
         )
         return self.sdf
 
