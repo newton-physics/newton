@@ -203,6 +203,7 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
                 if attr.startswith("time_"):
                     # Warmup run (not measured).
                     method(*params)
+                    wp.synchronize()
                     # Run timing benchmarks multiple times and measure elapsed time.
                     for _ in range(number):
                         start = time.perf_counter()

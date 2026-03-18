@@ -215,9 +215,12 @@ class SensorContact:
 
     .. rubric:: Multi-world behavior
 
-    When the model contains multiple worlds, counterpart mappings are resolved per-world. Cross-world shape pairs are excluded --
-    only within-world and global counterparts (e.g. ground plane) contribute. Global bodies and shapes cannot be sensing
-    objects.
+    When the model contains multiple worlds, counterpart mappings are resolved per-world. The collision pipeline and
+    solver are expected to produce only within-world contacts, so cross-world force accumulation does not arise in
+    practice. Global counterparts (e.g. ground plane) contribute to every world they contact.
+
+    In single-world models where no ``add_world()`` call was made (all entities are global / ``world=-1``), the sensor
+    treats the entire model as one implicit world and all entities are valid sensing objects.
 
     When counterparts are specified, the force matrix has shape ``(sum_of_sensors_across_worlds, max_counterparts)``
     where ``max_counterparts`` is the maximum counterpart count of any single world. Row order matches
