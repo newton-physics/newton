@@ -1567,24 +1567,40 @@ wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=vec6), "dest": wp.a
 
 
 class SolverImplicitMPM(SolverBase):
-    """Implicit MPM solver.
+    """Implicit MPM solver for granular and elasto-plastic materials.
 
-    This solver implements an implicit MPM algorithm for granular materials,
-    roughly following [1] but with a GPU-friendly rheology solver.
+    Implements an implicit Material Point Method (MPM) algorithm roughly
+    following [1], extended with a GPU-friendly rheology solver supporting
+    pressure-dependent yield (Drucker-Prager), viscosity, dilatancy, and
+    isotropic hardening/softening.
 
-    This variant of MPM is mostly interesting for very stiff materials, especially
-    in the fully inelastic limit, but is not as versatile as more traditional explicit approaches.
+    This variant is particularly well-suited for very stiff materials and
+    the fully inelastic limit. It is less versatile than traditional explicit
+    MPM but offers unconditional stability with respect to the time step.
+
+    Call :meth:`register_custom_attributes` on your :class:`~newton.ModelBuilder`
+    before building the model to enable the MPM-specific per-particle material
+    parameters and state variables (e.g. ``mpm:young_modulus``,
+    ``mpm:friction``, ``mpm:particle_elastic_strain``).
 
     [1] https://doi.org/10.1145/2897824.2925877
 
     Args:
-        model: The model to solve.
-        config: The solver configuration.
+        model: The model to simulate.
+        config: Solver configuration. See :class:`SolverImplicitMPM.Config`.
+        temporary_store: Optional Warp FEM temporary store for reusing scratch
+            allocations across steps.
+        verbose: Enable verbose solver output. Defaults to ``wp.config.verbose``.
+        enable_timers: Enable per-section wall-clock timings.
     """
 
     @dataclass
     class Config:
-        """Implicit MPM solver configuration."""
+        """Configuration for :class:`SolverImplicitMPM`.
+
+        Per-particle properties can be configured using custom attributes on the Model.
+        See :meth:`SolverImplicitMPM.register_custom_attributes` for details.
+        """
 
         # numerics
         max_iterations: int = 250
@@ -1920,7 +1936,7 @@ class SolverImplicitMPM(SolverBase):
         body_mass: wp.array | None = None,
         body_inv_inertia: wp.array | None = None,
         body_q: wp.array | None = None,
-    ):
+    ) -> None:
         """Configure collider geometry and material properties.
 
         By default, collisions are set up against all shapes in the model with
@@ -1970,6 +1986,20 @@ class SolverImplicitMPM(SolverBase):
         contacts: newton.Contacts,
         dt: float,
     ) -> None:
+        """Advance the simulation by one time step.
+
+        Transfers particle data to the grid, solves the implicit rheology
+        system, and transfers the result back to update particle positions,
+        velocities, and stress.
+
+        Args:
+            state_in: Input state at the start of the step.
+            state_out: Output state written with updated particle data.
+                May be the same object as ``state_in`` for in-place stepping.
+            control: Control input (unused; material parameters come from the model).
+            contacts: Contact information (unused; collisions are handled internally).
+            dt: Time step duration [s].
+        """
         model = self.model
 
         with wp.ScopedDevice(model.device):
@@ -1982,7 +2012,36 @@ class SolverImplicitMPM(SolverBase):
     def notify_model_changed(self, flags: int) -> None:
         self._mpm_model.notify_particle_material_changed()
 
-    def _project_outside(self, state_in: newton.State, state_out: newton.State, dt: float, gap: float | None = None):
+    def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
+        """Collect current collider impulses and their application positions.
+
+        Returns a tuple of 3 arrays:
+            - Impulse values in world units.
+            - Collider positions in world units.
+            - Collider id, that can be mapped back to the model's body ids using the ``collider_body_index`` property.
+        """
+
+        # Not stepped yet, read from preallocated scratchpad
+        if not hasattr(state, "impulse_field"):
+            state = self._scratchpad
+
+        cell_volume = self._mpm_model.voxel_size**3
+        return (
+            -cell_volume * state.impulse_field.dof_values,
+            state.collider_position_field.dof_values,
+            state.collider_ids,
+        )
+
+    @property
+    def collider_body_index(self) -> wp.array:
+        """Array mapping collider indices to body indices.
+
+        Returns:
+            Per-collider body index array. Value is -1 for colliders that are not bodies.
+        """
+        return self._mpm_model.collider.collider_body_index
+
+    def project_outside(self, state_in: newton.State, state_out: newton.State, dt: float, gap: float | None = None):
         """Project particles outside of colliders, and adjust their velocity and velocity gradients
 
         Args:
@@ -2024,43 +2083,14 @@ class SolverImplicitMPM(SolverBase):
             # Restore previous max query dist
             self._mpm_model.collider.query_max_dist = prev_gap
 
-    def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
-        """Collect current collider impulses and their application positions.
-
-        Returns a tuple of 3 arrays:
-            - Impulse values in world units.
-            - Collider positions in world units.
-            - Collider id, that can be mapped back to the model's body ids using the ``collider_body_index`` property.
-        """
-
-        # Not stepped yet, read from preallocated scratchpad
-        if not hasattr(state, "impulse_field"):
-            state = self._scratchpad
-
-        cell_volume = self._mpm_model.voxel_size**3
-        return (
-            -cell_volume * state.impulse_field.dof_values,
-            state.collider_position_field.dof_values,
-            state.collider_ids,
-        )
-
-    @property
-    def collider_body_index(self) -> wp.array:
-        """Array mapping collider indices to body indices.
-
-        Returns:
-            Per-collider body index array. Value is -1 for colliders that are not bodies.
-        """
-        return self._mpm_model.collider.collider_body_index
-
-    def _update_particle_frames(
+    def update_particle_frames(
         self,
         state_prev: newton.State,
         state: newton.State,
         dt: float,
         min_stretch: float = 0.25,
         max_stretch: float = 2.0,
-    ):
+    ) -> None:
         """Update per-particle deformation frames for rendering and projection.
 
         Integrates the particle deformation gradient using the velocity gradient
@@ -2082,7 +2112,7 @@ class SolverImplicitMPM(SolverBase):
             device=state.mpm.particle_qd_grad.device,
         )
 
-    def sample_render_grains(self, state: newton.State, grains_per_particle: int):
+    def sample_render_grains(self, state: newton.State, grains_per_particle: int) -> wp.array:
         """Generate per-particle point samples used for high-resolution rendering.
 
         Args:
@@ -2096,13 +2126,13 @@ class SolverImplicitMPM(SolverBase):
 
         return sample_render_grains(state, self._mpm_model.particle_radius, grains_per_particle)
 
-    def _update_render_grains(
+    def update_render_grains(
         self,
         state_prev: newton.State,
         state: newton.State,
         grains: wp.array,
         dt: float,
-    ):
+    ) -> None:
         """Advect grain samples with the grid velocity and keep them inside the deformed particle.
 
         Args:
