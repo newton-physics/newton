@@ -39,7 +39,12 @@ from newton._src.geometry.sdf_texture import (
     texture_sample_sdf,
     texture_sample_sdf_grad,
 )
-from newton._src.geometry.sdf_utils import SDFData, sample_sdf_extrapolated, sample_sdf_grad_extrapolated
+from newton._src.geometry.sdf_utils import (
+    SDFData,
+    get_distance_to_mesh,
+    sample_sdf_extrapolated,
+    sample_sdf_grad_extrapolated,
+)
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 _cuda_available = wp.is_cuda_available()
@@ -105,6 +110,75 @@ def _create_box_mesh(half_extents: tuple[float, float, float] = (0.5, 0.5, 0.5))
     return Mesh(vertices, indices)
 
 
+def _create_sphere_mesh(radius: float = 0.5, subdivisions: int = 3) -> Mesh:
+    """Create an icosphere mesh for smooth-SDF testing."""
+    phi = (1.0 + np.sqrt(5.0)) / 2.0
+    verts_list = [
+        [-1, phi, 0],
+        [1, phi, 0],
+        [-1, -phi, 0],
+        [1, -phi, 0],
+        [0, -1, phi],
+        [0, 1, phi],
+        [0, -1, -phi],
+        [0, 1, -phi],
+        [phi, 0, -1],
+        [phi, 0, 1],
+        [-phi, 0, -1],
+        [-phi, 0, 1],
+    ]
+    norm_factor = np.linalg.norm(verts_list[0])
+    verts_list = [[v[i] / norm_factor * radius for i in range(3)] for v in verts_list]
+
+    faces = [
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
+    ]
+
+    for _ in range(subdivisions):
+        new_faces = []
+        edge_midpoints = {}
+
+        def get_midpoint(i0, i1, _ep=edge_midpoints):
+            key = (min(i0, i1), max(i0, i1))
+            if key not in _ep:
+                v0, v1 = verts_list[i0], verts_list[i1]
+                mid = [(v0[j] + v1[j]) / 2 for j in range(3)]
+                length = np.sqrt(sum(m * m for m in mid))
+                _ep[key] = len(verts_list)
+                verts_list.append([m / length * radius for m in mid])
+            return _ep[key]
+
+        for f in faces:
+            a = get_midpoint(f[0], f[1])
+            b = get_midpoint(f[1], f[2])
+            c = get_midpoint(f[2], f[0])
+            new_faces.extend([[f[0], a, c], [f[1], b, a], [f[2], c, b], [a, b, c]])
+        faces = new_faces
+
+    verts = np.array(verts_list, dtype=np.float32)
+    indices = np.array(faces, dtype=np.int32).flatten()
+    return Mesh(verts, indices)
+
+
 @wp.kernel
 def _sample_texture_sdf_kernel(
     sdf: TextureSDFData,
@@ -160,6 +234,42 @@ def _sample_texture_sdf_from_array_kernel(
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf_table[sdf_idx], query_points[tid])
+
+
+@wp.kernel
+def _bvh_ground_truth_kernel(
+    mesh: wp.uint64,
+    query_points: wp.array(dtype=wp.vec3),
+    results: wp.array(dtype=float),
+):
+    tid = wp.tid()
+    results[tid] = get_distance_to_mesh(mesh, query_points[tid], 10000.0, 0.5)
+
+
+@wp.kernel
+def _bvh_ground_truth_grad_kernel(
+    mesh: wp.uint64,
+    query_points: wp.array(dtype=wp.vec3),
+    results: wp.array(dtype=float),
+    gradients: wp.array(dtype=wp.vec3),
+):
+    """Compute BVH ground truth distance and finite-difference gradient."""
+    tid = wp.tid()
+    p = query_points[tid]
+    d = get_distance_to_mesh(mesh, p, 10000.0, 0.5)
+    results[tid] = d
+    eps = 1.0e-4
+    dx = get_distance_to_mesh(mesh, p + wp.vec3(eps, 0.0, 0.0), 10000.0, 0.5) - get_distance_to_mesh(
+        mesh, p - wp.vec3(eps, 0.0, 0.0), 10000.0, 0.5
+    )
+    dy = get_distance_to_mesh(mesh, p + wp.vec3(0.0, eps, 0.0), 10000.0, 0.5) - get_distance_to_mesh(
+        mesh, p - wp.vec3(0.0, eps, 0.0), 10000.0, 0.5
+    )
+    dz = get_distance_to_mesh(mesh, p + wp.vec3(0.0, 0.0, eps), 10000.0, 0.5) - get_distance_to_mesh(
+        mesh, p - wp.vec3(0.0, 0.0, eps), 10000.0, 0.5
+    )
+    inv_2eps = 0.5 / eps
+    gradients[tid] = wp.vec3(dx * inv_2eps, dy * inv_2eps, dz * inv_2eps)
 
 
 def _build_texture_and_nanovdb(mesh, resolution=64, margin=0.05, narrow_band_range=(-0.1, 0.1), device="cuda:0"):
@@ -239,80 +349,118 @@ def test_texture_sdf_construction(test, device):
     test.assertTrue(np.all(box_upper >= mesh_max))
 
 
+def _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narrow_band, device):
+    """Shared helper: sample both SDFs and compute contact-zone error statistics.
+
+    Only considers points where ``|nanovdb_distance| <= 0.5 * narrow_band``
+    to avoid the subgrid-to-coarse transition fringe at the narrow-band edge
+    where errors are expected.  This keeps the comparison inside the region
+    that actually matters for contacts.
+
+    Returns a dict with ``nb_dist_*``, ``nb_angle_*`` keys for distance and
+    gradient-angle stats (mean, median, p95, max).
+    """
+    n = query_points.shape[0]
+    tex_vals = wp.zeros(n, dtype=float, device=device)
+    tex_grads = wp.zeros(n, dtype=wp.vec3, device=device)
+    nano_vals = wp.zeros(n, dtype=float, device=device)
+    nano_grads = wp.zeros(n, dtype=wp.vec3, device=device)
+
+    wp.launch(
+        _sample_texture_sdf_grad_kernel, dim=n, inputs=[tex_sdf, query_points, tex_vals, tex_grads], device=device
+    )
+    wp.launch(
+        _sample_nanovdb_grad_kernel, dim=n, inputs=[nanovdb_data, query_points, nano_vals, nano_grads], device=device
+    )
+    wp.synchronize()
+
+    tv = tex_vals.numpy()
+    nv = nano_vals.numpy()
+    tg = tex_grads.numpy()
+    ng = nano_grads.numpy()
+
+    valid = (np.abs(tv) < 1e5) & (np.abs(nv) < 1e5)
+    inner_band = 0.5 * narrow_band
+    nb = valid & (np.abs(nv) <= inner_band)
+
+    stats = {"nb_count": int(nb.sum()), "all_count": int(valid.sum())}
+
+    for tag, mask in [("nb", nb), ("all", valid)]:
+        if mask.sum() == 0:
+            continue
+        diff = np.abs(tv[mask] - nv[mask])
+        stats[f"{tag}_dist_mean"] = float(diff.mean())
+        stats[f"{tag}_dist_median"] = float(np.median(diff))
+        stats[f"{tag}_dist_p95"] = float(np.percentile(diff, 95))
+        stats[f"{tag}_dist_max"] = float(diff.max())
+
+        n1 = np.linalg.norm(tg[mask], axis=1)
+        n2 = np.linalg.norm(ng[mask], axis=1)
+        gv = (n1 > 1e-6) & (n2 > 1e-6)
+        if gv.sum() > 0:
+            tg_n = tg[mask][gv] / n1[gv, None]
+            ng_n = ng[mask][gv] / n2[gv, None]
+            dots = np.clip(np.sum(tg_n * ng_n, axis=1), -1.0, 1.0)
+            angles = np.degrees(np.arccos(dots))
+            stats[f"{tag}_angle_mean"] = float(angles.mean())
+            stats[f"{tag}_angle_median"] = float(np.median(angles))
+            stats[f"{tag}_angle_p95"] = float(np.percentile(angles, 95))
+            stats[f"{tag}_angle_max"] = float(angles.max())
+            stats[f"{tag}_grad_valid"] = int(gv.sum())
+
+    return stats
+
+
 def test_texture_sdf_values_match_nanovdb(test, device):
-    """Compare texture SDF vs NanoVDB at random points."""
+    """Compare float32 texture SDF vs NanoVDB distance in the contact zone.
+
+    Uses the inner half of the narrow band (``|d| <= 0.05``) to avoid the
+    subgrid-to-coarse transition fringe and demand sub-millimeter accuracy
+    where contacts actually happen.
+    """
     mesh = _create_box_mesh()
     tex_sdf, _coarse_tex, _subgrid_tex, nanovdb_data, _wp_mesh = _build_texture_and_nanovdb(mesh, device=device)
 
-    query_np = _generate_query_points(mesh, num_points=1000)
+    query_np = _generate_query_points(mesh, num_points=2000)
     query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    narrow_band = 0.1
 
-    tex_results = wp.zeros(1000, dtype=float, device=device)
-    nano_results = wp.zeros(1000, dtype=float, device=device)
+    s = _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narrow_band, device)
 
-    wp.launch(_sample_texture_sdf_kernel, dim=1000, inputs=[tex_sdf, query_points, tex_results], device=device)
-    wp.launch(_sample_nanovdb_value_kernel, dim=1000, inputs=[nanovdb_data, query_points, nano_results], device=device)
-    wp.synchronize()
+    test.assertGreater(s["nb_count"], 300, f"Too few contact-zone points: {s['nb_count']}")
 
-    tex_np = tex_results.numpy()
-    nano_np = nano_results.numpy()
-
-    # Filter to valid points (both give reasonable values)
-    valid = (np.abs(tex_np) < 1e5) & (np.abs(nano_np) < 1e5)
-    test.assertTrue(np.sum(valid) > 500, f"Too few valid points: {np.sum(valid)}")
-
-    diff = np.abs(tex_np[valid] - nano_np[valid])
-    mean_err = diff.mean()
-    test.assertLess(mean_err, 0.02, f"Mean SDF error too large: {mean_err:.6f}")
+    test.assertLess(s["nb_dist_mean"], 5e-4, f"Contact-zone mean dist error: {s['nb_dist_mean']:.4e}")
+    test.assertLess(s["nb_dist_median"], 1e-4, f"Contact-zone median dist error: {s['nb_dist_median']:.4e}")
+    test.assertLess(s["nb_dist_p95"], 2e-3, f"Contact-zone p95 dist error: {s['nb_dist_p95']:.4e}")
+    test.assertLess(s["nb_dist_max"], 0.01, f"Contact-zone max dist error: {s['nb_dist_max']:.4e}")
 
 
 def test_texture_sdf_gradient_accuracy(test, device):
-    """Compare texture analytical gradient vs NanoVDB gradient."""
+    """Compare float32 texture gradient vs NanoVDB gradient in the contact zone.
+
+    Uses the inner half of the narrow band to avoid the transition fringe.
+    Max angle is not asserted because box corners produce inherent gradient
+    discontinuities even in the contact zone. The p95 tolerance is generous
+    because ``_generate_query_points`` concentrates 70% of samples near box
+    vertices, placing ~5% of inner-band points near corners where the SDF
+    gradient is multi-valued.
+    """
     mesh = _create_box_mesh()
     tex_sdf, _coarse_tex, _subgrid_tex, nanovdb_data, _wp_mesh = _build_texture_and_nanovdb(mesh, device=device)
 
-    query_np = _generate_query_points(mesh, num_points=1000)
+    query_np = _generate_query_points(mesh, num_points=2000)
     query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    narrow_band = 0.1
 
-    tex_vals = wp.zeros(1000, dtype=float, device=device)
-    tex_grads = wp.zeros(1000, dtype=wp.vec3, device=device)
-    nano_vals = wp.zeros(1000, dtype=float, device=device)
-    nano_grads = wp.zeros(1000, dtype=wp.vec3, device=device)
+    s = _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narrow_band, device)
 
-    wp.launch(
-        _sample_texture_sdf_grad_kernel,
-        dim=1000,
-        inputs=[tex_sdf, query_points, tex_vals, tex_grads],
-        device=device,
+    test.assertGreater(
+        s.get("nb_grad_valid", 0), 200, f"Too few contact-zone gradient points: {s.get('nb_grad_valid', 0)}"
     )
-    wp.launch(
-        _sample_nanovdb_grad_kernel,
-        dim=1000,
-        inputs=[nanovdb_data, query_points, nano_vals, nano_grads],
-        device=device,
-    )
-    wp.synchronize()
 
-    tg = tex_grads.numpy()
-    ng = nano_grads.numpy()
-    tv = tex_vals.numpy()
-    nv = nano_vals.numpy()
-
-    # Compute gradient angles for valid points
-    valid_mask = (np.abs(tv) < 1e5) & (np.abs(nv) < 1e5)
-    n1 = np.linalg.norm(tg, axis=1)
-    n2 = np.linalg.norm(ng, axis=1)
-    grad_valid = valid_mask & (n1 > 1e-8) & (n2 > 1e-8)
-
-    test.assertTrue(np.sum(grad_valid) > 300, f"Too few valid gradient points: {np.sum(grad_valid)}")
-
-    tg_n = tg[grad_valid] / n1[grad_valid, None]
-    ng_n = ng[grad_valid] / n2[grad_valid, None]
-    dots = np.sum(tg_n * ng_n, axis=1)
-    angles = np.arccos(np.clip(dots, -1, 1)) * 180.0 / np.pi
-
-    mean_angle = float(angles.mean())
-    test.assertLess(mean_angle, 10.0, f"Mean gradient angle too large: {mean_angle:.2f} deg")
+    test.assertLess(s["nb_angle_mean"], 3.0, f"Contact-zone mean gradient angle: {s['nb_angle_mean']:.2f} deg")
+    test.assertLess(s["nb_angle_median"], 0.5, f"Contact-zone median gradient angle: {s['nb_angle_median']:.2f} deg")
+    test.assertLess(s["nb_angle_p95"], 15.0, f"Contact-zone p95 gradient angle: {s['nb_angle_p95']:.2f} deg")
 
 
 def test_texture_sdf_extrapolation(test, device):
@@ -735,6 +883,308 @@ def test_texture_sdf_from_volume(test, device):
     test.assertGreater(val_out, 0.0, f"Far point should be outside box, got {val_out:.4f}")
 
 
+def _build_texture_sdf_with_mode(
+    mesh, quantization_mode, resolution=64, margin=0.05, narrow_band_range=(-0.1, 0.1), device="cuda:0"
+):
+    """Build a texture SDF with a specific quantization mode."""
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, coarse_tex, subgrid_tex, _block_coords = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=margin,
+        narrow_band_range=narrow_band_range,
+        max_resolution=resolution,
+        quantization_mode=quantization_mode,
+        device=device,
+    )
+    return tex_sdf, coarse_tex, subgrid_tex, wp_mesh
+
+
+def test_uint16_native_texture_dtype(test, device):
+    """Verify uint16 mode produces native uint16 subgrid textures."""
+    mesh = _create_box_mesh()
+    _tex_sdf, _coarse_tex, subgrid_tex, _wp_mesh = _build_texture_sdf_with_mode(
+        mesh,
+        QuantizationMode.UINT16,
+        resolution=32,
+        device=device,
+    )
+    import warp  # noqa: PLC0415
+
+    test.assertEqual(subgrid_tex.dtype, warp.uint16, "Subgrid texture should be uint16")
+    test.assertEqual(_coarse_tex.dtype, warp.float32, "Coarse texture should remain float32")
+
+
+def test_uint16_vs_nanovdb_distance(test, device):
+    """Compare uint16 texture SDF vs NanoVDB distance in the contact zone.
+
+    Uses the inner half of the narrow band to avoid the subgrid-to-coarse
+    transition fringe and demand sub-millimeter accuracy.
+    """
+    mesh = _create_box_mesh()
+    tex_sdf, _ct, _st, _wm = _build_texture_sdf_with_mode(
+        mesh,
+        QuantizationMode.UINT16,
+        resolution=64,
+        device=device,
+    )
+
+    mesh_copy = _create_box_mesh()
+    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    nanovdb_data = mesh_copy.sdf.to_kernel_data()
+
+    query_np = _generate_query_points(mesh, num_points=2000)
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    narrow_band = 0.1
+
+    s = _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narrow_band, device)
+
+    test.assertGreater(s["nb_count"], 300, f"Too few contact-zone points: {s['nb_count']}")
+
+    test.assertLess(s["nb_dist_mean"], 5e-4, f"Contact-zone mean dist error: {s['nb_dist_mean']:.4e}")
+    test.assertLess(s["nb_dist_median"], 1e-4, f"Contact-zone median dist error: {s['nb_dist_median']:.4e}")
+    test.assertLess(s["nb_dist_p95"], 2e-3, f"Contact-zone p95 dist error: {s['nb_dist_p95']:.4e}")
+    test.assertLess(s["nb_dist_max"], 0.01, f"Contact-zone max dist error: {s['nb_dist_max']:.4e}")
+
+
+def test_uint16_vs_nanovdb_gradient(test, device):
+    """Compare uint16 texture SDF gradient vs NanoVDB gradient in the contact zone.
+
+    Uses the inner half of the narrow band. Max angle is not asserted because
+    box corners produce inherent gradient discontinuities. The p95 tolerance
+    is generous because vertex-concentrated sampling places ~5% of inner-band
+    points near corners where the SDF gradient is multi-valued.
+    """
+    mesh = _create_box_mesh()
+    tex_sdf, _ct, _st, _wm = _build_texture_sdf_with_mode(
+        mesh,
+        QuantizationMode.UINT16,
+        resolution=64,
+        device=device,
+    )
+
+    mesh_copy = _create_box_mesh()
+    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    nanovdb_data = mesh_copy.sdf.to_kernel_data()
+
+    query_np = _generate_query_points(mesh, num_points=2000)
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    narrow_band = 0.1
+
+    s = _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narrow_band, device)
+
+    test.assertGreater(
+        s.get("nb_grad_valid", 0), 200, f"Too few contact-zone gradient points: {s.get('nb_grad_valid', 0)}"
+    )
+
+    test.assertLess(s["nb_angle_mean"], 3.0, f"Contact-zone mean gradient angle: {s['nb_angle_mean']:.2f} deg")
+    test.assertLess(s["nb_angle_median"], 0.5, f"Contact-zone median gradient angle: {s['nb_angle_median']:.2f} deg")
+    test.assertLess(s["nb_angle_p95"], 15.0, f"Contact-zone p95 gradient angle: {s['nb_angle_p95']:.2f} deg")
+
+
+def test_uint16_vs_float32_texture_accuracy(test, device):
+    """Verify uint16 native textures match float32 textures within quantization precision.
+
+    Tests that switching from float32 to uint16 subgrid textures introduces
+    only minimal error from the 16-bit quantization, confirming the native
+    uint16 texture path works correctly.
+    """
+    mesh = _create_box_mesh()
+
+    tex_f32, _cf, _sf, _wf = _build_texture_sdf_with_mode(
+        mesh,
+        QuantizationMode.FLOAT32,
+        resolution=64,
+        device=device,
+    )
+    tex_u16, _cu, _su, _wu = _build_texture_sdf_with_mode(
+        mesh,
+        QuantizationMode.UINT16,
+        resolution=64,
+        device=device,
+    )
+
+    query_np = _generate_query_points(mesh, num_points=1000)
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    n = len(query_np)
+
+    results_f32 = wp.zeros(n, dtype=float, device=device)
+    results_u16 = wp.zeros(n, dtype=float, device=device)
+    grads_f32 = wp.zeros(n, dtype=wp.vec3, device=device)
+    grads_u16 = wp.zeros(n, dtype=wp.vec3, device=device)
+
+    wp.launch(
+        _sample_texture_sdf_grad_kernel, dim=n, inputs=[tex_f32, query_points, results_f32, grads_f32], device=device
+    )
+    wp.launch(
+        _sample_texture_sdf_grad_kernel, dim=n, inputs=[tex_u16, query_points, results_u16, grads_u16], device=device
+    )
+    wp.synchronize()
+
+    f32_np = results_f32.numpy()
+    u16_np = results_u16.numpy()
+
+    valid = (np.abs(f32_np) < 1e5) & (np.abs(u16_np) < 1e5)
+    test.assertGreater(np.sum(valid), 500)
+
+    dist_diff = np.abs(f32_np[valid] - u16_np[valid])
+    mean_dist_err = float(dist_diff.mean())
+    max_dist_err = float(dist_diff.max())
+    test.assertLess(mean_dist_err, 1e-4, f"UINT16 vs FLOAT32 mean distance error: {mean_dist_err:.2e}")
+    test.assertLess(max_dist_err, 1e-3, f"UINT16 vs FLOAT32 max distance error: {max_dist_err:.2e}")
+
+    gf = grads_f32.numpy()
+    gu = grads_u16.numpy()
+    n1 = np.linalg.norm(gf, axis=1)
+    n2 = np.linalg.norm(gu, axis=1)
+    grad_valid = valid & (n1 > 1e-8) & (n2 > 1e-8)
+
+    if np.sum(grad_valid) > 100:
+        gf_n = gf[grad_valid] / n1[grad_valid, None]
+        gu_n = gu[grad_valid] / n2[grad_valid, None]
+        dots = np.sum(gf_n * gu_n, axis=1)
+        angles = np.arccos(np.clip(dots, -1, 1)) * 180.0 / np.pi
+        mean_angle = float(angles.mean())
+        test.assertLess(mean_angle, 1.0, f"UINT16 vs FLOAT32 mean gradient angle: {mean_angle:.4f} deg")
+
+
+def _generate_sphere_query_points(radius: float = 0.5, num_points: int = 3000, seed: int = 42) -> np.ndarray:
+    """Generate random query points distributed around a sphere surface."""
+    rng = np.random.default_rng(seed)
+    directions = rng.normal(size=(num_points, 3)).astype(np.float32)
+    norms = np.linalg.norm(directions, axis=1, keepdims=True)
+    directions /= norms
+    radial_offsets = rng.normal(0, 0.03, size=(num_points, 1)).astype(np.float32)
+    return directions * (radius + radial_offsets)
+
+
+def test_texture_sdf_vs_ground_truth_distance(test, device):
+    """Compare texture SDF distance against BVH ground truth in the contact zone.
+
+    Uses a sphere mesh (no edges/corners) so the only error source is
+    trilinear interpolation between grid vertices.  Tests the inner
+    contact zone (``|d| < 0.05``) where contacts happen.
+    """
+    mesh = _create_sphere_mesh(radius=0.5, subdivisions=3)
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, _ct, _st, _bc = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        quantization_mode=QuantizationMode.FLOAT32,
+        device=device,
+    )
+
+    query_np = _generate_sphere_query_points(radius=0.5, num_points=3000)
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    n = len(query_np)
+
+    tex_results = wp.zeros(n, dtype=float, device=device)
+    bvh_results = wp.zeros(n, dtype=float, device=device)
+    wp.launch(_sample_texture_sdf_kernel, dim=n, inputs=[tex_sdf, query_points, tex_results], device=device)
+    wp.launch(_bvh_ground_truth_kernel, dim=n, inputs=[wp_mesh.id, query_points, bvh_results], device=device)
+    wp.synchronize()
+
+    tex_np = tex_results.numpy()
+    bvh_np = bvh_results.numpy()
+
+    inner_band = 0.05
+    valid = (np.abs(tex_np) < 1e5) & (np.abs(bvh_np) < inner_band)
+    test.assertGreater(valid.sum(), 500, f"Too few inner-band points: {valid.sum()}")
+
+    diff = np.abs(tex_np[valid] - bvh_np[valid])
+    test.assertLess(float(diff.mean()), 2e-4, f"GT mean dist error: {diff.mean():.4e}")
+    test.assertLess(float(np.median(diff)), 1.5e-4, f"GT median dist error: {np.median(diff):.4e}")
+    test.assertLess(float(np.percentile(diff, 95)), 7e-4, f"GT p95 dist error: {np.percentile(diff, 95):.4e}")
+    test.assertLess(float(diff.max()), 2e-3, f"GT max dist error: {diff.max():.4e}")
+
+
+def test_texture_sdf_vs_ground_truth_gradient(test, device):
+    """Compare texture SDF gradient against BVH ground truth gradient.
+
+    Uses a sphere mesh (smooth SDF everywhere) so gradient errors are
+    purely from trilinear interpolation, not geometry discontinuities.
+    BVH ground truth gradient is computed via central finite differences
+    of ``get_distance_to_mesh``.
+    """
+    mesh = _create_sphere_mesh(radius=0.5, subdivisions=3)
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, _ct, _st, _bc = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        quantization_mode=QuantizationMode.FLOAT32,
+        device=device,
+    )
+
+    query_np = _generate_sphere_query_points(radius=0.5, num_points=3000)
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    n = len(query_np)
+
+    tex_vals = wp.zeros(n, dtype=float, device=device)
+    tex_grads = wp.zeros(n, dtype=wp.vec3, device=device)
+    bvh_vals = wp.zeros(n, dtype=float, device=device)
+    bvh_grads = wp.zeros(n, dtype=wp.vec3, device=device)
+
+    wp.launch(
+        _sample_texture_sdf_grad_kernel, dim=n, inputs=[tex_sdf, query_points, tex_vals, tex_grads], device=device
+    )
+    wp.launch(
+        _bvh_ground_truth_grad_kernel, dim=n, inputs=[wp_mesh.id, query_points, bvh_vals, bvh_grads], device=device
+    )
+    wp.synchronize()
+
+    bv = bvh_vals.numpy()
+    tg = tex_grads.numpy()
+    bg = bvh_grads.numpy()
+
+    inner_band = 0.05
+    valid = np.abs(bv) < inner_band
+    n1 = np.linalg.norm(tg[valid], axis=1)
+    n2 = np.linalg.norm(bg[valid], axis=1)
+    gv = (n1 > 1e-6) & (n2 > 1e-6)
+    test.assertGreater(gv.sum(), 500, f"Too few valid gradient points: {gv.sum()}")
+
+    tg_n = tg[valid][gv] / n1[gv, None]
+    bg_n = bg[valid][gv] / n2[gv, None]
+    dots = np.clip(np.sum(tg_n * bg_n, axis=1), -1.0, 1.0)
+    angles = np.degrees(np.arccos(dots))
+
+    test.assertLess(float(angles.mean()), 2.0, f"GT mean gradient angle: {angles.mean():.2f} deg")
+    test.assertLess(float(np.median(angles)), 1.5, f"GT median gradient angle: {np.median(angles):.2f} deg")
+    test.assertLess(
+        float(np.percentile(angles, 95)), 5.0, f"GT p95 gradient angle: {np.percentile(angles, 95):.2f} deg"
+    )
+
+
+def test_build_sdf_texture_format_parameter(test, device):
+    """Verify Mesh.build_sdf() respects the texture_format parameter."""
+    mesh_u16 = _create_box_mesh()
+    sdf_u16 = mesh_u16.build_sdf(max_resolution=32, texture_format="uint16", device=device)
+    test.assertIsNotNone(sdf_u16)
+    test.assertIsNotNone(sdf_u16._subgrid_texture)
+    test.assertEqual(sdf_u16._subgrid_texture.dtype, wp.uint16)
+
+    mesh_f32 = _create_box_mesh()
+    sdf_f32 = mesh_f32.build_sdf(max_resolution=32, texture_format="float32", device=device)
+    test.assertIsNotNone(sdf_f32)
+    test.assertIsNotNone(sdf_f32._subgrid_texture)
+    test.assertEqual(sdf_f32._subgrid_texture.dtype, wp.float32)
+
+
 # Register tests for CUDA devices
 devices = get_cuda_test_devices()
 add_function_test(TestTextureSDF, "test_texture_sdf_construction", test_texture_sdf_construction, devices=devices)
@@ -768,6 +1218,27 @@ add_function_test(
 )
 add_function_test(TestTextureSDF, "test_texture_sdf_scale_baked", test_texture_sdf_scale_baked, devices=devices)
 add_function_test(TestTextureSDF, "test_texture_sdf_from_volume", test_texture_sdf_from_volume, devices=devices)
+add_function_test(TestTextureSDF, "test_uint16_native_texture_dtype", test_uint16_native_texture_dtype, devices=devices)
+add_function_test(TestTextureSDF, "test_uint16_vs_nanovdb_distance", test_uint16_vs_nanovdb_distance, devices=devices)
+add_function_test(TestTextureSDF, "test_uint16_vs_nanovdb_gradient", test_uint16_vs_nanovdb_gradient, devices=devices)
+add_function_test(
+    TestTextureSDF, "test_uint16_vs_float32_texture_accuracy", test_uint16_vs_float32_texture_accuracy, devices=devices
+)
+add_function_test(
+    TestTextureSDF, "test_build_sdf_texture_format_parameter", test_build_sdf_texture_format_parameter, devices=devices
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_vs_ground_truth_distance",
+    test_texture_sdf_vs_ground_truth_distance,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_vs_ground_truth_gradient",
+    test_texture_sdf_vs_ground_truth_gradient,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":

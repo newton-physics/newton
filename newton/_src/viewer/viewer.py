@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -26,7 +27,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.types import MAXVAL, nparray
+from ..core.types import MAXVAL, Axis, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -834,13 +835,24 @@ class ViewerBase(ABC):
         self,
         name: str,
         transform: wp.transform,
+        *,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
+        snap_to: wp.transform | None = None,
     ):
-        """
-        Log a gizmo GUI element for the given name and transform.
+        """Log a gizmo GUI element for the given name and transform.
 
         Args:
             name: The name of the gizmo.
             transform: The transform of the gizmo.
+            translate: Axes on which the translation handles are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all translation handles.
+            rotate: Axes on which the rotation rings are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all rotation rings.
+            snap_to: Optional world transform to snap to when this gizmo is
+                released by the user.
         """
         return
 

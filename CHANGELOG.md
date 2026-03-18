@@ -11,7 +11,12 @@
 - Support kinematic bodies in VBD solver
 - Add brick stacking example
 - Add box pyramid example and ASV benchmark for dense convex-on-convex contacts
-- Add support for textures in the SensorTiledCamera via `Config.enable_textures`
+- Add plotting example showing how to access and visualize per-step simulation diagnostics
+- Add `exposure` property to GL renderer
+- Add `snap_to` argument to `ViewerGL.log_gizmo()` to snap gizmos to a target world transform when the user releases them
+- Expose `gizmo_is_using` attribute to detect whether a gizmo is actively being dragged
+- Add per-axis gizmo filtering via `translate`/`rotate` parameters on `log_gizmo`
+- Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
 
 ### Changed
 
@@ -20,13 +25,17 @@
 - Standardize `rigid_contact_normal` to point from shape 0 toward shape 1 (A-to-B), matching the documented convention. Consumers that previously negated the normal on read (XPBD, VBD, MuJoCo, Kamino) no longer need to.
 - Replace `Model.sdf_data` / `sdf_volume` / `sdf_coarse_volume` with texture-based equivalents (`texture_sdf_data`, `texture_sdf_coarse_textures`, `texture_sdf_subgrid_textures`)
 - Render inertia boxes as wireframe lines instead of solid boxes in the GL viewer to avoid occluding objects
+- Upgrade GL viewer lighting from Blinn-Phong to Cook-Torrance PBR with GGX distribution, Schlick-GGX geometry, Fresnel-weighted ambient, and ACES filmic tone mapping
 
 ### Deprecated
 
 ### Removed
 
+- Remove `robot_humanoid` example in favor of `basic_plotting` which uses the same humanoid model with diagnostics visualization
+
 ### Fixed
 
+- Restore keyboard camera movement while hovering gizmos so keyboard controls remain active when the pointer is over gizmos
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
 - Unify CPU and GPU inertia validation to produce identical results for zero-mass bodies with `bound_mass`, singular inertia, non-symmetric tensors, and triangle-inequality boundary cases
 - Fix `UnboundLocalError` crash in detailed inertia validation when eigenvalue decomposition encounters NaN/Inf input
