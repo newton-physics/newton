@@ -1833,16 +1833,18 @@ class ViewerGL(ViewerBase):
 
             M = wp.transform_to_matrix(transform)
             M_ = m44_to_mat16(M)
-            before_values = np.asarray(M_.values, dtype=np.float32).copy()
 
-            op_active = False
+            op_modified = False
             for op in ops:
-                op_active = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_active
+                op_modified = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_modified
 
-            after_values = np.asarray(M_.values, dtype=np.float32)
-            moved_this_frame = bool(np.any(np.abs(after_values - before_values) > 1.0e-8))
-
-            is_active = moved_this_frame or op_active
+            any_gizmo_is_using = safe_bool(giz.is_using_any())
+            if hasattr(giz, "is_using"):
+                # manipulate() only reports matrix changes this frame. Keep the
+                # gizmo active across stationary drag frames until release.
+                is_active = safe_bool(giz.is_using()) and any_gizmo_is_using
+            else:
+                is_active = op_modified or (was_active and any_gizmo_is_using)
 
             if was_active and not is_active and snap_to is not None:
                 transform[:] = snap_to
