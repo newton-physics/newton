@@ -419,8 +419,8 @@ class ModelBuilder:
             """The damping stiffness of the joint axis limits. Defaults to 1e1.
 
             **Warning:** The interpretation of this value varies by solver. With VBD,
-            the effective damping is `limit_kd × limit_ke`, which can be excessively
-            stiff with the default values (1e1 × 1e4 = 1e5). Consider using lower
+            the effective damping is `limit_kd * limit_ke`, which can be excessively
+            stiff with the default values (1e1 * 1e4 = 1e5). Consider using lower
             values for VBD (e.g., 0.1-1.0). See :attr:`Model.joint_limit_kd` for
             solver-specific semantics."""
             self.target_pos = target_pos

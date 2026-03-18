@@ -467,7 +467,7 @@ class Model:
         """Joint damping for target tracking. **Note:** Interpretation varies by solver:
 
         - **MuJoCo/SemiImplicit/Featherstone:** Absolute damping [N·s/m or N·m·s/rad]
-        - **VBD:** Dimensionless Rayleigh coefficient (effective damping = kd × ke)
+        - **VBD:** Dimensionless Rayleigh coefficient (effective damping = kd * ke)
         - **XPBD:** Raw damping, internally normalized by ke (gamma = kd / ke)
 
         Shape [joint_dof_count], float. See solver documentation for details."""
@@ -491,7 +491,7 @@ class Model:
         """Joint position limit damping. **Note:** Interpretation varies by solver:
 
         - **MuJoCo/SemiImplicit/Featherstone:** Absolute damping [N·s/m or N·m·s/rad]
-        - **VBD:** Dimensionless Rayleigh coefficient (effective damping = kd × ke)
+        - **VBD:** Dimensionless Rayleigh coefficient (effective damping = kd * ke)
         - **XPBD:** Raw damping, internally normalized by ke (gamma = kd / ke)
 
         Shape [joint_dof_count], float. See solver documentation for details."""
