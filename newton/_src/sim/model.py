@@ -474,7 +474,7 @@ class Model:
         self.joint_dof_dim: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_enabled: wp.array(dtype=wp.bool) | None = None
-        """Controls which joint is simulated (bodies become disconnected if False, only supported by :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
+        """Controls which joint is simulated (bodies become disconnected if False, supported by :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower: wp.array(dtype=wp.float32) | None = None
         """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_limit_upper: wp.array(dtype=wp.float32) | None = None

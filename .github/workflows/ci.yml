@@ -16,11 +16,6 @@ on:
 
 jobs:
   minimal-import-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        # Test boundary versions: 3.10 (oldest, needs fallback), 3.12 (typing.override added), 3.14 (latest)
-        python-version: ["3.10", "3.12", "3.14"]
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -30,15 +25,57 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-      - name: Install uv and set the Python version
+      - name: Install uv
         uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867  # v7.1.6
         with:
           version: "0.9.0"
-          python-version: ${{ matrix.python-version }}
-      - name: Test minimal import
-        run: uv run python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+      - name: Test minimal import (Python 3.10)
+        run: uv run --python 3.10 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+      - name: Test minimal import (Python 3.11)
+        run: uv run --python 3.11 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+      - name: Test minimal import (Python 3.12)
+        run: uv run --python 3.12 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+      - name: Test minimal import (Python 3.13)
+        run: uv run --python 3.13 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+      - name: Test minimal import (Python 3.14)
+        run: uv run --python 3.14 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+
+  dependency-install-test:
+    needs: minimal-import-test
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          [
+            ubuntu-latest,
+            ubuntu-24.04-arm,
+            windows-latest,
+            macos-latest,
+          ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867  # v7.1.6
+        with:
+          version: "0.9.0"
+      - name: Test dependency resolution (Python 3.10)
+        run: uv sync --dry-run --python 3.10 --extra dev
+      - name: Test dependency resolution (Python 3.11)
+        run: uv sync --dry-run --python 3.11 --extra dev
+      - name: Test dependency resolution (Python 3.12)
+        run: uv sync --dry-run --python 3.12 --extra dev
+      - name: Test dependency resolution (Python 3.13)
+        run: uv sync --dry-run --python 3.13 --extra dev
 
   newton-unittests:
+    needs: dependency-install-test
     strategy:
       fail-fast: false
       matrix:
