@@ -566,6 +566,9 @@ def _apply_warp_config(parser, args):
         setattr(wp.config, key, value)
 
 
+_BENCHMARK_PRIORITY_WARNING = "Benchmark running at default process priority (results may vary)."
+
+
 def _raise_benchmark_priority():
     """Raise process/thread priority for stable benchmark measurements."""
     import sys  # noqa: PLC0415
@@ -576,21 +579,15 @@ def _raise_benchmark_priority():
 
             psutil.Process().nice(psutil.REALTIME_PRIORITY_CLASS)
         except ModuleNotFoundError:
-            print(
-                "Benchmark running at default process priority (results may vary)."
-                " Install 'psutil' to automatically raise priority."
-            )
+            print(f"{_BENCHMARK_PRIORITY_WARNING} Install 'psutil' to automatically raise priority.")
     elif sys.platform == "linux":
-        import os  # noqa: PLC0415
-
         try:
             max_pri = os.sched_get_priority_max(os.SCHED_FIFO)
             os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(max_pri))
-        except PermissionError:
+        except OSError:
             print(
-                "Benchmark running at default process priority (results may vary)."
-                " Add your user to the 'realtime' group or run with elevated"
-                " privileges to enable real-time scheduling."
+                f"{_BENCHMARK_PRIORITY_WARNING} Add your user to the 'realtime' group"
+                " or run with elevated privileges to enable real-time scheduling."
             )
     elif sys.platform == "darwin":
         import ctypes  # noqa: PLC0415
@@ -598,12 +595,13 @@ def _raise_benchmark_priority():
 
         try:
             libsystem = ctypes.CDLL(ctypes.util.find_library("System"))
+            # From <sys/qos.h>
             QOS_CLASS_USER_INTERACTIVE = 0x21
             rc = libsystem.pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
             if rc != 0:
-                print(f"Benchmark: failed to set QoS class (error {rc}), using default thread priority.")
-        except Exception as e:
-            print(f"Benchmark: could not raise thread priority ({e}), using default.")
+                print(f"{_BENCHMARK_PRIORITY_WARNING} pthread_set_qos_class_self_np returned {rc}.")
+        except OSError as e:
+            print(f"{_BENCHMARK_PRIORITY_WARNING} {e}")
 
 
 def init(parser=None):
