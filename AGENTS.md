@@ -14,6 +14,13 @@
 - Imperative mood in commit messages ("Fix X", not "Fixed X"), ~50 char subject, body wraps at 72 chars explaining _what_ and _why_.
 - Verify regression tests fail without the fix before committing.
 - Pin GitHub Actions by SHA: `action@<sha>  # vX.Y.Z`. Check `.github/workflows/` for allowlisted hashes.
+- License headers must use the 2-line SPDX-only format. Do not include the full Apache 2.0 boilerplate paragraph:
+  ```python
+  # SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+  # SPDX-License-Identifier: Apache-2.0
+  ```
+  Documentation (`.rst`) and notebooks (`.ipynb`) use `CC-BY-4.0` instead of `Apache-2.0`.
+  Use the year the file was first created. Do not create date ranges or update the year when modifying a file.
 
 Run `uvx pre-commit run -a` to lint/format before committing. Use `uv` for all commands; fall back to `venv`/`conda` if unavailable.
 
