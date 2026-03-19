@@ -1695,13 +1695,13 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.TetMesh.html#newton.TetMesh.compute_surface_triangles">compute_surface_triangles() (newton.TetMesh static method)</a>
         </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.compute_world_offsets.html#newton.utils.compute_world_offsets">compute_world_offsets() (in module newton.utils)</a>
+        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
-        <dt>
-          <a href="api/_generated/newton.utils.compute_world_offsets.html#newton.utils.compute_world_offsets">compute_world_offsets() (in module newton.utils)</a>
-        </dt>
         <dt>
           <a href="api/_generated/newton.GeoType.html#newton.GeoType.CONE">CONE (newton.GeoType attribute)</a>
         </dt>
@@ -1824,7 +1824,13 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.Gaussian.html#newton.Gaussian.count">count (newton.Gaussian property)</a>
         </dt>
         <dt>
-          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.counterparts">counterparts (newton.sensors.SensorContact attribute)</a>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.counterpart_indices">counterpart_indices (newton.sensors.SensorContact attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.counterpart_type">counterpart_type (newton.sensors.SensorContact attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.counterparts">counterparts (newton.sensors.SensorContact property)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.create_albedo_image_output">create_albedo_image_output() (newton.sensors.SensorTiledCamera method)</a>
@@ -2375,6 +2381,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.Contacts.html#newton.Contacts.force">force (newton.Contacts attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.force_matrix">force_matrix (newton.sensors.SensorContact attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorRaycast.html#newton.sensors.SensorRaycast.fov_radians">fov_radians (newton.sensors.SensorRaycast attribute)</a>
@@ -3570,7 +3579,7 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.geometry.NarrowPhase.html#newton.geometry.NarrowPhase">NarrowPhase (class in newton.geometry)</a>
         </dt>
         <dt>
-          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.net_force">net_force (newton.sensors.SensorContact attribute)</a>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.net_force">net_force (newton.sensors.SensorContact property)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.newton_dof_to_body">newton_dof_to_body (newton.solvers.SolverMuJoCo attribute)</a>
@@ -3903,7 +3912,7 @@ window.addEventListener("load", () => mermaid.run());
     <td style="width: 33%; vertical-align: top;">
       <dl>
         <dt>
-          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.reading_indices">reading_indices (newton.sensors.SensorContact attribute)</a>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.reading_indices">reading_indices (newton.sensors.SensorContact property)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.rebuild_bvh">rebuild_bvh() (newton.solvers.SolverVBD method)</a>
@@ -4130,10 +4139,16 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.sdf_texture_format">sdf_texture_format (newton.ModelBuilder.ShapeConfig attribute)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.sensing_obj_idx">sensing_obj_idx (newton.sensors.SensorContact attribute)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.sensing_obj_transforms">sensing_obj_transforms (newton.sensors.SensorContact attribute)</a>
         </dt>
         <dt>
-          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.sensing_objs">sensing_objs (newton.sensors.SensorContact attribute)</a>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.sensing_obj_type">sensing_obj_type (newton.sensors.SensorContact attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.sensing_objs">sensing_objs (newton.sensors.SensorContact property)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact">SensorContact (class in newton.sensors)</a>
@@ -4233,7 +4248,7 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.Model.html#newton.Model.AttributeFrequency.SHAPE">SHAPE (newton.Model.AttributeFrequency attribute)</a>
         </dt>
         <dt>
-          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.shape">shape (newton.sensors.SensorContact attribute)</a>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.shape">shape (newton.sensors.SensorContact property)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.ObjectType.SHAPE">SHAPE (newton.sensors.SensorContact.ObjectType attribute)</a>
@@ -4822,6 +4837,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.ObjectType.TOTAL">TOTAL (newton.sensors.SensorContact.ObjectType attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact.total_force">total_force (newton.sensors.SensorContact attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.utils.EventTracer.html#newton.utils.EventTracer.trace">trace() (newton.utils.EventTracer method)</a>
