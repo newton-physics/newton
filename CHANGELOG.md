@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add support for custom physics callbacks in the MuJoCo solver
 - Add 3D texture-based SDF, replacing NanoVDB volumes in the mesh-mesh collision pipeline for improved performance and CPU compatibility.
 - Add `--benchmark [SECONDS]` flag to examples for headless FPS measurement with warmup
 - Interactive example browser in the GL viewer with tree-view navigation and switch/reset support
@@ -75,6 +76,7 @@
 - Fix inertia box wireframe rotation for isotropic and axisymmetric bodies in viewer
 - Implicit MPM solver now uses `mass=0` for kinematic particles instead of `ACTIVE` flag
 - Fix `get_tetmesh()` winding order for left-handed USD meshes
+- Fix ``AttributeError`` when constructing ``SolverMuJoCo`` with dictionary-based ``callbacks`` arguments that occur from configuration serialization systems like IsaacLab
 
 ## [1.0.0] - 2026-03-10
 

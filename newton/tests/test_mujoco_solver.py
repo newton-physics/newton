@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 
 import numpy as np  # For numerical operations and random values
 import warp as wp
@@ -8272,6 +8273,71 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
             )
         finally:
             os.unlink(xml_path)
+
+
+class TestMuJoCoSolverCallbacks(unittest.TestCase):
+    """Tests for the callbacks parameter of SolverMuJoCo."""
+
+    def _make_model(self):
+        builder = newton.ModelBuilder()
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(-1, link)
+        builder.add_articulation([joint])
+        return builder.finalize()
+
+    def test_callbacks_none_by_default(self):
+        """Callbacks are not set when None is passed (default)."""
+        from mujoco_warp._src.types import Callback
+
+        model = self._make_model()
+        solver = SolverMuJoCo(model)
+        self.assertIsInstance(solver.mjw_model.callback, Callback)
+        self.assertIsNone(solver.mjw_model.callback.control)
+        self.assertIsNone(solver.mjw_model.callback.passive)
+
+    def test_callbacks_with_callback_instance(self):
+        """A Callback instance is assigned directly."""
+        from mujoco_warp._src.types import Callback
+
+        def my_control(m, d):
+            pass
+
+        model = self._make_model()
+        cb = Callback(control=my_control)
+        solver = SolverMuJoCo(model, callbacks=cb)
+        self.assertIs(solver.mjw_model.callback, cb)
+        self.assertIs(solver.mjw_model.callback.control, my_control)
+
+    def test_callbacks_with_dict(self):
+        """A dict of callback fields constructs a Callback."""
+        model = self._make_model()
+        solver = SolverMuJoCo(model, callbacks={"control": lambda m, d: None})
+        self.assertIsNotNone(solver.mjw_model.callback.control)
+        self.assertIsNone(solver.mjw_model.callback.passive)
+
+    def test_callbacks_with_mapping(self):
+        """A non-dict Mapping is accepted and constructs a Callback."""
+
+        class CallbackMapping(Mapping):
+            def __init__(self, data):
+                self._data = data
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return len(self._data)
+
+        def my_passive(m, d):
+            pass
+
+        model = self._make_model()
+        solver = SolverMuJoCo(model, callbacks=CallbackMapping({"passive": my_passive}))
+        self.assertIs(solver.mjw_model.callback.passive, my_passive)
+        self.assertIsNone(solver.mjw_model.callback.control)
 
 
 if __name__ == "__main__":

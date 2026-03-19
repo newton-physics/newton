@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -2780,6 +2780,7 @@ class SolverMuJoCo(SolverBase):
         use_mujoco_contacts: bool = True,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
+        callbacks: Any | None = None,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -2818,6 +2819,9 @@ class SolverMuJoCo(SolverBase):
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
+            callbacks: Optional MuJoCo Warp callback configuration. Accepts either a
+                :class:`mujoco_warp.Callback` instance or a mapping of callback fields
+                used to construct one.
         """
         super().__init__(model)
 
@@ -2938,6 +2942,13 @@ class SolverMuJoCo(SolverBase):
 
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
+            if callbacks is not None:
+                if isinstance(callbacks, Mapping):
+                    from mujoco_warp._src.types import Callback
+
+                    self.mjw_model.callback = Callback(**dict(callbacks))
+                else:
+                    self.mjw_model.callback = callbacks
 
     @event_scope
     def _mujoco_warp_step(self):
