@@ -2097,9 +2097,9 @@ def parse_usd(
                     and _has_visual_material_properties(_get_material_props_cached(prim))
                 )
 
-                hide_collider_for_body = (
-                    hide_collision_shapes and has_body_visual_shapes and not collider_has_visual_material
-                )
+                # Explicit hide_collision_shapes overrides material-based visibility:
+                # if the body already has visual shapes, hide its colliders unconditionally.
+                hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
                 show_collider_by_policy = should_show_collider(
                     force_show_colliders,
                     has_visual_shapes=has_body_visual_shapes,
