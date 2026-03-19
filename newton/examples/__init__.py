@@ -524,6 +524,34 @@ def default_args(parser=None):
     return parser.parse_known_args([])[0]
 
 
+def _raise_benchmark_priority():
+    """Raise process/thread priority for stable benchmark measurements."""
+    import sys  # noqa: PLC0415
+
+    if sys.platform == "win32":
+        try:
+            import psutil  # noqa: PLC0415
+
+            psutil.Process().nice(psutil.REALTIME_PRIORITY_CLASS)
+        except ModuleNotFoundError:
+            print(
+                "Benchmark running at default process priority (results may vary)."
+                " Install 'psutil' to automatically raise priority."
+            )
+    elif sys.platform == "linux":
+        import os  # noqa: PLC0415
+
+        try:
+            max_pri = os.sched_get_priority_max(os.SCHED_FIFO)
+            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(max_pri))
+        except PermissionError:
+            print(
+                "Benchmark running at default process priority (results may vary)."
+                " Add your user to the 'realtime' group or run with elevated"
+                " privileges to enable real-time scheduling."
+            )
+
+
 def init(parser=None):
     """Initialize Newton example components from parsed arguments.
 
@@ -557,18 +585,10 @@ def init(parser=None):
     if args.device:
         wp.set_device(args.device)
 
-    # Benchmark mode forces null viewer and raises process priority
+    # Benchmark mode forces null viewer and raises process/thread priority
     if args.benchmark is not False:
         args.viewer = "null"
-        try:
-            import psutil  # noqa: PLC0415
-
-            psutil.Process().nice(psutil.REALTIME_PRIORITY_CLASS)
-        except (ModuleNotFoundError, AttributeError):
-            print(
-                "Benchmark running at default process priority (results may vary)."
-                " Install 'psutil' to automatically raise priority."
-            )
+        _raise_benchmark_priority()
 
     # Create viewer based on type
     if args.viewer == "gl":
