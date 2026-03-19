@@ -253,6 +253,40 @@ class Example:
         _changed, self.show_stress = imgui.checkbox("Show Stress", self.show_stress)
 
     @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+
+        # Scene configuration
+        parser.add_argument("--emit-lo", type=float, nargs=3, default=[0.0, 0.0, 0.0])
+        parser.add_argument("--emit-hi", type=float, nargs=3, default=[5.0, 1, 1.0])
+        parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
+        parser.add_argument("--fps", type=float, default=240.0)
+        parser.add_argument("--substeps", type=int, default=1)
+
+        parser.add_argument("--density", "-rho", type=float, default=1000.0)
+        parser.add_argument("--young-modulus", "-ym", type=float, default=5.0e6)
+        parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.45)
+        parser.add_argument("--damping", "-d", type=float, default=0.001)
+        parser.add_argument(
+            "--solver",
+            "-s",
+            type=str,
+            default="cg",
+            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+        )
+        parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
+
+        parser.add_argument("--strain-basis", "-sb", type=str, default="P1d")
+        parser.add_argument("--collider-basis", "-cb", type=str, default="Q1")
+        parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
+
+        parser.add_argument("--max-iterations", "-it", type=int, default=250)
+        parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
+        parser.add_argument("--voxel-size", "-dx", type=float, default=0.25)
+
+        return parser
+
+    @staticmethod
     def emit_particles(builder: newton.ModelBuilder, args):
         density = args.density
         voxel_size = args.voxel_size
@@ -288,41 +322,10 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
+    parser = Example.create_parser()
 
-    # Scene configuration
-    parser.add_argument("--emit-lo", type=float, nargs=3, default=[0.0, 0.0, 0.0])
-    parser.add_argument("--emit-hi", type=float, nargs=3, default=[5.0, 1, 1.0])
-    parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
-    parser.add_argument("--fps", type=float, default=240.0)
-    parser.add_argument("--substeps", type=int, default=1)
-
-    parser.add_argument("--density", "-rho", type=float, default=1000.0)
-    parser.add_argument("--young-modulus", "-ym", type=float, default=5.0e6)
-    parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.45)
-    parser.add_argument("--damping", "-d", type=float, default=0.001)
-    parser.add_argument(
-        "--solver",
-        "-s",
-        type=str,
-        default="cg",
-        choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
-    )
-    parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
-
-    parser.add_argument("--strain-basis", "-sb", type=str, default="P1d")
-    parser.add_argument("--collider-basis", "-cb", type=str, default="Q1")
-    parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
-
-    parser.add_argument("--max-iterations", "-it", type=int, default=250)
-    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
-    parser.add_argument("--voxel-size", "-dx", type=float, default=0.25)
-
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
     example = Example(viewer, args)
 
     newton.examples.run(example, args)

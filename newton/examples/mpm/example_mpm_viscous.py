@@ -116,6 +116,36 @@ class Example:
         self.viewer.end_frame()
 
     @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+
+        # Scene configuration
+        parser.add_argument("--funnel-aperture", type=float, default=0.02, help="Diameter of the narrow opening [m]")
+        parser.add_argument("--funnel-top-radius", type=float, default=0.05, help="Radius of the wide opening [m]")
+        parser.add_argument("--funnel-height", type=float, default=0.2, help="Vertical extent of the funnel [m]")
+        parser.add_argument("--funnel-offset-z", type=float, default=0.2, help="Z position of the funnel bottom [m]")
+        parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
+        parser.add_argument("--fps", type=float, default=240.0)
+        parser.add_argument("--substeps", type=int, default=1)
+
+        # Material parameters
+        parser.add_argument("--density", type=float, default=1000.0)
+        parser.add_argument("--viscosity", type=float, default=50.0)
+        parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=1.0)
+        parser.add_argument("--friction", "-mu", type=float, default=0.0)
+        parser.add_argument("--ground-friction", type=float, default=0.5)
+        parser.add_argument("--funnel-friction", type=float, default=0.0)
+
+        # Solver parameters
+        parser.add_argument("--max-iterations", "-it", type=int, default=250)
+        parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
+        parser.add_argument("--voxel-size", "-dx", type=float, default=0.005)
+        parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
+        parser.add_argument("--collider-basis", "-cb", type=str, default="S2")
+
+        return parser
+
+    @staticmethod
     def create_funnel_mesh(aperture_radius, top_radius, height, z_offset, thickness=0.005, num_segments=64):
         """Generate a thick-walled funnel mesh open at both ends.
 
@@ -243,31 +273,7 @@ class Example:
 
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-
-    # Scene configuration
-    parser.add_argument("--funnel-aperture", type=float, default=0.02, help="Diameter of the narrow opening [m]")
-    parser.add_argument("--funnel-top-radius", type=float, default=0.05, help="Radius of the wide opening [m]")
-    parser.add_argument("--funnel-height", type=float, default=0.2, help="Vertical extent of the funnel [m]")
-    parser.add_argument("--funnel-offset-z", type=float, default=0.2, help="Z position of the funnel bottom [m]")
-    parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
-    parser.add_argument("--fps", type=float, default=240.0)
-    parser.add_argument("--substeps", type=int, default=1)
-
-    # Material parameters
-    parser.add_argument("--density", type=float, default=1000.0)
-    parser.add_argument("--viscosity", type=float, default=50.0)
-    parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=1.0)
-    parser.add_argument("--friction", "-mu", type=float, default=0.0)
-    parser.add_argument("--ground-friction", type=float, default=0.5)
-    parser.add_argument("--funnel-friction", type=float, default=0.0)
-
-    # Solver parameters
-    parser.add_argument("--max-iterations", "-it", type=int, default=250)
-    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
-    parser.add_argument("--voxel-size", "-dx", type=float, default=0.005)
-    parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
-    parser.add_argument("--collider-basis", "-cb", type=str, default="S2")
+    parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
 

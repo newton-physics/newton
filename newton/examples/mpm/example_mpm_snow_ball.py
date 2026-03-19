@@ -361,45 +361,48 @@ class Example:
     def render_ui(self, imgui):
         _changed, self.show_compression = imgui.checkbox("Show Compression", self.show_compression)
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+
+        # Scene configuration
+        parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -9.81])
+        parser.add_argument("--fps", type=float, default=60.0)
+        parser.add_argument("--substeps", type=int, default=1)
+
+        # Add MPM-specific arguments
+        parser.add_argument("--density", type=float, default=400.0)
+        parser.add_argument("--young-modulus", "-ym", type=float, default=1.4e6)
+        parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
+        parser.add_argument("--friction-coeff", "-mu", type=float, default=0.5)
+        parser.add_argument("--damping", type=float, default=0.01)
+        parser.add_argument("--yield-pressure", "-yp", type=float, default=1.4e6)
+        parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.2)
+        parser.add_argument("--yield-stress", "-ys", type=float, default=0.0e5)
+        parser.add_argument("--hardening", type=float, default=5.0)
+        parser.add_argument("--dilatancy", type=float, default=1.0)
+
+        parser.add_argument(
+            "--solver",
+            "-s",
+            type=str,
+            default="cg+gauss-seidel",
+            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+        )
+
+        parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
+        parser.add_argument("--max-iterations", "-it", type=int, default=150)
+        parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-4)
+        parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)  # Increased voxel size for larger domain
+
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
+    parser = Example.create_parser()
 
-    # Scene configuration
-    parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -9.81])
-    parser.add_argument("--fps", type=float, default=60.0)
-    parser.add_argument("--substeps", type=int, default=1)
-
-    # Add MPM-specific arguments
-    parser.add_argument("--density", type=float, default=400.0)
-    parser.add_argument("--young-modulus", "-ym", type=float, default=1.4e6)
-    parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
-    parser.add_argument("--friction-coeff", "-mu", type=float, default=0.5)
-    parser.add_argument("--damping", type=float, default=0.01)
-    parser.add_argument("--yield-pressure", "-yp", type=float, default=1.4e6)
-    parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.2)
-    parser.add_argument("--yield-stress", "-ys", type=float, default=0.0e5)
-    parser.add_argument("--hardening", type=float, default=5.0)
-    parser.add_argument("--dilatancy", type=float, default=1.0)
-
-    parser.add_argument(
-        "--solver",
-        "-s",
-        type=str,
-        default="cg+gauss-seidel",
-        choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
-    )
-
-    parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
-    parser.add_argument("--max-iterations", "-it", type=int, default=150)
-    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-4)
-    parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)  # Increased voxel size for larger domain
-
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
     example = Example(viewer, args)
 
     newton.examples.run(example, args)
