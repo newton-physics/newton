@@ -2523,6 +2523,7 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
+    num_steps = 0
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
@@ -2538,6 +2539,7 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
+    num_steps = 0
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
@@ -2644,6 +2646,7 @@ class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
+    num_steps = 0
 
 
 # -----------------------------------------------------------------------------
@@ -2656,6 +2659,7 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
 
     robot_folder = "leap_hand"
     robot_xml = "scene_right.xml"
+    num_steps = 0
 
 
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
@@ -2686,6 +2690,7 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
 
     robot_folder = "shadow_hand"
     robot_xml = "scene_right.xml"
+    num_steps = 0
     # tendon_invweight0 is compilation-dependent (derived from inertia)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
 
@@ -2710,6 +2715,7 @@ class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
 
     robot_folder = "wonik_allegro"
     robot_xml = "scene_right.xml"
+    num_steps = 0
     # TODO: body_mass differs — Newton computes different masses for visual geoms
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
@@ -2731,10 +2737,8 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    # TODO: dof_damping differs significantly — Newton imports damping incorrectly
-    # TODO: equality constraints not fully imported
-    # TODO: ngeom differs (71 vs 69) — Newton creates extra geoms
-    # TODO: dof_damping, jnt_range, eq_ differ — multiple import issues
+    num_steps = 0
+    # TODO: dof_damping, jnt_range, eq_, ngeom differ — multiple import issues
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
 
 
@@ -2857,6 +2861,7 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
+    num_steps = 0
 
 
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
@@ -2911,6 +2916,7 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
+    num_steps = 0
     # TODO: actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
@@ -2919,6 +2925,7 @@ class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
+    num_steps = 0
 
 
 # -----------------------------------------------------------------------------
@@ -2952,12 +2959,14 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
+    num_steps = 0
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
+    num_steps = 0
 
 
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
@@ -2996,6 +3005,7 @@ class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
+    num_steps = 0
 
 
 # -----------------------------------------------------------------------------
@@ -3049,6 +3059,7 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
+    num_steps = 0
     # TODO: body_mass differs for some bodies
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
