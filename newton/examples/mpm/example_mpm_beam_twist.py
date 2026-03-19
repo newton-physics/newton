@@ -248,6 +248,16 @@ class Example:
             "all particles have finite positions",
             lambda q, qd: wp.length(q) < 1.0e6,
         )
+        newton.examples.test_particle_state(
+            self.state_0,
+            "all particles have finite velocities",
+            lambda q, qd: wp.length(qd) < 1.0e6,
+        )
+        newton.examples.test_particle_state(
+            self.state_0,
+            "all particles remain near the beam",
+            lambda q, qd: wp.length(q) < 10.0,
+        )
 
     def render_ui(self, imgui):
         _changed, self.show_stress = imgui.checkbox("Show Stress", self.show_stress)

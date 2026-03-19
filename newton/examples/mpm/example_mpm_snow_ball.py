@@ -357,6 +357,16 @@ class Example:
             "all particles have finite positions",
             lambda q, qd: wp.length(q) < 1.0e6,
         )
+        newton.examples.test_particle_state(
+            self.state_0,
+            "all particles have finite velocities",
+            lambda q, qd: wp.length(qd) < 1.0e6,
+        )
+        newton.examples.test_particle_state(
+            self.state_0,
+            "all particles are within the terrain domain",
+            lambda q, qd: q[2] > -20.0 and q[2] < 30.0,
+        )
 
     def render_ui(self, imgui):
         _changed, self.show_compression = imgui.checkbox("Show Compression", self.show_compression)
