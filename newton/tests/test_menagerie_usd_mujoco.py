@@ -1288,8 +1288,8 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
     control_strategy = StructuredControlStrategy(seed=42)
 
     @unittest.skip("Native mujoco_warp crashes with free(): invalid pointer")
-    def test_simulation_equivalence(self):
-        super().test_simulation_equivalence()
+    def test_dynamics(self):
+        super().test_dynamics()
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
