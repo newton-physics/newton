@@ -497,7 +497,7 @@ def strain_rhs(
 
     _compliance, _poisson, damping = extract_elastic_parameters(elastic_parameters(s))
 
-    alpha = 1.0 / (1.0 + damping * dt)
+    alpha = 1.0 / (1.0 + damping / dt)
 
     RSinvRt_prev = U_prev @ wp.diag(1.0 / xi_prev) @ wp.transpose(U_prev)
     Id = wp.identity(n=3, dtype=float)
@@ -529,7 +529,7 @@ def compliance_form(
     return (
         wp.ddot(
             Rt @ tau(s) @ FinvT,
-            stress_strain_relationship(Rt @ sig(s) @ FinvT, compliance / (1.0 + damping * dt), poisson),
+            stress_strain_relationship(Rt @ sig(s) @ FinvT, compliance / (1.0 + damping / dt), poisson),
         )
         * inv_cell_volume
     )

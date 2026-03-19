@@ -674,7 +674,7 @@ class SolverImplicitMPM(SolverBase):
         Attributes registered on Model (per-particle):
             - ``mpm:young_modulus``: Young's modulus in Pa
             - ``mpm:poisson_ratio``: Poisson's ratio for elasticity
-            - ``mpm:damping``: Viscous damping coefficient
+            - ``mpm:damping``: Elastic damping relaxation time in seconds
             - ``mpm:friction``: Friction coefficient
             - ``mpm:yield_pressure``: Yield pressure in Pa
             - ``mpm:tensile_yield_ratio``: Tensile yield ratio
