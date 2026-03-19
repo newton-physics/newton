@@ -1059,7 +1059,7 @@ def _copy_body_q_to_mjwarp_kernel(
 
 def run_newton_eval_fk(solver: SolverMuJoCo, model: newton.Model, state: newton.State):
     """Run Newton's FK and copy results into the solver's mjwarp data."""
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     nworld = solver.mjc_body_to_newton.shape[0]
     nbody = solver.mjc_body_to_newton.shape[1]
     wp.launch(
@@ -1459,8 +1459,11 @@ def compare_mjdata_field(
         newton_np = newton_np[:, 1:]
         native_np = native_np[:, 1:]
 
-    # Vectorized comparison
-    diff = np.abs(newton_np - native_np)
+    # Quaternion sign handling: q and -q represent the same rotation
+    if newton_arr.dtype == wp.quat:
+        diff = np.minimum(np.abs(newton_np - native_np), np.abs(newton_np + native_np))
+    else:
+        diff = np.abs(newton_np - native_np)
     max_diff = float(np.max(diff))
 
     if max_diff > tol:
