@@ -297,11 +297,23 @@ class UI:
 
         self.impl.render(self.imgui.get_draw_data())
 
+    def is_capturing_mouse(self):
+        if not self.is_available:
+            return False
+
+        return self.io.want_capture_mouse
+
+    def is_capturing_keyboard(self):
+        if not self.is_available:
+            return False
+
+        return self.io.want_capture_keyboard
+
     def is_capturing(self):
         if not self.is_available:
             return False
 
-        return self.io.want_capture_mouse or self.io.want_capture_keyboard
+        return self.is_capturing_mouse() or self.is_capturing_keyboard()
 
     def resize(self, width, height):
         if not self.is_available:

@@ -14,6 +14,13 @@
 # limitations under the License.
 
 from .render_context import RenderContext
-from .types import GaussianRenderMode, RenderLightType, RenderOrder
+from .types import GaussianRenderMode, MeshData, RenderLightType, RenderOrder, TextureData
 
-__all__ = ["GaussianRenderMode", "RenderContext", "RenderLightType", "RenderOrder"]
+__all__ = [
+    "GaussianRenderMode",
+    "MeshData",
+    "RenderContext",
+    "RenderLightType",
+    "RenderOrder",
+    "TextureData",
+]

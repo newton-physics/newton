@@ -678,6 +678,7 @@ class Mesh:
         margin: float | None = None,
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
+        texture_format: str = "uint16",
     ) -> "SDF":
         """Build and attach an SDF for this mesh.
 
@@ -702,6 +703,11 @@ class Mesh:
                 and ``scale_baked`` is set to ``True`` in the resulting SDF.
                 Required for hydroelastic collision with non-unit shape scale.
                 Defaults to ``None`` (no scale baking, scale applied at runtime).
+            texture_format: Subgrid texture storage format for the SDF.
+                ``"uint16"`` (default) stores subgrid voxels in 16-bit
+                normalized textures (half the memory of float32).
+                ``"float32"`` stores full-precision values. ``"uint8"`` uses
+                8-bit textures for minimum memory at lower precision.
 
         Returns:
             The attached :class:`SDF` instance.
@@ -711,6 +717,10 @@ class Mesh:
         """
         if self.sdf is not None:
             raise RuntimeError("Mesh already has an SDF. Call clear_sdf() before rebuilding.")
+
+        _valid_tex_fmts = ("float32", "uint16", "uint8")
+        if texture_format not in _valid_tex_fmts:
+            raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_valid_tex_fmts)}.")
 
         from .sdf_utils import SDF  # noqa: PLC0415
 
@@ -723,6 +733,7 @@ class Mesh:
             margin=margin if margin is not None else 0.05,
             shape_margin=shape_margin,
             scale=scale,
+            texture_format=texture_format,
         )
         return self.sdf
 
@@ -778,6 +789,16 @@ class Mesh:
         self._texture = _normalize_texture_input(value)
         self._texture_hash = None
         self._cached_hash = None
+
+    @property
+    def texture_hash(self) -> int:
+        """Content-based hash of the assigned texture.
+
+        Returns a stable integer hash derived from the texture data.
+        The value is lazily computed and cached until :attr:`texture`
+        is reassigned.
+        """
+        return self._compute_texture_hash()
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
@@ -1611,6 +1632,7 @@ class Gaussian:
         scales: nparray | None = None,
         opacities: nparray | None = None,
         sh_coeffs: nparray | None = None,
+        sh_degree: int | None = None,
         min_response: float = 0.1,
     ):
         """Construct a Gaussian splat asset from arrays.
@@ -1626,6 +1648,8 @@ class Gaussian:
             sh_coeffs: Spherical harmonic coefficients, shape ``(N, C)``, float.
                 The number of coefficients *C* determines the SH degree
                 (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.).
+            sh_degree: Spherical harmonic degree.
+            min_response: Minimum response required for alpha testing.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -1650,6 +1674,11 @@ class Gaussian:
             self._sh_coeffs = np.ascontiguousarray(np.asarray(sh_coeffs, dtype=np.float32).reshape(n, -1))
         else:
             self._sh_coeffs = np.ones((n, 3), dtype=np.float32)
+
+        if sh_degree is not None:
+            self._sh_degree = sh_degree
+        else:
+            self._sh_degree = self._find_sh_degree()
 
         if not np.isfinite(min_response) or not (0.0 < min_response < 1.0):
             raise ValueError("min_response must be finite and in (0, 1)")
@@ -1707,7 +1736,16 @@ class Gaussian:
 
     @property
     def sh_degree(self) -> int:
-        """Spherical harmonics degree (0--3), inferred from *sh_coeffs* shape."""
+        """Spherical harmonics degree (0-3), int"""
+        return self._sh_degree
+
+    @property
+    def min_response(self) -> float:
+        """Min response, float."""
+        return self._min_response
+
+    def _find_sh_degree(self) -> int:
+        """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
         # SH bands: degree 0 -> 1*3=3, degree 1 -> 4*3=12,
         #           degree 2 -> 9*3=27, degree 3 -> 16*3=48
@@ -1715,11 +1753,6 @@ class Gaussian:
             if c >= num:
                 return deg
         return 0
-
-    @property
-    def min_response(self) -> float:
-        """Min response, float."""
-        return self._min_response
 
     # ---- Finalize (GPU upload) -----------------------------------------------
 
@@ -1890,29 +1923,9 @@ class Gaussian:
             A new :class:`Gaussian` instance.
         """
 
-        def _get_attr(name):
-            attr = prim.GetAttribute(name)
-            if attr and attr.HasValue():
-                return np.array(attr.Get(), dtype=np.float32)
+        from ..usd.utils import get_gaussian  # noqa: PLC0415
 
-            attr = prim.GetAttribute(f"{name}h")
-            if attr and attr.HasValue():
-                return np.array(attr.Get(), dtype=np.float32)
-
-            return None
-
-        positions = _get_attr("positions")
-        if positions is None:
-            raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
-
-        return Gaussian(
-            positions=positions,
-            rotations=_get_attr("orientations"),
-            scales=_get_attr("scales"),
-            opacities=_get_attr("opacities"),
-            sh_coeffs=_get_attr("radiance:sphericalHarmonicsCoefficients"),
-            min_response=min_response,
-        )
+        return get_gaussian(prim, min_response=min_response)
 
     # ---- Utility -------------------------------------------------------------
 
