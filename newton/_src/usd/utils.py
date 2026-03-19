@@ -24,7 +24,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, AxisType, nparray
-from ..geometry import Mesh
+from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 
 AttributeAssignment = Model.AttributeAssignment
@@ -1841,3 +1841,42 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
                 return fallback_props
 
     return _empty_material_properties()
+
+
+def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
+    """Load Gaussian splat data from a USD prim.
+
+    Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+
+    Args:
+        prim: A USD prim containing Gaussian splat data.
+        min_response: Min response (default = 0.1).
+
+    Returns:
+        A new :class:`Gaussian` instance.
+    """
+
+    def _get_float_array_attr(name):
+        attr = prim.GetAttribute(name)
+        if attr and attr.HasValue():
+            return np.array(attr.Get(), dtype=np.float32)
+
+        attr = prim.GetAttribute(f"{name}h")
+        if attr and attr.HasValue():
+            return np.array(attr.Get(), dtype=np.float32)
+
+        return None
+
+    positions = _get_float_array_attr("positions")
+    if positions is None:
+        raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
+
+    return Gaussian(
+        positions=positions,
+        rotations=_get_float_array_attr("orientations"),
+        scales=_get_float_array_attr("scales"),
+        opacities=_get_float_array_attr("opacities"),
+        sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
+        sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
+        min_response=min_response,
+    )

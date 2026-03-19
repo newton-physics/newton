@@ -245,6 +245,11 @@ class ModelBuilder:
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
         If provided (and sdf_target_voxel_size is None), enables primitive SDF
         generation. Requires GPU since wp.Volume only supports CUDA."""
+        sdf_texture_format: str = "uint16"
+        """Subgrid texture storage format for the SDF. ``"uint16"``
+        (default) stores subgrid voxels as 16-bit normalized textures (half
+        the memory of ``"float32"``). ``"float32"`` stores full-precision
+        values. ``"uint8"`` uses 8-bit textures for minimum memory."""
         is_hydroelastic: bool = False
         """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False.
 
@@ -267,6 +272,7 @@ class ModelBuilder:
             target_voxel_size: float | None = None,
             is_hydroelastic: bool = False,
             kh: float = 1.0e10,
+            texture_format: str | None = None,
         ) -> None:
             """Enable SDF-based collision for this shape.
 
@@ -282,6 +288,9 @@ class ModelBuilder:
                 is_hydroelastic: Whether to use SDF-based hydroelastic contacts. Both shapes
                     in a pair must have this enabled.
                 kh: Contact stiffness coefficient for hydroelastic collisions.
+                texture_format: Subgrid texture storage format. ``"uint16"``
+                    (default) uses 16-bit normalized textures. ``"float32"``
+                    uses full-precision. ``"uint8"`` uses 8-bit textures.
 
             Raises:
                 ValueError: If both max_resolution and target_voxel_size are provided.
@@ -296,6 +305,8 @@ class ModelBuilder:
                 self.sdf_max_resolution = None
             self.is_hydroelastic = is_hydroelastic
             self.kh = kh
+            if texture_format is not None:
+                self.sdf_texture_format = texture_format
 
         def validate(self, shape_type: int | None = None) -> None:
             """Validate ShapeConfig parameters.
@@ -304,6 +315,11 @@ class ModelBuilder:
                 shape_type: Optional shape geometry type used for context-specific
                     validation.
             """
+            _valid_tex_fmts = ("float32", "uint16", "uint8")
+            if self.sdf_texture_format not in _valid_tex_fmts:
+                raise ValueError(
+                    f"Unknown sdf_texture_format {self.sdf_texture_format!r}. Expected one of {list(_valid_tex_fmts)}."
+                )
             if self.sdf_max_resolution is not None and self.sdf_target_voxel_size is not None:
                 raise ValueError("Set only one of sdf_max_resolution or sdf_target_voxel_size, not both.")
             if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
@@ -822,10 +838,11 @@ class ModelBuilder:
 
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
-        When False, uses a fast GPU kernel that reports only the total number of corrected bodies
-        and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).
-        When True, uses a CPU implementation that reports specific issues for each body and updates
-        the ModelBuilder's internal state.
+        When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
+        When True, uses a CPU implementation that reports specific issues for each body.
+        Both modes produce semantically identical corrected values on the returned
+        :class:`Model`. Neither mode modifies the builder's internal state — corrected
+        values live only on the Model.
         Default: False."""
 
         # endregion
@@ -900,9 +917,12 @@ class ModelBuilder:
         """Per-shape target SDF voxel sizes retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_max_resolution: list[int | None] = []
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
+        self.shape_sdf_texture_format: list[str] = []
+        """Per-shape SDF texture format retained until :meth:`finalize <ModelBuilder.finalize>`."""
 
-        # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
+        # Mesh SDF storage (texture SDF arrays created at finalize)
 
+        # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
         """Shape collision filter pairs accumulated for :attr:`Model.shape_collision_filter_pairs`."""
 
@@ -3060,6 +3080,7 @@ class ModelBuilder:
             "shape_sdf_narrow_band_range",
             "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
+            "shape_sdf_texture_format",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -5120,6 +5141,7 @@ class ModelBuilder:
                 cfg.sdf_max_resolution is not None
                 or cfg.sdf_target_voxel_size is not None
                 or cfg.sdf_narrow_band_range != (-0.1, 0.1)
+                or cfg.sdf_texture_format != "uint16"
             ):
                 raise ValueError(
                     "Mesh shapes do not use cfg.sdf_* for SDF generation. "
@@ -5199,6 +5221,7 @@ class ModelBuilder:
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
+        self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
@@ -9534,8 +9557,28 @@ class ModelBuilder:
             m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
-            # Compute and compact SDF resources (shared table + per-shape index indirection)
-            from ..geometry.sdf_utils import SDFData, compute_sdf_from_shape  # noqa: PLC0415
+            # Compute and compact texture SDF resources (shared table + per-shape index indirection)
+            from ..geometry.types import Mesh as NewtonMesh  # noqa: PLC0415
+
+            def _create_primitive_mesh(stype: int, scale: Sequence[float] | None) -> NewtonMesh | None:
+                """Create a watertight mesh from a primitive shape for texture SDF construction."""
+                from ..core.types import Axis  # noqa: PLC0415
+
+                sx, sy, sz = scale if scale is not None else (1.0, 1.0, 1.0)
+                common_kw = {"compute_normals": False, "compute_uvs": False, "compute_inertia": False}
+                if stype == GeoType.BOX:
+                    return NewtonMesh.create_box(sx, sy, sz, duplicate_vertices=False, **common_kw)
+                elif stype == GeoType.SPHERE:
+                    return NewtonMesh.create_sphere(sx, **common_kw)
+                elif stype == GeoType.CAPSULE:
+                    return NewtonMesh.create_capsule(sx, sy, up_axis=Axis.Z, **common_kw)
+                elif stype == GeoType.CYLINDER:
+                    return NewtonMesh.create_cylinder(sx, sy, up_axis=Axis.Z, **common_kw)
+                elif stype == GeoType.CONE:
+                    return NewtonMesh.create_cone(sx, sy, up_axis=Axis.Z, **common_kw)
+                elif stype == GeoType.ELLIPSOID:
+                    return NewtonMesh.create_ellipsoid(sx, sy, sz, **common_kw)
+                return None
 
             current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
@@ -9554,14 +9597,28 @@ class ModelBuilder:
             if (has_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
                     "SDF collision paths require a CUDA-capable GPU device. "
-                    "wp.Volume (used for SDF collision) only supports CUDA."
+                    "Texture SDFs (used for SDF collision) only support CUDA."
                 )
 
-            compact_sdf_data = []
-            compact_sdf_volume = []
-            compact_sdf_coarse_volume = []
             sdf_block_coords = []
             sdf_index2blocks = []
+            from ..geometry.sdf_texture import (  # noqa: PLC0415
+                QuantizationMode,
+                TextureSDFData,
+                create_empty_texture_sdf_data,
+                create_texture_sdf_from_mesh,
+            )
+
+            _tex_fmt_map = {
+                "float32": QuantizationMode.FLOAT32,
+                "uint16": QuantizationMode.UINT16,
+                "uint8": QuantizationMode.UINT8,
+            }
+
+            compact_texture_sdf_data = []
+            compact_texture_sdf_coarse_textures = []
+            compact_texture_sdf_subgrid_textures = []
+            compact_texture_sdf_subgrid_start_slots = []
             shape_sdf_index = [-1] * len(self.shape_type)
             sdf_cache = {}
 
@@ -9570,85 +9627,125 @@ class ModelBuilder:
                 shape_src = self.shape_source[i]
                 shape_flags = self.shape_flags[i]
                 shape_scale = self.shape_scale[i]
-                shape_margin = self.shape_margin[i]
                 shape_gap = self.shape_gap[i]
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
+                sdf_tex_fmt = self.shape_sdf_texture_format[i]
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
-                sdf_data = None
-                sparse_volume = None
-                coarse_volume = None
                 block_coords = []
                 cache_key = None
+                mesh_sdf = None
 
                 if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                        sdf_data = mesh_sdf.to_kernel_data()
-                        sparse_volume = mesh_sdf.sparse_volume
-                        coarse_volume = mesh_sdf.coarse_volume
-                        block_coords = list(mesh_sdf.block_coords) if mesh_sdf.block_coords is not None else []
+                        if mesh_sdf.texture_block_coords is not None:
+                            block_coords = list(mesh_sdf.texture_block_coords)
+                        elif mesh_sdf.block_coords is not None:
+                            block_coords = list(mesh_sdf.block_coords)
+                        else:
+                            block_coords = []
                 elif is_hydroelastic and has_shape_collision:
-                    bake_scale = True
-                    # Keep voxel-size-driven generation independent from max_resolution.
                     effective_max_resolution = sdf_max_resolution
                     if sdf_target_voxel_size is None and effective_max_resolution is None:
                         effective_max_resolution = 64
                     cache_key = (
                         "primitive_generated",
                         shape_type,
-                        shape_margin,
                         shape_gap,
                         tuple(sdf_narrow_band_range),
                         sdf_target_voxel_size,
                         effective_max_resolution,
                         tuple(shape_scale),
+                        sdf_tex_fmt,
                     )
-                    if cache_key not in sdf_cache:
-                        sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf_from_shape(
-                            shape_type=shape_type,
-                            shape_geo=None,
-                            shape_scale=shape_scale,
-                            shape_margin=shape_margin,
-                            narrow_band_distance=sdf_narrow_band_range,
-                            margin=shape_gap,
-                            target_voxel_size=sdf_target_voxel_size,
-                            max_resolution=effective_max_resolution,
-                            bake_scale=bake_scale,
-                            device=device,
-                        )
 
                 if cache_key is not None:
                     if cache_key in sdf_cache:
                         shape_sdf_index[i] = sdf_cache[cache_key]
                     else:
-                        sdf_idx = len(compact_sdf_data)
+                        sdf_idx = len(compact_texture_sdf_data)
                         sdf_cache[cache_key] = sdf_idx
                         shape_sdf_index[i] = sdf_idx
 
-                        compact_sdf_data.append(sdf_data)
-                        compact_sdf_volume.append(sparse_volume)
-                        compact_sdf_coarse_volume.append(coarse_volume)
+                        tex_block_coords = None
+                        if mesh_sdf is not None:
+                            tex_data = mesh_sdf.to_texture_kernel_data()
+                            if tex_data is not None:
+                                compact_texture_sdf_data.append(tex_data)
+                                compact_texture_sdf_coarse_textures.append(mesh_sdf._coarse_texture)
+                                compact_texture_sdf_subgrid_textures.append(mesh_sdf._subgrid_texture)
+                                compact_texture_sdf_subgrid_start_slots.append(tex_data.subgrid_start_slots)
+                                if mesh_sdf.texture_block_coords is not None:
+                                    tex_block_coords = mesh_sdf.texture_block_coords
+                            else:
+                                compact_texture_sdf_data.append(create_empty_texture_sdf_data())
+                                compact_texture_sdf_coarse_textures.append(None)
+                                compact_texture_sdf_subgrid_textures.append(None)
+                                compact_texture_sdf_subgrid_start_slots.append(None)
+                        else:
+                            prim_mesh = _create_primitive_mesh(shape_type, shape_scale)
+                            if prim_mesh is not None:
+                                prim_wp_mesh = wp.Mesh(
+                                    points=wp.array(prim_mesh.vertices, dtype=wp.vec3, device=device),
+                                    indices=wp.array(prim_mesh.indices.flatten(), dtype=wp.int32, device=device),
+                                    support_winding_number=True,
+                                )
+                                try:
+                                    tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
+                                        prim_wp_mesh,
+                                        margin=shape_gap,
+                                        narrow_band_range=tuple(sdf_narrow_band_range),
+                                        max_resolution=effective_max_resolution,
+                                        quantization_mode=_tex_fmt_map[sdf_tex_fmt],
+                                        scale_baked=True,
+                                        device=device,
+                                    )
+                                except Exception as e:
+                                    warnings.warn(
+                                        f"Texture SDF construction failed for shape {i} "
+                                        f"(type={shape_type}): {e}. Falling back to BVH.",
+                                        stacklevel=2,
+                                    )
+                                    tex_data = create_empty_texture_sdf_data()
+                                    c_tex = None
+                                    s_tex = None
+                                    tex_bc = None
+                                compact_texture_sdf_data.append(tex_data)
+                                compact_texture_sdf_coarse_textures.append(c_tex)
+                                compact_texture_sdf_subgrid_textures.append(s_tex)
+                                compact_texture_sdf_subgrid_start_slots.append(
+                                    tex_data.subgrid_start_slots if c_tex is not None else None
+                                )
+                                tex_block_coords = tex_bc
+                            else:
+                                compact_texture_sdf_data.append(create_empty_texture_sdf_data())
+                                compact_texture_sdf_coarse_textures.append(None)
+                                compact_texture_sdf_subgrid_textures.append(None)
+                                compact_texture_sdf_subgrid_start_slots.append(None)
+
+                        final_block_coords = list(tex_block_coords) if tex_block_coords is not None else block_coords
                         block_start_idx = len(sdf_block_coords)
-                        sdf_block_coords.extend(block_coords)
+                        sdf_block_coords.extend(final_block_coords)
                         sdf_index2blocks.append([block_start_idx, len(sdf_block_coords)])
 
-            m.sdf_data = (
-                wp.array(compact_sdf_data, dtype=SDFData, device=device)
-                if compact_sdf_data
-                else wp.array([], dtype=SDFData, device=device)
-            )
-            m.sdf_volume = compact_sdf_volume
-            m.sdf_coarse_volume = compact_sdf_coarse_volume
             m.shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m.sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
             m.sdf_index2blocks = (
                 wp.array(sdf_index2blocks, dtype=wp.vec2i) if sdf_index2blocks else wp.array([], dtype=wp.vec2i)
             )
+            m.texture_sdf_data = (
+                wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
+                if compact_texture_sdf_data
+                else wp.array([], dtype=TextureSDFData, device=device)
+            )
+            m.texture_sdf_coarse_textures = compact_texture_sdf_coarse_textures
+            m.texture_sdf_subgrid_textures = compact_texture_sdf_subgrid_textures
+            m.texture_sdf_subgrid_start_slots = compact_texture_sdf_subgrid_start_slots
 
             # ---------------------
             # heightfield collision data
@@ -9660,13 +9757,13 @@ class ModelBuilder:
                     "contacts between heightfield pairs will be skipped.",
                     stacklevel=2,
                 )
-            if has_heightfields:
-                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+            from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
-                hfield_data_list = []
-                elevation_chunks = []
-                offset = 0
-                empty_hfield = create_empty_heightfield_data()
+            compact_heightfield_data = []
+            elevation_chunks = []
+            shape_heightfield_index = [-1] * len(self.shape_type)
+            offset = 0
+            if has_heightfields:
                 for i in range(len(self.shape_type)):
                     if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
                         hf = self.shape_source[i]
@@ -9678,26 +9775,26 @@ class ModelBuilder:
                         hd.hy = hf.hy
                         hd.min_z = hf.min_z
                         hd.max_z = hf.max_z
-                        hfield_data_list.append(hd)
+                        shape_heightfield_index[i] = len(compact_heightfield_data)
+                        compact_heightfield_data.append(hd)
                         elevation_chunks.append(hf.data.flatten())
                         offset += hf.nrow * hf.ncol
-                    else:
-                        hfield_data_list.append(empty_hfield)
-                m.shape_heightfield_data = wp.array(hfield_data_list, dtype=HeightfieldData, device=device)
-                if elevation_chunks:
-                    m.heightfield_elevation_data = wp.array(
-                        np.concatenate(elevation_chunks), dtype=wp.float32, device=device
-                    )
-                else:
-                    m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
-            else:
-                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
-                empty_hfield = create_empty_heightfield_data()
-                m.shape_heightfield_data = wp.array(
-                    [empty_hfield] * max(len(self.shape_type), 1), dtype=HeightfieldData, device=device
-                )
-                m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
+            m.shape_heightfield_index = wp.array(
+                shape_heightfield_index if shape_heightfield_index else [-1],
+                dtype=wp.int32,
+                device=device,
+            )
+            m.heightfield_data = (
+                wp.array(compact_heightfield_data, dtype=HeightfieldData, device=device)
+                if compact_heightfield_data
+                else wp.array([create_empty_heightfield_data()], dtype=HeightfieldData, device=device)
+            )
+            m.heightfield_elevations = (
+                wp.array(np.concatenate(elevation_chunks), dtype=wp.float32, device=device)
+                if elevation_chunks
+                else wp.zeros(1, dtype=wp.float32, device=device)
+            )
 
             # ---------------------
             # springs
@@ -9757,50 +9854,56 @@ class ModelBuilder:
             # rigid bodies
 
             # Apply inertia verification and correction
-            # This catches negative masses/inertias and other critical issues
+            # This catches negative masses/inertias and other critical issues.
+            # Neither path mutates the builder — corrected values only appear
+            # on the returned Model so that finalize() is side-effect-free.
             if len(self.body_mass) > 0:
                 if self.validate_inertia_detailed:
-                    # Use detailed Python validation with per-body warnings
+                    # Use detailed Python validation with per-body warnings.
+                    # Build corrected copies without modifying builder lists.
+                    corrected_mass = list(self.body_mass)
+                    corrected_inertia = list(self.body_inertia)
+                    corrected_inv_mass = list(self.body_inv_mass)
+                    corrected_inv_inertia = list(self.body_inv_inertia)
+
                     for i in range(len(self.body_mass)):
                         mass = self.body_mass[i]
                         inertia = self.body_inertia[i]
                         body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
 
-                        corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
+                        new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
                             mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia, body_label
                         )
 
                         if was_corrected:
-                            self.body_mass[i] = corrected_mass
-                            self.body_inertia[i] = corrected_inertia
-                            # Update inverse mass and inertia
-                            if corrected_mass > 0.0:
-                                self.body_inv_mass[i] = 1.0 / corrected_mass
+                            corrected_mass[i] = new_mass
+                            corrected_inertia[i] = new_inertia
+                            if new_mass > 0.0:
+                                corrected_inv_mass[i] = 1.0 / new_mass
                             else:
-                                self.body_inv_mass[i] = 0.0
+                                corrected_inv_mass[i] = 0.0
 
-                            if any(x for x in corrected_inertia):
-                                self.body_inv_inertia[i] = wp.inverse(corrected_inertia)
+                            if any(x for x in new_inertia):
+                                corrected_inv_inertia[i] = wp.inverse(new_inertia)
                             else:
-                                self.body_inv_inertia[i] = corrected_inertia
+                                corrected_inv_inertia[i] = new_inertia
 
-                    # For detailed validation, create arrays from builder data (which were updated)
-                    m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    # Create arrays from corrected copies
+                    m.body_mass = wp.array(corrected_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inv_mass = wp.array(corrected_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inertia = wp.array(corrected_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    m.body_inv_inertia = wp.array(corrected_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
                 else:
                     # Use fast Warp kernel validation
-                    # First create arrays for the kernel
                     body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
                     body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
                     body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
                     body_inv_inertia_array = wp.array(
                         self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
                     )
-                    correction_flags = wp.zeros(len(self.body_mass), dtype=wp.bool)
+                    correction_count = wp.zeros(1, dtype=wp.int32)
 
-                    # Launch validation kernel
+                    # Launch validation kernel (corrects arrays in-place on device)
                     wp.launch(
                         kernel=validate_and_correct_inertia_kernel,
                         dim=len(self.body_mass),
@@ -9812,12 +9915,12 @@ class ModelBuilder:
                             self.balance_inertia,
                             self.bound_mass if self.bound_mass is not None else 0.0,
                             self.bound_inertia if self.bound_inertia is not None else 0.0,
-                            correction_flags,
+                            correction_count,
                         ],
                     )
 
-                    # Check if any corrections were made
-                    num_corrections = int(np.sum(correction_flags.numpy()))
+                    # Check if any corrections were made (single int transfer)
+                    num_corrections = int(correction_count.numpy()[0])
                     if num_corrections > 0:
                         warnings.warn(
                             f"Inertia validation corrected {num_corrections} bodies. "
@@ -9825,8 +9928,9 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-                    # Directly use the corrected arrays on the Model (avoids double allocation)
-                    # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
+                    # Use the corrected arrays directly on the Model.
+                    # Builder state is intentionally left unchanged — corrected
+                    # values live only on the returned Model.
                     m.body_mass = body_mass_array
                     m.body_inv_mass = body_inv_mass_array
                     m.body_inertia = body_inertia_array

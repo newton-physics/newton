@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -26,7 +27,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.types import MAXVAL, nparray
+from ..core.types import MAXVAL, Axis, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -185,39 +186,44 @@ class ViewerBase(ABC):
         return min(self.max_worlds, self.model.world_count)
 
     def _get_shape_isomesh(self, shape_idx: int) -> newton.Mesh | None:
-        """Get the isomesh for a collision shape with an SDF volume.
+        """Get the isomesh for a collision shape with a texture SDF.
 
-        Computes the marching-cubes isosurface from the SDF volume and caches it.
-        Uses the volume.id (uint64) as cache key, so shapes sharing the same SDF
-        volume will reuse the same isomesh.
+        Computes the marching-cubes isosurface from the texture SDF and caches it
+        by SDF table index.
 
         Args:
             shape_idx: Index of the shape.
 
         Returns:
-            Mesh object for the isomesh, or None if shape has no SDF volume.
+            Mesh object for the isomesh, or ``None`` if shape has no texture SDF.
         """
         if self.model is None:
             return None
 
-        # Check if this shape has an SDF volume
         sdf_idx = int(self._shape_sdf_index_host[shape_idx]) if self._shape_sdf_index_host is not None else -1
-        sdf_volume = self.model.sdf_volume[sdf_idx] if (sdf_idx >= 0 and self.model.sdf_volume) else None
-        if sdf_volume is None:
+        if sdf_idx < 0 or self.model.texture_sdf_data is None:
             return None
 
-        # Use volume.id as cache key - this is a unique uint64 pointer
-        volume_id = int(sdf_volume.id)
+        if sdf_idx in self._isomesh_cache:
+            return self._isomesh_cache[sdf_idx]
 
-        # Check if already computed. Cached None means "computed but no mesh".
-        if volume_id in self._isomesh_cache:
-            return self._isomesh_cache[volume_id]
+        slots = (
+            self.model.texture_sdf_subgrid_start_slots[sdf_idx]
+            if hasattr(self.model, "texture_sdf_subgrid_start_slots") and self.model.texture_sdf_subgrid_start_slots
+            else None
+        )
+        if slots is None:
+            self._isomesh_cache[sdf_idx] = None
+            return None
 
-        # Compute isomesh from SDF volume
-        from ..geometry.sdf_utils import compute_isomesh  # noqa: PLC0415
+        from ..geometry.sdf_texture import compute_isomesh_from_texture_sdf  # noqa: PLC0415
 
-        isomesh = compute_isomesh(sdf_volume)
-        self._isomesh_cache[volume_id] = isomesh
+        coarse_tex = self.model.texture_sdf_coarse_textures[sdf_idx]
+        coarse_dims = (coarse_tex.width - 1, coarse_tex.height - 1, coarse_tex.depth - 1)
+        isomesh = compute_isomesh_from_texture_sdf(
+            self.model.texture_sdf_data, sdf_idx, slots, coarse_dims, device=self.device
+        )
+        self._isomesh_cache[sdf_idx] = isomesh
         return isomesh
 
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
@@ -466,9 +472,9 @@ class ViewerBase(ABC):
             self.log_lines("/contacts", None, None, None)
             return
 
-        # Get contact count (handle case where it might be zero)
-        num_contacts = contacts.rigid_contact_count.numpy()[0]
+        # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
+        num_contacts = min(int(contacts.rigid_contact_count.numpy()[0]), max_contacts)
 
         # Ensure we have buffers for line endpoints
         if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
@@ -829,13 +835,24 @@ class ViewerBase(ABC):
         self,
         name: str,
         transform: wp.transform,
+        *,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
+        snap_to: wp.transform | None = None,
     ):
-        """
-        Log a gizmo GUI element for the given name and transform.
+        """Log a gizmo GUI element for the given name and transform.
 
         Args:
             name: The name of the gizmo.
             transform: The transform of the gizmo.
+            translate: Axes on which the translation handles are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all translation handles.
+            rotate: Axes on which the rotation rings are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all rotation rings.
+            snap_to: Optional world transform to snap to when this gizmo is
+                released by the user.
         """
         return
 
@@ -1311,9 +1328,9 @@ class ViewerBase(ABC):
             # visual-only copy exists.
             is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
             is_visible = flags & int(newton.ShapeFlags.VISIBLE)
-            # Check for SDF volume existence without computing the isomesh (lazy evaluation)
+            # Check for texture SDF existence without computing the isomesh (lazy evaluation)
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            has_sdf = sdf_idx >= 0 and self.model.sdf_volume and self.model.sdf_volume[sdf_idx] is not None
+            has_sdf = sdf_idx >= 0 and self.model.texture_sdf_data is not None
             if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
@@ -1418,7 +1435,7 @@ class ViewerBase(ABC):
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        sdf_data = self.model.sdf_data.numpy() if self.model.sdf_data is not None else None
+        tex_sdf_np = self.model.texture_sdf_data.numpy() if self.model.texture_sdf_data is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
@@ -1427,7 +1444,7 @@ class ViewerBase(ABC):
             if not self._should_render_world(shape_world[s]):
                 continue
 
-            # Only process collision shapes with SDF volumes
+            # Only process collision shapes with texture SDFs
             is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
             if not is_collision_shape:
                 continue
@@ -1436,9 +1453,10 @@ class ViewerBase(ABC):
             if isomesh is None:
                 continue
 
-            # Check if scale was baked into the SDF
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            scale_baked = bool(sdf_data[sdf_idx]["scale_baked"]) if (sdf_data is not None and sdf_idx >= 0) else True
+            scale_baked = (
+                bool(tex_sdf_np[sdf_idx]["scale_baked"]) if (tex_sdf_np is not None and sdf_idx >= 0) else True
+            )
 
             # Create isomesh geometry (always use (1,1,1) for geometry since isomesh is in SDF space)
             geo_type = newton.GeoType.MESH

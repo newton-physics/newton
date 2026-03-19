@@ -31,7 +31,6 @@ from .state import State
 if TYPE_CHECKING:
     from newton_actuators import Actuator
 
-    from ..geometry.sdf_utils import SDFData
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -290,25 +289,31 @@ class Model:
         self.gaussians_data = None
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
 
-        # Heightfield collision data
-        self.shape_heightfield_data: wp.array(dtype=HeightfieldData) | None = None
-        """Array of HeightfieldData structs, shape [shape_count]. Contains grid metadata for collision kernels."""
-        self.heightfield_elevation_data: wp.array(dtype=wp.float32) | None = None
+        # Heightfield collision data (compact table + per-shape index indirection)
+        self.shape_heightfield_index: wp.array(dtype=wp.int32) | None = None
+        """Per-shape heightfield index, shape [shape_count]. -1 means shape has no heightfield."""
+        self.heightfield_data: wp.array(dtype=HeightfieldData) | None = None
+        """Compact array of HeightfieldData structs, one per actual heightfield shape."""
+        self.heightfield_elevations: wp.array(dtype=wp.float32) | None = None
         """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
 
         # SDF storage (compact table + per-shape index indirection)
-        self.sdf_data: wp.array(dtype=SDFData) | None = None
-        """Compact array of SDFData structs, shape [num_sdfs]."""
-        self.sdf_volume: list[wp.Volume | None] = []
-        """Sparse SDF volumes matching sdf_data by index. Kept for reference counting."""
-        self.sdf_coarse_volume: list[wp.Volume | None] = []
-        """Coarse SDF volumes matching sdf_data by index. Kept for reference counting."""
         self.shape_sdf_index: wp.array(dtype=wp.int32) | None = None
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
         self.sdf_block_coords: wp.array(dtype=wp.vec3us) | None = None
         """Compact flat array of active SDF block coordinates."""
         self.sdf_index2blocks: wp.array(dtype=wp.vec2i) | None = None
         """Per-SDF [start, end) indices into sdf_block_coords, shape [num_sdfs, 2]."""
+
+        # Texture SDF storage
+        self.texture_sdf_data = None
+        """Compact array of TextureSDFData structs, shape [num_sdfs]."""
+        self.texture_sdf_coarse_textures = []
+        """Coarse 3D textures matching texture_sdf_data by index. Kept for reference counting."""
+        self.texture_sdf_subgrid_textures = []
+        """Subgrid 3D textures matching texture_sdf_data by index. Kept for reference counting."""
+        self.texture_sdf_subgrid_start_slots = []
+        """Subgrid start slot arrays matching texture_sdf_data by index. Kept for reference counting."""
 
         # Local AABB and voxel grid for contact reduction
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
@@ -469,7 +474,7 @@ class Model:
         self.joint_dof_dim: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_enabled: wp.array(dtype=wp.bool) | None = None
-        """Controls which joint is simulated (bodies become disconnected if False, only supported by :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
+        """Controls which joint is simulated (bodies become disconnected if False, supported by :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower: wp.array(dtype=wp.float32) | None = None
         """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_limit_upper: wp.array(dtype=wp.float32) | None = None

@@ -218,6 +218,17 @@ add_example_test(
     test_options_cpu={"world_count": 16},
     test_options_cuda={"world_count": 64},
     use_viewer=True,
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_urdf",
+    devices=test_devices,
+    test_options={"num-frames": 200, "solver": "vbd"},
+    test_options_cpu={"world_count": 16},
+    test_options_cuda={"world_count": 64},
+    use_viewer=True,
+    test_suffix="vbd",
 )
 
 add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
@@ -239,20 +250,6 @@ class TestCableExamples(unittest.TestCase):
 
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_bend",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_bend_damping",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
     name="cable.example_cable_twist",
     devices=test_devices,
     use_viewer=True,
@@ -260,7 +257,14 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_helix",
+    name="cable.example_cable_y_junction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
@@ -268,14 +272,6 @@ add_example_test(
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_pile",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_y_junction",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
@@ -389,14 +385,6 @@ add_example_test(
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
-    use_viewer=True,
-)
-add_example_test(
-    TestRobotExamples,
-    name="robot.example_robot_humanoid",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 500},
-    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 add_example_test(
@@ -679,6 +667,15 @@ add_example_test(
     name="mpm.example_mpm_twoway_coupling",
     devices=cuda_test_devices,
     test_options={"num-frames": 80},
+    use_viewer=True,
+)
+
+
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_plotting",
+    devices=test_devices,
+    test_options={"num-frames": 200},
     use_viewer=True,
 )
 

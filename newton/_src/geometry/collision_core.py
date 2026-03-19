@@ -23,7 +23,14 @@ from ..core.types import vec5
 from .broad_phase_common import binary_search
 from .collision_convex import create_solve_convex_multi_contact, create_solve_convex_single_contact
 from .contact_data import ContactData
-from .support_function import GenericShapeData, GeoTypeEx, SupportMapDataProvider, pack_mesh_ptr, support_map
+from .support_function import (
+    GenericShapeData,
+    GeoTypeEx,
+    SupportMapDataProvider,
+    pack_mesh_ptr,
+    support_map,
+    unpack_mesh_ptr,
+)
 from .types import GeoType
 
 # Configuration flag for multi-contact generation
@@ -145,6 +152,34 @@ def no_post_process_contact(
 
 
 @wp.func
+def post_process_minkowski_only(
+    contact_data: ContactData,
+    shape_a: GenericShapeData,
+    pos_a_adjusted: wp.vec3,
+    rot_a: wp.quat,
+    shape_b: GenericShapeData,
+    pos_b_adjusted: wp.vec3,
+    rot_b: wp.quat,
+) -> ContactData:
+    """Lean post-processor: Minkowski sphere/capsule adjustment only, no axial rolling."""
+    type_a = shape_a.shape_type
+    type_b = shape_b.shape_type
+    normal = contact_data.contact_normal_a_to_b
+    radius_eff_a = contact_data.radius_eff_a
+    radius_eff_b = contact_data.radius_eff_b
+
+    if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
+        contact_data.contact_point_center = contact_data.contact_point_center + normal * (radius_eff_a * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - radius_eff_a
+
+    if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
+        contact_data.contact_point_center = contact_data.contact_point_center - normal * (radius_eff_b * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - radius_eff_b
+
+    return contact_data
+
+
+@wp.func
 def post_process_axial_on_discrete_contact(
     contact_data: ContactData,
     shape_a: GenericShapeData,
@@ -251,17 +286,23 @@ def post_process_axial_on_discrete_contact(
 
 
 def create_compute_gjk_mpr_contacts(
-    writer_func: Any, post_process_contact: Any = post_process_axial_on_discrete_contact
+    writer_func: Any,
+    post_process_contact: Any = post_process_axial_on_discrete_contact,
+    support_func: Any = None,
 ):
     """
     Factory function to create a compute_gjk_mpr_contacts function with a specific writer function.
 
     Args:
         writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
+        post_process_contact: Function to post-process contact data
+        support_func: Support mapping function (defaults to support_map)
 
     Returns:
         A compute_gjk_mpr_contacts function with the writer function baked in
     """
+    if support_func is None:
+        support_func = support_map
 
     @wp.func
     def compute_gjk_mpr_contacts(
@@ -326,7 +367,7 @@ def create_compute_gjk_mpr_contacts(
         contact_template.gap_sum = rigid_gap
 
         if wp.static(ENABLE_MULTI_CONTACT):
-            wp.static(create_solve_convex_multi_contact(support_map, writer_func, post_process_contact))(
+            wp.static(create_solve_convex_multi_contact(support_func, writer_func, post_process_contact))(
                 shape_a_data,
                 shape_b_data,
                 rot_a,
@@ -335,7 +376,7 @@ def create_compute_gjk_mpr_contacts(
                 pos_b_adjusted,
                 0.0,  # sum_of_contact_offsets - gap
                 data_provider,
-                rigid_gap + radius_eff_a + radius_eff_b,
+                rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 type_a == GeoType.SPHERE
                 or type_b == GeoType.SPHERE
                 or type_a == GeoType.ELLIPSOID
@@ -344,7 +385,7 @@ def create_compute_gjk_mpr_contacts(
                 contact_template,
             )
         else:
-            wp.static(create_solve_convex_single_contact(support_map, writer_func, post_process_contact))(
+            wp.static(create_solve_convex_single_contact(support_func, writer_func, post_process_contact))(
                 shape_a_data,
                 shape_b_data,
                 rot_a,
@@ -353,7 +394,7 @@ def create_compute_gjk_mpr_contacts(
                 pos_b_adjusted,
                 0.0,  # sum_of_contact_offsets - gap
                 data_provider,
-                rigid_gap + radius_eff_a + radius_eff_b,
+                rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 writer_data,
                 contact_template,
             )
@@ -393,29 +434,64 @@ def compute_tight_aabb_from_support(
     # Compute AABB extents by evaluating support function in local space
     # Dot products are done in local space to avoid expensive rotations
 
-    # Max X: support along +local_x, dot in local space
-    support_point = support_map(shape_data, local_x, data_provider)
-    max_x = wp.dot(local_x, support_point)
+    min_x = float(0.0)
+    max_x = float(0.0)
+    min_y = float(0.0)
+    max_y = float(0.0)
+    min_z = float(0.0)
+    max_z = float(0.0)
 
-    # Max Y: support along +local_y, dot in local space
-    support_point = support_map(shape_data, local_y, data_provider)
-    max_y = wp.dot(local_y, support_point)
+    if shape_data.shape_type == GeoType.CONVEX_MESH:
+        # Single-pass AABB: iterate over vertices once, project onto all 3 axes.
+        # This replaces 6 separate support_map calls (each iterating all vertices)
+        # with 1 pass that computes min/max projections simultaneously.
+        mesh_ptr = unpack_mesh_ptr(shape_data.auxiliary)
+        mesh = wp.mesh_get(mesh_ptr)
+        mesh_scale = shape_data.scale
+        num_verts = mesh.points.shape[0]
 
-    # Max Z: support along +local_z, dot in local space
-    support_point = support_map(shape_data, local_z, data_provider)
-    max_z = wp.dot(local_z, support_point)
+        # Pre-scale axes: dot(local_axis, scale*v) == dot(scale*local_axis, v)
+        scaled_x = wp.cw_mul(local_x, mesh_scale)
+        scaled_y = wp.cw_mul(local_y, mesh_scale)
+        scaled_z = wp.cw_mul(local_z, mesh_scale)
 
-    # Min X: support along -local_x, dot in local space
-    support_point = support_map(shape_data, -local_x, data_provider)
-    min_x = wp.dot(local_x, support_point)
+        min_x = float(1.0e10)
+        max_x = float(-1.0e10)
+        min_y = float(1.0e10)
+        max_y = float(-1.0e10)
+        min_z = float(1.0e10)
+        max_z = float(-1.0e10)
 
-    # Min Y: support along -local_y, dot in local space
-    support_point = support_map(shape_data, -local_y, data_provider)
-    min_y = wp.dot(local_y, support_point)
+        for i in range(num_verts):
+            p = mesh.points[i]
+            vx = wp.dot(p, scaled_x)
+            vy = wp.dot(p, scaled_y)
+            vz = wp.dot(p, scaled_z)
+            min_x = wp.min(min_x, vx)
+            max_x = wp.max(max_x, vx)
+            min_y = wp.min(min_y, vy)
+            max_y = wp.max(max_y, vy)
+            min_z = wp.min(min_z, vz)
+            max_z = wp.max(max_z, vz)
+    else:
+        # Generic path: 6 support evaluations for other shape types (all O(1))
+        support_point = support_map(shape_data, local_x, data_provider)
+        max_x = wp.dot(local_x, support_point)
 
-    # Min Z: support along -local_z, dot in local space
-    support_point = support_map(shape_data, -local_z, data_provider)
-    min_z = wp.dot(local_z, support_point)
+        support_point = support_map(shape_data, local_y, data_provider)
+        max_y = wp.dot(local_y, support_point)
+
+        support_point = support_map(shape_data, local_z, data_provider)
+        max_z = wp.dot(local_z, support_point)
+
+        support_point = support_map(shape_data, -local_x, data_provider)
+        min_x = wp.dot(local_x, support_point)
+
+        support_point = support_map(shape_data, -local_y, data_provider)
+        min_y = wp.dot(local_y, support_point)
+
+        support_point = support_map(shape_data, -local_z, data_provider)
+        min_z = wp.dot(local_z, support_point)
 
     # AABB in world space (add world position to extents)
     aabb_min = wp.vec3(min_x, min_y, min_z) + center_pos
@@ -556,16 +632,22 @@ def check_infinite_plane_bsphere_overlap(
     return center_dist <= other_radius
 
 
-def create_find_contacts(writer_func: Any):
+def create_find_contacts(writer_func: Any, support_func: Any = None, post_process_contact: Any = None):
     """
     Factory function to create a find_contacts function with a specific writer function.
 
     Args:
         writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
+        support_func: Support mapping function (defaults to support_map)
+        post_process_contact: Post-processing function (defaults to post_process_axial_on_discrete_contact)
 
     Returns:
         A find_contacts function with the writer function baked in
     """
+    if support_func is None:
+        support_func = support_map
+    if post_process_contact is None:
+        post_process_contact = post_process_axial_on_discrete_contact
 
     @wp.func
     def find_contacts(
@@ -630,7 +712,11 @@ def create_find_contacts(writer_func: Any):
             )
 
         # Compute and write contacts using GJK/MPR
-        wp.static(create_compute_gjk_mpr_contacts(writer_func))(
+        wp.static(
+            create_compute_gjk_mpr_contacts(
+                writer_func, post_process_contact=post_process_contact, support_func=support_func
+            )
+        )(
             shape_data_a,
             shape_data_b,
             quat_a,

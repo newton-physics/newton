@@ -32,7 +32,7 @@ from .....geometry.collision_core import compute_tight_aabb_from_support
 from .....geometry.contact_data import ContactData
 from .....geometry.flags import ShapeFlags
 from .....geometry.narrow_phase import NarrowPhase
-from .....geometry.sdf_utils import SDFData
+from .....geometry.sdf_texture import TextureSDFData
 from .....geometry.support_function import GenericShapeData, SupportMapDataProvider, pack_mesh_ptr
 from .....geometry.types import GeoType
 
@@ -603,13 +603,14 @@ class CollisionPipelineUnifiedKamino:
             # TODO: These are currently left empty just to satisfy the narrow phase interface
             # but we need to implement SDF/mesh/heightfield support in Kamino to make use of them.
             # With has_meshes=False, these arrays are never accessed.
-            self.shape_sdf_data = wp.empty(shape=(0,), dtype=SDFData)
+            self.shape_sdf_data = wp.empty(shape=(0,), dtype=TextureSDFData)
             self.shape_sdf_index = wp.full_like(self.geom_type, -1)
             self.shape_collision_aabb_lower = wp.empty(shape=(0,), dtype=wp.vec3)
             self.shape_collision_aabb_upper = wp.empty(shape=(0,), dtype=wp.vec3)
             self.shape_voxel_resolution = wp.empty(shape=(0,), dtype=wp.vec3i)
-            self.shape_heightfield_data = None  # TODO
-            self.heightfield_elevation_data = None  # TODO
+            self.shape_heightfield_index = None  # TODO
+            self.heightfield_data = None  # TODO
+            self.heightfield_elevations = None  # TODO
 
         # Initialize the broad-phase backend depending on the selected mode
         match self._broadphase:
@@ -863,7 +864,7 @@ class CollisionPipelineUnifiedKamino:
             shape_data=self.geom_data,
             shape_transform=data.geoms.pose,
             shape_source=self._model.geoms.ptr,
-            sdf_data=self.shape_sdf_data,
+            texture_sdf_data=self.shape_sdf_data,
             shape_sdf_index=self.shape_sdf_index,
             shape_gap=self._model.geoms.gap,
             shape_collision_radius=self.shape_collision_radius,
@@ -871,8 +872,9 @@ class CollisionPipelineUnifiedKamino:
             shape_collision_aabb_lower=self.shape_collision_aabb_lower,
             shape_collision_aabb_upper=self.shape_collision_aabb_upper,
             shape_voxel_resolution=self.shape_voxel_resolution,
-            shape_heightfield_data=self.shape_heightfield_data,
-            heightfield_elevation_data=self.heightfield_elevation_data,
+            shape_heightfield_index=self.shape_heightfield_index,
+            heightfield_data=self.heightfield_data,
+            heightfield_elevations=self.heightfield_elevations,
             writer_data=writer_data,
             device=self._device,
         )

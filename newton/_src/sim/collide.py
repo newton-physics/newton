@@ -132,12 +132,11 @@ def write_contact(
     writer_data.out_point0[index] = wp.transform_point(X_bw_a, a_contact_world)
     writer_data.out_point1[index] = wp.transform_point(X_bw_b, b_contact_world)
 
-    # Match kernels.py convention
-    contact_normal = -contact_normal_a_to_b
+    contact_normal = contact_normal_a_to_b
 
-    # Offsets in body frames
-    writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, -offset_mag_a * contact_normal)
-    writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, offset_mag_b * contact_normal)
+    # Offsets in body frames (offset0 points toward B, offset1 points toward A)
+    writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, offset_mag_a * contact_normal)
+    writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, -offset_mag_b * contact_normal)
 
     writer_data.out_normal[index] = contact_normal
     writer_data.out_margin0[index] = offset_mag_a
@@ -395,7 +394,6 @@ class CollisionPipeline:
         reduce_contacts: bool = True,
         rigid_contact_max: int | None = None,
         max_triangle_pairs: int = 1000000,
-        max_heightfield_cell_pairs: int = 1000000,
         shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
@@ -420,13 +418,10 @@ class CollisionPipeline:
                 - Else if ``model.rigid_contact_max > 0``, use the model value.
                 - Else estimate automatically from model shape and pair metadata.
             max_triangle_pairs:
-                Maximum number of mesh-triangle pairs allocated by narrow phase.
-                Increase this when scenes with large/complex meshes report
+                Maximum number of triangle pairs allocated by narrow phase
+                for mesh and heightfield collisions.  Increase this when
+                scenes with large/complex meshes or heightfields report
                 triangle-pair overflow warnings.
-            max_heightfield_cell_pairs:
-                Maximum number of heightfield cell pairs allocated by narrow phase.
-                Increase this when scenes with large/complex heightfields report
-                heightfield-cell-pair overflow warnings.
             soft_contact_max: Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
@@ -464,8 +459,6 @@ class CollisionPipeline:
         self._rigid_contact_max = rigid_contact_max
         if max_triangle_pairs <= 0:
             raise ValueError("max_triangle_pairs must be > 0")
-        if max_heightfield_cell_pairs <= 0:
-            raise ValueError("max_heightfield_cell_pairs must be > 0")
         # Keep model-level default in sync with the resolved pipeline capacity.
         # This avoids divergence between model- and contacts-based users (e.g. VBD init).
         model.rigid_contact_max = rigid_contact_max
@@ -574,10 +567,21 @@ class CollisionPipeline:
             # should not trigger mesh-only kernel setup/launches.
             has_meshes = False
             has_heightfields = False
+            use_lean_gjk_mpr = False
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 has_heightfields = bool((shape_types == int(GeoType.HFIELD)).any())
                 has_meshes = bool((shape_types == int(GeoType.MESH)).any())
+                # Use lean GJK/MPR kernel when scene has no capsules, ellipsoids,
+                # cylinders, or cones (which need full support function and axial
+                # rolling post-processing)
+                lean_unsupported = {
+                    int(GeoType.CAPSULE),
+                    int(GeoType.ELLIPSOID),
+                    int(GeoType.CYLINDER),
+                    int(GeoType.CONE),
+                }
+                use_lean_gjk_mpr = not bool(lean_unsupported & set(shape_types.tolist()))
 
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
@@ -585,7 +589,6 @@ class CollisionPipeline:
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
                 max_triangle_pairs=max_triangle_pairs,
-                max_heightfield_cell_pairs=max_heightfield_cell_pairs,
                 reduce_contacts=self.reduce_contacts,
                 device=device,
                 shape_aabb_lower=shape_aabb_lower,
@@ -595,6 +598,7 @@ class CollisionPipeline:
                 hydroelastic_sdf=hydroelastic_sdf,
                 has_meshes=has_meshes,
                 has_heightfields=has_heightfields,
+                use_lean_gjk_mpr=use_lean_gjk_mpr,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
 
@@ -813,16 +817,17 @@ class CollisionPipeline:
                 shape_data=self.geom_data,
                 shape_transform=self.geom_transform,
                 shape_source=model.shape_source_ptr,
-                sdf_data=model.sdf_data,
                 shape_sdf_index=model.shape_sdf_index,
+                texture_sdf_data=model.texture_sdf_data,
                 shape_gap=model.shape_gap,
                 shape_collision_radius=model.shape_collision_radius,
                 shape_flags=model.shape_flags,
                 shape_collision_aabb_lower=model.shape_collision_aabb_lower,
                 shape_collision_aabb_upper=model.shape_collision_aabb_upper,
                 shape_voxel_resolution=self.narrow_phase.shape_voxel_resolution,
-                shape_heightfield_data=model.shape_heightfield_data,
-                heightfield_elevation_data=model.heightfield_elevation_data,
+                shape_heightfield_index=model.shape_heightfield_index,
+                heightfield_data=model.heightfield_data,
+                heightfield_elevations=model.heightfield_elevations,
                 writer_data=writer_data,
                 device=self.device,
             )
@@ -849,8 +854,9 @@ class CollisionPipeline:
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,
-                    model.shape_heightfield_data,
-                    model.heightfield_elevation_data,
+                    model.shape_heightfield_index,
+                    model.heightfield_data,
+                    model.heightfield_elevations,
                 ],
                 outputs=[
                     contacts.soft_contact_count,

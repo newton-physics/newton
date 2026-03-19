@@ -21,9 +21,18 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ..geometry import GeoType, ShapeFlags
+from ..geometry import GeoType, Mesh, ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, GaussianRenderMode, RenderContext, RenderLightType, RenderOrder
+from ..utils import load_texture, normalize_texture
+from .warp_raytrace import (
+    ClearData,
+    GaussianRenderMode,
+    MeshData,
+    RenderContext,
+    RenderLightType,
+    RenderOrder,
+    TextureData,
+)
 
 
 @wp.kernel(enable_backward=False)
@@ -75,12 +84,9 @@ def compute_enabled_shapes(
     shape_type: wp.array(dtype=wp.int32),
     shape_flags: wp.array(dtype=wp.int32),
     out_shape_enabled: wp.array(dtype=wp.uint32),
-    out_mesh_indices: wp.array(dtype=wp.int32),
     out_shape_enabled_count: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-
-    out_mesh_indices[tid] = tid
 
     if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
         return
@@ -153,14 +159,20 @@ class SensorTiledCamera:
         backface_culling: bool = True
         """Cull back-facing triangles."""
 
+        enable_textures: bool = False
+        """Enable texturing."""
+
     def __init__(self, model: Model, *, config: Config | None = None):
         self.model = model
+
+        if config is None:
+            config = SensorTiledCamera.Config()
 
         self.render_context = RenderContext(
             world_count=self.model.world_count,
             config=RenderContext.Config(
                 enable_global_world=True,
-                enable_textures=False,
+                enable_textures=config.enable_textures,
                 enable_shadows=False,
                 enable_ambient_lighting=True,
                 enable_particles=True,
@@ -169,9 +181,6 @@ class SensorTiledCamera:
             device=self.model.device,
         )
         self.render_context.shape_source_ptr = model.shape_source_ptr
-        self.render_context.shape_indices = wp.empty(
-            self.model.shape_count, dtype=wp.int32, device=self.render_context.device
-        )
         self.render_context.shape_bounds = wp.empty(
             (self.model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.render_context.device
         )
@@ -195,14 +204,11 @@ class SensorTiledCamera:
         self.render_context.shape_transforms = wp.empty(
             self.model.shape_count, dtype=wp.transformf, device=self.render_context.device
         )
-        self.render_context.shape_materials = wp.array(
-            np.full(self.model.shape_count, fill_value=-1, dtype=np.int32),
-            dtype=wp.int32,
-            device=self.render_context.device,
-        )
 
         self.render_context.shape_world_index = self.model.shape_world
         self.render_context.gaussians_data = self.model.gaussians_data
+
+        self.__load_texture_and_mesh_data(config)
 
         colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(self.model.shape_source)]
         self.render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.render_context.device)
@@ -215,7 +221,6 @@ class SensorTiledCamera:
                 model.shape_type,
                 model.shape_flags,
                 self.render_context.shape_enabled,
-                self.render_context.shape_indices,
                 num_enabled_shapes,
             ],
             device=self.render_context.device,
@@ -225,16 +230,15 @@ class SensorTiledCamera:
 
         self.render_context.utils.compute_shape_bounds()
 
-        if config is not None:
-            self.render_context.config.enable_backface_culling = config.backface_culling
-            if config.checkerboard_texture:
-                self.assign_checkerboard_material_to_all_shapes()
-            if config.default_light:
-                self.create_default_light(config.default_light_shadows)
-            if config.colors_per_world:
-                self.assign_random_colors_per_world()
-            elif config.colors_per_shape:
-                self.assign_random_colors_per_shape()
+        self.render_context.config.enable_backface_culling = config.backface_culling
+        if config.checkerboard_texture:
+            self.assign_checkerboard_material_to_all_shapes()
+        if config.default_light:
+            self.create_default_light(config.default_light_shadows)
+        if config.colors_per_world:
+            self.assign_random_colors_per_world()
+        elif config.colors_per_shape:
+            self.assign_random_colors_per_shape()
 
     def sync_transforms(self, state: State):
         """Synchronize shape transforms from the simulation state.
@@ -519,3 +523,85 @@ class SensorTiledCamera:
         if color := getattr(shape, "color", None):
             return color
         return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
+
+    def __load_texture_and_mesh_data(self, config: Config):
+        """Load textures and mesh data into the render context.
+
+        Deduplicates textures by hash and meshes by identity, storing each
+        unique texture as a :class:`TextureData` struct and each unique Mesh
+        as a :class:`MeshData` struct.  Per-shape index arrays map each
+        shape to its texture and mesh data entry (``-1`` when absent).
+
+        Args:
+            config: Sensor configuration controlling whether textures are enabled.
+        """
+        self.__mesh_data = []
+        self.__texture_data = []
+
+        texture_hashes = {}
+        mesh_hashes = {}
+
+        mesh_data_ids = []
+        texture_data_ids = []
+
+        for shape in self.model.shape_source:
+            if isinstance(shape, Mesh):
+                if shape.texture is not None and config.enable_textures and not config.checkerboard_texture:
+                    if shape.texture_hash not in texture_hashes:
+                        pixels = load_texture(shape.texture)
+                        if pixels is None:
+                            raise ValueError(f"Failed to load texture: {shape.texture}")
+
+                        # Normalize texture to ensure a consistent channel layout and dtype
+                        pixels = normalize_texture(pixels, require_channels=True)
+                        if pixels.dtype != np.uint8:
+                            pixels = pixels.astype(np.uint8, copy=False)
+
+                        texture_hashes[shape.texture_hash] = len(self.__texture_data)
+
+                        data = TextureData()
+                        data.texture = wp.Texture2D(
+                            pixels,
+                            filter_mode=wp.TextureFilterMode.LINEAR,
+                            address_mode=wp.TextureAddressMode.WRAP,
+                            normalized_coords=True,
+                            dtype=wp.uint8,
+                            num_channels=4,
+                            device=self.render_context.device,
+                        )
+                        data.repeat = wp.vec2f(1.0, 1.0)
+                        self.__texture_data.append(data)
+
+                    texture_data_ids.append(texture_hashes[shape.texture_hash])
+                else:
+                    texture_data_ids.append(-1)
+
+                if shape.uvs is not None or shape.normals is not None:
+                    if shape not in mesh_hashes:
+                        mesh_hashes[shape] = len(self.__mesh_data)
+
+                        data = MeshData()
+                        if shape.uvs is not None:
+                            data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.render_context.device)
+                        if shape.normals is not None:
+                            data.normals = wp.array(shape.normals, dtype=wp.vec3f, device=self.render_context.device)
+                        self.__mesh_data.append(data)
+
+                    mesh_data_ids.append(mesh_hashes[shape])
+                else:
+                    mesh_data_ids.append(-1)
+            else:
+                texture_data_ids.append(-1)
+                mesh_data_ids.append(-1)
+
+        self.render_context.texture_data = wp.array(
+            self.__texture_data, dtype=TextureData, device=self.render_context.device
+        )
+        self.render_context.shape_texture_ids = wp.array(
+            texture_data_ids, dtype=wp.int32, device=self.render_context.device
+        )
+
+        self.render_context.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.render_context.device)
+        self.render_context.shape_mesh_data_ids = wp.array(
+            mesh_data_ids, dtype=wp.int32, device=self.render_context.device
+        )

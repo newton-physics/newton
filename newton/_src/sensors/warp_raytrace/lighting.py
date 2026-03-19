@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-def create_compute_lighting_function(config: RenderContext.Config, state: RenderContext.State) -> wp.func:
+def create_compute_lighting_function(config: RenderContext.Config, state: RenderContext.State) -> wp.Function:
     raytrace_first_hit = raytrace.create_first_hit_function(config, state)
 
     @wp.func
@@ -40,7 +40,6 @@ def create_compute_lighting_function(config: RenderContext.Config, state: Render
         bvh_particles_group_roots: wp.array(dtype=wp.int32),
         shape_enabled: wp.array(dtype=wp.uint32),
         shape_types: wp.array(dtype=wp.int32),
-        shape_indices: wp.array(dtype=wp.int32),
         shape_sizes: wp.array(dtype=wp.vec3f),
         shape_transforms: wp.array(dtype=wp.transformf),
         shape_source_ptr: wp.array(dtype=wp.uint64),
@@ -107,7 +106,6 @@ def create_compute_lighting_function(config: RenderContext.Config, state: Render
                 world_index,
                 shape_enabled,
                 shape_types,
-                shape_indices,
                 shape_sizes,
                 shape_transforms,
                 shape_source_ptr,

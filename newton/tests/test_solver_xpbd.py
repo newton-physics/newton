@@ -25,6 +25,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.examples
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -380,6 +381,101 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
     )
 
 
+def test_articulation_contact_drift(test, device):
+    """
+    Regression test for articulated bodies drifting laterally on the ground (#2030).
+
+    When joints are solved before contacts in the XPBD iteration loop, joint
+    corrections displace bodies laterally and contact friction can't fully
+    counteract the displacement. Over many steps, the residual accumulates
+    into visible sliding.
+
+    Setup:
+    - Load a quadruped URDF on its side on the ground plane.
+    - Let it settle for 2 seconds, then simulate for 3 more seconds.
+    - Check that the root body hasn't drifted laterally.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_body_armature = 0.01
+    builder.default_joint_cfg.armature = 0.01
+    builder.default_joint_cfg.target_ke = 2000.0
+    builder.default_joint_cfg.target_kd = 1.0
+    builder.default_shape_cfg.ke = 1.0e4
+    builder.default_shape_cfg.kd = 1.0e2
+    builder.default_shape_cfg.kf = 1.0e2
+    builder.default_shape_cfg.mu = 1.0
+
+    # Place the quadruped on its side (rotated 90 degrees around X axis)
+    rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.PI * 0.5)
+    builder.add_urdf(
+        newton.examples.get_asset("quadruped.urdf"),
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), rot),
+        floating=True,
+        enable_self_collisions=False,
+        ignore_inertial_definitions=True,
+    )
+
+    builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
+    builder.joint_target_pos[-12:] = builder.joint_q[-12:]
+    builder.add_ground_plane()
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    fps = 100
+    frame_dt = 1.0 / fps
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+
+    # Let the quadruped settle after drop (2 seconds)
+    for _ in range(200):
+        for _ in range(sim_substeps):
+            state_0.clear_forces()
+            model.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, sim_dt)
+            state_0, state_1 = state_1, state_0
+
+    body_q = state_0.body_q.numpy()
+    initial_x = float(body_q[0][0])
+    initial_y = float(body_q[0][1])
+
+    # Simulate for 3 more seconds
+    for _ in range(300):
+        for _ in range(sim_substeps):
+            state_0.clear_forces()
+            model.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, sim_dt)
+            state_0, state_1 = state_1, state_0
+
+    body_q = state_0.body_q.numpy()
+    final_x = float(body_q[0][0])
+    final_y = float(body_q[0][1])
+
+    drift_x = abs(final_x - initial_x)
+    drift_y = abs(final_y - initial_y)
+    drift_xy = float(np.hypot(drift_x, drift_y))
+
+    # The root body should not drift more than 1 cm laterally over 3 seconds
+    # (Z is up, so X and Y are the lateral axes)
+    # Without the fix, Y drifts ~5.9 mm/s → ~1.8 cm over 3 seconds.
+    max_drift = 0.01
+    test.assertLess(
+        drift_xy,
+        max_drift,
+        msg=(
+            f"Root body drifted {drift_xy:.4f} m laterally over 3 seconds "
+            f"(dx={drift_x:.4f}, dy={drift_y:.4f}, max allowed: {max_drift})"
+        ),
+    )
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -416,6 +512,15 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_shape_restitution_accounts_for_body_velocity",
     test_particle_shape_restitution_accounts_for_body_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestSolverXPBD,
+    "test_articulation_contact_drift",
+    test_articulation_contact_drift,
     devices=devices,
     check_output=False,
 )

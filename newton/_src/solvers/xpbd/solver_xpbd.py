@@ -309,6 +309,7 @@ class SolverXPBD(SolverBase):
                             state_in.body_q,
                             model.body_com,
                             model.joint_type,
+                            model.joint_enabled,
                             model.joint_parent,
                             model.joint_child,
                             model.joint_X_p,
@@ -477,82 +478,10 @@ class SolverXPBD(SolverBase):
                     # handle rigid bodies
                     # ----------------------------
 
-                    if model.joint_count:
-                        # wp.launch(
-                        #     kernel=solve_simple_body_joints,
-                        #     dim=model.joint_count,
-                        #     inputs=[
-                        #         body_q,
-                        #         body_qd,
-                        #         model.body_com,
-                        #         model.body_inv_mass,
-                        #         model.body_inv_inertia,
-                        #         model.joint_type,
-                        #         model.joint_enabled,
-                        #         model.joint_parent,
-                        #         model.joint_child,
-                        #         model.joint_X_p,
-                        #         model.joint_X_c,
-                        #         model.joint_limit_lower,
-                        #         model.joint_limit_upper,
-                        #         model.joint_qd_start,
-                        #         model.joint_dof_dim,
-                        #         model.joint_dof_mode,
-                        #         model.joint_axis,
-                        #         control.joint_target,
-                        #         model.joint_target_ke,
-                        #         model.joint_target_kd,
-                        #         self.joint_linear_compliance,
-                        #         self.joint_angular_compliance,
-                        #         self.joint_angular_relaxation,
-                        #         self.joint_linear_relaxation,
-                        #         dt,
-                        #     ],
-                        #     outputs=[body_deltas],
-                        #     device=model.device,
-                        # )
-
-                        wp.launch(
-                            kernel=solve_body_joints,
-                            dim=model.joint_count,
-                            inputs=[
-                                body_q,
-                                body_qd,
-                                model.body_com,
-                                self.body_inv_mass_effective,
-                                self.body_inv_inertia_effective,
-                                model.joint_type,
-                                model.joint_enabled,
-                                model.joint_parent,
-                                model.joint_child,
-                                model.joint_X_p,
-                                model.joint_X_c,
-                                model.joint_limit_lower,
-                                model.joint_limit_upper,
-                                model.joint_qd_start,
-                                model.joint_dof_dim,
-                                model.joint_axis,
-                                control.joint_target_pos,
-                                control.joint_target_vel,
-                                model.joint_target_ke,
-                                model.joint_target_kd,
-                                self.joint_linear_compliance,
-                                self.joint_angular_compliance,
-                                self.joint_angular_relaxation,
-                                self.joint_linear_relaxation,
-                                dt,
-                            ],
-                            outputs=[body_deltas],
-                            device=model.device,
-                        )
-
-                        body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
-
                     # Solve rigid contact constraints
                     if model.body_count and contacts is not None:
                         if self.rigid_contact_con_weighting:
                             rigid_contact_inv_weight.zero_()
-                        body_deltas.zero_()
 
                         wp.launch(
                             kernel=solve_body_contact_positions,
@@ -607,6 +536,48 @@ class SolverXPBD(SolverBase):
                         body_q, body_qd = self._apply_body_deltas(
                             model, state_in, state_out, body_deltas, dt, rigid_contact_inv_weight
                         )
+
+                    if model.joint_count:
+                        if requires_grad:
+                            body_deltas = wp.zeros_like(body_deltas)
+                        else:
+                            body_deltas.zero_()
+
+                        wp.launch(
+                            kernel=solve_body_joints,
+                            dim=model.joint_count,
+                            inputs=[
+                                body_q,
+                                body_qd,
+                                model.body_com,
+                                self.body_inv_mass_effective,
+                                self.body_inv_inertia_effective,
+                                model.joint_type,
+                                model.joint_enabled,
+                                model.joint_parent,
+                                model.joint_child,
+                                model.joint_X_p,
+                                model.joint_X_c,
+                                model.joint_limit_lower,
+                                model.joint_limit_upper,
+                                model.joint_qd_start,
+                                model.joint_dof_dim,
+                                model.joint_axis,
+                                control.joint_target_pos,
+                                control.joint_target_vel,
+                                model.joint_target_ke,
+                                model.joint_target_kd,
+                                self.joint_linear_compliance,
+                                self.joint_angular_compliance,
+                                self.joint_angular_relaxation,
+                                self.joint_linear_relaxation,
+                                dt,
+                            ],
+                            outputs=[body_deltas],
+                            device=model.device,
+                        )
+
+                        body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
             if model.particle_count:
                 if particle_q.ptr != state_out.particle_q.ptr:
