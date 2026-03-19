@@ -21,7 +21,7 @@ import warp as wp
 
 from ...geometry import Gaussian, GeoType
 from . import lighting, raytrace, textures, tiling
-from .types import RenderOrder
+from .types import MeshData, RenderOrder, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -49,17 +49,12 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
         # Shapes
         shape_enabled: wp.array(dtype=wp.uint32),
         shape_types: wp.array(dtype=wp.int32),
-        shape_indices: wp.array(dtype=wp.int32),
-        shape_materials: wp.array(dtype=wp.int32),
         shape_sizes: wp.array(dtype=wp.vec3f),
         shape_colors: wp.array(dtype=wp.vec4f),
         shape_transforms: wp.array(dtype=wp.transformf),
         shape_source_ptr: wp.array(dtype=wp.uint64),
-        # Meshes
-        mesh_face_offsets: wp.array(dtype=wp.int32),
-        mesh_face_vertices: wp.array(dtype=wp.vec3i),
-        mesh_texcoord: wp.array(dtype=wp.vec2f),
-        mesh_texcoord_offsets: wp.array(dtype=wp.int32),
+        shape_texture_ids: wp.array(dtype=wp.int32),
+        shape_mesh_data_ids: wp.array(dtype=wp.int32),
         # Particle BVH
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
@@ -69,17 +64,12 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
         particles_radius: wp.array(dtype=wp.float32),
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
+        # Meshes
+        mesh_data: wp.array(dtype=MeshData),
         # Gaussians
         gaussians_data: wp.array(dtype=Gaussian.Data),
-        # Materials
-        material_texture_ids: wp.array(dtype=wp.int32),
-        material_texture_repeat: wp.array(dtype=wp.vec2f),
-        material_rgba: wp.array(dtype=wp.vec4f),
         # Textures
-        texture_offsets: wp.array(dtype=wp.int32),
-        texture_data: wp.array(dtype=wp.uint32),
-        texture_height: wp.array(dtype=wp.int32),
-        texture_width: wp.array(dtype=wp.int32),
+        texture_data: wp.array(dtype=TextureData),
         # Lights
         light_active: wp.array(dtype=wp.bool),
         light_type: wp.array(dtype=wp.int32),
@@ -141,10 +131,11 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
             wp.static(config.max_distance),
             shape_enabled,
             shape_types,
-            shape_indices,
             shape_sizes,
             shape_transforms,
             shape_source_ptr,
+            shape_mesh_data_ids,
+            mesh_data,
             particles_position,
             particles_radius,
             triangle_mesh_id,
@@ -181,42 +172,31 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
             color = wp.vec4f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 color = shape_colors[closest_hit.shape_index]
-                if shape_materials[closest_hit.shape_index] > -1:
-                    color = wp.cw_mul(color, material_rgba[shape_materials[closest_hit.shape_index]])
 
             base_color = wp.vec3f(color[0], color[1], color[2])
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                material_index = shape_materials[closest_hit.shape_index]
-                if material_index > -1:
-                    texture_index = material_texture_ids[material_index]
-                    if texture_index > -1:
-                        tex_color = textures.sample_texture(
-                            shape_types[closest_hit.shape_index],
-                            shape_transforms[closest_hit.shape_index],
-                            material_index,
-                            texture_index,
-                            material_texture_repeat[material_index],
-                            texture_offsets[texture_index],
-                            texture_data,
-                            texture_height[texture_index],
-                            texture_width[texture_index],
-                            mesh_face_offsets,
-                            mesh_face_vertices,
-                            mesh_texcoord,
-                            mesh_texcoord_offsets,
-                            hit_point,
-                            closest_hit.bary_u,
-                            closest_hit.bary_v,
-                            closest_hit.face_idx,
-                            closest_hit.shape_mesh_index,
-                        )
+                texture_index = shape_texture_ids[closest_hit.shape_index]
+                if texture_index > -1:
+                    tex_color = textures.sample_texture(
+                        shape_types[closest_hit.shape_index],
+                        shape_transforms[closest_hit.shape_index],
+                        texture_data,
+                        texture_index,
+                        shape_source_ptr[closest_hit.shape_index],
+                        mesh_data,
+                        shape_mesh_data_ids[closest_hit.shape_index],
+                        hit_point,
+                        closest_hit.bary_u,
+                        closest_hit.bary_v,
+                        closest_hit.face_idx,
+                    )
 
-                        base_color = wp.vec3f(
-                            base_color[0] * tex_color[0],
-                            base_color[1] * tex_color[1],
-                            base_color[2] * tex_color[2],
-                        )
+                    base_color = wp.vec3f(
+                        base_color[0] * tex_color[0],
+                        base_color[1] * tex_color[1],
+                        base_color[2] * tex_color[2],
+                    )
 
             if render_albedo:
                 out_albedo[out_index] = tiling.pack_rgba_to_uint32(base_color, 1.0)
@@ -253,7 +233,6 @@ def create_kernel(config: RenderContext.Config, state: RenderContext.State) -> w
                     bvh_particles_group_roots,
                     shape_enabled,
                     shape_types,
-                    shape_indices,
                     shape_sizes,
                     shape_transforms,
                     shape_source_ptr,

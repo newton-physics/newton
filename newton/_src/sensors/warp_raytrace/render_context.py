@@ -27,7 +27,7 @@ from .bvh import (
     compute_shape_bvh_bounds,
 )
 from .render import create_kernel
-from .types import GaussianRenderMode, RenderOrder
+from .types import GaussianRenderMode, MeshData, RenderOrder, TextureData
 from .utils import Utils
 
 
@@ -84,11 +84,6 @@ class RenderContext:
         self.shape_count_enabled = 0
         self.shape_count_total = 0
 
-        self.mesh_texcoord: wp.array(dtype=wp.vec2f) = None
-        self.mesh_texcoord_offsets: wp.array(dtype=wp.int32) = None
-        self.mesh_face_offsets: wp.array(dtype=wp.int32) = None
-        self.mesh_face_vertices: wp.array(dtype=wp.vec3i) = None
-
         self.__triangle_points: wp.array(dtype=wp.vec3f) = None
         self.__triangle_indices: wp.array(dtype=wp.int32) = None
 
@@ -100,23 +95,17 @@ class RenderContext:
 
         self.shape_enabled: wp.array(dtype=wp.uint32) = None
         self.shape_types: wp.array(dtype=wp.int32) = None
-        self.shape_indices: wp.array(dtype=wp.int32) = None
         self.shape_sizes: wp.array(dtype=wp.vec3f) = None
         self.shape_transforms: wp.array(dtype=wp.transformf) = None
-        self.shape_materials: wp.array(dtype=wp.int32) = None
         self.shape_colors: wp.array(dtype=wp.vec4f) = None
         self.shape_world_index: wp.array(dtype=wp.int32) = None
         self.shape_source_ptr: wp.array(dtype=wp.uint64) = None
         self.shape_bounds: wp.array2d(dtype=wp.vec3f) = None
+        self.shape_texture_ids: wp.array(dtype=wp.int32) = None
+        self.shape_mesh_data_ids: wp.array(dtype=wp.int32) = None
 
-        self.texture_offsets: wp.array(dtype=wp.int32) = None
-        self.texture_data: wp.array(dtype=wp.uint32) = None
-        self.texture_width: wp.array(dtype=wp.int32) = None
-        self.texture_height: wp.array(dtype=wp.int32) = None
-
-        self.material_texture_ids: wp.array(dtype=wp.int32) = None
-        self.material_texture_repeat: wp.array(dtype=wp.vec2f) = None
-        self.material_rgba: wp.array(dtype=wp.vec4f) = None
+        self.mesh_data: wp.array(dtype=MeshData) = None
+        self.texture_data: wp.array(dtype=TextureData) = None
 
         self.lights_active: wp.array(dtype=wp.bool) = None
         self.lights_type: wp.array(dtype=wp.int32) = None
@@ -270,17 +259,12 @@ class RenderContext:
                     # Shapes
                     self.shape_enabled,
                     self.shape_types,
-                    self.shape_indices,
-                    self.shape_materials,
                     self.shape_sizes,
                     self.shape_colors,
                     self.shape_transforms,
-                    # Meshes
                     self.shape_source_ptr,
-                    self.mesh_face_offsets,
-                    self.mesh_face_vertices,
-                    self.mesh_texcoord,
-                    self.mesh_texcoord_offsets,
+                    self.shape_texture_ids,
+                    self.shape_mesh_data_ids,
                     # Particle BVH
                     self.particle_count_total,
                     self.bvh_particles.id if self.bvh_particles else 0,
@@ -290,16 +274,12 @@ class RenderContext:
                     self.particles_radius,
                     # Triangle Mesh
                     self.triangle_mesh.id if self.triangle_mesh is not None else 0,
+                    # Meshes
+                    self.mesh_data,
                     # Gaussians
                     self.gaussians_data,
                     # Textures
-                    self.material_texture_ids,
-                    self.material_texture_repeat,
-                    self.material_rgba,
-                    self.texture_offsets,
                     self.texture_data,
-                    self.texture_height,
-                    self.texture_width,
                     # Lights
                     self.lights_active,
                     self.lights_type,
@@ -464,7 +444,6 @@ class RenderContext:
                 self.shape_world_index,
                 self.shape_enabled,
                 self.shape_types,
-                self.shape_indices,
                 self.shape_sizes,
                 self.shape_transforms,
                 self.shape_bounds,

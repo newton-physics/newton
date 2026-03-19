@@ -389,14 +389,6 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_robot_humanoid",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 500},
-    test_options_cpu={"num-frames": 10},
-    use_viewer=True,
-)
-add_example_test(
-    TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
@@ -675,6 +667,15 @@ add_example_test(
     name="mpm.example_mpm_twoway_coupling",
     devices=cuda_test_devices,
     test_options={"num-frames": 80},
+    use_viewer=True,
+)
+
+
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_plotting",
+    devices=test_devices,
+    test_options={"num-frames": 200},
     use_viewer=True,
 )
 
