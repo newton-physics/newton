@@ -372,23 +372,3 @@ def ray_intersect_mesh(
         if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
             return query.t
     return -1.0
-
-
-@wp.func
-def ray_intersect_mesh_any(
-    transform: wp.transformf,
-    scale: wp.vec3f,
-    ray_origin: wp.vec3f,
-    ray_direction: wp.vec3f,
-    mesh_id: wp.uint64,
-    max_t: wp.float32,
-) -> float:
-    """Return the distance to the nearest mesh intersection, or ``-1.0`` if no hit."""
-
-    ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
-
-    query = wp.mesh_query_ray(mesh_id, ray_origin_local, ray_direction_local, max_t)
-
-    if query.result:
-        return query.t
-    return -1.0

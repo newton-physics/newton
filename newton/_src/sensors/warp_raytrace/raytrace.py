@@ -620,12 +620,13 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
 
                     shape_type = shape_types[si]
                     if shape_type == GeoType.MESH:
-                        hit_dist = ray_intersect.ray_intersect_mesh_any(
+                        hit_dist = ray_intersect.ray_intersect_mesh(
                             shape_transforms[si],
                             shape_sizes[si],
                             ray_origin_world,
                             ray_dir_world,
                             shape_source_ptr[si],
+                            False,
                             max_dist,
                         )
                     elif shape_type == GeoType.PLANE:
@@ -699,14 +700,14 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                 si = wp.int32(0)
 
                 while wp.bvh_query_next(query, si, max_dist):
-                    geom_hit = ray_intersect.ray_intersect_particle_sphere_with_normal(
+                    hit_dist = raycast.ray_intersect_particle_sphere(
                         ray_origin_world,
                         ray_dir_world,
                         particles_position[si],
                         particles_radius[si],
                     )
 
-                    if geom_hit.hit and geom_hit.distance <= max_dist:
+                    if hit_dist > -1.0 and hit_dist < max_dist:
                         return True
 
         return False
