@@ -336,10 +336,8 @@ void main()
     // surface vectors
     vec3 N = normalize(Normal);
     vec3 V = normalize(view_pos - FragPos);
-    // Ensure normal faces the viewer regardless of winding order
-    if (dot(N, V) < 0.0) {
-        N = -N;
-    }
+    // Flip normal for backfacing triangles
+    if (!gl_FrontFacing) N = -N;
     vec3 L = normalize(sun_direction);
     vec3 H = normalize(V + L);
 

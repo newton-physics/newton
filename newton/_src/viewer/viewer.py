@@ -835,8 +835,10 @@ class ViewerBase(ABC):
         self,
         name: str,
         transform: wp.transform,
+        *,
         translate: Sequence[Axis] | None = None,
         rotate: Sequence[Axis] | None = None,
+        snap_to: wp.transform | None = None,
     ):
         """Log a gizmo GUI element for the given name and transform.
 
@@ -849,6 +851,8 @@ class ViewerBase(ABC):
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
+            snap_to: Optional world transform to snap to when this gizmo is
+                released by the user.
         """
         return
 

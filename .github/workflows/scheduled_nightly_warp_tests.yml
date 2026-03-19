@@ -114,6 +114,15 @@ jobs:
               {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-051b9d2e71acf8047", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"},
               {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-0c98bd06abe8ee5eb", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"}
             ]
+          pre-runner-script: |
+            if [ -d /opt/dlami/nvme ]; then
+              mkdir -p /opt/dlami/nvme/actions-runner/_work
+              mkdir -p /opt/dlami/nvme/actions-runner/.local
+              mkdir -p /opt/dlami/nvme/actions-runner/.cache
+              ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
+              ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
+              ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
+            fi
           aws-resource-tags: >
             [
               {"Key": "Name", "Value": "ec2-github-runner"},
@@ -149,8 +158,15 @@ jobs:
       - name: Update lock file with latest warp-lang nightly build
         run: uv lock -P warp-lang --prerelease allow
 
+      - name: Check disk space
+        run: df -h
+
       - name: Run Tests
         run: uv run --extra dev --extra torch-cu13 -m newton.tests --junit-report-xml rspec.xml
+
+      - name: Check disk space (post-test)
+        if: always()
+        run: df -h
 
       - name: Test Summary
         if: ${{ !cancelled() }}

@@ -266,6 +266,7 @@ class ViewerGL(ViewerBase):
         else:
             self.ui = None
         self._gizmo_log = None
+        self._gizmo_active = {}
         self.gizmo_is_using = False
 
         # Performance tracking
@@ -353,8 +354,10 @@ class ViewerGL(ViewerBase):
         self,
         name: str,
         transform: wp.transform,
+        *,
         translate: Sequence[Axis] | None = None,
         rotate: Sequence[Axis] | None = None,
+        snap_to: wp.transform | None = None,
     ):
         """Log or update a transform gizmo for the current frame.
 
@@ -362,11 +365,34 @@ class ViewerGL(ViewerBase):
             name: Unique gizmo path/name.
             transform: Gizmo world transform.
             translate: Axes on which the translation handles are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all rotation rings.
+            snap_to: Optional world transform to snap to when this gizmo is
+                released by the user.
         """
-        t = (Axis.X, Axis.Y, Axis.Z) if translate is None else tuple(set(translate))
-        r = (Axis.X, Axis.Y, Axis.Z) if rotate is None else tuple(set(rotate))
-        self._gizmo_log[name] = (transform, t, r)
+        axis_order = (Axis.X, Axis.Y, Axis.Z)
+
+        if translate is None:
+            t = axis_order
+        else:
+            translate_axes = {Axis.from_any(axis) for axis in translate}
+            t = tuple(axis for axis in axis_order if axis in translate_axes)
+
+        if rotate is None:
+            r = axis_order
+        else:
+            rotate_axes = {Axis.from_any(axis) for axis in rotate}
+            r = tuple(axis for axis in axis_order if axis in rotate_axes)
+
+        self._gizmo_log[name] = {
+            "transform": transform,
+            "snap_to": snap_to,
+            "translate": t,
+            "rotate": r,
+        }
 
     @override
     def clear_model(self):
@@ -1411,7 +1437,7 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         fov_delta = scroll_y * 2.0
@@ -1438,7 +1464,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         import pyglet
@@ -1483,7 +1509,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         import pyglet
@@ -1517,6 +1543,32 @@ class ViewerGL(ViewerBase):
         """
         pass
 
+    def _ui_is_capturing_mouse(self) -> bool:
+        """Return whether the UI wants to consume mouse input this frame."""
+        if not self.ui:
+            return False
+
+        if hasattr(self.ui, "is_capturing_mouse"):
+            return bool(self.ui.is_capturing_mouse())
+
+        if hasattr(self.ui, "is_capturing"):
+            return bool(self.ui.is_capturing())
+
+        return False
+
+    def _ui_is_capturing_keyboard(self) -> bool:
+        """Return whether the UI wants to consume keyboard input this frame."""
+        if not self.ui:
+            return False
+
+        if hasattr(self.ui, "is_capturing_keyboard"):
+            return bool(self.ui.is_capturing_keyboard())
+
+        if hasattr(self.ui, "is_capturing"):
+            return bool(self.ui.is_capturing())
+
+        return False
+
     def on_key_press(self, symbol: int, modifiers: int):
         """
         Handle key press events for UI and simulation control.
@@ -1525,7 +1577,7 @@ class ViewerGL(ViewerBase):
             symbol: Key symbol.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_keyboard():
             return
 
         try:
@@ -1617,7 +1669,7 @@ class ViewerGL(ViewerBase):
         Args:
             dt: Time delta since last update.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_keyboard():
             return
 
         # camera-relative basis
@@ -1702,7 +1754,11 @@ class ViewerGL(ViewerBase):
 
     def _render_gizmos(self):
         self.gizmo_is_using = False
-        if not self._gizmo_log or not self.ui:
+        if not self._gizmo_log:
+            self._gizmo_active.clear()
+            return
+        if not self.ui:
+            self._gizmo_active.clear()
             return
 
         giz = self.ui.giz
@@ -1725,6 +1781,12 @@ class ViewerGL(ViewerBase):
             m = np.asarray(m, dtype=np.float32).reshape(4, 4)
             return giz.Matrix16(m.flatten(order="F").tolist())
 
+        def safe_bool(value) -> bool:
+            try:
+                return bool(value)
+            except Exception:
+                return False
+
         view_ = m44_to_mat16(view)
         proj_ = m44_to_mat16(proj)
 
@@ -1740,20 +1802,31 @@ class ViewerGL(ViewerBase):
         }
 
         # Draw & mutate each gizmo
-        for gid, (transform, translate, rotate) in self._gizmo_log.items():
+        logged_ids = set()
+        for gid, gizmo_data in self._gizmo_log.items():
+            logged_ids.add(gid)
+            transform = gizmo_data["transform"]
+            snap_to = gizmo_data["snap_to"]
+            translate = gizmo_data["translate"]
+            rotate = gizmo_data["rotate"]
+
             # Use compound ops when all axes are active (includes plane handles).
             if len(translate) == 3:
                 t_ops = (giz.OPERATION.translate,)
             else:
-                t_ops = tuple(axis_translate[a] for a in translate if a in axis_translate)
+                t_ops = tuple(axis_translate[a] for a in translate)
 
             if len(rotate) == 3:
                 r_ops = (giz.OPERATION.rotate,)
             else:
-                r_ops = tuple(axis_rotate[a] for a in rotate if a in axis_rotate)
+                r_ops = tuple(axis_rotate[a] for a in rotate)
 
             ops = t_ops + r_ops
+            was_active = self._gizmo_active.get(gid, False)
             if not ops:
+                if was_active and snap_to is not None:
+                    transform[:] = snap_to
+                self._gizmo_active[gid] = False
                 continue
 
             giz.push_id(str(gid))
@@ -1761,13 +1834,32 @@ class ViewerGL(ViewerBase):
             M = wp.transform_to_matrix(transform)
             M_ = m44_to_mat16(M)
 
+            op_modified = False
             for op in ops:
-                giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)
+                op_modified = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_modified
 
-            M[:] = M_.values.reshape(4, 4, order="F")
-            transform[:] = wp.transform_from_matrix(M)
+            any_gizmo_is_using = safe_bool(giz.is_using_any())
+            if hasattr(giz, "is_using"):
+                # manipulate() only reports matrix changes this frame. Keep the
+                # gizmo active across stationary drag frames until release.
+                is_active = safe_bool(giz.is_using()) and any_gizmo_is_using
+            else:
+                is_active = op_modified or (was_active and any_gizmo_is_using)
+
+            if was_active and not is_active and snap_to is not None:
+                transform[:] = snap_to
+            else:
+                M[:] = M_.values.reshape(4, 4, order="F")
+                transform[:] = wp.transform_from_matrix(M)
+
+            self._gizmo_active[gid] = is_active
 
             giz.pop_id()
+
+        # Drop stale interaction state for gizmos that are no longer logged.
+        for gid in tuple(self._gizmo_active):
+            if gid not in logged_ids:
+                del self._gizmo_active[gid]
 
         self.gizmo_is_using = giz.is_using_any()
 

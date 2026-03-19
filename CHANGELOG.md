@@ -11,12 +11,15 @@
 - Support kinematic bodies in VBD solver
 - Add brick stacking example
 - Add box pyramid example and ASV benchmark for dense convex-on-convex contacts
+- Add plotting example showing how to access and visualize per-step simulation diagnostics
 - Add `exposure` property to GL renderer
+- Add `snap_to` argument to `ViewerGL.log_gizmo()` to snap gizmos to a target world transform when the user releases them
 - Expose `gizmo_is_using` attribute to detect whether a gizmo is actively being dragged
 - Add per-axis gizmo filtering via `translate`/`rotate` parameters on `log_gizmo`
 - Add configurable velocity basis for implicit MPM (`velocity_basis`, default `"Q1"`) with GIMP quadrature option (`integration_scheme="gimp"`)
 - Add plastic viscosity, dilatancy, hardening and softening rate as per-particle MPM material properties (`mpm:viscosity`, `mpm:dilatancy`, `mpm:hardening_rate`, `mpm:softening_rate`)
 - Add MPM beam twist, snow ball, and viscous coiling examples
+- Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
 
 ### Changed
 
@@ -34,14 +37,18 @@
 
 ### Removed
 
+- Remove `robot_humanoid` example in favor of `basic_plotting` which uses the same humanoid model with diagnostics visualization
+
 ### Fixed
 
+- Restore keyboard camera movement while hovering gizmos so keyboard controls remain active when the pointer is over gizmos
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
 - Unify CPU and GPU inertia validation to produce identical results for zero-mass bodies with `bound_mass`, singular inertia, non-symmetric tensors, and triangle-inequality boundary cases
 - Fix `UnboundLocalError` crash in detailed inertia validation when eigenvalue decomposition encounters NaN/Inf input
 - Handle NaN/Inf mass and inertia deterministically in both validation paths (zero out mass and inertia)
 - Update `ModelBuilder` internal state after fast-path (GPU kernel) inertia validation so it matches the returned `Model`
 - Fix MJCF mesh scale resolution to use the mesh asset's own class rather than the geom's default class, avoiding incorrect vertex scaling for models like Robotiq 2F-85 V4
+- Fix articulated bodies drifting laterally on the ground in XPBD solver by solving rigid contacts before joints
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
 - Fix body `gravcomp` not being written to the MuJoCo spec, causing it to be absent from XML saved via `save_to_mjcf`
