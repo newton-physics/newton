@@ -73,7 +73,7 @@ class RenderContext:
         self.config = config if config else RenderContext.Config()
         self.state = RenderContext.State()
 
-        self.kernel_cache: dict[tuple[RenderContext.Config, RenderContext.State], wp.kernel] = {}
+        self.kernel_cache: dict[int, wp.kernel] = {}
 
         self.world_count = world_count
 
@@ -236,7 +236,7 @@ class RenderContext:
             if albedo_image is not None:
                 albedo_image = albedo_image.reshape(self.world_count * camera_count * width * height)
 
-            kernel_cache_key = (self.config, self.state, clear_data)
+            kernel_cache_key = hash((self.config, self.state, clear_data))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
             if render_kernel is None:
                 render_kernel = create_kernel(self.config, self.state, clear_data)
