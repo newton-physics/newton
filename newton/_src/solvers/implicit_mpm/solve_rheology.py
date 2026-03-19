@@ -1048,6 +1048,7 @@ def solve_rheology(
         solver: Solver type string. ``"gauss-seidel"``, ``"jacobi"``,
             ``"cg"``, or ``"cg+<solver>"`` (CG as initial guess then
             ``<solver>`` for the main solve).
+            Note that the ``cg`` solver only supports solid materials, without contacts.
         max_iterations: Maximum number of nonlinear iterations.
         tolerance: Solver tolerance for the stress residual (L2 norm).
         momentum: :class:`MomentumData` containing per-node inverse volume
@@ -1088,6 +1089,7 @@ def solve_rheology(
             delassus_operator.apply_stress_delta(rheology.stress, momentum.velocity)
             delassus_operator.postprocess_stress_and_strain()
             delassus_operator.release()
+            contact_solver.release()
             return None
 
         # use only as initial guess for the next solver

@@ -202,7 +202,6 @@ def hardening_law(Jp: float, hardening: float):
 def get_elastic_parameters(
     i: int,
     material_parameters: MaterialParameters,
-    particle_Jp: wp.array(dtype=float),
 ):
     # Hardening only affects yield parameters, not elastic stiffness.
     # This separates the elastic response from the plastic history.
@@ -224,10 +223,8 @@ def extract_elastic_parameters(
 
 
 @wp.func
-def get_yield_parameters(
-    i: int, material_parameters: MaterialParameters, particle_Jp: wp.array(dtype=float), dt: float
-):
-    h = hardening_law(particle_Jp[i], material_parameters.hardening[i])
+def get_yield_parameters(i: int, material_parameters: MaterialParameters, particle_Jp: float, dt: float):
+    h = hardening_law(particle_Jp, material_parameters.hardening[i])
 
     mu = material_parameters.friction[i]
 
@@ -251,7 +248,7 @@ def integrate_elastic_parameters(
     particle_Jp: wp.array(dtype=float),
 ):
     i = s.qp_index
-    params_vec = get_elastic_parameters(i, material_parameters, particle_Jp)
+    params_vec = get_elastic_parameters(i, material_parameters)
     return wp.dot(u(s), params_vec) * inv_cell_volume
 
 
@@ -265,7 +262,7 @@ def integrate_yield_parameters(
     dt: float,
 ):
     i = s.qp_index
-    params_vec = get_yield_parameters(i, material_parameters, particle_Jp, dt)
+    params_vec = get_yield_parameters(i, material_parameters, particle_Jp[i], dt)
     return wp.dot(u(s), params_vec) * inv_cell_volume
 
 
@@ -383,10 +380,10 @@ def update_particle_strains(
     strain_delta = elastic_strain_delta(s) + skew
     strain_new = prev_strain + strain_delta @ prev_strain
 
-    elastic_parameters_vec = get_elastic_parameters(s.qp_index, material_parameters, particle_Jp)
+    elastic_parameters_vec = get_elastic_parameters(s.qp_index, material_parameters)
     compliance, poisson, _damping = extract_elastic_parameters(elastic_parameters_vec)
 
-    yield_parameters_vec = get_yield_parameters(s.qp_index, material_parameters, particle_Jp, dt)
+    yield_parameters_vec = get_yield_parameters(s.qp_index, material_parameters, particle_Jp_new, dt)
 
     stress_0 = fem.SymmetricTensorMapper.value_to_dof_3d(stress(s))
     particle_stress_new = fem.SymmetricTensorMapper.dof_to_value_3d(project_stress(stress_0, yield_parameters_vec))
@@ -1010,8 +1007,9 @@ def scatter_field_dof_values(
 ):
     nid = wp.tid()
 
-    if nid != fem.NULL_NODE_INDEX:
-        dest[space_node_indices[nid]] = src[nid]
+    sid = space_node_indices[nid]
+    if sid != fem.NULL_NODE_INDEX:
+        dest[sid] = src[nid]
 
 
 wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=wp.vec3), "dest": wp.array(dtype=wp.vec3)})

@@ -202,7 +202,7 @@ class Example:
 
             pressure = np.trace(stresses, axis1=1, axis2=2) / 3.0
             dev_part = stresses - pressure.reshape(-1, 1, 1) * np.eye(3).reshape(1, 3, 3)
-            dev_stress = np.linalg.matrix_norm(dev_part)
+            dev_stress = np.linalg.norm(dev_part, axis=(1, 2))
 
             s = dev_stress
             s_min, s_max = np.percentile(s, [10, 90])
