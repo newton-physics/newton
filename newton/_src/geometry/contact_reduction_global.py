@@ -396,6 +396,8 @@ def _clear_active_kernel(
     entry_k_eff: wp.array(dtype=wp.float32),
     total_depth_reduced: wp.array(dtype=wp.float32),
     total_normal_reduced: wp.array(dtype=wp.vec3),
+    agg_moment_unreduced: wp.array(dtype=wp.float32),
+    agg_moment_reduced: wp.array(dtype=wp.float32),
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
@@ -435,6 +437,9 @@ def _clear_active_kernel(
                 entry_k_eff[entry_idx] = 0.0
                 total_depth_reduced[entry_idx] = 0.0
                 total_normal_reduced[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
+                if agg_moment_unreduced.shape[0] > 0:
+                    agg_moment_unreduced[entry_idx] = 0.0
+                    agg_moment_reduced[entry_idx] = 0.0
 
         # Clear this value slot (slot-major layout)
         value_idx = local_idx * ht_capacity + entry_idx
@@ -566,6 +571,9 @@ class GlobalContactReducer:
             self.total_depth_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
             # Total depth-weighted normal of reduced contacts per normal bin
             self.total_normal_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
+            # Moment accumulators for moment matching (friction scale adjustment)
+            self.agg_moment_unreduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+            self.agg_moment_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
         else:
             self.agg_force = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(0, dtype=wp.vec3, device=device)
@@ -573,6 +581,8 @@ class GlobalContactReducer:
             self.entry_k_eff = wp.zeros(0, dtype=wp.float32, device=device)
             self.total_depth_reduced = wp.zeros(0, dtype=wp.float32, device=device)
             self.total_normal_reduced = wp.zeros(0, dtype=wp.vec3, device=device)
+            self.agg_moment_unreduced = wp.zeros(0, dtype=wp.float32, device=device)
+            self.agg_moment_reduced = wp.zeros(0, dtype=wp.float32, device=device)
 
     def clear(self):
         """Clear all contacts and reset the reducer (full clear)."""
@@ -604,6 +614,8 @@ class GlobalContactReducer:
                 self.entry_k_eff,
                 self.total_depth_reduced,
                 self.total_normal_reduced,
+                self.agg_moment_unreduced,
+                self.agg_moment_reduced,
                 self.hashtable.capacity,
                 self.values_per_key,
                 num_threads,

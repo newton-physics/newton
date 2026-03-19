@@ -439,6 +439,41 @@ def _compute_net_force(contacts, model, state):
     return np.sum(force_mag[:, None] * (-normals[mask]), axis=0)
 
 
+def _compute_net_moment(contacts, model, state):
+    """Compute net friction moment from a contacts buffer."""
+    n = int(contacts.rigid_contact_count.numpy()[0])
+    normals = contacts.rigid_contact_normal.numpy()[:n]
+    p0 = contacts.rigid_contact_point0.numpy()[:n]
+    p1 = contacts.rigid_contact_point1.numpy()[:n]
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:n]
+    shape0 = contacts.rigid_contact_shape0.numpy()[:n]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:n]
+    shape_body = model.shape_body.numpy()
+    body_q = state.body_q.numpy()
+
+    b0 = shape_body[shape0]
+    b1 = shape_body[shape1]
+    off0 = np.where((b0 != -1)[:, None], body_q[np.maximum(b0, 0), :3], 0.0)
+    off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
+    p0w = p0 + off0
+    p1w = p1 + off1
+    depth = np.einsum("ij,ij->i", p0w - p1w, -normals) / 2.0
+    mask = (stiffness > 0) & (depth < 0)
+
+    force_mag = stiffness[mask] * (-depth[mask])
+    contact_pos = (p0w[mask] + p1w[mask]) / 2.0
+    total_weight = force_mag.sum()
+    anchor = (force_mag[:, None] * contact_pos).sum(axis=0) / total_weight
+
+    r = contact_pos - anchor
+    neg_normals = -normals[mask]
+    lever = np.linalg.norm(np.cross(r, neg_normals), axis=1)
+
+    friction = contacts.rigid_contact_friction.numpy()[:n][mask]
+
+    return float((friction * force_mag * lever).sum())
+
+
 def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: bool):
     """Reduced hydroelastic forces must match the unreduced reference."""
     cube_half = 0.1
@@ -529,6 +564,201 @@ def test_reduced_vs_unreduced_contact_forces(test, device):
 def test_reduced_vs_unreduced_contact_forces_with_anchor_contact(test, device):
     """Reduced hydroelastic forces must still match with anchor_contact enabled."""
     _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact=True)
+
+
+def _run_reduced_vs_unreduced_contact_moments_test(test, device):
+    """Reduced hydroelastic moments (with moment_matching) must match unreduced reference."""
+    cube_half = 0.1
+    sphere_radius = 0.1
+
+    shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=128,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-0.01, 0.01),
+        gap=0.01,
+        kh=1e9,
+    )
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = shape_cfg
+    builder.add_ground_plane()
+
+    cube_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half), wp.quat_identity()),
+        label="cube",
+    )
+    builder.add_shape_box(body=cube_body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    rest_z = 2 * cube_half + sphere_radius
+    sphere_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, rest_z), wp.quat_identity()),
+        label="sphere",
+    )
+    builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    cfg_reduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=True,
+        moment_matching=True,
+    )
+    cfg_unreduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    pipe_red = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_reduced)
+    pipe_unr = newton.CollisionPipeline(model, rigid_contact_max=20000, sdf_hydroelastic_config=cfg_unreduced)
+    contacts_red = pipe_red.contacts()
+    contacts_unr = pipe_unr.contacts()
+
+    penetrations = [0.0, 1e-4, 1e-3, 1e-2]
+
+    for pen in penetrations:
+        sphere_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
+
+        pipe_red.collide(state, contacts_red)
+        pipe_unr.collide(state, contacts_unr)
+
+        m_red = _compute_net_moment(contacts_red, model, state)
+        m_unr = _compute_net_moment(contacts_unr, model, state)
+
+        if pen == 0.0:
+            test.assertLess(abs(m_red), 1e-3, f"pen={pen}: reduced moment should be ~0")
+            test.assertLess(abs(m_unr), 1e-3, f"pen={pen}: unreduced moment should be ~0")
+            continue
+
+        # Both moments should be non-negative
+        test.assertGreaterEqual(m_unr, 0.0, f"pen={pen}: unreduced moment should be >= 0")
+
+        # Moments should match within 5%
+        if m_unr > 1e-6:
+            rel = abs(m_red - m_unr) / m_unr
+            test.assertLess(
+                rel,
+                0.05,
+                f"pen={pen}: moment mismatch {rel * 100:.2f}% "
+                f"(reduced={m_red:.6f}, unreduced={m_unr:.6f})",
+            )
+
+
+def test_reduced_vs_unreduced_contact_moments(test, device):
+    """Reduced and unreduced hydroelastic moments must agree with moment_matching."""
+    _run_reduced_vs_unreduced_contact_moments_test(test, device)
+
+
+def _compute_total_friction_capacity(contacts, model, state):
+    """Compute total lateral friction capacity: sum(friction_scale * normal_force)."""
+    n = int(contacts.rigid_contact_count.numpy()[0])
+    normals = contacts.rigid_contact_normal.numpy()[:n]
+    p0 = contacts.rigid_contact_point0.numpy()[:n]
+    p1 = contacts.rigid_contact_point1.numpy()[:n]
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:n]
+    shape0 = contacts.rigid_contact_shape0.numpy()[:n]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:n]
+    shape_body = model.shape_body.numpy()
+    body_q = state.body_q.numpy()
+
+    b0 = shape_body[shape0]
+    b1 = shape_body[shape1]
+    off0 = np.where((b0 != -1)[:, None], body_q[np.maximum(b0, 0), :3], 0.0)
+    off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
+    p0w = p0 + off0
+    p1w = p1 + off1
+    depth = np.einsum("ij,ij->i", p0w - p1w, -normals) / 2.0
+    mask = (stiffness > 0) & (depth < 0)
+
+    force_mag = stiffness[mask] * (-depth[mask])
+    friction = contacts.rigid_contact_friction.numpy()[:n][mask]
+    # friction == 0 means "unset" → default scale 1.0
+    friction = np.where(friction > 0.0, friction, 1.0)
+
+    return float((friction * force_mag).sum())
+
+
+def _run_translational_friction_invariance_test(test, device):
+    """Total lateral friction capacity must be invariant under moment matching."""
+    cube_half = 0.1
+    sphere_radius = 0.1
+
+    shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=128,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-0.01, 0.01),
+        gap=0.01,
+        kh=1e9,
+    )
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = shape_cfg
+    builder.add_ground_plane()
+
+    cube_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half), wp.quat_identity()),
+        label="cube",
+    )
+    builder.add_shape_box(body=cube_body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    rest_z = 2 * cube_half + sphere_radius
+    sphere_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, rest_z), wp.quat_identity()),
+        label="sphere",
+    )
+    builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    cfg_moment = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=True,
+        moment_matching=True,
+    )
+    cfg_no_moment = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=True,
+        moment_matching=False,
+    )
+    pipe_moment = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_moment)
+    pipe_no_moment = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_no_moment)
+    contacts_moment = pipe_moment.contacts()
+    contacts_no_moment = pipe_no_moment.contacts()
+
+    penetrations = [1e-4, 1e-3, 1e-2]
+
+    for pen in penetrations:
+        sphere_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
+
+        pipe_moment.collide(state, contacts_moment)
+        pipe_no_moment.collide(state, contacts_no_moment)
+
+        fc_moment = _compute_total_friction_capacity(contacts_moment, model, state)
+        fc_no_moment = _compute_total_friction_capacity(contacts_no_moment, model, state)
+
+        # Both should have nonzero friction capacity
+        test.assertGreater(fc_no_moment, 0.0, f"pen={pen}: no-moment friction capacity should be > 0")
+
+        # Friction capacity must match within 1%
+        if fc_no_moment > 1e-6:
+            rel = abs(fc_moment - fc_no_moment) / fc_no_moment
+            test.assertLess(
+                rel,
+                0.01,
+                f"pen={pen}: translational friction mismatch {rel * 100:.2f}% "
+                f"(moment_matching={fc_moment:.6f}, no_moment={fc_no_moment:.6f})",
+            )
+
+
+def test_translational_friction_invariance(test, device):
+    """Total lateral friction capacity must be preserved when moment_matching is enabled."""
+    _run_translational_friction_invariance_test(test, device)
 
 
 def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
@@ -917,6 +1147,23 @@ add_function_test(
     TestHydroelastic,
     "test_reduced_vs_unreduced_contact_forces_with_anchor_contact",
     test_reduced_vs_unreduced_contact_forces_with_anchor_contact,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_moments",
+    test_reduced_vs_unreduced_contact_moments,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_translational_friction_invariance",
+    test_translational_friction_invariance,
     devices=cuda_devices,
     check_output=False,
 )

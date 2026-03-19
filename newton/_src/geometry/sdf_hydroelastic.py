@@ -253,6 +253,11 @@ class HydroelasticSDF:
         anchor_contact: bool = False
         """Whether to add an anchor contact at the center of pressure for each normal bin.
         The anchor contact helps preserve moment balance. Only active when reduce_contacts is True."""
+        moment_matching: bool = False
+        """Whether to adjust per-contact friction scales so that the maximum
+        friction moment per normal bin is preserved between reduced and
+        unreduced contacts. Automatically enables ``anchor_contact``.
+        Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
         """Contact area used for non-penetrating contacts at the margin."""
 
@@ -395,6 +400,7 @@ class HydroelasticSDF:
                 reduction_config = HydroelasticReductionConfig(
                     normal_matching=self.config.normal_matching,
                     anchor_contact=self.config.anchor_contact,
+                    moment_matching=self.config.moment_matching,
                     margin_contact_area=self.config.margin_contact_area,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
