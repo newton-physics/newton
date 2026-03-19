@@ -97,7 +97,11 @@ jobs:
           pre-runner-script: |
             if [ -d /opt/dlami/nvme ]; then
               mkdir -p /opt/dlami/nvme/actions-runner/_work
+              mkdir -p /opt/dlami/nvme/actions-runner/.local
+              mkdir -p /opt/dlami/nvme/actions-runner/.cache
               ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
+              ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
+              ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
             fi
           aws-resource-tags: >
             [
