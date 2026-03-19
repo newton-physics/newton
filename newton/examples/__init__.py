@@ -557,9 +557,18 @@ def init(parser=None):
     if args.device:
         wp.set_device(args.device)
 
-    # Benchmark mode forces null viewer
+    # Benchmark mode forces null viewer and raises process priority
     if args.benchmark is not False:
         args.viewer = "null"
+        try:
+            import psutil  # noqa: PLC0415
+
+            psutil.Process().nice(psutil.REALTIME_PRIORITY_CLASS)
+        except (ModuleNotFoundError, AttributeError):
+            print(
+                "Benchmark running at default process priority (results may vary)."
+                " Install 'psutil' to automatically raise priority."
+            )
 
     # Create viewer based on type
     if args.viewer == "gl":
