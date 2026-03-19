@@ -206,7 +206,7 @@ class Example:
 
         # add jitter: uniformly sample displacement in each axis in [-0.5*radius, 0.5*radius]
         jitter_scale = 1.0 * (spacing / 2.0)  # radius = spacing/2
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed=423)
         all_pos += rng.uniform(-jitter_scale, jitter_scale, size=all_pos.shape)
 
         # Calculate mass
@@ -317,7 +317,7 @@ class Example:
             Jp_min = 0.5
             Jp_max = 2.0
             Jp_range = Jp_max - Jp_min if Jp_max > Jp_min else 1.0
-            Jp_norm = (Jp - Jp_min) / Jp_range
+            Jp_norm = np.clip((Jp - Jp_min) / Jp_range, 0.0, 1.0)
 
             # Vectorized colormap: blue (min) -> green (mid) -> red (max)
             v = Jp_norm

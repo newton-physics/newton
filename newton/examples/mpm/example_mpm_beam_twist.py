@@ -207,7 +207,7 @@ class Example:
             s = dev_stress
             s_min, s_max = np.percentile(s, [10, 90])
             s_range = s_max - s_min if s_max > s_min else 1.0
-            s_norm = (s - s_min) / s_range
+            s_norm = np.clip((s - s_min) / s_range, 0.0, 1.0)
 
             # Vectorized color mapping: blue->green (v < 0.5), green->red (v >= 0.5)
             colors_np = np.zeros((s_norm.shape[0], 3), dtype=np.float32)
