@@ -338,6 +338,18 @@ class TestSensorContact(unittest.TestCase):
         with self.assertRaises(ValueError):
             SensorContact(model, sensing_obj_bodies=[0, 0])
 
+    def test_unmatched_pattern_raises(self):
+        """Sensing or counterpart patterns that match nothing raise ValueError."""
+        model = _make_two_world_model()
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_bodies="nonexistent")
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_shapes="nonexistent")
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="nonexistent")
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_bodies="*", counterpart_shapes="nonexistent")
+
     def test_global_counterpart_in_all_worlds(self):
         """Global counterparts (e.g., ground) appear in every sensing object's counterpart list."""
         model = _make_two_world_model(include_ground=True)

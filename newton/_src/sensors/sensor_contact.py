@@ -379,6 +379,7 @@ class SensorContact:
             s_shapes = match_labels(model.shape_label, sensing_obj_shapes)
             _check_index_bounds(s_shapes, len(model.shape_label), "sensing_obj_shapes", "shapes")
 
+        using_counterparts = True
         if counterpart_bodies is not None:
             c_bodies = match_labels(model.body_label, counterpart_bodies)
             _check_index_bounds(c_bodies, len(model.body_label), "counterpart_bodies", "bodies")
@@ -390,6 +391,7 @@ class SensorContact:
         else:
             c_shapes = []
             c_bodies = []
+            using_counterparts = False
 
         world_count = model.world_count
 
@@ -417,6 +419,12 @@ class SensorContact:
         if not sensing_indices:
             raise ValueError(
                 f"No {'bodies' if sensing_is_body else 'shapes'} matched the sensing object pattern(s). "
+                "Check that the labels exist in the model."
+            )
+
+        if using_counterparts and not counterpart_indices:
+            raise ValueError(
+                f"No {'bodies' if counterpart_is_body else 'shapes'} matched the counterpart pattern(s). "
                 "Check that the labels exist in the model."
             )
 
