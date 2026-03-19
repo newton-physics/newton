@@ -550,6 +550,18 @@ def _raise_benchmark_priority():
                 " Add your user to the 'realtime' group or run with elevated"
                 " privileges to enable real-time scheduling."
             )
+    elif sys.platform == "darwin":
+        import ctypes  # noqa: PLC0415
+        import ctypes.util  # noqa: PLC0415
+
+        try:
+            libsystem = ctypes.CDLL(ctypes.util.find_library("System"))
+            QOS_CLASS_USER_INTERACTIVE = 0x21
+            rc = libsystem.pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+            if rc != 0:
+                print(f"Benchmark: failed to set QoS class (error {rc}), using default thread priority.")
+        except Exception as e:
+            print(f"Benchmark: could not raise thread priority ({e}), using default.")
 
 
 def init(parser=None):
