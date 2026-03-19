@@ -1765,7 +1765,6 @@ class SolverImplicitMPM(SolverBase):
                 quadrature=pic,
                 fields={"u": scratch.velocity_test},
                 values={
-                    "particle_Jp": state_in.mpm.particle_Jp,
                     "material_parameters": mpm_model.material_parameters,
                     "inv_cell_volume": inv_cell_volume,
                 },

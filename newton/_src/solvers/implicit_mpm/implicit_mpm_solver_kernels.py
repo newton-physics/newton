@@ -241,11 +241,9 @@ def get_yield_parameters(i: int, material_parameters: MaterialParameters, partic
 @fem.integrand
 def integrate_elastic_parameters(
     s: fem.Sample,
-    domain: fem.Domain,
     u: fem.Field,
     inv_cell_volume: float,
     material_parameters: MaterialParameters,
-    particle_Jp: wp.array(dtype=float),
 ):
     i = s.qp_index
     params_vec = get_elastic_parameters(i, material_parameters)
@@ -879,6 +877,11 @@ def node_color(
 ):
     nid = wp.tid()
     vid = space_node_indices[nid]
+
+    if vid == fem.NULL_NODE_INDEX:
+        colors[nid] = _NULL_COLOR
+        color_indices[nid] = nid
+        return
 
     if voxels:
         c = voxels[vid]
