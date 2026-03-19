@@ -1301,6 +1301,15 @@ If False, return a new Mesh for the convex hull.</p>
 <dd><p>Default maximum vertex count for convex hull approximation.</p>
 </dd></dl>
 
+<dl class="py property">
+<dt class="sig sig-object py" id="newton.Mesh.texture_hash">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">texture_hash</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.Mesh.texture_hash" title="Link to this definition">#</a></dt>
+<dd><p>Content-based hash of the assigned texture.</p>
+<p>Returns a stable integer hash derived from the texture data.
+The value is lazily computed and cached until <code class="xref py py-attr docutils literal notranslate"><span class="pre">texture</span></code>
+is reassigned.</p>
+</dd></dl>
+
 </dd></dl>
 
 </section>
@@ -1351,6 +1360,7 @@ If False, return a new Mesh for the convex hull.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.copy"><code class="docutils literal notranslate"><span class="pre">copy()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.finalize"><code class="docutils literal notranslate"><span class="pre">finalize()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.MAX_HULL_VERTICES"><code class="docutils literal notranslate"><span class="pre">MAX_HULL_VERTICES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.texture_hash"><code class="docutils literal notranslate"><span class="pre">texture_hash</span></code></a></li>
 </ul>
 </li>
 </ul>
