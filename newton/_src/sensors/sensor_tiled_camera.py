@@ -149,6 +149,9 @@ class SensorTiledCamera:
         default_light_shadows: bool = False
         """Enable shadows for the default light (requires ``default_light``)."""
 
+        enable_ambient_lighting: bool = True
+        """Enable ambient lighting for the scene."""
+
         colors_per_world: bool = False
         """Assign a random color palette per world."""
 
@@ -161,6 +164,9 @@ class SensorTiledCamera:
         enable_textures: bool = False
         """Enable texturing."""
 
+        enable_particles: bool = True
+        """Enable particle rendering."""
+
     def __init__(self, model: Model, *, config: Config | None = None):
         self.model = model
 
@@ -171,11 +177,11 @@ class SensorTiledCamera:
             world_count=self.model.world_count,
             config=RenderContext.Config(
                 enable_global_world=True,
-                enable_textures=config.enable_textures,
                 enable_shadows=False,
-                enable_ambient_lighting=True,
-                enable_particles=True,
-                enable_backface_culling=True,
+                enable_textures=config.enable_textures,
+                enable_ambient_lighting=config.enable_ambient_lighting,
+                enable_particles=config.enable_particles,
+                enable_backface_culling=config.backface_culling,
             ),
             device=self.model.device,
         )
@@ -229,7 +235,6 @@ class SensorTiledCamera:
 
         self.render_context.utils.compute_shape_bounds()
 
-        self.render_context.config.enable_backface_culling = config.backface_culling
         if config.checkerboard_texture:
             self.assign_checkerboard_material_to_all_shapes()
         if config.default_light:

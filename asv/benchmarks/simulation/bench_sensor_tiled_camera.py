@@ -93,7 +93,22 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.sync_transforms(self.state)
         self.tiled_camera_sensor.render_context.refit_bvh()
 
-        # Precompile Kernels
+        # Warmup Kernels
+        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.TILED
+        self.tiled_camera_sensor.render_context.config.tile_width = 8
+        self.tiled_camera_sensor.render_context.config.tile_height = 8
+        for out_color, out_depth in [(True, True), (True, False), (False, True)]:
+            for _ in range(iterations):
+                self.tiled_camera_sensor.update(
+                    None,
+                    self.camera_transforms,
+                    self.camera_rays,
+                    color_image=self.color_image if out_color else None,
+                    depth_image=self.depth_image if out_depth else None,
+                    refit_bvh=False,
+                )
+
+        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(

@@ -30,8 +30,12 @@ if TYPE_CHECKING:
 def create_kernel(
     config: RenderContext.Config, state: RenderContext.State, clear_data: RenderContext.ClearData
 ) -> wp.kernel:
-    raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
     compute_lighting = lighting.create_compute_lighting_function(config, state)
+
+    if state.render_color or state.render_normal:
+        raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
+    else:
+        raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
 
     @wp.kernel(enable_backward=False)
     def render_megakernel(
@@ -154,8 +158,6 @@ def create_kernel(
                 out_shape_index[out_index] = wp.uint32(wp.static(clear_data.clear_shape_index))
             return
 
-        shaded_color = closest_hit.color
-
         if wp.static(state.render_depth):
             out_depth[out_index] = closest_hit.distance
 
@@ -173,6 +175,8 @@ def create_kernel(
             if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
                 is_gaussian = wp.bool(True)
 
+        albedo_color = wp.vec3f(0.0)
+
         if not is_gaussian:
             hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
@@ -180,7 +184,7 @@ def create_kernel(
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 color = shape_colors[closest_hit.shape_index]
 
-            base_color = wp.vec3f(color[0], color[1], color[2])
+            albedo_color = wp.vec3f(color[0], color[1], color[2])
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
@@ -199,13 +203,15 @@ def create_kernel(
                         closest_hit.face_idx,
                     )
 
-                    base_color = wp.cw_mul(base_color, tex_color)
+                    albedo_color = wp.cw_mul(albedo_color, tex_color)
 
-            if wp.static(state.render_albedo):
-                out_albedo[out_index] = tiling.pack_rgba_to_uint32(base_color, 1.0)
+        if wp.static(state.render_albedo):
+            out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_color, 1.0)
 
         if not wp.static(state.render_color):
             return
+
+        shaded_color = closest_hit.color
 
         if not is_gaussian:
             if wp.static(config.enable_ambient_lighting):
@@ -218,11 +224,8 @@ def create_kernel(
                 ground = wp.vec3f(0.1, 0.1, 0.12)
                 ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
                 ambient_intensity = 0.5
-                shaded_color = wp.vec3f(
-                    base_color[0] * (ambient_color[0] * ambient_intensity),
-                    base_color[1] * (ambient_color[1] * ambient_intensity),
-                    base_color[2] * (ambient_color[2] * ambient_intensity),
-                )
+
+                shaded_color = wp.cw_mul(albedo_color, ambient_color * ambient_intensity)
 
             # Apply lighting and shadows
             for light_index in range(light_count):
@@ -250,7 +253,7 @@ def create_kernel(
                     closest_hit.normal,
                     hit_point,
                 )
-                shaded_color = shaded_color + base_color * light_contribution
+                shaded_color = shaded_color + albedo_color * light_contribution
 
         out_color[out_index] = tiling.pack_rgba_to_uint32(shaded_color, 1.0)
 
