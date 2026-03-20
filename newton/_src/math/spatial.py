@@ -28,8 +28,6 @@ def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float =
         return wp.quat_identity()
 
     if d <= -1.0 + eps:
-        # Deterministic axis orthogonal to from_vec.
-        # Prefer cross with X, fallback to Y if nearly parallel.
         helper = wp.vec3(1.0, 0.0, 0.0)
         if wp.abs(from_vec[0]) >= 0.9:
             helper = wp.vec3(0.0, 1.0, 0.0)
@@ -40,7 +38,6 @@ def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float =
             axis = wp.cross(from_vec, wp.vec3(0.0, 0.0, 1.0))
             axis_len = wp.length(axis)
 
-        # Final fallback: if axis is still degenerate, pick an arbitrary axis.
         if axis_len <= eps:
             return wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi)
 
@@ -48,6 +45,70 @@ def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float =
         return wp.quat_from_axis_angle(axis, wp.pi)
 
     return wp.quat_between_vectors(from_vec, to_vec)
+
+
+@wp.func
+def quat_slerp(q0: wp.quat, q1: wp.quat, t: float) -> wp.quat:
+    """Spherical linear interpolation between two quaternions.
+
+    Computes the shortest-arc SLERP from ``q0`` to ``q1`` at parameter ``t``.
+    The inputs are normalized before interpolation so callers do not need to
+    pre-normalize. When ``q0`` and ``q1`` are nearly identical (dot product
+    close to 1), the function falls back to normalized linear interpolation
+    (NLERP) to avoid dividing by a near-zero ``sin(theta)``.
+
+    .. math::
+       q(t) = \\frac{\\sin((1-t)\\theta)}{\\sin\\theta}\\,q_0
+              + \\frac{\\sin(t\\theta)}{\\sin\\theta}\\,q_1,
+       \\quad \\theta = \\arccos(q_0 \\cdot q_1)
+
+    Args:
+        q0: Start quaternion.
+        q1: End quaternion.
+        t:  Interpolation parameter in :math:`[0, 1]`.
+            ``t = 0`` returns ``q0``; ``t = 1`` returns ``q1``.
+
+    Returns:
+        wp.quat: Interpolated unit quaternion.
+    """
+    # Normalize inputs
+    q0 = wp.normalize(q0)
+    q1 = wp.normalize(q1)
+
+    # Ensure shortest-arc interpolation
+    cos_theta = wp.dot(q0, q1)
+    if cos_theta < 0.0:
+        q1 = wp.quat(-q1[0], -q1[1], -q1[2], -q1[3])
+        cos_theta = -cos_theta
+
+    # Clamp to valid range for acos
+    cos_theta = wp.min(cos_theta, 1.0)
+
+    # Fall back to NLERP when quaternions are nearly coincident
+    eps = 1.0e-6
+    if cos_theta > 1.0 - eps:
+        result = wp.quat(
+            q0[0] + t * (q1[0] - q0[0]),
+            q0[1] + t * (q1[1] - q0[1]),
+            q0[2] + t * (q1[2] - q0[2]),
+            q0[3] + t * (q1[3] - q0[3]),
+        )
+        return wp.normalize(result)
+
+    theta = wp.acos(cos_theta)
+    sin_theta = wp.sin(theta)
+
+    s0 = wp.sin((1.0 - t) * theta) / sin_theta
+    s1 = wp.sin(t * theta) / sin_theta
+
+    return wp.normalize(
+        wp.quat(
+            s0 * q0[0] + s1 * q1[0],
+            s0 * q0[1] + s1 * q1[1],
+            s0 * q0[2] + s1 * q1[2],
+            s0 * q0[3] + s1 * q1[3],
+        )
+    )
 
 
 @wp.func
@@ -194,15 +255,12 @@ def quat_velocity(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
     Returns:
         Angular velocity :math:`\\omega` in world frame [rad/s].
     """
-    # Normalize inputs
     q1 = wp.normalize(q_now)
     q0 = wp.normalize(q_prev)
 
-    # Enforce shortest-arc by aligning quaternion hemisphere
     if wp.dot(q1, q0) < 0.0:
         q0 = wp.quat(-q0[0], -q0[1], -q0[2], -q0[3])
 
-    # dq = q1 * conj(q0)
     dq = wp.normalize(wp.mul(q1, wp.quat_inverse(q0)))
 
     axis, angle = wp.quat_to_axis_angle(dq)
@@ -242,6 +300,7 @@ __all__ = [
     "quat_between_axes",
     "quat_between_vectors_robust",
     "quat_decompose",
+    "quat_slerp",
     "quat_velocity",
     "transform_twist",
     "transform_wrench",
