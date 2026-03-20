@@ -2526,6 +2526,7 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
 
     robot_folder = "franka_emika_panda"
     num_steps = 0
+    fk_enabled = True
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
@@ -2542,6 +2543,8 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
 
     robot_folder = "franka_fr3_v2"
     num_steps = 0
+    fk_enabled = True
+    fk_tolerance = 5e-6  # equality constraints cause slightly larger FK drift
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
@@ -2649,6 +2652,7 @@ class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
 
     robot_folder = "universal_robots_ur10e"
     num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2662,6 +2666,7 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
     robot_folder = "leap_hand"
     robot_xml = "scene_right.xml"
     num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
@@ -2693,6 +2698,7 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     robot_folder = "shadow_hand"
     robot_xml = "scene_right.xml"
     num_steps = 0
+    fk_enabled = True
     # tendon_invweight0 is compilation-dependent (derived from inertia)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
 
@@ -2718,6 +2724,7 @@ class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     robot_folder = "wonik_allegro"
     robot_xml = "scene_right.xml"
     num_steps = 0
+    fk_enabled = True
     # TODO: body_mass differs — Newton computes different masses for visual geoms
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
@@ -2740,6 +2747,7 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
 
     robot_folder = "aloha"
     num_steps = 0
+    fk_enabled = False  # FK fails due to import issues (xpos diff 0.14)
     # TODO: dof_damping, jnt_range, eq_, ngeom differ — multiple import issues
     # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
@@ -2823,6 +2831,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     use_cuda_graph = True
     # num_steps = 100  # Disabled to avoid CI flakiness
     num_steps = 0
+    fk_enabled = True
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
     parse_visuals = True
@@ -2865,6 +2874,7 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
 
     robot_folder = "booster_t1"
     num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
@@ -2920,6 +2930,7 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
 
     robot_folder = "unitree_g1"
     num_steps = 0
+    fk_enabled = True
     # TODO: actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
@@ -2929,6 +2940,7 @@ class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
 
     robot_folder = "unitree_h1"
     num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2963,6 +2975,7 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
 
     robot_folder = "anybotics_anymal_c"
     num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
@@ -2970,6 +2983,7 @@ class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
 
     robot_folder = "boston_dynamics_spot"
     num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
@@ -3009,6 +3023,7 @@ class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
 
     robot_folder = "unitree_go2"
     num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -3063,6 +3078,7 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
 
     robot_folder = "robotstudio_so101"
     num_steps = 0
+    fk_enabled = True
     # TODO: body_mass differs for some bodies
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
