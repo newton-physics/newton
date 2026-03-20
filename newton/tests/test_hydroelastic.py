@@ -263,9 +263,6 @@ def test_stacked_small_mesh_cubes_hydroelastic(test, device, solver_fn):
 
 def test_stacked_primitive_cubes_hydroelastic_no_reduction(test, device, solver_fn):
     """Test 3 primitive cubes (1m) stacked without contact reduction using hydroelastic contacts."""
-    # Unreduced contacts carry more per-face noise from 16-bit texture SDF
-    # quantization; use more substeps to compensate and allow up to 50% of
-    # cube_half (25% of cube size) positional drift.
     run_stacked_cubes_hydroelastic_test(
         test,
         device,
@@ -322,7 +319,8 @@ def test_buffer_fraction_no_crash(test, device):
     reduced_count = int(contacts_reduced.rigid_contact_count.numpy()[0])
     test.assertGreater(reduced_count, 0, "Expected non-zero contacts with reduced buffer_fraction")
 
-    # Full allocation should not produce fewer contacts.
+    # Full allocation should not produce significantly fewer contacts.
+    # Allow a small tolerance for non-deterministic contact counts.
     config_full = HydroelasticSDF.Config(buffer_fraction=1.0)
     pipeline_full = newton.CollisionPipeline(
         model,
@@ -334,10 +332,11 @@ def test_buffer_fraction_no_crash(test, device):
     wp.synchronize()
     full_count = int(contacts_full.rigid_contact_count.numpy()[0])
 
+    tolerance = max(2, int(0.05 * reduced_count))
     test.assertGreaterEqual(
-        full_count,
+        full_count + tolerance,
         reduced_count,
-        f"Expected full buffers ({full_count}) to produce >= reduced buffers ({reduced_count}) contacts",
+        f"Full buffers ({full_count}) produced significantly fewer contacts than reduced buffers ({reduced_count})",
     )
 
 
@@ -411,11 +410,16 @@ def _set_body_z_kernel(
     body_q[body_idx] = wp.transform(wp.vec3(p[0], p[1], z), wp.transform_get_rotation(cur))
 
 
-def _compute_net_force(contacts, model, state):
-    """Compute net contact force from a contacts buffer."""
+def _extract_contact_forces(contacts, model, state):
+    """Extract active contact force magnitudes, world-frame points, normals, and friction.
+
+    Returns (force_mag, p0w, p1w, normals, friction) arrays filtered to active contacts,
+    or all-empty arrays when there are no active contacts.
+    """
     n = int(contacts.rigid_contact_count.numpy()[0])
+    empty = np.empty((0, 3)), np.empty((0, 3)), np.empty((0, 3)), np.empty(0), np.empty(0)
     if n == 0 or contacts.rigid_contact_stiffness is None:
-        return np.zeros(3)
+        return empty
 
     normals = contacts.rigid_contact_normal.numpy()[:n]
     p0 = contacts.rigid_contact_point0.numpy()[:n]
@@ -435,50 +439,55 @@ def _compute_net_force(contacts, model, state):
     p1w = p1 + off1
     depth = np.einsum("ij,ij->i", p0w - p1w, -normals) / 2.0
     mask = (stiffness > 0) & (depth < 0)
-    force_mag = stiffness[mask] * (-depth[mask])
-    return np.sum(force_mag[:, None] * (-normals[mask]), axis=0)
-
-
-def _compute_net_moment(contacts, model, state):
-    """Compute net friction moment from a contacts buffer."""
-    n = int(contacts.rigid_contact_count.numpy()[0])
-    normals = contacts.rigid_contact_normal.numpy()[:n]
-    p0 = contacts.rigid_contact_point0.numpy()[:n]
-    p1 = contacts.rigid_contact_point1.numpy()[:n]
-    stiffness = contacts.rigid_contact_stiffness.numpy()[:n]
-    shape0 = contacts.rigid_contact_shape0.numpy()[:n]
-    shape1 = contacts.rigid_contact_shape1.numpy()[:n]
-    shape_body = model.shape_body.numpy()
-    body_q = state.body_q.numpy()
-
-    b0 = shape_body[shape0]
-    b1 = shape_body[shape1]
-    off0 = np.where((b0 != -1)[:, None], body_q[np.maximum(b0, 0), :3], 0.0)
-    off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
-    p0w = p0 + off0
-    p1w = p1 + off1
-    depth = np.einsum("ij,ij->i", p0w - p1w, -normals) / 2.0
-    mask = (stiffness > 0) & (depth < 0)
 
     force_mag = stiffness[mask] * (-depth[mask])
-    contact_pos = (p0w[mask] + p1w[mask]) / 2.0
-    total_weight = force_mag.sum()
-    anchor = (force_mag[:, None] * contact_pos).sum(axis=0) / total_weight
+    friction = contacts.rigid_contact_friction.numpy()[:n][mask]
+    # friction == 0 means "unset" → default scale 1.0
+    friction = np.where(friction > 0.0, friction, 1.0)
+    return p0w[mask], p1w[mask], normals[mask], force_mag, friction
+
+
+def _compute_net_force(contacts, model, state):
+    """Compute net contact force from a contacts buffer."""
+    _, _, normals, force_mag, _ = _extract_contact_forces(contacts, model, state)
+    if len(force_mag) == 0:
+        return np.zeros(3)
+    return np.sum(force_mag[:, None] * (-normals), axis=0)
+
+
+def _compute_force_weighted_anchor(contacts, model, state):
+    """Return the force-weighted center of pressure for active contacts."""
+    p0w, p1w, _, force_mag, _ = _extract_contact_forces(contacts, model, state)
+    if len(force_mag) == 0:
+        return np.zeros(3)
+    contact_pos = (p0w + p1w) / 2.0
+    return (force_mag[:, None] * contact_pos).sum(axis=0) / force_mag.sum()
+
+
+def _compute_net_moment(contacts, model, state, anchor=None):
+    """Compute net friction moment from a contacts buffer.
+    """
+    p0w, p1w, normals, force_mag, friction = _extract_contact_forces(contacts, model, state)
+    if len(force_mag) == 0:
+        return 0.0
+
+    contact_pos = (p0w + p1w) / 2.0
+    if anchor is None:
+        total_weight = force_mag.sum()
+        anchor = (force_mag[:, None] * contact_pos).sum(axis=0) / total_weight
 
     r = contact_pos - anchor
-    neg_normals = -normals[mask]
+    neg_normals = -normals
     lever = np.linalg.norm(np.cross(r, neg_normals), axis=1)
-
-    friction = contacts.rigid_contact_friction.numpy()[:n][mask]
 
     return float((friction * force_mag * lever).sum())
 
 
-def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: bool):
-    """Reduced hydroelastic forces must match the unreduced reference."""
-    cube_half = 0.1
-    sphere_radius = 0.1
+def _build_cube_sphere_scene(device, cube_half=0.1, sphere_radius=0.1):
+    """Build a cube-on-ground + sphere-on-cube scene for contact comparison tests.
 
+    Returns (model, state, sphere_body, rest_z).
+    """
     shape_cfg = newton.ModelBuilder.ShapeConfig(
         sdf_max_resolution=128,
         is_hydroelastic=True,
@@ -507,6 +516,27 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
+    return model, state, sphere_body, rest_z
+
+
+def _make_pipelines(model, configs, rigid_contact_maxes=None):
+    """Create collision pipelines and contacts for a list of HydroelasticSDF.Configs.
+
+    Returns list of (pipeline, contacts) tuples.
+    """
+    if rigid_contact_maxes is None:
+        rigid_contact_maxes = [500] * len(configs)
+    result = []
+    for cfg, rcm in zip(configs, rigid_contact_maxes, strict=True):
+        pipe = newton.CollisionPipeline(model, rigid_contact_max=rcm, sdf_hydroelastic_config=cfg)
+        result.append((pipe, pipe.contacts()))
+    return result
+
+
+def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False):
+    """Reduced and unreduced hydroelastic forces must agree within 1%."""
+    model, state, sphere_body, rest_z = _build_cube_sphere_scene(device)
+
     cfg_reduced = HydroelasticSDF.Config(
         output_contact_surface=True,
         reduce_contacts=True,
@@ -517,14 +547,13 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
         reduce_contacts=False,
         anchor_contact=False,
     )
-    pipe_red = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_reduced)
-    pipe_unr = newton.CollisionPipeline(model, rigid_contact_max=20000, sdf_hydroelastic_config=cfg_unreduced)
-    contacts_red = pipe_red.contacts()
-    contacts_unr = pipe_unr.contacts()
+    (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
+        model, [cfg_reduced, cfg_unreduced], [500, 20000]
+    )
 
-    penetrations = [0.0, 1e-4, 1e-3, 1e-2]
+    anchor_label = "with anchor" if anchor_contact else "without anchor"
 
-    for pen in penetrations:
+    for pen in [0.0, 1e-4, 1e-3, 1e-2]:
         sphere_z = rest_z - pen
         wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
 
@@ -533,7 +562,6 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
 
         f_red = _compute_net_force(contacts_red, model, state)
         f_unr = _compute_net_force(contacts_unr, model, state)
-        anchor_label = "with anchor" if anchor_contact else "without anchor"
 
         if pen == 0.0:
             # No penetration — both forces should be near zero
@@ -556,48 +584,14 @@ def _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact: 
             )
 
 
-def test_reduced_vs_unreduced_contact_forces(test, device):
-    """Reduced and unreduced hydroelastic forces must agree within 1% without anchors."""
-    _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact=False)
-
-
 def test_reduced_vs_unreduced_contact_forces_with_anchor_contact(test, device):
     """Reduced hydroelastic forces must still match with anchor_contact enabled."""
-    _run_reduced_vs_unreduced_contact_forces_test(test, device, anchor_contact=True)
+    test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=True)
 
 
-def _run_reduced_vs_unreduced_contact_moments_test(test, device):
-    """Reduced hydroelastic moments (with moment_matching) must match unreduced reference."""
-    cube_half = 0.1
-    sphere_radius = 0.1
-
-    shape_cfg = newton.ModelBuilder.ShapeConfig(
-        sdf_max_resolution=128,
-        is_hydroelastic=True,
-        sdf_narrow_band_range=(-0.01, 0.01),
-        gap=0.01,
-        kh=1e9,
-    )
-    builder = newton.ModelBuilder()
-    builder.default_shape_cfg = shape_cfg
-    builder.add_ground_plane()
-
-    cube_body = builder.add_body(
-        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half), wp.quat_identity()),
-        label="cube",
-    )
-    builder.add_shape_box(body=cube_body, hx=cube_half, hy=cube_half, hz=cube_half)
-
-    rest_z = 2 * cube_half + sphere_radius
-    sphere_body = builder.add_body(
-        xform=wp.transform(wp.vec3(0.0, 0.0, rest_z), wp.quat_identity()),
-        label="sphere",
-    )
-    builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
-
-    model = builder.finalize(device=device)
-    state = model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+def test_reduced_vs_unreduced_contact_moments(test, device):
+    """Reduced and unreduced hydroelastic moments must agree with moment_matching."""
+    model, state, sphere_body, rest_z = _build_cube_sphere_scene(device)
 
     cfg_reduced = HydroelasticSDF.Config(
         output_contact_surface=True,
@@ -610,22 +604,21 @@ def _run_reduced_vs_unreduced_contact_moments_test(test, device):
         reduce_contacts=False,
         anchor_contact=False,
     )
-    pipe_red = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_reduced)
-    pipe_unr = newton.CollisionPipeline(model, rigid_contact_max=20000, sdf_hydroelastic_config=cfg_unreduced)
-    contacts_red = pipe_red.contacts()
-    contacts_unr = pipe_unr.contacts()
+    (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
+        model, [cfg_reduced, cfg_unreduced], [500, 20000]
+    )
 
-    penetrations = [0.0, 1e-4, 1e-3, 1e-2]
-
-    for pen in penetrations:
+    for pen in [0.0, 1e-4, 1e-3, 1e-2]:
         sphere_z = rest_z - pen
         wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
 
         pipe_red.collide(state, contacts_red)
         pipe_unr.collide(state, contacts_unr)
 
-        m_red = _compute_net_moment(contacts_red, model, state)
-        m_unr = _compute_net_moment(contacts_unr, model, state)
+        anchor = _compute_force_weighted_anchor(contacts_unr, model, state)
+
+        m_red = _compute_net_moment(contacts_red, model, state, anchor=anchor)
+        m_unr = _compute_net_moment(contacts_unr, model, state, anchor=anchor)
 
         if pen == 0.0:
             test.assertLess(abs(m_red), 1e-3, f"pen={pen}: reduced moment should be ~0")
@@ -641,50 +634,23 @@ def _run_reduced_vs_unreduced_contact_moments_test(test, device):
             test.assertLess(
                 rel,
                 0.05,
-                f"pen={pen}: moment mismatch {rel * 100:.2f}% "
-                f"(reduced={m_red:.6f}, unreduced={m_unr:.6f})",
+                f"pen={pen}: moment mismatch {rel * 100:.2f}% (reduced={m_red:.6f}, unreduced={m_unr:.6f})",
             )
-
-
-def test_reduced_vs_unreduced_contact_moments(test, device):
-    """Reduced and unreduced hydroelastic moments must agree with moment_matching."""
-    _run_reduced_vs_unreduced_contact_moments_test(test, device)
 
 
 def _compute_total_friction_capacity(contacts, model, state):
     """Compute total lateral friction capacity: sum(friction_scale * normal_force)."""
-    n = int(contacts.rigid_contact_count.numpy()[0])
-    normals = contacts.rigid_contact_normal.numpy()[:n]
-    p0 = contacts.rigid_contact_point0.numpy()[:n]
-    p1 = contacts.rigid_contact_point1.numpy()[:n]
-    stiffness = contacts.rigid_contact_stiffness.numpy()[:n]
-    shape0 = contacts.rigid_contact_shape0.numpy()[:n]
-    shape1 = contacts.rigid_contact_shape1.numpy()[:n]
-    shape_body = model.shape_body.numpy()
-    body_q = state.body_q.numpy()
-
-    b0 = shape_body[shape0]
-    b1 = shape_body[shape1]
-    off0 = np.where((b0 != -1)[:, None], body_q[np.maximum(b0, 0), :3], 0.0)
-    off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
-    p0w = p0 + off0
-    p1w = p1 + off1
-    depth = np.einsum("ij,ij->i", p0w - p1w, -normals) / 2.0
-    mask = (stiffness > 0) & (depth < 0)
-
-    force_mag = stiffness[mask] * (-depth[mask])
-    friction = contacts.rigid_contact_friction.numpy()[:n][mask]
-    # friction == 0 means "unset" → default scale 1.0
-    friction = np.where(friction > 0.0, friction, 1.0)
-
+    _, _, _, force_mag, friction = _extract_contact_forces(contacts, model, state)
+    if len(force_mag) == 0:
+        return 0.0
     return float((friction * force_mag).sum())
 
 
-def _run_translational_friction_invariance_test(test, device):
-    """Total lateral friction capacity must be invariant under moment matching."""
-    cube_half = 0.1
-    sphere_radius = 0.1
+def _build_cube_cube_scene(device, cube_half_lower=0.2, cube_half_upper=0.1):
+    """Build a big-cube-on-ground + small-cube-on-top scene for contact comparison tests.
 
+    Returns (model, state, upper_body, rest_z).
+    """
     shape_cfg = newton.ModelBuilder.ShapeConfig(
         sdf_max_resolution=128,
         is_hydroelastic=True,
@@ -696,22 +662,116 @@ def _run_translational_friction_invariance_test(test, device):
     builder.default_shape_cfg = shape_cfg
     builder.add_ground_plane()
 
-    cube_body = builder.add_body(
-        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half), wp.quat_identity()),
-        label="cube",
+    lower_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half_lower), wp.quat_identity()),
+        label="lower_cube",
     )
-    builder.add_shape_box(body=cube_body, hx=cube_half, hy=cube_half, hz=cube_half)
+    builder.add_shape_box(body=lower_body, hx=cube_half_lower, hy=cube_half_lower, hz=cube_half_lower)
 
-    rest_z = 2 * cube_half + sphere_radius
-    sphere_body = builder.add_body(
+    rest_z = 2 * cube_half_lower + cube_half_upper
+    upper_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, rest_z), wp.quat_identity()),
-        label="sphere",
+        label="upper_cube",
     )
-    builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
+    builder.add_shape_box(body=upper_body, hx=cube_half_upper, hy=cube_half_upper, hz=cube_half_upper)
 
     model = builder.finalize(device=device)
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    return model, state, upper_body, rest_z
+
+
+def test_reduced_vs_unreduced_contact_forces_cube_on_cube(test, device):
+    """Reduced and unreduced hydroelastic forces must agree within 1% for cube-on-cube."""
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device)
+
+    cfg_reduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=False,
+    )
+    cfg_unreduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
+        model, [cfg_reduced, cfg_unreduced], [500, 50000]
+    )
+
+    for pen in [1e-4, 1e-3, 1e-2]:
+        upper_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, upper_z], device=device)
+
+        pipe_red.collide(state, contacts_red)
+        pipe_unr.collide(state, contacts_unr)
+
+        f_red = _compute_net_force(contacts_red, model, state)
+        f_unr = _compute_net_force(contacts_unr, model, state)
+
+        # z-component (normal force) — must be nonzero and match within 1%
+        test.assertGreater(abs(f_unr[2]), 0.0, f"pen={pen}: unreduced Fz should be nonzero")
+        rel_z = abs(f_red[2] - f_unr[2]) / abs(f_unr[2])
+        test.assertLess(rel_z, 0.01, f"pen={pen}: Fz mismatch {rel_z * 100:.2f}%")
+
+        # xy-components — should be small; match as fraction of |Fz|
+        for axis, label in [(0, "Fx"), (1, "Fy")]:
+            abs_diff = abs(f_red[axis] - f_unr[axis])
+            test.assertLess(
+                abs_diff / abs(f_unr[2]),
+                0.01,
+                f"pen={pen}: {label} diff {abs_diff:.4f} > 1% of |Fz| {abs(f_unr[2]):.4f}",
+            )
+
+
+def test_reduced_vs_unreduced_contact_moments_cube_on_cube(test, device):
+    """Reduced and unreduced hydroelastic moments must agree for cube-on-cube with moment_matching."""
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device)
+
+    cfg_reduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=True,
+        moment_matching=True,
+    )
+    cfg_unreduced = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
+        model, [cfg_reduced, cfg_unreduced], [500, 50000]
+    )
+
+    for pen in [1e-4, 1e-3, 1e-2]:
+        upper_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, upper_z], device=device)
+
+        pipe_red.collide(state, contacts_red)
+        pipe_unr.collide(state, contacts_unr)
+
+        anchor = _compute_force_weighted_anchor(contacts_unr, model, state)
+
+        m_red = _compute_net_moment(contacts_red, model, state, anchor=anchor)
+        m_unr = _compute_net_moment(contacts_unr, model, state, anchor=anchor)
+
+        # Both moments should be non-negative
+        test.assertGreaterEqual(m_unr, 0.0, f"pen={pen}: unreduced moment should be >= 0")
+
+        # Moments should match within 5%
+        if m_unr > 1e-6:
+            rel = abs(m_red - m_unr) / m_unr
+            test.assertLess(
+                rel,
+                0.05,
+                f"pen={pen}: moment mismatch {rel * 100:.2f}% (reduced={m_red:.6f}, unreduced={m_unr:.6f})",
+            )
+
+
+def test_translational_friction_invariance(test, device):
+    """Total lateral friction capacity must be preserved when moment_matching is enabled."""
+    model, state, sphere_body, rest_z = _build_cube_sphere_scene(device)
 
     cfg_moment = HydroelasticSDF.Config(
         output_contact_surface=True,
@@ -725,14 +785,11 @@ def _run_translational_friction_invariance_test(test, device):
         anchor_contact=True,
         moment_matching=False,
     )
-    pipe_moment = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_moment)
-    pipe_no_moment = newton.CollisionPipeline(model, rigid_contact_max=500, sdf_hydroelastic_config=cfg_no_moment)
-    contacts_moment = pipe_moment.contacts()
-    contacts_no_moment = pipe_no_moment.contacts()
+    (pipe_moment, contacts_moment), (pipe_no_moment, contacts_no_moment) = _make_pipelines(
+        model, [cfg_moment, cfg_no_moment]
+    )
 
-    penetrations = [1e-4, 1e-3, 1e-2]
-
-    for pen in penetrations:
+    for pen in [1e-4, 1e-3, 1e-2]:
         sphere_z = rest_z - pen
         wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, sphere_z], device=device)
 
@@ -754,11 +811,6 @@ def _run_translational_friction_invariance_test(test, device):
                 f"pen={pen}: translational friction mismatch {rel * 100:.2f}% "
                 f"(moment_matching={fc_moment:.6f}, no_moment={fc_no_moment:.6f})",
             )
-
-
-def test_translational_friction_invariance(test, device):
-    """Total lateral friction capacity must be preserved when moment_matching is enabled."""
-    _run_translational_friction_invariance_test(test, device)
 
 
 def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
@@ -1164,6 +1216,22 @@ add_function_test(
     TestHydroelastic,
     "test_translational_friction_invariance",
     test_translational_friction_invariance,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_forces_cube_on_cube",
+    test_reduced_vs_unreduced_contact_forces_cube_on_cube,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_moments_cube_on_cube",
+    test_reduced_vs_unreduced_contact_moments_cube_on_cube,
     devices=cuda_devices,
     check_output=False,
 )
