@@ -206,11 +206,11 @@ class RenderContext:
         self.bvh_particles = None
         self.bvh_particles_group_roots = None
         self.triangle_mesh = None
-        self.particles_position = None
-        self.particles_radius = None
-        self.particles_world_index = None
-        self.triangle_points = None
-        self.triangle_indices = None
+        self.__triangle_points = None
+        self.__triangle_indices = None
+        self.__particles_position = None
+        self.__particles_radius = None
+        self.__particles_world_index = None
 
         self.shape_source_ptr = model.shape_source_ptr
         self.shape_bounds = wp.empty((model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.device)
