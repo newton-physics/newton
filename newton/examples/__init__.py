@@ -461,6 +461,12 @@ def create_parser():
         metavar="SECONDS",
         help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
     )
+    parser.add_argument(
+        "--realtime",
+        action="store_true",
+        default=False,
+        help="Use real-time process priority in benchmark mode (Windows only).",
+    )
 
     return parser
 
@@ -527,7 +533,7 @@ def default_args(parser=None):
 _BENCHMARK_PRIORITY_WARNING = "Benchmark running at default process priority (results may vary)."
 
 
-def _raise_benchmark_priority():
+def _raise_benchmark_priority(realtime=False):
     """Raise process/thread priority for stable benchmark measurements."""
     import sys  # noqa: PLC0415
 
@@ -535,7 +541,8 @@ def _raise_benchmark_priority():
         try:
             import psutil  # noqa: PLC0415
 
-            psutil.Process().nice(psutil.REALTIME_PRIORITY_CLASS)
+            priority = psutil.REALTIME_PRIORITY_CLASS if realtime else psutil.HIGH_PRIORITY_CLASS
+            psutil.Process().nice(priority)
         except ModuleNotFoundError:
             print(f"{_BENCHMARK_PRIORITY_WARNING} Install 'psutil' to automatically raise priority.")
     elif sys.platform == "linux":
@@ -598,7 +605,7 @@ def init(parser=None):
     # Benchmark mode forces null viewer and raises process/thread priority
     if args.benchmark is not False:
         args.viewer = "null"
-        _raise_benchmark_priority()
+        _raise_benchmark_priority(realtime=getattr(args, "realtime", False))
 
     # Create viewer based on type
     if args.viewer == "gl":
