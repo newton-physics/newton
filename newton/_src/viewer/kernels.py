@@ -430,6 +430,14 @@ def compute_inertia_box_lines(
     # Compute principal inertia axes and extents
     rot, principal_inertia = wp.eig3(body_inertia[body_id])
 
+    # Skip eigenvector rotation for near-isotropic inertia (e.g., cubes, spheres).
+    # When eigenvalues are nearly equal, eig3 returns arbitrary eigenvectors
+    # causing the wireframe box to appear randomly rotated.
+    max_eig = wp.max(principal_inertia)
+    min_eig = wp.min(principal_inertia)
+    if min_eig > 0.0 and max_eig < 1.01 * min_eig:
+        rot = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
     box_inertia = principal_inertia * inv_m * (12.0 / 8.0)
     sx = wp.sqrt(wp.abs(box_inertia[2] + box_inertia[1] - box_inertia[0]))
     sy = wp.sqrt(wp.abs(box_inertia[0] + box_inertia[2] - box_inertia[1]))
