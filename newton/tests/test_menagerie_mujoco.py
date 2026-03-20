@@ -2739,7 +2739,7 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     robot_folder = "aloha"
     num_steps = 0
     # TODO: dof_damping, jnt_range, eq_, ngeom differ — multiple import issues
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_range"}
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
