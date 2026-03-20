@@ -811,35 +811,45 @@
 <h1>newton.solvers.SolverImplicitMPM<a class="headerlink" href="#newton-solvers-solverimplicitmpm" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverImplicitMPM</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/implicit_mpm/solver_implicit_mpm.py#L1147"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverImplicitMPM" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverImplicitMPM</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">temporary_store</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_timers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/implicit_mpm/solver_implicit_mpm.py#L577"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverImplicitMPM" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference internal" href="newton.solvers.SolverBase.html#newton.solvers.SolverBase" title="newton._src.solvers.solver.SolverBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverBase</span></code></a></p>
-<p>Implicit MPM solver.</p>
-<p>This solver implements an implicit MPM algorithm for granular materials,
-roughly following [1] but with a GPU-friendly rheology solver.</p>
-<p>This variant of MPM is mostly interesting for very stiff materials, especially
-in the fully inelastic limit, but is not as versatile as more traditional explicit approaches.</p>
+<p>Implicit MPM solver for granular and elasto-plastic materials.</p>
+<p>Implements an implicit Material Point Method (MPM) algorithm roughly
+following [1], extended with a GPU-friendly rheology solver supporting
+pressure-dependent yield (Drucker-Prager), viscosity, dilatancy, and
+isotropic hardening/softening.</p>
+<p>This variant is particularly well-suited for very stiff materials and
+the fully inelastic limit. It is less versatile than traditional explicit
+MPM but offers unconditional stability with respect to the time step.</p>
+<p>Call <a class="reference internal" href="#newton.solvers.SolverImplicitMPM.register_custom_attributes" title="newton.solvers.SolverImplicitMPM.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a> on your <a class="reference internal" href="newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>
+before building the model to enable the MPM-specific per-particle material
+parameters and state variables (e.g. <code class="docutils literal notranslate"><span class="pre">mpm:young_modulus</span></code>,
+<code class="docutils literal notranslate"><span class="pre">mpm:friction</span></code>, <code class="docutils literal notranslate"><span class="pre">mpm:particle_elastic_strain</span></code>).</p>
 <p>[1] <a class="reference external" href="https://doi.org/10.1145/2897824.2925877">https://doi.org/10.1145/2897824.2925877</a></p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – The model to solve.</p></li>
-<li><p><strong>config</strong> (<a class="reference internal" href="#newton.solvers.SolverImplicitMPM.Config" title="newton._src.solvers.implicit_mpm.solver_implicit_mpm.SolverImplicitMPM.Config"><em>Config</em></a>) – The solver configuration.</p></li>
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – The model to simulate.</p></li>
+<li><p><strong>config</strong> (<a class="reference internal" href="#newton.solvers.SolverImplicitMPM.Config" title="newton._src.solvers.implicit_mpm.solver_implicit_mpm.SolverImplicitMPM.Config"><em>Config</em></a>) – Solver configuration. See <a class="reference internal" href="#newton.solvers.SolverImplicitMPM.Config" title="newton.solvers.SolverImplicitMPM.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverImplicitMPM.Config</span></code></a>.</p></li>
+<li><p><strong>temporary_store</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.fem.TemporaryStore.html#warp.fem.TemporaryStore" title="(in Warp v1.12.0)"><em>TemporaryStore</em></a><em> | </em><em>None</em>) – Optional Warp FEM temporary store for reusing scratch
+allocations across steps.</p></li>
+<li><p><strong>verbose</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><em>None</em>) – Enable verbose solver output. Defaults to <code class="docutils literal notranslate"><span class="pre">wp.config.verbose</span></code>.</p></li>
+<li><p><strong>enable_timers</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Enable per-section wall-clock timings.</p></li>
 </ul>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>The solver.</p>
 </dd>
 </dl>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Config</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">max_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">250</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">strain_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'P0'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'gauss-seidel'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmstart_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_velocity_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'instantaneous'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">voxel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grid_type</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sparse'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grid_padding</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_active_cell_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">transfer_scheme</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'apic'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">critical_fraction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">air_drag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_normal_from_sdf_gradient</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'Q1'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Config</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">max_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">250</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0001</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'gauss-seidel'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmstart_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_velocity_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'forward'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">voxel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grid_type</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sparse'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grid_padding</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_active_cell_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">transfer_scheme</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'apic'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integration_scheme</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'pic'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">critical_fraction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">air_drag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_normal_from_sdf_gradient</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'Q1'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">strain_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'P0'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">velocity_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'Q1'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>Implicit MPM solver configuration.</p>
+<p>Configuration for <a class="reference internal" href="#newton.solvers.SolverImplicitMPM" title="newton.solvers.SolverImplicitMPM"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverImplicitMPM</span></code></a>.</p>
+<p>Per-particle properties can be configured using custom attributes on the Model.
+See <a class="reference internal" href="#newton.solvers.SolverImplicitMPM.register_custom_attributes" title="newton.solvers.SolverImplicitMPM.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">SolverImplicitMPM.register_custom_attributes()</span></code></a> for details.</p>
 <dl class="field-list simple">
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">max_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">250</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">strain_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'P0'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'gauss-seidel'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmstart_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_velocity_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'instantaneous'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">voxel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grid_type</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sparse'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grid_padding</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_active_cell_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">transfer_scheme</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'apic'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">critical_fraction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">air_drag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_normal_from_sdf_gradient</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'Q1'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">max_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">250</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0001</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'gauss-seidel'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmstart_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_velocity_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'forward'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">voxel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grid_type</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sparse'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grid_padding</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_active_cell_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">transfer_scheme</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'apic'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integration_scheme</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'pic'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">critical_fraction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">air_drag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_normal_from_sdf_gradient</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'Q1'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">strain_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'P0'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">velocity_basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'Q1'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.__init__" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
@@ -869,8 +879,8 @@ in the fully inelastic limit, but is not as versatile as more traditional explic
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.collider_velocity_mode">
-<span class="sig-name descname"><span class="pre">collider_velocity_mode</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'instantaneous'</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.collider_velocity_mode" title="Link to this definition">#</a></dt>
-<dd><p>Collider velocity computation mode. May be one of instantaneous, finite_difference.</p>
+<span class="sig-name descname"><span class="pre">collider_velocity_mode</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'forward'</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.collider_velocity_mode" title="Link to this definition">#</a></dt>
+<dd><p>Collider velocity computation mode, may be one of ‘forward’ or ‘backward’. ‘forward’ uses the current velocity, ‘backward’ uses the previous timestep position. Deprecated aliases ‘instantaneous’ (=’forward’) and ‘finite_difference’ (=’backward’) are also accepted.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -892,6 +902,12 @@ in the fully inelastic limit, but is not as versatile as more traditional explic
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.integration_scheme">
+<span class="sig-name descname"><span class="pre">integration_scheme</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'pic'</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.integration_scheme" title="Link to this definition">#</a></dt>
+<dd><p>Integration scheme controlling shape-function support. May be one of pic, gimp.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.max_active_cell_count">
 <span class="sig-name descname"><span class="pre">max_active_cell_count</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">-1</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.max_active_cell_count" title="Link to this definition">#</a></dt>
 <dd><p>Maximum number of active cells to use for active subsets of dense grids. -1 means unlimited.</p>
@@ -906,18 +922,18 @@ in the fully inelastic limit, but is not as versatile as more traditional explic
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.solver">
 <span class="sig-name descname"><span class="pre">solver</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'gauss-seidel'</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.solver" title="Link to this definition">#</a></dt>
-<dd><p>Solver to use for the rheology solver. May be one of gauss-seidel, jacobi.</p>
+<dd><p>Solver to use for the rheology solver. May be one of gauss-seidel, jacobi, cg.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.strain_basis">
 <span class="sig-name descname"><span class="pre">strain_basis</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'P0'</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.strain_basis" title="Link to this definition">#</a></dt>
-<dd><p>Strain basis functions. May be one of P0, Q1</p>
+<dd><p>Strain basis functions. May be one of P0, P1d, Q1, Q1d, or pic[n].</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.tolerance">
-<span class="sig-name descname"><span class="pre">tolerance</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1e-05</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.tolerance" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">tolerance</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0.0001</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.tolerance" title="Link to this definition">#</a></dt>
 <dd><p>Tolerance for the rheology solver.</p>
 </dd></dl>
 
@@ -925,6 +941,17 @@ in the fully inelastic limit, but is not as versatile as more traditional explic
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.transfer_scheme">
 <span class="sig-name descname"><span class="pre">transfer_scheme</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'apic'</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.transfer_scheme" title="Link to this definition">#</a></dt>
 <dd><p>Transfer scheme to use for particle-grid transfers. May be one of apic, pic.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.velocity_basis">
+<span class="sig-name descname"><span class="pre">velocity_basis</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'Q1'</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.velocity_basis" title="Link to this definition">#</a></dt>
+<dd><p>B2 (quadratic b-spline), Q1 (trilinear)</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Velocity basis function string. Examples</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py attribute">
@@ -936,7 +963,7 @@ in the fully inelastic limit, but is not as versatile as more traditional explic
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.Config.warmstart_mode">
 <span class="sig-name descname"><span class="pre">warmstart_mode</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'auto'</span></em><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.Config.warmstart_mode" title="Link to this definition">#</a></dt>
-<dd><p>Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid.</p>
+<dd><p>Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid, smoothed.</p>
 </dd></dl>
 
 </dd></dl>
@@ -951,18 +978,23 @@ for the implicit MPM solver.</p>
 <dt>Attributes registered on Model (per-particle):</dt><dd><ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:young_modulus</span></code>: Young’s modulus in Pa</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:poisson_ratio</span></code>: Poisson’s ratio for elasticity</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">mpm:damping</span></code>: Viscous damping coefficient</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">mpm:hardening</span></code>: Hardening factor for plasticity</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mpm:damping</span></code>: Elastic damping relaxation time in seconds</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:friction</span></code>: Friction coefficient</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:yield_pressure</span></code>: Yield pressure in Pa</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:tensile_yield_ratio</span></code>: Tensile yield ratio</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:yield_stress</span></code>: Deviatoric yield stress in Pa</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mpm:hardening</span></code>: Hardening factor for plasticity</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mpm:hardening_rate</span></code>: Hardening rate for plasticity</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mpm:softening_rate</span></code>: Softening rate for plasticity</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mpm:dilatancy</span></code>: Dilatancy factor for plasticity</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mpm:viscosity</span></code>: Viscosity for plasticity [Pa·s]</p></li>
 </ul>
 </dd>
 <dt>Attributes registered on State (per-particle):</dt><dd><ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:particle_qd_grad</span></code>: Velocity gradient for APIC transfer</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:particle_elastic_strain</span></code>: Elastic deformation gradient</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:particle_Jp</span></code>: Determinant of plastic deformation gradient</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mpm:particle_stress</span></code>: Cauchy stress tensor [Pa]</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mpm:particle_transform</span></code>: Overall deformation gradient for rendering</p></li>
 </ul>
 </dd>
@@ -973,8 +1005,24 @@ for the implicit MPM solver.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">temporary_store</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_timers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.__init__" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.collect_collider_impulses">
+<span class="sig-name descname"><span class="pre">collect_collider_impulses</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.collect_collider_impulses" title="Link to this definition">#</a></dt>
+<dd><p>Collect current collider impulses and their application positions.</p>
+<dl class="simple">
+<dt>Returns a tuple of 3 arrays:</dt><dd><ul class="simple">
+<li><p>Impulse values in world units.</p></li>
+<li><p>Collider positions in world units.</p></li>
+<li><p>Collider id, that can be mapped back to the model’s body ids using the <code class="docutils literal notranslate"><span class="pre">collider_body_index</span></code> property.</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="field-list simple">
 </dl>
 </dd></dl>
 
@@ -982,6 +1030,22 @@ for the implicit MPM solver.</p>
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.notify_model_changed">
 <span class="sig-name descname"><span class="pre">notify_model_changed</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">flags</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.notify_model_changed" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.project_outside">
+<span class="sig-name descname"><span class="pre">project_outside</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gap</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.project_outside" title="Link to this definition">#</a></dt>
+<dd><p>Project particles outside of colliders, and adjust their velocity and velocity gradients</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>state_in</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The input state.</p></li>
+<li><p><strong>state_out</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The output state. Only particle_q, particle_qd, and particle_qd_grad are written.</p></li>
+<li><p><strong>dt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The time step, for extrapolating the collider end-of-step positions from its current position and velocity.</p></li>
+<li><p><strong>gap</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).</p></li>
+</ul>
+</dd>
 </dl>
 </dd></dl>
 
@@ -1000,12 +1064,15 @@ for the implicit MPM solver.</p>
 <dd class="field-even"><p>A <code class="docutils literal notranslate"><span class="pre">wp.array</span></code> with shape <code class="docutils literal notranslate"><span class="pre">(num_particles,</span> <span class="pre">grains_per_particle)</span></code> of
 type <code class="docutils literal notranslate"><span class="pre">wp.vec3</span></code> containing grain positions.</p>
 </dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><em>array</em></a></p>
+</dd>
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.setup_collider">
-<span class="sig-name descname"><span class="pre">setup_collider</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">collider_meshes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_body_ids</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_thicknesses</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_friction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_adhesion</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_projection_threshold</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_com</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_mass</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_inv_inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.setup_collider" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">setup_collider</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">collider_meshes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_body_ids</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_margins</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_friction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_adhesion</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_projection_threshold</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_com</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_mass</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_inv_inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_q</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.setup_collider" title="Link to this definition">#</a></dt>
 <dd><p>Configure collider geometry and material properties.</p>
 <p>By default, collisions are set up against all shapes in the model with
 <code class="docutils literal notranslate"><span class="pre">newton.ShapeFlags.COLLIDE_PARTICLES</span></code>. Use this method to customize
@@ -1015,7 +1082,7 @@ collider sources, materials, or to read colliders from a different model.</p>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>collider_meshes</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.Mesh.html#warp.Mesh" title="(in Warp v1.12.0)"><em>Mesh</em></a><em>] </em><em>| </em><em>None</em>) – Warp triangular meshes used as colliders.</p></li>
 <li><p><strong>collider_body_ids</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>] </em><em>| </em><em>None</em>) – For dynamic colliders, per-mesh body ids.</p></li>
-<li><p><strong>collider_thicknesses</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Per-mesh signed distance offsets (m).</p></li>
+<li><p><strong>collider_margins</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Per-mesh signed distance offsets (m).</p></li>
 <li><p><strong>collider_friction</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Per-mesh Coulomb friction coefficients.</p></li>
 <li><p><strong>collider_adhesion</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Per-mesh adhesion (Pa).</p></li>
 <li><p><strong>collider_projection_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Per-mesh projection threshold (m).</p></li>
@@ -1032,7 +1099,48 @@ collider sources, materials, or to read colliders from a different model.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.step">
 <span class="sig-name descname"><span class="pre">step</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">control</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.step" title="Link to this definition">#</a></dt>
-<dd><dl class="field-list simple">
+<dd><p>Advance the simulation by one time step.</p>
+<p>Transfers particle data to the grid, solves the implicit rheology
+system, and transfers the result back to update particle positions,
+velocities, and stress.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>state_in</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Input state at the start of the step.</p></li>
+<li><p><strong>state_out</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Output state written with updated particle data.
+May be the same object as <code class="docutils literal notranslate"><span class="pre">state_in</span></code> for in-place stepping.</p></li>
+<li><p><strong>control</strong> (<a class="reference internal" href="newton.Control.html#newton.Control" title="newton._src.sim.control.Control"><em>Control</em></a>) – Control input (unused; material parameters come from the model).</p></li>
+<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a>) – Contact information (unused; collisions are handled internally).</p></li>
+<li><p><strong>dt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Time step duration [s].</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.update_particle_frames">
+<span class="sig-name descname"><span class="pre">update_particle_frames</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_prev</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_stretch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.25</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_stretch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2.0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.update_particle_frames" title="Link to this definition">#</a></dt>
+<dd><p>Update per-particle deformation frames for rendering and projection.</p>
+<p>Integrates the particle deformation gradient using the velocity gradient
+and clamps its principal stretches to the provided bounds for
+robustness.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverImplicitMPM.update_render_grains">
+<span class="sig-name descname"><span class="pre">update_render_grains</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_prev</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grains</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverImplicitMPM.update_render_grains" title="Link to this definition">#</a></dt>
+<dd><p>Advect grain samples with the grid velocity and keep them inside the deformed particle.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>state_prev</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Previous state (t_n).</p></li>
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Current state (t_{n+1}).</p></li>
+<li><p><strong>grains</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><em>array</em></a>) – 2D array of grain positions per particle to be updated in place. See <code class="docutils literal notranslate"><span class="pre">sample_render_grains</span></code>.</p></li>
+<li><p><strong>dt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Time step duration.</p></li>
+</ul>
+</dd>
 </dl>
 </dd></dl>
 
@@ -1090,22 +1198,28 @@ collider sources, materials, or to read colliders from a different model.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.critical_fraction"><code class="docutils literal notranslate"><span class="pre">critical_fraction</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.grid_padding"><code class="docutils literal notranslate"><span class="pre">grid_padding</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.grid_type"><code class="docutils literal notranslate"><span class="pre">grid_type</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.integration_scheme"><code class="docutils literal notranslate"><span class="pre">integration_scheme</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.max_active_cell_count"><code class="docutils literal notranslate"><span class="pre">max_active_cell_count</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.max_iterations"><code class="docutils literal notranslate"><span class="pre">max_iterations</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.solver"><code class="docutils literal notranslate"><span class="pre">solver</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.strain_basis"><code class="docutils literal notranslate"><span class="pre">strain_basis</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.tolerance"><code class="docutils literal notranslate"><span class="pre">tolerance</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.transfer_scheme"><code class="docutils literal notranslate"><span class="pre">transfer_scheme</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.velocity_basis"><code class="docutils literal notranslate"><span class="pre">velocity_basis</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.voxel_size"><code class="docutils literal notranslate"><span class="pre">voxel_size</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.Config.warmstart_mode"><code class="docutils literal notranslate"><span class="pre">warmstart_mode</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.register_custom_attributes"><code class="docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.collect_collider_impulses"><code class="docutils literal notranslate"><span class="pre">collect_collider_impulses()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.notify_model_changed"><code class="docutils literal notranslate"><span class="pre">notify_model_changed()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.project_outside"><code class="docutils literal notranslate"><span class="pre">project_outside()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.sample_render_grains"><code class="docutils literal notranslate"><span class="pre">sample_render_grains()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.setup_collider"><code class="docutils literal notranslate"><span class="pre">setup_collider()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.step"><code class="docutils literal notranslate"><span class="pre">step()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.update_particle_frames"><code class="docutils literal notranslate"><span class="pre">update_particle_frames()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.update_render_grains"><code class="docutils literal notranslate"><span class="pre">update_render_grains()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.collider_body_index"><code class="docutils literal notranslate"><span class="pre">collider_body_index</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverImplicitMPM.voxel_size"><code class="docutils literal notranslate"><span class="pre">voxel_size</span></code></a></li>
 </ul>
