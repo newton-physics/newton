@@ -435,8 +435,8 @@ def compute_inertia_box_lines(
     # causing the wireframe box to appear randomly rotated.
     max_eig = wp.max(principal_inertia)
     min_eig = wp.min(principal_inertia)
-    if min_eig > 0.0 and max_eig < 1.01 * min_eig:
-        rot = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    if min_eig > 0.0 and max_eig < 1.01 * min_eig:  # within 1% → isotropic
+        rot = wp.identity(3, float)
 
     box_inertia = principal_inertia * inv_m * (12.0 / 8.0)
     sx = wp.sqrt(wp.abs(box_inertia[2] + box_inertia[1] - box_inertia[0]))
