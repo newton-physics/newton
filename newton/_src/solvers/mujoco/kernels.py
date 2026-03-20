@@ -682,6 +682,7 @@ def convert_mjw_contacts_to_newton_kernel(
     mj_nacon: wp.array(dtype=wp.int32),
     mj_contact_pos: wp.array(dtype=wp.vec3),
     mj_contact_frame: wp.array(dtype=wp.mat33f),
+    mj_contact_dist: wp.array(dtype=float),
     mj_contact_dim: wp.array(dtype=int),
     mj_contact_geom: wp.array(dtype=wp.vec2i),
     mj_contact_efc_address: wp.array2d(dtype=int),

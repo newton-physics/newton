@@ -3550,6 +3550,7 @@ class SolverMuJoCo(SolverBase):
                 mj_data.nacon,
                 mj_contact.pos,
                 mj_contact.frame,
+                mj_contact.dist,
                 mj_contact.dim,
                 mj_contact.geom,
                 mj_contact.efc_address,
