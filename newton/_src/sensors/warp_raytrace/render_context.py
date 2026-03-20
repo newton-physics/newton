@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
+import numpy as np
 import warp as wp
 
-from ...geometry import Gaussian
+from ...geometry import Gaussian, GeoType, Mesh, ShapeFlags
+from ...sim import Model, State
+from ...utils import load_texture, normalize_texture
 from .bvh import (
     compute_bvh_group_roots,
     compute_particle_bvh_bounds,
@@ -19,22 +24,112 @@ from .types import GaussianRenderMode, MeshData, RenderOrder, TextureData
 from .utils import Utils
 
 
+@wp.kernel(enable_backward=False)
+def convert_newton_transform(
+    in_body_transforms: wp.array(dtype=wp.transform),
+    in_shape_body: wp.array(dtype=wp.int32),
+    in_transform: wp.array(dtype=wp.transformf),
+    in_scale: wp.array(dtype=wp.vec3f),
+    out_transforms: wp.array(dtype=wp.transformf),
+    out_sizes: wp.array(dtype=wp.vec3f),
+):
+    tid = wp.tid()
+
+    body = in_shape_body[tid]
+    body_transform = wp.transform_identity()
+    if body >= 0:
+        body_transform = in_body_transforms[body]
+
+    out_transforms[tid] = wp.mul(body_transform, in_transform[tid])
+    out_sizes[tid] = in_scale[tid]
+
+
+@wp.func
+def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
+    if shape_type == GeoType.BOX:
+        return True
+    if shape_type == GeoType.CAPSULE:
+        return True
+    if shape_type == GeoType.CYLINDER:
+        return True
+    if shape_type == GeoType.ELLIPSOID:
+        return True
+    if shape_type == GeoType.PLANE:
+        return True
+    if shape_type == GeoType.SPHERE:
+        return True
+    if shape_type == GeoType.CONE:
+        return True
+    if shape_type == GeoType.MESH:
+        return True
+    if shape_type == GeoType.GAUSSIAN:
+        return True
+    wp.printf("Unsupported shape geom type: %d\n", shape_type)
+    return False
+
+
+@wp.kernel(enable_backward=False)
+def compute_enabled_shapes(
+    shape_type: wp.array(dtype=wp.int32),
+    shape_flags: wp.array(dtype=wp.int32),
+    out_shape_enabled: wp.array(dtype=wp.uint32),
+    out_shape_enabled_count: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+
+    if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
+        return
+
+    if not is_supported_shape_type(shape_type[tid]):
+        return
+
+    index = wp.atomic_add(out_shape_enabled_count, 0, 1)
+    out_shape_enabled[index] = wp.uint32(tid)
+
+
 class RenderContext:
     @dataclass(unsafe_hash=True)
     class Config:
+        """Raytrace render settings shared across all worlds."""
+
         enable_global_world: bool = True
-        enable_textures: bool = True
-        enable_shadows: bool = True
+        """Include shapes that belong to no specific world."""
+
+        enable_textures: bool = False
+        """Enable texture-mapped rendering for meshes."""
+
+        enable_shadows: bool = False
+        """Enable shadow rays for directional lights."""
+
         enable_ambient_lighting: bool = True
+        """Enable ambient lighting for the scene."""
+
         enable_particles: bool = True
+        """Enable particle rendering."""
+
         enable_backface_culling: bool = True
+        """Cull back-facing triangles."""
+
         render_order: int = RenderOrder.PIXEL_PRIORITY
+        """Render traversal order (see :class:`RenderOrder`)."""
+
         tile_width: int = 16
+        """Tile width [px] for :attr:`RenderOrder.TILED` traversal."""
+
         tile_height: int = 8
+        """Tile height [px] for :attr:`RenderOrder.TILED` traversal."""
+
         max_distance: float = 1000.0
+        """Maximum ray distance [m]."""
+
         gaussians_mode: int = GaussianRenderMode.FAST
+        """Gaussian splatting render mode (see :class:`GaussianRenderMode`)."""
+
         gaussians_min_transmittance: float = 0.49
+        """Minimum transmittance before early-out during Gaussian rendering."""
+
         gaussians_max_num_hits: int = 20
+        """Maximum Gaussian hits accumulated per ray."""
 
     @dataclass(unsafe_hash=True)
     class State:
@@ -104,30 +199,69 @@ class RenderContext:
         self.lights_position: wp.array(dtype=wp.vec3f) = None
         self.lights_orientation: wp.array(dtype=wp.vec3f) = None
 
-    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.uint32, device=self.device)
+    def init_from_model(self, model: Model, load_textures: bool):
+        self.shape_source_ptr = model.shape_source_ptr
+        self.shape_bounds = wp.empty((model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.device)
 
-    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.float32, ndim=4
-    ):
-        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.float32, device=self.device)
+        if model.particle_q is not None and model.particle_q.shape[0]:
+            self.particles_position = model.particle_q
+            self.particles_radius = model.particle_radius
+            self.particles_world_index = model.particle_world
+            if model.tri_indices is not None and model.tri_indices.shape[0]:
+                self.triangle_points = model.particle_q
+                self.triangle_indices = model.tri_indices.flatten()
+                self.config.enable_particles = False
 
-    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.uint32, device=self.device)
+        self.shape_enabled = wp.empty(model.shape_count, dtype=wp.uint32, device=self.device)
+        self.shape_types = model.shape_type
+        self.shape_sizes = wp.empty(model.shape_count, dtype=wp.vec3f, device=self.device)
+        self.shape_transforms = wp.empty(model.shape_count, dtype=wp.transformf, device=self.device)
 
-    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.vec3f, ndim=4
-    ):
-        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.vec3f, device=self.device)
+        self.shape_world_index = model.shape_world
+        self.gaussians_data = model.gaussians_data
 
-    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        return wp.zeros((self.world_count, camera_count, height, width), dtype=wp.uint32, device=self.device)
+        self.__load_texture_and_mesh_data(model, load_textures)
+
+        colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(model.shape_source)]
+        self.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.device)
+
+        num_enabled_shapes = wp.zeros(1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=compute_enabled_shapes,
+            dim=model.shape_count,
+            inputs=[
+                model.shape_type,
+                model.shape_flags,
+                self.shape_enabled,
+                num_enabled_shapes,
+            ],
+            device=self.device,
+        )
+        self.shape_count_total = model.shape_count
+        self.shape_count_enabled = int(num_enabled_shapes.numpy()[0])
+        self.utils.compute_shape_bounds()
+
+    def update(self, model: Model, state: State):
+        if self.has_shapes:
+            wp.launch(
+                kernel=convert_newton_transform,
+                dim=model.shape_count,
+                inputs=[
+                    state.body_q,
+                    model.shape_body,
+                    model.shape_transform,
+                    model.shape_scale,
+                    self.shape_transforms,
+                    self.shape_sizes,
+                ],
+                device=self.device,
+            )
+
+        if self.has_triangle_mesh:
+            self.triangle_points = state.particle_q
+
+        if self.has_particles:
+            self.particles_position = state.particle_q
 
     def refit_bvh(self):
         self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(
@@ -458,3 +592,136 @@ class RenderContext:
             ],
             device=self.device,
         )
+
+    def __get_shape_color(self, index: int, shape: Any):
+        SHAPE_COLOR_MAP = [
+            (68 / 255.0, 119 / 255.0, 170 / 255.0),  # blue
+            (102 / 255.0, 204 / 255.0, 238 / 255.0),  # cyan
+            (34 / 255.0, 136 / 255.0, 51 / 255.0),  # green
+            (204 / 255.0, 187 / 255.0, 68 / 255.0),  # yellow
+            (238 / 255.0, 102 / 255.0, 119 / 255.0),  # red
+            (170 / 255.0, 51 / 255.0, 119 / 255.0),  # magenta
+            (187 / 255.0, 187 / 255.0, 187 / 255.0),  # grey
+            (238 / 255.0, 153 / 255.0, 51 / 255.0),  # orange
+            (0 / 255.0, 153 / 255.0, 136 / 255.0),  # teal
+        ]
+
+        if color := getattr(shape, "color", None):
+            return color
+        return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
+
+    def __load_texture_and_mesh_data(self, model: Model, load_textures: bool):
+        self.__mesh_data = []
+        self.__texture_data = []
+
+        texture_hashes = {}
+        mesh_hashes = {}
+
+        mesh_data_ids = []
+        texture_data_ids = []
+
+        for shape in model.shape_source:
+            if isinstance(shape, Mesh):
+                if shape.texture is not None and load_textures:
+                    if shape.texture_hash not in texture_hashes:
+                        pixels = load_texture(shape.texture)
+                        if pixels is None:
+                            raise ValueError(f"Failed to load texture: {shape.texture}")
+
+                        # Normalize texture to ensure a consistent channel layout and dtype
+                        pixels = normalize_texture(pixels, require_channels=True)
+                        if pixels.dtype != np.uint8:
+                            pixels = pixels.astype(np.uint8, copy=False)
+
+                        texture_hashes[shape.texture_hash] = len(self.__texture_data)
+
+                        data = TextureData()
+                        data.texture = wp.Texture2D(
+                            pixels,
+                            filter_mode=wp.TextureFilterMode.LINEAR,
+                            address_mode=wp.TextureAddressMode.WRAP,
+                            normalized_coords=True,
+                            dtype=wp.uint8,
+                            num_channels=4,
+                            device=self.device,
+                        )
+                        data.repeat = wp.vec2f(1.0, 1.0)
+                        self.__texture_data.append(data)
+
+                    texture_data_ids.append(texture_hashes[shape.texture_hash])
+                else:
+                    texture_data_ids.append(-1)
+
+                if shape.uvs is not None or shape.normals is not None:
+                    if shape not in mesh_hashes:
+                        mesh_hashes[shape] = len(self.__mesh_data)
+
+                        data = MeshData()
+                        if shape.uvs is not None:
+                            data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.device)
+                        if shape.normals is not None:
+                            data.normals = wp.array(shape.normals, dtype=wp.vec3f, device=self.device)
+                        self.__mesh_data.append(data)
+
+                    mesh_data_ids.append(mesh_hashes[shape])
+                else:
+                    mesh_data_ids.append(-1)
+            else:
+                texture_data_ids.append(-1)
+                mesh_data_ids.append(-1)
+
+        self.texture_data = wp.array(self.__texture_data, dtype=TextureData, device=self.device)
+        self.shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
+
+        self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
+        self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
+
+    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        warnings.warn(
+            "RenderContext.create_color_image_output is deprecated, use SensorTiledCamera.create_color_image_output instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_color_image_output(width, height, camera_count)
+
+    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.float32, ndim=4
+    ):
+        warnings.warn(
+            "RenderContext.create_depth_image_output is deprecated, use SensorTiledCamera.create_depth_image_output instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_depth_image_output(width, height, camera_count)
+
+    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        warnings.warn(
+            "RenderContext.create_shape_index_image_output is deprecated, use SensorTiledCamera.create_shape_index_image_output instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_shape_index_image_output(width, height, camera_count)
+
+    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.vec3f, ndim=4
+    ):
+        warnings.warn(
+            "RenderContext.create_normal_image_output is deprecated, use SensorTiledCamera.create_normal_image_output instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_normal_image_output(width, height, camera_count)
+
+    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        warnings.warn(
+            "RenderContext.create_albedo_image_output is deprecated, use SensorTiledCamera.create_albedo_image_output instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_albedo_image_output(width, height, camera_count)
