@@ -6,49 +6,48 @@
 # Newton
 
 <p align="center">
-  <strong>English</strong> ·
-  <a href="README.zh.md">中文</a>
+  <a href="README.md">English</a> ·
+  <strong>中文</strong>
 </p>
 
-Newton is a GPU-accelerated physics simulation engine built upon [NVIDIA Warp](https://github.com/NVIDIA/warp), specifically targeting roboticists and simulation researchers.
+Newton 是一个基于 [NVIDIA Warp](https://github.com/NVIDIA/warp) 的 GPU 加速物理仿真引擎，专为机器人专家和仿真研究人员设计。
 
-Newton extends and generalizes Warp's ([deprecated](https://github.com/NVIDIA/warp/discussions/735)) `warp.sim` module, and integrates
-[MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) as its primary backend. Newton emphasizes GPU-based computation, [OpenUSD](https://openusd.org/) support, differentiability, and user-defined extensibility, facilitating rapid iteration and scalable robotics simulation.
+Newton 扩展并泛化了 Warp 的（[已弃用](https://github.com/NVIDIA/warp/discussions/735)）`warp.sim` 模块，并集成了 [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) 作为其主要后端。Newton 强调基于 GPU 的计算、[OpenUSD](https://openusd.org/) 支持、可微性以及用户定义的可扩展性，从而促进快速迭代和可扩展的机器人仿真。
 
-Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. Code is licensed under [Apache-2.0](https://github.com/newton-physics/newton/blob/main/LICENSE.md). Documentation is licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
+Newton 是一个由社区构建和维护的 [Linux 基金会 (Linux Foundation)](https://www.linuxfoundation.org/) 项目。代码采用 [Apache-2.0](https://github.com/newton-physics/newton/blob/main/LICENSE.md) 协议授权。文档采用 [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) 协议授权。
 
-Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/), and [NVIDIA](https://www.nvidia.com/).
+Newton 由 [迪士尼研究中心 (Disney Research)](https://www.disneyresearch.com/)、[Google DeepMind](https://deepmind.google/) 和 [NVIDIA](https://www.nvidia.com/) 发起。
 
-## Requirements
+## 要求 (Requirements)
 
-- **Python** 3.10+
-- **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-- **GPU:** NVIDIA GPU (Maxwell or newer), driver 545 or newer (CUDA 12). No local CUDA Toolkit installation required. macOS runs on CPU.
+- **Python:** 3.10+
+- **操作系统 (OS):** Linux (x86-64, aarch64), Windows (x86-64), 或 macOS (仅 CPU)
+- **显卡 (GPU):** NVIDIA GPU (Maxwell 或更新版本), 驱动 545 或更新版本 (CUDA 12)。无需本地安装 CUDA Toolkit。macOS 在 CPU 上运行。
 
-For detailed system requirements and tested configurations, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
+有关详细的系统要求和测试过的配置，请参阅[安装指南](https://newton-physics.github.io/newton/latest/guide/installation.html)。
 
-## Quickstart
+## 快速开始 (Quickstart)
 
 ```bash
 pip install "newton[examples]"
 python -m newton.examples basic_pendulum
 ```
 
-To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
+要使用 [uv](https://docs.astral.sh/uv/) 从源码安装，请参阅[安装指南](https://newton-physics.github.io/newton/latest/guide/installation.html)。
 
-## Examples
+## 示例 (Examples)
 
-Before running the examples below, install Newton with the examples extra:
+在运行以下示例之前，请安装带有示例额外选项的 Newton：
 
 ```bash
 pip install "newton[examples]"
 ```
 
-If you installed from source with uv, substitute `uv run` for `python` in the commands below.
+如果您使用 uv 从源码安装，请在以下命令中用 `uv run` 代替 `python`。
 
 <table>
   <tr>
-    <td colspan="3"><h3>Basic Examples</h3></td>
+    <td colspan="3"><h3>基础示例 (Basic Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -151,7 +150,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     <td></td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Robot Examples</h3></td>
+    <td colspan="3"><h3>机器人示例 (Robot Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -251,7 +250,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Cable Examples</h3></td>
+    <td colspan="3"><h3>线缆示例 (Cable Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -302,7 +301,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Cloth Examples</h3></td>
+    <td colspan="3"><h3>布料示例 (Cloth Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -385,7 +384,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Inverse Kinematics Examples</h3></td>
+    <td colspan="3"><h3>逆运动学示例 (Inverse Kinematics Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -436,7 +435,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>MPM Examples</h3></td>
+    <td colspan="3"><h3>MPM 示例 (MPM Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -491,7 +490,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Sensor Examples</h3></td>
+    <td colspan="3"><h3>传感器示例 (Sensor Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -522,7 +521,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Selection Examples</h3></td>
+    <td colspan="3"><h3>选择示例 (Selection Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -573,7 +572,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>DiffSim Examples</h3></td>
+    <td colspan="3"><h3>可微仿真示例 (DiffSim Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -632,7 +631,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Multi-Physics Examples</h3></td>
+    <td colspan="3"><h3>多物理场示例 (Multi-Physics Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -659,7 +658,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Contacts Examples</h3></td>
+    <td colspan="3"><h3>碰撞示例 (Contacts Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -710,7 +709,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
   </tr>
   <tr>
-    <td colspan="3"><h3>Softbody Examples</h3></td>
+    <td colspan="3"><h3>软体示例 (Softbody Examples)</h3></td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -738,47 +737,47 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
   </tr>
 </table>
 
-### Example Options
+### 示例选项 (Example Options)
 
-The examples support the following command-line arguments:
+这些示例支持以下命令行参数：
 
-| Argument        | Description                                                                                         | Default                      |
+| 参数 (Argument) | 描述 (Description)                                                                                          | 默认值 (Default)             |
 | --------------- | --------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `--viewer`      | Viewer type: `gl` (OpenGL window), `usd` (USD file output), `rerun` (ReRun), or `null` (no viewer). | `gl`                         |
-| `--device`      | Compute device to use, e.g., `cpu`, `cuda:0`, etc.                                                  | `None` (default Warp device) |
-| `--num-frames`  | Number of frames to simulate (for USD output).                                                      | `100`                        |
-| `--output-path` | Output path for USD files (required if `--viewer usd` is used).                                     | `None`                       |
+| `--viewer`      | 查看器类型：`gl` (OpenGL 窗口), `usd` (USD 文件输出), `rerun` (ReRun), 或 `null` (无查看器)。 | `gl`                         |
+| `--device`      | 要使用的计算设备，例如 `cpu`, `cuda:0` 等。                                                  | `None` (默认 Warp 设备) |
+| `--num-frames`  | 要仿真的帧数（用于 USD 输出）。                                                      | `100`                        |
+| `--output-path` | USD 文件的输出路径（如果使用 `--viewer usd` 则为必填项）。                                     | `None`                       |
 
-Some examples may add additional arguments (see their respective source files for details).
+某些示例可能会添加额外的参数（详情请参阅其各自的源文件）。
 
-### Example Usage
+### 示例用法 (Example Usage)
 
 ```bash
-# List available examples
+# 列出可用示例
 python -m newton.examples
 
-# Run with the USD viewer and save to my_output.usd
+# 使用 USD 查看器运行并保存到 my_output.usd
 python -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
 
-# Run on a selected device
+# 在选定设备上运行
 python -m newton.examples basic_urdf --device cuda:0
 
-# Combine options
+# 组合选项
 python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 ```
 
-## Contributing and Development
+## 贡献与开发 (Contributing and Development)
 
-See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for instructions on how to contribute to Newton.
+有关如何为 Newton 做出贡献的说明，请参阅[贡献指南](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md)和[开发指南](https://newton-physics.github.io/newton/latest/guide/development.html)。
 
-## Support and Community Discussion
+## 支持与社区讨论 (Support and Community Discussion)
 
-For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/latest/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
+如有疑问，在[主仓库发起讨论](https://github.com/newton-physics/newton/discussions)之前，请先查阅 [Newton 文档](https://newton-physics.github.io/newton/latest/guide/overview.html)。
 
-## Code of Conduct
+## 行为准则 (Code of Conduct)
 
-By participating in this community, you agree to abide by the Linux Foundation [Code of Conduct](https://lfprojects.org/policies/code-of-conduct/).
+参与本社区即表示您同意遵守 Linux 基金会的[行为准则](https://lfprojects.org/policies/code-of-conduct/)。
 
-## Project Governance, Legal, and Members
+## 项目治理、法律和成员 (Project Governance, Legal, and Members)
 
-Please see the [newton-governance repository](https://github.com/newton-physics/newton-governance) for more information about project governance.
+有关项目治理的更多信息，请参阅 [newton-governance 仓库](https://github.com/newton-physics/newton-governance)。
