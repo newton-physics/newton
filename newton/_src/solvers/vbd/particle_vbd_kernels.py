@@ -1208,7 +1208,7 @@ def evaluate_self_contact_force_norm(dis: float, collision_radius: float, k: flo
     # C2 continuity calculation
     tau = collision_radius * 0.5
     if tau > dis > 1e-5:
-        k2 = 0.5 * tau * tau * k
+        k2 = tau * tau * k
         dEdD = -k2 / dis
         d2E_dDdD = k2 / (dis * dis)
     else:
