@@ -313,6 +313,16 @@ The required headers depend on the file type:
 When adding a new file, copy the header from an existing file of the same type. If the
 license check fails on your PR, add the appropriate header to the top of each flagged file.
 
+To run the license checks locally with Docker before pushing:
+
+.. code-block:: console
+
+    # Check Python source headers (Apache-2.0)
+    docker run -it --rm -v $(pwd):/github/workspace apache/skywalking-eyes header check
+
+    # Check documentation headers (CC-BY-4.0)
+    docker run -it --rm -v $(pwd):/github/workspace apache/skywalking-eyes -c .licenserc-docs.yaml header check
+
 Using a local Warp installation with uv
 ---------------------------------------
 
