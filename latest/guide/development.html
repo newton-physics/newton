@@ -1053,17 +1053,35 @@ venv</label><div class="sd-tab-content docutils">
 </section>
 <section id="license-headers">
 <h2>License headers<a class="headerlink" href="#license-headers" title="Link to this heading">#</a></h2>
-<p>Every source file in the repository must carry an <a class="reference external" href="https://spdx.dev/">SPDX</a> license header.
-A CI check (<code class="docutils literal notranslate"><span class="pre">pr_license_check.yml</span></code>) enforces this on every pull request using
-<a class="reference external" href="https://github.com/apache/skywalking-eyes">Apache SkyWalking Eyes</a>.</p>
+<p>Every source file in the repository must carry a 2-line <a class="reference external" href="https://spdx.dev/">SPDX</a> license
+header. The project’s Apache-2.0 license is in <code class="docutils literal notranslate"><span class="pre">LICENSE.md</span></code> at the repository root, and additional and third-party license texts are available in the <code class="docutils literal notranslate"><span class="pre">newton/licenses</span></code> directory, so no further
+boilerplate is required in individual files.</p>
 <p>The required headers depend on the file type:</p>
-<ul class="simple">
-<li><p><strong>Python files</strong> (<code class="docutils literal notranslate"><span class="pre">.py</span></code>) — Apache-2.0. See <code class="docutils literal notranslate"><span class="pre">.licenserc.yaml</span></code> for the exact template.</p></li>
-<li><p><strong>Documentation files</strong> (<code class="docutils literal notranslate"><span class="pre">.rst</span></code>) — CC-BY-4.0. See <code class="docutils literal notranslate"><span class="pre">.licenserc-docs.yaml</span></code> for the exact template.</p></li>
-<li><p><strong>Jupyter notebooks</strong> (<code class="docutils literal notranslate"><span class="pre">.ipynb</span></code>) — CC-BY-4.0. Copy the header from an existing notebook.</p></li>
+<ul>
+<li><p><strong>Python files</strong> (<code class="docutils literal notranslate"><span class="pre">.py</span></code>):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) &lt;year&gt; The Newton Developers</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>Documentation files</strong> (<code class="docutils literal notranslate"><span class="pre">.rst</span></code>) — CC-BY-4.0:</p>
+<div class="highlight-rst notranslate"><div class="highlight"><pre><span></span><span class="c">.. SPDX-FileCopyrightText: Copyright (c) &lt;year&gt; The Newton Developers</span>
+<span class="c">.. SPDX-License-Identifier: CC-BY-4.0</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>Jupyter notebooks</strong> (<code class="docutils literal notranslate"><span class="pre">.ipynb</span></code>) — CC-BY-4.0 (plain text in the first cell, no comment prefix):</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>SPDX-FileCopyrightText: Copyright (c) &lt;year&gt; The Newton Developers
+SPDX-License-Identifier: CC-BY-4.0
+</pre></div>
+</div>
+</li>
 </ul>
-<p>When adding a new file, copy the header from an existing file of the same type. If the
-license check fails on your PR, add the appropriate header to the top of each flagged file.</p>
+<p>Use the year the file was <strong>first created</strong>. Do not update the year when modifying an
+existing file, and do not use year ranges — git history is the authoritative record of
+when changes were made.</p>
+<p>A CI check (<code class="docutils literal notranslate"><span class="pre">pr_license_check.yml</span></code>) enforces headers on every pull request using
+<a class="reference external" href="https://github.com/apache/skywalking-eyes">Apache SkyWalking Eyes</a>.</p>
 <p>To run the license checks locally with Docker before pushing:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>Check<span class="w"> </span>Python<span class="w"> </span><span class="nb">source</span><span class="w"> </span>headers<span class="w"> </span><span class="o">(</span>Apache-2.0<span class="o">)</span>
 <span class="go">docker run -it --rm -v $(pwd):/github/workspace apache/skywalking-eyes header check</span>
