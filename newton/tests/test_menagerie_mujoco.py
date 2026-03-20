@@ -2561,9 +2561,22 @@ class TestMenagerieBase(unittest.TestCase):
             # Native: split pipeline with contact/constraint injection
             run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
             wp.synchronize()
+
+            contacts_match, contact_msg = compare_contacts_sorted(
+                newton_solver.mjw_data, native_mjw_data, tol=self.split_pipeline_tol
+            )
+            if not contacts_match:
+                raise AssertionError(f"Step {step}: Contact mismatch - {contact_msg}")
             inject_contacts(newton_solver.mjw_data, native_mjw_data)
+
             run_native_make_constraint(native_mjw_model, native_mjw_data)
             wp.synchronize()
+
+            constraints_match, constraint_msg = compare_constraints_sorted(
+                newton_solver.mjw_data, native_mjw_data, tol=self.split_pipeline_tol
+            )
+            if not constraints_match:
+                raise AssertionError(f"Step {step}: Constraint mismatch - {constraint_msg}")
             inject_constraints(newton_solver.mjw_data, native_mjw_data)
             run_native_transmission(native_mjw_model, native_mjw_data)
             run_native_step1_rest(native_mjw_model, native_mjw_data)
