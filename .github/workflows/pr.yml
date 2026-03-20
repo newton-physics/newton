@@ -35,6 +35,66 @@ jobs:
       - name: Check uv lockfile
         run: uv lock --check
 
+  check-licenses:
+    name: License Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - name: Check code license headers (Apache-2.0)
+        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1  # v0.8.0
+      - name: Check docs license headers (CC-BY-4.0)
+        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1  # v0.8.0
+        with:
+          config: .licenserc-docs.yaml
+      - name: Check notebook license headers (CC-BY-4.0)
+        run: |
+          status=0
+          for nb in $(find docs -name '*.ipynb' -not -path '*/.*' -not -path '*/_build/*'); do
+            if ! grep -q 'SPDX-License-Identifier: CC-BY-4.0' "$nb"; then
+              echo "ERROR: $nb missing CC-BY-4.0 SPDX header"
+              status=1
+            fi
+          done
+          exit $status
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - name: Dependency review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          show-openssf-scorecard: false
+          allow-licenses: >-
+            Apache-2.0,
+            MIT,
+            BSD-2-Clause,
+            BSD-2-Clause-Views,
+            BSD-3-Clause,
+            ISC,
+            MPL-2.0,
+            PSF-2.0,
+            Python-2.0,
+            Zlib,
+            CC0-1.0,
+            CC-BY-4.0
+
   run-newton-tests:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
