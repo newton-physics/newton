@@ -40,7 +40,7 @@ def _rms_error_kernel(
     dt: wp.array(dtype=wp.float32),
     error_out: wp.array(dtype=wp.float32),
 ):
-    """RMS difference between full-step and doubled half-step states.
+    """L2 norm of the error between full-step and doubled half-step states.
 
     joint_qd error is scaled by dt (velocity * time = displacement) so both
     components share comparable units.  Diverged sims get error = 1e10.
@@ -58,8 +58,7 @@ def _rms_error_kernel(
         d = (joint_qd_double[qd_start + i] - joint_qd_full[qd_start + i]) * h
         error_sq += d * d
 
-    n = float(coords_per_world + dofs_per_world)
-    error = wp.sqrt(error_sq / n)
+    error = wp.sqrt(error_sq)
 
     if wp.isnan(error) or wp.isinf(error):
         error = float(1.0e10)
@@ -274,7 +273,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         """
         Args:
             model: The model to simulate.
-            tol: RMS integration error tolerance per world [same units as joint_q/qd].
+            tol: L2 norm integration error tolerance per world [same units as joint_q/qd].
                 Worlds with error > tol are rejected and retry with a smaller dt.
             dt_inner_init: Initial inner (adaptive physics) timestep [s].
             dt_inner_min: Minimum allowed inner timestep [s].
@@ -360,7 +359,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
     def _run_3eval_block(self) -> None:
         """One step-doubling attempt (the CUDA graph body).
 
-        Snapshot, 3 MuJoCo evals (full + 2x half), RMS error, Drake
+        Snapshot, 3 MuJoCo evals (full + 2x half), L2 error, Drake
         controller, state select, sim_time advance.  _apply_dt_cap runs
         outside the graph so effective_dt_max can change without recapture.
         """
@@ -665,7 +664,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
 
     @property
     def last_error(self) -> wp.array:
-        """RMS integration error from the most recent step, shape ``[world_count]``, float32, on device."""
+        """L2 norm integration error from the most recent step, shape ``[world_count]``, float32, on device."""
         return self._last_error
 
     @property

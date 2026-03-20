@@ -129,7 +129,7 @@ def _print_status(solver, step):
             f"{'world':>{col}}"
             f"{'sim_time (s)':>{col}}"
             f"{'dt (s)':>{col}}"
-            f"{'RMS error':>{col}}"
+            f"{'L2 error':>{col}}"
             f"{'status':>{col}}"
         )
         lines = [f"  step {step}  tol={solver._tol:.1e}", bar, hdr, bar]
