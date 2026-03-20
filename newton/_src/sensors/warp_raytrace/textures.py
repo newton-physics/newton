@@ -73,23 +73,23 @@ def sample_texture(
     bary_v: wp.float32,
     face_id: wp.int32,
 ) -> wp.vec3f:
-    tex_color = wp.vec3f(1.0, 1.0, 1.0)
+    DEFAULT_RETURN = wp.vec3f(1.0, 1.0, 1.0)
 
     if texture_index == -1:
-        return tex_color
+        return DEFAULT_RETURN
 
     if shape_type == GeoType.PLANE:
-        tex_color = sample_texture_plane(hit_point, shape_transform, texture_data[texture_index])
+        return sample_texture_plane(hit_point, shape_transform, texture_data[texture_index])
 
     if shape_type == GeoType.MESH:
         if face_id < 0 or mesh_data_index < 0:
-            return tex_color
+            return DEFAULT_RETURN
 
         if mesh_data[mesh_data_index].uvs.shape[0] == 0:
-            return tex_color
+            return DEFAULT_RETURN
 
-        tex_color = sample_texture_mesh(
+        return sample_texture_mesh(
             bary_u, bary_v, face_id, mesh_id, mesh_data[mesh_data_index], texture_data[texture_index]
         )
 
-    return tex_color
+    return DEFAULT_RETURN

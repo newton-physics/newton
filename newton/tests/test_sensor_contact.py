@@ -20,31 +20,36 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sensors.sensor_contact import _bucket_indices_by_world
 from newton.sensors import SensorContact
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
 
-class MockModel:
-    """Minimal mock model for testing SensorContact"""
+def _make_two_world_model(device=None, include_ground=False):
+    """Build a 2-world model with bodies A (world 0) and B (world 1).
 
-    def __init__(self, device=None):
-        self.device = device or wp.get_device()
-        self.world_count = 1
-        self.shape_world_start = None
-        self.body_world_start = None
-        self.shape_contact_pairs = None
-
-    def request_contact_attributes(self, *args):
-        pass
+    Each body owns one shape.  When *include_ground* is True, a global ground
+    shape (body=-1) is appended.
+    """
+    builder = newton.ModelBuilder()
+    builder.begin_world()
+    builder.add_body(label="A")
+    builder.add_shape_box(0, hx=0.1, hy=0.1, hz=0.1, label="s0")
+    builder.end_world()
+    builder.begin_world()
+    builder.add_body(label="B")
+    builder.add_shape_box(1, hx=0.1, hy=0.1, hz=0.1, label="s1")
+    builder.end_world()
+    if include_ground:
+        builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1, label="ground")
+    return builder.finalize(device=device)
 
 
 def create_contacts(device, pairs, naconmax, normals=None, forces=None):
     """Helper to create Contacts with specified contacts.
 
     The force spatial vectors are computed as (magnitude * normal, 0, 0, 0) to match
-    the convention that contacts.force stores the force on body0 from body1.
+    the convention that contacts.force stores the force on shape0 from shape1.
     """
     contacts = newton.Contacts(naconmax, 0, device=device, requested_attributes={"force"})
     n_contacts = len(pairs)
@@ -79,17 +84,15 @@ class TestSensorContact(unittest.TestCase):
         """Test net force aggregation across different contact subsets"""
         device = wp.get_device()
 
-        # Define entities: Entity A = (0,1), Entity B = (2)
-        entity_A = (0, 1)
-        entity_B = (2,)
-
-        model = MockModel()
-        model.body_label = ["A", "B"]
-        model.body_shapes = [entity_A, entity_B]
-        model.shape_body = wp.array([0, 0, 1], dtype=wp.int32, device=device)
-        model.shape_transform = wp.zeros(3, dtype=wp.transform, device=device)
-        model.shape_world_start = wp.array([0, 3, 3], dtype=wp.int32, device=device)
-        model.body_world_start = wp.array([0, 2, 2], dtype=wp.int32, device=device)
+        # Body A owns shapes 0,1; body B owns shape 2; shape 3 is ground
+        builder = newton.ModelBuilder()
+        body_a = builder.add_body(label="A")
+        builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+        body_b = builder.add_body(label="B")
+        builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
 
         contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
@@ -169,31 +172,27 @@ class TestSensorContact(unittest.TestCase):
 
                 contact_sensor.update(None, contacts)
 
-                self.assertIsNotNone(contact_sensor.net_force)
-                self.assertEqual(contact_sensor.net_force.shape, contact_sensor.shape)
+                self.assertIsNotNone(contact_sensor.force_matrix)
+                self.assertIsNotNone(contact_sensor.total_force)
 
-                self.assertTrue(contact_sensor.net_force.dtype == wp.vec3)
+                net_forces = contact_sensor.force_matrix.numpy()
+                total_forces = contact_sensor.total_force.numpy()
 
-                net_forces = contact_sensor.net_force.numpy()
-
-                assert_np_equal(net_forces[0, 2], scenario["force_on_A_from_B"])
-                assert_np_equal(net_forces[1, 1], scenario["force_on_B_from_A"])
-                assert_np_equal(net_forces[0, 0], scenario["force_on_A_from_all"])
-                assert_np_equal(net_forces[1, 0], scenario["force_on_B_from_all"])
+                assert_np_equal(net_forces[0, 1], scenario["force_on_A_from_B"])
+                assert_np_equal(net_forces[1, 0], scenario["force_on_B_from_A"])
+                assert_np_equal(total_forces[0], scenario["force_on_A_from_all"])
+                assert_np_equal(total_forces[1], scenario["force_on_B_from_all"])
 
     def test_sensing_obj_transforms(self):
         """Test that sensing object transforms are computed correctly."""
         device = wp.get_device()
 
-        model = MockModel()
-        model.body_label = ["A", "B"]
-        model.body_shapes = [(0,), (1,)]
-        model.shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_transform = wp.array(
-            [wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device
-        )
-        model.shape_world_start = wp.array([0, 2, 2], dtype=wp.int32, device=device)
-        model.body_world_start = wp.array([0, 2, 2], dtype=wp.int32, device=device)
+        builder = newton.ModelBuilder()
+        builder.add_body(label="A")
+        builder.add_shape_box(0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_body(label="B")
+        builder.add_shape_box(1, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
 
         sensor = SensorContact(model, sensing_obj_bodies="*")
 
@@ -218,18 +217,13 @@ class TestSensorContact(unittest.TestCase):
         """Test transforms for shape-type sensing objects, including ground shapes."""
         device = wp.get_device()
 
-        model = MockModel()
-        model.body_label = ["A"]
-        model.body_shapes = [(0,)]
-        model.shape_label = ["s0", "s1"]
-        # shape 0 belongs to body 0, shape 1 is a ground shape (body -1)
-        model.shape_body = wp.array([0, -1], dtype=wp.int32, device=device)
-        model.shape_world_start = wp.array([0, 1, 1, 2], dtype=wp.int32, device=device)
-        model.body_world_start = wp.array([0, 1, 1, 1], dtype=wp.int32, device=device)
-
-        shape0_local = wp.transform(wp.vec3(0.5, 0.25, 0.125), wp.quat_identity())
-        shape1_local = wp.transform(wp.vec3(10.0, 20.0, 30.0), wp.quat_identity())
-        model.shape_transform = wp.array([shape0_local, shape1_local], dtype=wp.transform, device=device)
+        shape0_xform = (wp.vec3(0.5, 0.25, 0.125), wp.quat_identity())
+        shape1_xform = (wp.vec3(10.0, 20.0, 30.0), wp.quat_identity())
+        builder = newton.ModelBuilder()
+        builder.add_body(label="A")
+        builder.add_shape_box(0, xform=shape0_xform, hx=0.1, hy=0.1, hz=0.1, label="s0")
+        builder.add_shape_box(body=-1, xform=shape1_xform, hx=0.1, hy=0.1, hz=0.1, label="ground")
+        model = builder.finalize(device=device)
 
         sensor = SensorContact(model, sensing_obj_shapes="*")
 
@@ -250,167 +244,126 @@ class TestSensorContact(unittest.TestCase):
         # ground shape (body_idx == -1): shape_transform only -> (10, 20, 30)
         assert_np_equal(transforms[1][:3], [10.0, 20.0, 30.0])
 
-    def test_bucket_indices_by_world(self):
-        """Indices are correctly bucketed by world using world_start."""
-
-        # world_start layout: [start_w0, start_w1, start_global_tail, total]
-        # world 0: shapes [0,1,2], world 1: shapes [3,4,5], global tail: shapes [6,7]
-        world_count = 2
-        shape_world_start = [0, 3, 6, 8]
-
-        indices = [0, 1, 4, 5, 7]
-        buckets, global_indices = _bucket_indices_by_world(indices, shape_world_start, world_count)
-
-        self.assertEqual(len(buckets), 2)
-        self.assertEqual(buckets[0], [0, 1])
-        self.assertEqual(buckets[1], [4, 5])
-        self.assertEqual(global_indices, [7])
-
-    def test_bucket_indices_global_front(self):
-        """Global indices at the front of the array are correctly identified."""
-
-        # Front globals: [0,1], world 0: [2,3,4], world 1: [5,6,7], tail globals: [8,9]
-        world_count = 2
-        shape_world_start = [2, 5, 8, 10]
-
-        indices = [0, 3, 8]
-        buckets, global_indices = _bucket_indices_by_world(indices, shape_world_start, world_count)
-
-        self.assertEqual(buckets[0], [3])
-        self.assertEqual(buckets[1], [])
-        self.assertEqual(sorted(global_indices), [0, 8])
-
     def test_per_world_attributes(self):
-        """sensing_objs, counterparts, reading_indices are nested per-world."""
-        device = wp.get_device()
-
-        model = MockModel()
-        model.body_label = ["A", "B"]
-        model.body_shapes = {-1: [], 0: (0,), 1: (1,)}
-        model.shape_label = ["s0", "s1"]
-        model.shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_transform = wp.zeros(2, dtype=wp.transform, device=device)
-        model.world_count = 2
-        model.body_world = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_world = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
-        model.body_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+        """sensing_obj_idx and counterpart_indices are flat lists."""
+        model = _make_two_world_model()
 
         sensor = SensorContact(model, sensing_obj_bodies="*")
 
-        self.assertIsInstance(sensor.sensing_objs, list)
-        self.assertEqual(len(sensor.sensing_objs), 2)  # 2 worlds
-        self.assertIsInstance(sensor.sensing_objs[0], list)
-
-        self.assertEqual(len(sensor.sensing_objs[0]), 1)
-        self.assertEqual(sensor.sensing_objs[0][0], (0, SensorContact.ObjectType.BODY))
-
-        self.assertEqual(len(sensor.sensing_objs[1]), 1)
-        self.assertEqual(sensor.sensing_objs[1][0], (1, SensorContact.ObjectType.BODY))
+        self.assertEqual(sensor.sensing_obj_idx, [0, 1])
+        self.assertEqual(len(sensor.counterpart_indices), 2)
+        # No explicit counterparts — each row has an empty counterpart list
+        self.assertEqual(sensor.counterpart_indices[0], [])
+        self.assertEqual(sensor.counterpart_indices[1], [])
 
     def test_multi_world_no_cross_world_pairs(self):
-        """Per-world construction produces no cross-world shape pairs."""
-        device = wp.get_device()
-
-        model = MockModel()
-        model.body_label = ["A", "B"]
-        model.body_shapes = {-1: [2], 0: (0,), 1: (1,)}
-        model.shape_label = ["s0", "s1", "ground"]
-        model.shape_body = wp.array([0, 1, -1], dtype=wp.int32, device=device)
-        model.shape_transform = wp.zeros(3, dtype=wp.transform, device=device)
-        model.world_count = 2
-        model.body_world = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_world = wp.array([0, 1, -1], dtype=wp.int32, device=device)
-        model.shape_world_start = wp.array([0, 1, 2, 3], dtype=wp.int32, device=device)
-        model.body_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+        """Per-world construction produces no cross-world counterpart columns."""
+        model = _make_two_world_model(include_ground=True)
 
         sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_shapes="*")
 
-        sp_sorted = sensor._sp_sorted.numpy()
-        for pair in sp_sorted:
-            s0, s1 = int(pair[0]), int(pair[1])
-            self.assertFalse(
-                s0 >= 0 and s1 >= 0 and {s0, s1} == {0, 1},
-                f"Cross-world pair found: ({s0}, {s1})",
-            )
-
-        sp_set = {tuple(int(x) for x in p) for p in sp_sorted if int(p[1]) >= 0}
-        # Each body's shape should pair with global ground shape (2),
-        # but not with shapes from other worlds
-        self.assertIn((0, 2), sp_set)
-        self.assertIn((1, 2), sp_set)
+        counterpart_col = sensor._counterpart_shape_to_col.numpy()
+        # Ground (shape 2, global) should have a counterpart column
+        self.assertGreaterEqual(counterpart_col[2], 0, "Ground shape should be a counterpart")
+        # Shape 0 (world 0) and shape 1 (world 1) should both be counterparts
+        self.assertGreaterEqual(counterpart_col[0], 0, "Shape 0 should be a counterpart")
+        self.assertGreaterEqual(counterpart_col[1], 0, "Shape 1 should be a counterpart")
+        # Per-world counterparts reuse the same column (different worlds, no cross-world contacts)
+        self.assertEqual(
+            counterpart_col[0],
+            counterpart_col[1],
+            "Per-world counterparts should share column indices",
+        )
 
     def test_multi_world_total_force(self):
         """Total force accumulates correctly with per-world pair tables."""
         device = wp.get_device()
-
-        model = MockModel()
-        model.body_label = ["A", "B"]
-        model.body_shapes = {-1: [], 0: (0,), 1: (1,)}
-        model.shape_label = ["s0", "s1"]
-        model.shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_transform = wp.zeros(2, dtype=wp.transform, device=device)
-        model.world_count = 2
-        model.body_world = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_world = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
-        model.body_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+        model = _make_two_world_model(device=device)
 
         sensor = SensorContact(model, sensing_obj_bodies="*")
 
         contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[3.0])
         sensor.update(None, contacts)
 
-        forces = sensor.net_force.numpy()
-        np.testing.assert_allclose(forces[0, 0], [0, 0, 3.0], atol=1e-5)
-        np.testing.assert_allclose(forces[1, 0], [0, 0, -3.0], atol=1e-5)
+        self.assertIsNone(sensor.force_matrix)
+        total = sensor.total_force.numpy()
+        np.testing.assert_allclose(total[0], [0, 0, 3.0], atol=1e-5)
+        np.testing.assert_allclose(total[1], [0, 0, -3.0], atol=1e-5)
 
     def test_global_sensing_object_raises(self):
         """Global entities as sensing objects raise ValueError."""
-        device = wp.get_device()
-
-        model = MockModel()
-        model.body_label = ["A"]
-        model.body_shapes = {-1: [1], 0: (0,)}
-        model.shape_label = ["s0", "ground"]
-        model.shape_body = wp.array([0, -1], dtype=wp.int32, device=device)
-        model.shape_transform = wp.zeros(2, dtype=wp.transform, device=device)
-        model.world_count = 2
-        model.body_world = wp.array([0], dtype=wp.int32, device=device)
-        model.shape_world = wp.array([0, -1], dtype=wp.int32, device=device)
-        model.shape_world_start = wp.array([0, 1, 1, 2], dtype=wp.int32, device=device)
-        model.body_world_start = wp.array([0, 1, 1, 1], dtype=wp.int32, device=device)
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        builder.add_body(label="A")
+        builder.add_shape_box(0, hx=0.1, hy=0.1, hz=0.1, label="s0")
+        builder.end_world()
+        builder.begin_world()
+        builder.end_world()
+        builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1, label="ground")
+        model = builder.finalize()
 
         with self.assertRaises(ValueError):
             SensorContact(model, sensing_obj_shapes="*")  # "*" matches ground too
 
-    def test_global_counterpart_in_all_worlds(self):
-        """Global counterparts (e.g., ground) appear in every world's counterpart bucket."""
-        device = wp.get_device()
+    def test_order_preservation(self):
+        """Sensing objects preserve caller's order for list[int] inputs."""
+        model = _make_two_world_model()
+        # Pass indices in reverse order: [1, 0]
+        sensor = SensorContact(model, sensing_obj_bodies=[1, 0])
+        self.assertEqual(sensor.sensing_obj_idx, [1, 0])
 
-        model = MockModel()
-        model.body_label = ["A", "B"]
-        model.body_shapes = {-1: [2], 0: (0,), 1: (1,)}
-        model.shape_label = ["s0", "s1", "ground"]
-        model.shape_body = wp.array([0, 1, -1], dtype=wp.int32, device=device)
-        model.shape_transform = wp.zeros(3, dtype=wp.transform, device=device)
-        model.world_count = 2
-        model.body_world = wp.array([0, 1], dtype=wp.int32, device=device)
-        model.shape_world = wp.array([0, 1, -1], dtype=wp.int32, device=device)
-        model.shape_world_start = wp.array([0, 1, 2, 3], dtype=wp.int32, device=device)
-        model.body_world_start = wp.array([0, 1, 2, 2], dtype=wp.int32, device=device)
+        contacts = create_contacts(model.device, [(0, 1)], naconmax=4, forces=[3.0])
+        sensor.update(None, contacts)
+        total = sensor.total_force.numpy()
+        # Row 0 is body 1, row 1 is body 0
+        np.testing.assert_allclose(total[0], [0, 0, -3.0], atol=1e-5)
+        np.testing.assert_allclose(total[1], [0, 0, 3.0], atol=1e-5)
+
+    def test_measure_total_false(self):
+        """measure_total=False produces total_force=None and populates force_matrix."""
+        model = _make_two_world_model(include_ground=True)
+        sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_shapes="*", measure_total=False)
+        self.assertIsNone(sensor.total_force)
+
+        contacts = create_contacts(model.device, [(0, 2)], naconmax=4, forces=[5.0])
+        sensor.update(None, contacts)
+        self.assertIsNotNone(sensor.force_matrix)
+        net = sensor.force_matrix.numpy()
+        ground_col = sensor.counterpart_indices[0].index(2)
+        np.testing.assert_allclose(net[0, ground_col], [0, 0, 5.0], atol=1e-5)
+
+    def test_duplicate_sensing_objects_raises(self):
+        """Duplicate sensing object indices raise ValueError."""
+        model = _make_two_world_model()
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_bodies=[0, 0])
+
+    def test_unmatched_pattern_raises(self):
+        """Sensing or counterpart patterns that match nothing raise ValueError."""
+        model = _make_two_world_model()
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_bodies="nonexistent")
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_shapes="nonexistent")
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="nonexistent")
+        with self.assertRaises(ValueError):
+            SensorContact(model, sensing_obj_bodies="*", counterpart_shapes="nonexistent")
+
+    def test_global_counterpart_in_all_worlds(self):
+        """Global counterparts (e.g., ground) appear in every sensing object's counterpart list."""
+        model = _make_two_world_model(include_ground=True)
 
         sensor = SensorContact(
             model,
             sensing_obj_bodies="*",
             counterpart_shapes=["ground"],
-            include_total=False,
+            measure_total=False,
         )
 
-        # Both worlds should have the ground as a counterpart
-        for w in range(2):
-            counterpart_indices = [idx for idx, _ in sensor.counterparts[w]]
-            self.assertIn(2, counterpart_indices, f"World {w} missing ground counterpart")
+        # Both sensing objects should have the ground as a counterpart
+        for i in range(2):
+            self.assertIn(2, sensor.counterpart_indices[i], f"Sensing obj {i} missing ground counterpart")
 
 
 class TestSensorContactMuJoCo(unittest.TestCase):
@@ -474,10 +427,10 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         solver.update_contacts(contacts, state_in)
         sensor.update(state_in, contacts)
 
-        forces = sensor.net_force.numpy()
+        total = sensor.total_force.numpy()
         g = 9.81
-        self.assertAlmostEqual(forces[0, 0, 2], mass_a * g, delta=mass_a * g * 0.01)
-        self.assertAlmostEqual(forces[1, 0, 2], mass_b * g, delta=mass_b * g * 0.01)
+        self.assertAlmostEqual(total[0, 2], mass_a * g, delta=mass_a * g * 0.01)
+        self.assertAlmostEqual(total[1, 2], mass_b * g, delta=mass_b * g * 0.01)
 
     def test_parallel_scenario(self):
         """Test contact forces with a, b, c side-by-side on base."""
@@ -539,26 +492,26 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
-        forces_acc = np.zeros((3, 1, 3))
-        base_acc = np.zeros((1, 1, 3))
+        forces_acc = np.zeros((3, 3))
+        base_acc = np.zeros((1, 3))
         for _ in range(avg_steps):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
             solver.update_contacts(contacts, state_in)
             sensor_abc.update(state_in, contacts)
             sensor_base.update(state_in, contacts)
-            forces_acc += sensor_abc.net_force.numpy()
-            base_acc += sensor_base.net_force.numpy()
+            forces_acc += sensor_abc.total_force.numpy()
+            base_acc += sensor_base.total_force.numpy()
         forces = forces_acc / avg_steps
         base_force = base_acc / avg_steps
 
         g = 9.81
-        self.assertAlmostEqual(forces[0, 0, 2], mass_a * g, delta=mass_a * g * 0.01)
-        self.assertAlmostEqual(forces[1, 0, 2], mass_b * g, delta=mass_b * g * 0.01)
-        self.assertAlmostEqual(forces[2, 0, 2], mass_c * g, delta=mass_c * g * 0.01)
+        self.assertAlmostEqual(forces[0, 2], mass_a * g, delta=mass_a * g * 0.01)
+        self.assertAlmostEqual(forces[1, 2], mass_b * g, delta=mass_b * g * 0.01)
+        self.assertAlmostEqual(forces[2, 2], mass_c * g, delta=mass_c * g * 0.01)
 
         total_weight = (mass_a + mass_b + mass_c) * g
-        self.assertAlmostEqual(base_force[0, 0, 2], -total_weight, delta=total_weight * 0.01)
+        self.assertAlmostEqual(base_force[0, 2], -total_weight, delta=total_weight * 0.01)
 
 
 if __name__ == "__main__":

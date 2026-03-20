@@ -396,10 +396,25 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
     if isinstance(pattern, str):
         return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
 
-    if all(isinstance(item, int) for item in pattern):
+    if not isinstance(pattern, list):
+        raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {type(pattern)}")
+
+    if len(pattern) == 0:
         return pattern
-    if all(isinstance(item, str) for item in pattern):
+
+    validation_failure = False
+
+    if isinstance(pattern[0], int):
+        # fast path for list[int]
+        for item in pattern:
+            if not isinstance(item, int):
+                validation_failure = True
+                break
+        if not validation_failure:
+            return pattern
+    elif all(isinstance(item, str) for item in pattern):
         return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+
     types = {type(item).__name__ for item in pattern}
     raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
 

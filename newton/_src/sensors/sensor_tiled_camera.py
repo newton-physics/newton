@@ -25,7 +25,6 @@ from ..geometry import GeoType, Mesh, ShapeFlags
 from ..sim import Model, State
 from ..utils import load_texture, normalize_texture
 from .warp_raytrace import (
-    ClearData,
     GaussianRenderMode,
     MeshData,
     RenderContext,
@@ -132,7 +131,7 @@ class SensorTiledCamera:
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
     GaussianRenderMode = GaussianRenderMode
-    ClearData = ClearData
+    ClearData = RenderContext.ClearData
 
     DEFAULT_CLEAR_DATA = ClearData()
     GRAY_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
@@ -150,6 +149,9 @@ class SensorTiledCamera:
         default_light_shadows: bool = False
         """Enable shadows for the default light (requires ``default_light``)."""
 
+        enable_ambient_lighting: bool = True
+        """Enable ambient lighting for the scene."""
+
         colors_per_world: bool = False
         """Assign a random color palette per world."""
 
@@ -162,6 +164,9 @@ class SensorTiledCamera:
         enable_textures: bool = False
         """Enable texturing."""
 
+        enable_particles: bool = True
+        """Enable particle rendering."""
+
     def __init__(self, model: Model, *, config: Config | None = None):
         self.model = model
 
@@ -172,11 +177,11 @@ class SensorTiledCamera:
             world_count=self.model.world_count,
             config=RenderContext.Config(
                 enable_global_world=True,
-                enable_textures=config.enable_textures,
                 enable_shadows=False,
-                enable_ambient_lighting=True,
-                enable_particles=True,
-                enable_backface_culling=True,
+                enable_textures=config.enable_textures,
+                enable_ambient_lighting=config.enable_ambient_lighting,
+                enable_particles=config.enable_particles,
+                enable_backface_culling=config.backface_culling,
             ),
             device=self.model.device,
         )
@@ -230,7 +235,6 @@ class SensorTiledCamera:
 
         self.render_context.utils.compute_shape_bounds()
 
-        self.render_context.config.enable_backface_culling = config.backface_culling
         if config.checkerboard_texture:
             self.assign_checkerboard_material_to_all_shapes()
         if config.default_light:
@@ -281,7 +285,7 @@ class SensorTiledCamera:
         normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None = None,
         albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         refit_bvh: bool = True,
-        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
+        clear_data: SensorTiledCamera.ClearData | None = DEFAULT_CLEAR_DATA,
     ):
         """Render output images for all worlds and cameras.
 
@@ -300,7 +304,7 @@ class SensorTiledCamera:
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for unshaded surface color. None to skip.
             refit_bvh: Refit the BVH before rendering.
-            clear_data: Values to clear output buffers with. None to skip clearing.
+            clear_data: Values to clear output buffers with.
                 See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
         """
         if state is not None:

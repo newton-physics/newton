@@ -13,11 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .render_context import ClearData, RenderContext
+from .render_context import RenderContext
 from .types import GaussianRenderMode, MeshData, RenderLightType, RenderOrder, TextureData
 
 __all__ = [
-    "ClearData",
     "GaussianRenderMode",
     "MeshData",
     "RenderContext",
