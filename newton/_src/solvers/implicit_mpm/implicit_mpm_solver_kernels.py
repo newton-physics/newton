@@ -27,15 +27,17 @@ from .rheology_solver_kernels import YieldParamVec, project_stress
 
 wp.set_module_options({"enable_backward": False})
 
+USE_HENCKY_STRAIN_MEASURE = wp.constant(True)
+"""Use Hencky instead of co-rotated elastic model (replaces (S - I) with log S in Hooke's law)"""
 
-MIN_PRINCIPAL_STRAIN = wp.constant(0.01)
+MIN_PRINCIPAL_STRAIN = wp.constant(1.0e-6 if USE_HENCKY_STRAIN_MEASURE else 1.0e-2)
 """Minimum elastic strain for the elastic model (singular value of the elastic deformation gradient)"""
 
-MAX_PRINCIPAL_STRAIN = wp.constant(100.0)
+MAX_PRINCIPAL_STRAIN = wp.constant(1.0e6 if USE_HENCKY_STRAIN_MEASURE else 1.0e2)
 """Maximum elastic strain for the elastic model (singular value of the elastic deformation gradient)"""
 
 MIN_HARDENING_JP = wp.constant(0.1)
-"""Minimum hardening for the elastic model (determinant of the plastic deformation gradient)"""
+"""Minimum plastic compression ratio for the hardening law (determinant of the plastic deformation gradient)"""
 
 MIN_JP_DELTA = wp.constant(0.01)
 """Minimum delta for the plastic deformation gradient"""
@@ -369,26 +371,23 @@ def update_particle_strains(
     )
     particle_Jp_new = particle_Jp_prev[s.qp_index] * wp.clamp(delta_Jp, MIN_JP_DELTA, MAX_JP_DELTA)
 
-    # elastic strain
-    # The skew-symmetric part of the velocity gradient is used as a linearized
-    # approximation of the finite rotation increment (matches standard deformation gradient update).
-    prev_strain = elastic_strain_prev[s.qp_index]
-    vel_grad = fem.grad(grid_vel, s)
-    skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
-    strain_delta = elastic_strain_delta(s) + skew
-    strain_new = prev_strain + strain_delta @ prev_strain
-
     elastic_parameters_vec = get_elastic_parameters(s.qp_index, material_parameters)
     compliance, poisson, _damping = extract_elastic_parameters(elastic_parameters_vec)
 
     yield_parameters_vec = get_yield_parameters(s.qp_index, material_parameters, particle_Jp_new, dt)
-
     stress_0 = fem.SymmetricTensorMapper.value_to_dof_3d(stress(s))
     particle_stress_new = fem.SymmetricTensorMapper.dof_to_value_3d(project_stress(stress_0, yield_parameters_vec))
 
-    elastic_strain_new = project_particle_strain(
-        s.qp_index, strain_new, prev_strain, compliance, poisson, yield_parameters_vec
-    )
+    # elastic strain
+    prev_strain = elastic_strain_prev[s.qp_index]
+    vel_grad = fem.grad(grid_vel, s)
+    skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
+    strain_delta = elastic_strain_delta(s) + skew
+
+    # The skew-symmetric part of the velocity gradient is used as a linearized
+    # approximation of the finite rotation increment (matches standard deformation gradient update).
+    elastic_strain_new = prev_strain + strain_delta @ prev_strain
+    elastic_strain_new = project_particle_strain(elastic_strain_new, prev_strain, compliance)
 
     gimp_weight = s.qp_weight * fem.measure(domain, s) / particle_volume[s.qp_index]
     wp.atomic_add(particle_Jp, s.qp_index, gimp_weight * particle_Jp_new)
@@ -398,12 +397,9 @@ def update_particle_strains(
 
 @wp.func
 def project_particle_strain(
-    i: int,
     F: wp.mat33,
     F_prev: wp.mat33,
     compliance: float,
-    poisson: float,
-    yield_parameters_vec: YieldParamVec,
 ):
     if compliance <= EPSILON:
         return wp.identity(n=3, dtype=float)
@@ -489,18 +485,21 @@ def strain_rhs(
     inv_cell_volume: float,
     dt: float,
 ):
-    F_prev = elastic_strains[s.qp_index]
-
-    U_prev, xi_prev, _V_prev = wp.svd3(F_prev)
-
     _compliance, _poisson, damping = extract_elastic_parameters(elastic_parameters(s))
-
     alpha = 1.0 / (1.0 + damping / dt)
 
-    RSinvRt_prev = U_prev @ wp.diag(1.0 / xi_prev) @ wp.transpose(U_prev)
-    Id = wp.identity(n=3, dtype=float)
+    F_prev = elastic_strains[s.qp_index]
+    U_prev, xi_prev, _V_prev = wp.svd3(F_prev)
 
-    strain = -alpha * wp.ddot(tau(s), RSinvRt_prev - Id)
+    if wp.static(USE_HENCKY_STRAIN_MEASURE):
+        RlogSRt_prev = (
+            U_prev @ wp.diag(wp.vec3(wp.log(xi_prev[0]), wp.log(xi_prev[1]), wp.log(xi_prev[2]))) @ wp.transpose(U_prev)
+        )
+        strain = alpha * wp.ddot(tau(s), RlogSRt_prev)
+    else:
+        RSinvRt_prev = U_prev @ wp.diag(1.0 / xi_prev) @ wp.transpose(U_prev)
+        Id = wp.identity(n=3, dtype=float)
+        strain = -alpha * wp.ddot(tau(s), RSinvRt_prev - Id)
 
     return strain * inv_cell_volume
 
@@ -519,18 +518,20 @@ def compliance_form(
     F = elastic_strains[s.qp_index]
 
     compliance, poisson, damping = extract_elastic_parameters(elastic_parameters(s))
+    gamma = compliance / (1.0 + damping / dt)
 
     U, xi, V = wp.svd3(F)
-
     Rt = V @ wp.transpose(U)
-    FinvT = U @ wp.diag(1.0 / xi) @ wp.transpose(V)
-    return (
-        wp.ddot(
-            Rt @ tau(s) @ FinvT,
-            stress_strain_relationship(Rt @ sig(s) @ FinvT, compliance / (1.0 + damping / dt), poisson),
+
+    if wp.static(USE_HENCKY_STRAIN_MEASURE):
+        R = wp.transpose(Rt)
+        return wp.ddot(Rt @ tau(s) @ R, stress_strain_relationship(Rt @ sig(s) @ R, gamma, poisson)) * inv_cell_volume
+    else:
+        FinvT = U @ wp.diag(1.0 / xi) @ wp.transpose(V)
+        return (
+            wp.ddot(Rt @ tau(s) @ FinvT, stress_strain_relationship(Rt @ sig(s) @ FinvT, gamma, poisson))
+            * inv_cell_volume
         )
-        * inv_cell_volume
-    )
 
 
 @fem.integrand
