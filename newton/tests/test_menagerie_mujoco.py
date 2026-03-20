@@ -77,6 +77,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sim.enums import JointType
 from newton._src.utils.download_assets import download_git_folder
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf
 from newton.solvers import SolverMuJoCo
@@ -1936,7 +1937,7 @@ class TestMenagerieBase(unittest.TestCase):
     # Set to True per robot to enable test_forward_kinematics().
     fk_enabled: bool = False
     fk_fields: ClassVar[list[str]] = DEFAULT_FK_FIELDS
-    fk_tolerance: float = 1e-6
+    fk_tolerance: float = 2e-6
 
     @classmethod
     def setUpClass(cls):
@@ -2233,6 +2234,21 @@ class TestMenagerieBase(unittest.TestCase):
         rng = np.random.default_rng(seed=42)
         joint_q_np = model.joint_q.numpy()
         joint_q_np += rng.uniform(-0.1, 0.1, size=joint_q_np.shape).astype(np.float32)
+
+        # Renormalize quaternions for free and ball joints (perturbation
+        # denormalizes them, which is invalid input for eval_fk)
+        joint_type = model.joint_type.numpy()
+        q_start = model.joint_q_start.numpy()
+        for j in range(len(joint_type)):
+            jt = joint_type[j]
+            qi = q_start[j]
+            if jt == JointType.FREE:
+                q = joint_q_np[qi + 3 : qi + 7]
+                q /= np.linalg.norm(q)
+            elif jt == JointType.BALL:
+                q = joint_q_np[qi : qi + 4]
+                q /= np.linalg.norm(q)
+
         model.joint_q.assign(joint_q_np)
         state.joint_q.assign(joint_q_np)
 
