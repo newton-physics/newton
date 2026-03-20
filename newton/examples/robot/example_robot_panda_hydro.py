@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Panda Hydro
@@ -231,7 +219,7 @@ class Example:
             self.object_body_local = builder.add_body(xform=object_xform, label="object")
             builder.add_shape_capsule(body=self.object_body_local, radius=radius, half_height=length / 2, cfg=pen_cfg)
             self.grasping_offset = [-0.03, 0.0, 0.13]
-            self.place_offset = -0.0
+            self.place_offset = -0.02
 
         elif self.scene == SceneType.CUBE:
             size = 0.04
@@ -240,7 +228,7 @@ class Example:
             self.object_body_local = builder.add_body(xform=object_xform, label="object")
             builder.add_shape_box(body=self.object_body_local, hx=size / 2, hy=size / 2, hz=size / 2)
             self.grasping_offset = [0.03, 0.0, 0.14]
-            self.place_offset = 0.02
+            self.place_offset = 0.0
 
         if self.put_in_cup:
             self.cup_pos = [0.13, -0.5, box_size + 0.1]
@@ -513,7 +501,7 @@ class Example:
         ]
 
         if self.put_in_cup:
-            loose_pos = 0.72
+            loose_pos = 0.71
             wps = []
             cup_pos_higher = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest])
             cup_pos_lower = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest - 0.1])

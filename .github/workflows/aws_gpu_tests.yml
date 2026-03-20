@@ -55,6 +55,11 @@ jobs:
       label: ${{ steps.start-ec2-runner.outputs.label }}
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        with:
+          egress-policy: audit
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708  # v5.1.1
         with:
@@ -92,7 +97,11 @@ jobs:
           pre-runner-script: |
             if [ -d /opt/dlami/nvme ]; then
               mkdir -p /opt/dlami/nvme/actions-runner/_work
+              mkdir -p /opt/dlami/nvme/actions-runner/.local
+              mkdir -p /opt/dlami/nvme/actions-runner/.cache
               ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
+              ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
+              ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
             fi
           aws-resource-tags: >
             [
@@ -123,11 +132,20 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      - name: Restore Warp kernel cache
+        if: github.event_name != 'merge_group'
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: /actions-runner/.cache/warp
+          key: warp-kernels-gpu-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          restore-keys: |
+            warp-kernels-gpu-
+
       - name: Check disk space
         run: df -h
 
       - name: Run Tests
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu13 -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Check disk space (post-test)
         if: always()
@@ -198,6 +216,11 @@ jobs:
       - gpu-unit-tests
     if: always() && github.repository == 'newton-physics/newton'
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        with:
+          egress-policy: audit
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708  # v5.1.1
         with:

@@ -35,7 +35,7 @@ uvx --with virtualenv asv run --launch-method spawn main^!
 ## PR Instructions
 
 - If opening a pull request on GitHub, use the template in `.github/PULL_REQUEST_TEMPLATE.md`.
-- If a change modifies user-facing behavior, append an entry to the `[Unreleased]` section of `CHANGELOG.md`. Use imperative present tense ("Add X"), place under the correct category (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`), and avoid internal implementation details.
+- If a change modifies user-facing behavior, append an entry at the end of the correct category (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`) in `CHANGELOG.md`'s `[Unreleased]` section. Use imperative present tense ("Add X") and avoid internal implementation details.
 - For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: "Deprecate `Model.geo_meshes` in favor of `Model.shapes`".
 
 ## Examples
