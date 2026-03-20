@@ -1,7 +1,7 @@
 """CENIC benchmark plots.
 
 Generates 6 figures: wall time vs tol, wall time vs N, GPU amortization,
-RMS error trace, adaptive dt trace, and GPU component breakdown.
+L2 error trace, adaptive dt trace, and GPU component breakdown.
 
 Usage:
     uv run python scripts/testing/contact/cenic_benchmark_plots.py
@@ -122,21 +122,37 @@ def main():
     wall_vs_tol = bench_wall_vs_tol(tols, n_worlds=1, sim_duration=sim_duration)
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot([str(f"{t:.0e}") for t in tols], wall_vs_tol, **STYLE, color="tab:blue")
+    ax.plot(tols, wall_vs_tol, **STYLE, color="tab:blue")
     ax.set_xlabel("Error tolerance")
     ax.set_ylabel("Wall time per sim-second [ms/sim-s]")
     ax.set_title("Wall time vs tolerance  (N=1, 2 s sim including contact)")
-    ax.set_ylim(bottom=0)
-    ax.grid(True, alpha=0.3)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.grid(True, which="both", alpha=0.3)
     _save(fig, out / "fig1_wall_vs_tol.png")
 
     wall_vs_n = bench_wall_vs_n(ns, tol=1e-3, sim_duration=sim_duration)
+
+    # Power-law fit in the pre-saturation regime (N <= 128).
+    sat = 128
+    mask = [i for i, n in enumerate(ns) if n <= sat]
+    ns_fit = np.array([ns[i] for i in mask])
+    ws_fit = np.array([wall_vs_n[i] for i in mask])
+    slope, intercept = np.polyfit(np.log(ns_fit), np.log(ws_fit), 1)
+    fit_x = np.geomspace(ns_fit[0], ns_fit[-1], 100)
+    fit_y = np.exp(intercept) * fit_x ** slope
+
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(ns, wall_vs_n, **STYLE, color="black")
+    ax.plot(fit_x, fit_y, color="tab:red", linestyle="--", linewidth=1.2,
+            label=f"fit N <= {sat}: t ~ N^{{{slope:.2f}}}")
+    ax.axvline(sat, color="grey", linestyle=":", linewidth=0.8, label=f"saturation N={sat}")
     ax.set_xlabel("N worlds")
     ax.set_ylabel("Wall time per sim-second [ms/sim-s]")
     ax.set_title("Wall time vs N worlds  (tol=1e-3, 2 s sim including contact)")
     ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.legend(fontsize=8)
     ax.grid(True, which="both", alpha=0.3)
     _save(fig, out / "fig2_wall_vs_n.png")
 
@@ -147,7 +163,7 @@ def main():
     ax.set_ylabel("Wall time per world per sim-second [ms/sim-s]")
     ax.set_title("GPU amortization: cost per world vs N  (tol=1e-3)")
     ax.set_xscale("log", base=2)
-    ax.set_ylim(bottom=0)
+    ax.set_yscale("log")
     ax.grid(True, which="both", alpha=0.3)
     opt_idx = int(np.argmin(cost_per_world))
     ax.axvline(ns[opt_idx], color="grey", linestyle="--", linewidth=1.0,
@@ -163,7 +179,7 @@ def main():
     ax.axhline(trace_tol, color="tab:blue", linestyle="--", linewidth=0.8,
                label=f"tolerance = {trace_tol:.0e}")
     ax.set_xlabel("Simulation time [s]")
-    ax.set_ylabel("RMS error (world 0)")
+    ax.set_ylabel("L2 error (world 0)")
     ax.set_title(f"Integration error over time  (N=1, tol={trace_tol:.0e})")
     ax.set_yscale("log")
     ax.legend(fontsize=8)

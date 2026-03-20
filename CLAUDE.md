@@ -80,4 +80,10 @@ solver = SolverMuJoCoCENIC(
 
 Multi-world scripts (`--num-worlds N`) produce diverging trajectories even from identical initial conditions. This is expected: GPU floating-point reductions are non-associative, causing per-world RMS error estimates to differ by ULP, which eventually leads to different accept/reject decisions and permanently diverging trajectories. Use `--num-worlds 1` for visualization; use `--headless` for data collection.
 
+---
+
+## Plotting conventions
+
+All benchmark and scaling plots must use log-log axes unless the plot is a time series (x-axis is simulation time) or log scale does not make sense for the data. Time series plots use linear x with log y where appropriate (e.g. error traces).
+
 @AGENTS.md
