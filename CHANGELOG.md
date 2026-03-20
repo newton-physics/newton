@@ -16,6 +16,7 @@
 - Add `snap_to` argument to `ViewerGL.log_gizmo()` to snap gizmos to a target world transform when the user releases them
 - Expose `gizmo_is_using` attribute to detect whether a gizmo is actively being dragged
 - Add per-axis gizmo filtering via `translate`/`rotate` parameters on `log_gizmo`
+- Add conceptual overview and MuJoCo Warp integration primer to collision documentation
 - Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
 - Add `enable_ambient_lighting` and `enable_particles` options to `SensorTiledCamera.Config`
 
