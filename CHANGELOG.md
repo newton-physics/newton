@@ -6,6 +6,7 @@
 
 - Add 3D texture-based SDF, replacing NanoVDB volumes in the mesh-mesh collision pipeline for improved performance and CPU compatibility.
 - Add `--benchmark [SECONDS]` flag to examples for headless FPS measurement with warmup
+- Raise process/thread priority automatically in `--benchmark` mode for stable measurements (Windows via psutil, Linux via SCHED_FIFO, macOS via QoS)
 - Interactive example browser in the GL viewer with tree-view navigation and switch/reset support
 - Add `TetMesh` class and USD loading API for tetrahedral mesh geometry
 - Support kinematic bodies in VBD solver

@@ -449,6 +449,12 @@ def create_parser():
         metavar="SECONDS",
         help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
     )
+    parser.add_argument(
+        "--realtime",
+        action="store_true",
+        default=False,
+        help="Use real-time process priority in benchmark mode (Windows only).",
+    )
 
     return parser
 
@@ -512,6 +518,45 @@ def default_args(parser=None):
     return parser.parse_known_args([])[0]
 
 
+_BENCHMARK_PRIORITY_WARNING = "Benchmark running at default process priority (results may vary)."
+
+
+def _raise_benchmark_priority(realtime=False):
+    """Raise process/thread priority for stable benchmark measurements."""
+    import sys  # noqa: PLC0415
+
+    if sys.platform == "win32":
+        try:
+            import psutil  # noqa: PLC0415
+
+            priority = psutil.REALTIME_PRIORITY_CLASS if realtime else psutil.HIGH_PRIORITY_CLASS
+            psutil.Process().nice(priority)
+        except ModuleNotFoundError:
+            print(f"{_BENCHMARK_PRIORITY_WARNING} Install 'psutil' to automatically raise priority.")
+    elif sys.platform == "linux":
+        try:
+            max_pri = os.sched_get_priority_max(os.SCHED_FIFO)
+            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(max_pri))
+        except OSError:
+            print(
+                f"{_BENCHMARK_PRIORITY_WARNING} Add your user to the 'realtime' group"
+                " or run with elevated privileges to enable real-time scheduling."
+            )
+    elif sys.platform == "darwin":
+        import ctypes  # noqa: PLC0415
+        import ctypes.util  # noqa: PLC0415
+
+        try:
+            libsystem = ctypes.CDLL(ctypes.util.find_library("System"))
+            # From <sys/qos.h>
+            QOS_CLASS_USER_INTERACTIVE = 0x21
+            rc = libsystem.pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+            if rc != 0:
+                print(f"{_BENCHMARK_PRIORITY_WARNING} pthread_set_qos_class_self_np returned {rc}.")
+        except OSError as e:
+            print(f"{_BENCHMARK_PRIORITY_WARNING} {e}")
+
+
 def init(parser=None):
     """Initialize Newton example components from parsed arguments.
 
@@ -545,9 +590,10 @@ def init(parser=None):
     if args.device:
         wp.set_device(args.device)
 
-    # Benchmark mode forces null viewer
+    # Benchmark mode forces null viewer and raises process/thread priority
     if args.benchmark is not False:
         args.viewer = "null"
+        _raise_benchmark_priority(realtime=getattr(args, "realtime", False))
 
     # Create viewer based on type
     if args.viewer == "gl":
