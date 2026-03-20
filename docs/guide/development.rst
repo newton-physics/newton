@@ -301,7 +301,7 @@ License headers
 ---------------
 
 Every source file in the repository must carry a 2-line `SPDX <https://spdx.dev/>`_ license
-header. The full license text lives in ``LICENSE.md`` at the repository root, so no further
+header. The full license texts are available in the ``LICENSES`` directory at the repository root, so no further
 boilerplate is required in individual files.
 
 The required headers depend on the file type:
