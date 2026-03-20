@@ -309,7 +309,7 @@ def step_response_control_kernel(
 ):
     """Set ctrl[world_i, act_i] = target only when world_i == act_i, else 0."""
     i = wp.tid()
-    world_i = i / num_actuators
+    world_i = i // num_actuators
     act_i = i % num_actuators  # type: ignore[operator]
     val = float(0.0)
     if world_i % num_actuators == act_i:
