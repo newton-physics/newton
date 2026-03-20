@@ -18,7 +18,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.geometry import create_mesh_heightfield
 from newton.solvers import SolverImplicitMPM
 
 
@@ -60,15 +59,15 @@ class Example:
         # We want heightfield array of shape (res_x, res_y) corresponding to x and y
         X_hf, Y_hf = np.meshgrid(self.hf_x, self.hf_y, indexing="ij")
         Z_hf = self._get_terrain_z(Y_hf, X_hf)
-        vertices, indices = create_mesh_heightfield(
+        terrain_mesh = newton.Mesh.create_heightfield(
             heightfield=Z_hf,
             extent_x=self.L_x,
             extent_y=self.L_y,
             center_x=0.0,
             center_y=0.0,
             ground_z=np.min(Z_hf) - 2.0,
+            compute_inertia=False,
         )
-        terrain_mesh = newton.Mesh(vertices, indices)
 
         # Add terrain body
         terrain_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="terrain")
@@ -261,7 +260,7 @@ class Example:
             np.abs(q_np[:, 1]) > (self.L_y / 2 - boundary_width),
         )
 
-        boundary_indices = wp.array(np.flatnonzero(boundary_mask), dtype=int, device=model.device)
+        boundary_indices = wp.array(np.flatnonzero(boundary_mask), dtype=wp.int32, device=model.device)
 
         # Initialize Jp (plastic deformation gradient determinant or damage variable)
         # 1.0 = fully intact

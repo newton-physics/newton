@@ -96,7 +96,7 @@ class Example:
         self.model.mpm.tensile_yield_ratio.fill_(1.0)
 
         q_np = self.model.particle_q.numpy()
-        fixed_mask = q_np[:, 0] < 0.05 * options.voxel_size
+        fixed_mask = q_np[:, 0] < options.emit_lo[0] + 0.5 * options.voxel_size
 
         # Clamp right end (twist)
         twist_mask = q_np[:, 0] > options.emit_hi[0] - 0.5 * options.voxel_size

@@ -316,8 +316,6 @@ def postprocess_stress_and_strain(
     loc_plastic_strain_new = wp.static(make_solve_flow_rule())(
         diag, loc_plastic_strain - wp.cw_mul(loc_stress, diag), loc_stress, yp, strain_node_volume[tau_i]
     )
-    loc_stress += wp.cw_div(loc_plastic_strain_new - loc_plastic_strain, diag)
-
     world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot)
 
     if _INCLUDE_LEFTOVER_STRAIN:
