@@ -155,14 +155,34 @@ def main():
     parser.add_argument("--num-worlds", type=int, default=1, help="parallel worlds")
     parser.add_argument("--num-steps",  type=int, default=0,  help="0 = run until closed")
     parser.add_argument("--headless",   action="store_true")
+    parser.add_argument("--fixed-dt",   type=float, default=None,
+                        help="Use fixed-step SolverMuJoCo with this dt instead of CENIC")
     args = parser.parse_args()
 
-    model  = build_model(args.num_worlds)
-    solver = make_solver(model)
-
+    model   = build_model(args.num_worlds)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
+
+    use_fixed = args.fixed_dt is not None
+
+    if use_fixed:
+        solver   = newton.solvers.SolverMuJoCo(model)
+        contacts = model.contacts()
+        n_inner  = round(DT_OUTER / args.fixed_dt)
+        print(
+            f"Fixed-step demo: {args.num_worlds} world(s)  solver=SolverMuJoCo  "
+            f"dt={args.fixed_dt:.4e}  substeps/outer={n_inner}",
+            flush=True,
+        )
+    else:
+        solver = make_solver(model)
+        print(
+            f"CENIC contact demo: {args.num_worlds} world(s)  solver=SolverMuJoCoCENIC  "
+            f"tol={solver._tol:.1e}  dt_inner_init={solver._dt.numpy()[0]:.4f}  "
+            f"dt_inner_max={solver._dt_max:.4f}",
+            flush=True,
+        )
 
     viewer = newton.viewer.ViewerGL(headless=args.headless)
     viewer.set_model(model)
@@ -171,25 +191,25 @@ def main():
         pitch=-22.5,
         yaw=136.3,
     )
-    print(
-        f"CENIC contact demo: {args.num_worlds} world(s)  solver=SolverMuJoCoCENIC  "
-        f"tol={solver._tol:.1e}  dt_inner_init={solver._dt.numpy()[0]:.4f}  "
-        f"dt_inner_max={solver._dt_max:.4f}",
-        flush=True,
-    )
+
     step    = 0
     t       = 0.0
     t_start = time.perf_counter()
 
     while viewer.is_running():
-        state_0, state_1 = solver.step_dt(
-            DT_OUTER, state_0, state_1, control,
-            apply_forces=viewer.apply_forces,
-        )
+        if use_fixed:
+            for _ in range(n_inner):
+                state_1 = solver.step(state_0, state_1, control, contacts, args.fixed_dt)
+                state_0, state_1 = state_1, state_0
+        else:
+            state_0, state_1 = solver.step_dt(
+                DT_OUTER, state_0, state_1, control,
+                apply_forces=viewer.apply_forces,
+            )
         t    += DT_OUTER
         step += 1
 
-        if step % LOG_EVERY == 0:
+        if not use_fixed and step % LOG_EVERY == 0:
             _print_status(solver, step)
 
         if args.num_steps > 0 and step >= args.num_steps:

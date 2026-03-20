@@ -70,9 +70,6 @@ def measure_n(n: int, steps: int, warmup: int) -> dict[str, float]:
     def _time_mujoco_warp():
         solver._mujoco_warp_step()
 
-    def _time_boundary_numpy():
-        _ = solver._boundary_flag.numpy()[0]
-
     def _time_status_summary():
         _ = solver.get_status_summary()
 
@@ -82,7 +79,6 @@ def measure_n(n: int, steps: int, warmup: int) -> dict[str, float]:
         "update_mjc_data": _time_update_mjc,
         "update_newton":   _time_update_newton,
         "mujoco_warp":     _time_mujoco_warp,
-        "boundary_numpy":  _time_boundary_numpy,
         "status_summary":  _time_status_summary,
     }
 
@@ -138,7 +134,6 @@ def main():
         ("graph_replay",    "CUDA graph replay (full inner step)","tab:orange", "-",  1.5),
         ("update_mjc_data", "update_mjc_data (×1)",              "tab:green",  "--", 1.2),
         ("update_newton",   "update_newton_state (×1)",          "tab:red",    "--", 1.2),
-        ("boundary_numpy",  "boundary_flag.numpy() (×1)",        "tab:purple", ":",  1.2),
         ("status_summary",  "get_status_summary() (×1)",         "tab:brown",  ":",  1.2),
     ]
 
@@ -216,7 +211,7 @@ def main():
     print(header)
     for n, r in zip(ns, all_results):
         row = f"{n:>6}"
-        for k in ["step_dt", "3x_substep", "mujoco_warp", "graph_replay", "update_mjc_data", "update_newton", "boundary_numpy", "status_summary"]:
+        for k in ["step_dt", "3x_substep", "mujoco_warp", "graph_replay", "update_mjc_data", "update_newton", "status_summary"]:
             row += f"  {r[k]*1e3:>16.3f}"
         print(row)
 

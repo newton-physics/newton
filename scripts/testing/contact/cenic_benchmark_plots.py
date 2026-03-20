@@ -18,11 +18,43 @@ import matplotlib.pyplot as plt
 import numpy as np
 import warp as wp
 
+import newton.solvers
 from scripts.testing.contact.cenic_contact_objects import DT_OUTER, DT_INNER_MIN, build_model, make_solver
 from scripts.testing.contact.cenic_scaling_diag import measure_n as _measure_component_n
 
 _build_model = build_model
 _make_solver = lambda model, tol=1e-3: make_solver(model, tol=tol)
+
+
+def _time_sim_fixed(n, dt, sim_duration):
+    """Build a fixed-step SolverMuJoCo, run sim_duration/DT_OUTER outer steps, return ms/sim-s."""
+    model    = _build_model(n)
+    solver   = newton.solvers.SolverMuJoCo(model)
+    s0, s1   = model.state(), model.state()
+    ctrl     = model.control()
+    contacts = model.contacts()
+    n_outer  = round(sim_duration / DT_OUTER)
+    n_inner  = round(DT_OUTER / dt)
+    wp.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(n_outer):
+        for _ in range(n_inner):
+            s1 = solver.step(s0, s1, ctrl, contacts, dt)
+            s0, s1 = s1, s0
+    wp.synchronize()
+    elapsed = time.perf_counter() - t0
+    return elapsed / sim_duration * 1e3, n_outer
+
+
+def bench_wall_vs_n_fixed(ns, dt, sim_duration=3.0):
+    """Returns list of mean ms/sim-second for each N using fixed-step solver."""
+    print(f"\n[Fig 2 fixed] Wall time vs N worlds  dt={dt:.0e}  sim={sim_duration}s", flush=True)
+    results = []
+    for n in ns:
+        ms, steps = _time_sim_fixed(n, dt, sim_duration)
+        print(f"  N={n:>5}  {ms:.1f} ms/sim-s  ({steps} outer steps, dt={dt:.0e})", flush=True)
+        results.append(ms)
+    return results
 
 
 def _compile_kernels():
@@ -108,6 +140,8 @@ def _save(fig, path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", default=".", help="Directory to write PNG files")
+    parser.add_argument("--compare-fixed", action="store_true",
+                        help="Also run fixed-step baselines and overlay on Fig 2")
     args = parser.parse_args()
 
     out = Path(args.out_dir)
@@ -133,6 +167,13 @@ def main():
 
     wall_vs_n = bench_wall_vs_n(ns, tol=1e-3, sim_duration=sim_duration)
 
+    # Fixed-step baselines (gated behind --compare-fixed).
+    if args.compare_fixed:
+        dt_coarse = DT_OUTER        # 10 ms -- 1 substep per outer step
+        dt_fine   = DT_OUTER / 20   # 0.5 ms -- 20 substeps per outer step
+        wall_fixed_coarse = bench_wall_vs_n_fixed(ns, dt=dt_coarse, sim_duration=sim_duration)
+        wall_fixed_fine   = bench_wall_vs_n_fixed(ns, dt=dt_fine, sim_duration=sim_duration)
+
     # Power-law fit in the pre-saturation regime (N <= 128).
     sat = 128
     mask = [i for i, n in enumerate(ns) if n <= sat]
@@ -143,13 +184,32 @@ def main():
     fit_y = np.exp(intercept) * fit_x ** slope
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(ns, wall_vs_n, **STYLE, color="black")
-    ax.plot(fit_x, fit_y, color="tab:red", linestyle="--", linewidth=1.2,
-            label=f"fit N <= {sat}: t ~ N^{{{slope:.2f}}}")
+    ax.plot(ns, wall_vs_n, **STYLE, color="black", label="CENIC adaptive (tol=1e-3)")
+    if args.compare_fixed:
+        ax.plot(ns, wall_fixed_coarse, **STYLE, color="tab:green",
+                label=f"Fixed dt={dt_coarse*1e3:.0f} ms (coarse)")
+        ax.plot(ns, wall_fixed_fine, **STYLE, color="tab:red",
+                label=f"Fixed dt={dt_fine*1e3:.1f} ms (fine)")
+        # Trend lines for fixed-step solvers (pre-saturation regime).
+        for wall_fixed, dt_val, color in [
+            (wall_fixed_coarse, dt_coarse, "tab:green"),
+            (wall_fixed_fine, dt_fine, "tab:red"),
+        ]:
+            mask_f = [i for i, n in enumerate(ns) if n <= sat]
+            ns_f = np.array([ns[i] for i in mask_f])
+            ws_f = np.array([wall_fixed[i] for i in mask_f])
+            sl_f, ic_f = np.polyfit(np.log(ns_f), np.log(ws_f), 1)
+            fit_xf = np.geomspace(ns_f[0], ns_f[-1], 100)
+            fit_yf = np.exp(ic_f) * fit_xf ** sl_f
+            ax.plot(fit_xf, fit_yf, color=color, linestyle="--", linewidth=1.2,
+                    label=f"fixed dt={dt_val*1e3:.1g} ms fit: t ~ N^{{{sl_f:.2f}}}")
+    ax.plot(fit_x, fit_y, color="tab:blue", linestyle="--", linewidth=1.2,
+            label=f"CENIC fit N <= {sat}: t ~ N^{{{slope:.2f}}}")
     ax.axvline(sat, color="grey", linestyle=":", linewidth=0.8, label=f"saturation N={sat}")
     ax.set_xlabel("N worlds")
     ax.set_ylabel("Wall time per sim-second [ms/sim-s]")
-    ax.set_title("Wall time vs N worlds  (tol=1e-3, 2 s sim including contact)")
+    title = "Fixed vs adaptive wall time" if args.compare_fixed else "Wall time vs N worlds"
+    ax.set_title(f"{title}  (tol=1e-3, 2 s sim including contact)")
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
     ax.legend(fontsize=8)
@@ -206,7 +266,6 @@ def main():
         ("graph_replay",    "CUDA graph replay (full inner step)",  "tab:orange", "-",  1.5),
         ("update_mjc_data", "update_mjc_data (×1)",                "tab:green",  "--", 1.2),
         ("update_newton",   "update_newton_state (×1)",            "tab:red",    "--", 1.2),
-        ("boundary_numpy",  "boundary_flag.numpy() — 1 int32",    "tab:purple", ":",  1.8),
     ]
 
     fig, ax = plt.subplots(figsize=(10, 5))

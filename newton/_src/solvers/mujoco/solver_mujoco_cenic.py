@@ -6,6 +6,8 @@ CUDA graph.  Step controller follows Drake's CalcAdjustedStepSize.
 
 from __future__ import annotations
 
+import gc
+
 import warp as wp
 
 from ...core.types import override
@@ -130,6 +132,31 @@ def _advance_sim_time(
 
 
 @wp.kernel
+def _boundary_reset(flag: wp.array(dtype=wp.int32)):
+    """Set flag[0] = 1 (all-reached)."""
+    flag[0] = 1
+
+
+@wp.kernel
+def _boundary_check(
+    sim_time: wp.array(dtype=wp.float32),
+    target: wp.array(dtype=wp.float32),
+    flag: wp.array(dtype=wp.int32),
+):
+    """Clear flag to 0 if any world has not yet reached target."""
+    i = wp.tid()
+    if sim_time[i] < target[i]:
+        wp.atomic_min(flag, 0, 0)
+
+
+@wp.kernel
+def _boundary_advance(arr: wp.array(dtype=wp.float32), delta: float):
+    """Increment arr[i] by delta."""
+    i = wp.tid()
+    arr[i] = arr[i] + delta
+
+
+@wp.kernel
 def _select_float_kernel(
     candidate: wp.array(dtype=wp.float32),
     fallback: wp.array(dtype=wp.float32),
@@ -180,30 +207,6 @@ def _select_spatial_vector_kernel(
         out[i] = fallback[i]
 
 
-@wp.kernel
-def _boundary_reset(flag: wp.array(dtype=wp.int32)):
-    """Set flag[0] = 1 (all-reached)."""
-    flag[0] = 1
-
-
-@wp.kernel
-def _boundary_check(
-    sim_time: wp.array(dtype=wp.float32),
-    target: wp.array(dtype=wp.float32),
-    flag: wp.array(dtype=wp.int32),
-):
-    """Clear flag to 0 if any world has not yet reached target."""
-    i = wp.tid()
-    if sim_time[i] < target[i]:
-        wp.atomic_min(flag, 0, 0)
-
-
-@wp.kernel
-def _boundary_advance(arr: wp.array(dtype=wp.float32), delta: float):
-    """Increment arr[i] by delta."""
-    i = wp.tid()
-    arr[i] = arr[i] + delta
-
 
 @wp.kernel
 def _status_sentinel_reset(out: wp.array(dtype=wp.float32)):
@@ -233,6 +236,18 @@ def _status_summary_kernel(
         wp.atomic_add(out, 3, wp.float32(1.0))
     wp.atomic_min(out, 4, dt[i])
     wp.atomic_max(out, 5, dt[i])
+
+
+class _ScopedDisableGC:
+    """Disable GC during graph capture to avoid capturing stale deallocations."""
+
+    def __enter__(self):
+        self._was_enabled = gc.isenabled()
+        gc.disable()
+
+    def __exit__(self, *args):
+        if self._was_enabled:
+            gc.enable()
 
 
 class SolverMuJoCoCENIC(SolverMuJoCo):
@@ -333,7 +348,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._timestep_buf = wp.full(world_count, dt_inner_init, dtype=wp.float32, device=device)
         self.mjw_model.opt.timestep = self._timestep_buf
 
-        # Captured once on first step_dt call.
+        # CUDA graph state -- captured once on first step_dt call.
         self._graph: wp.Graph | None = None
 
     def _run_substep(
@@ -357,17 +372,24 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._update_newton_state(self.model, state_out, self.mjw_data)
 
     def _run_3eval_block(self) -> None:
-        """One step-doubling attempt (the CUDA graph body).
+        """One 3-eval step-doubling attempt -- the CUDA graph body.
 
-        Snapshot, 3 MuJoCo evals (full + 2x half), L2 error, Drake
-        controller, state select, sim_time advance.  _apply_dt_cap runs
-        outside the graph so effective_dt_max can change without recapture.
+        Sequence:
+          1. Snapshot ``_state_cur`` -> ``_state_saved`` (rollback target).
+          2. Full step:   ``_state_cur + _dt     -> _scratch_full``.
+          3. Half step 1: ``_state_cur + _dt_half -> _scratch_mid``.
+          4. Half step 2: ``_scratch_mid + _dt_half -> _scratch_double``.
+          5. L2 error between ``_scratch_full`` and ``_scratch_double``.
+          6. Drake ``_calc_adjusted_step`` -> ``ideal_dt``, ``accepted``.
+          7. State select: accepted -> ``_scratch_double``, rejected ->
+             ``_state_saved``, written to ``_state_cur``.
+          8. ``_advance_sim_time`` for accepted worlds.
         """
         model = self.model
         n = model.world_count
         dev = model.device
 
-        # Snapshot for rollback on rejection.
+        # 1. Snapshot for rollback on rejection.
         wp.copy(self._state_saved.joint_q, self._state_cur.joint_q)
         wp.copy(self._state_saved.joint_qd, self._state_cur.joint_qd)
         if self._state_cur.body_q is not None and self._state_saved.body_q is not None:
@@ -375,11 +397,12 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         if self._state_cur.body_qd is not None and self._state_saved.body_qd is not None:
             wp.copy(self._state_saved.body_qd, self._state_cur.body_qd)
 
-        # 3 MuJoCo evals: full dt, half dt, half dt.
+        # 2-4. Three-eval step doubling.
         self._run_substep(self._state_cur, self._scratch_full, None, self._dt)
         self._run_substep(self._state_cur, self._scratch_mid, None, self._dt_half)
         self._run_substep(self._scratch_mid, self._scratch_double, None, self._dt_half)
 
+        # 5. L2 error (qd scaled by dt -> position units).
         wp.launch(
             _rms_error_kernel,
             dim=n,
@@ -396,6 +419,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             device=dev,
         )
 
+        # 6. Drake controller -> ideal_dt, accepted.
         wp.launch(
             _calc_adjusted_step,
             dim=n,
@@ -404,7 +428,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             device=dev,
         )
 
-        # State select: accepted worlds get scratch_double, rejected get saved.
+        # 7. State select: accepted -> scratch_double, rejected -> saved.
         wp.launch(
             _select_float_kernel,
             dim=model.joint_coord_count,
@@ -440,6 +464,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
                 device=dev,
             )
 
+        # 8. Advance sim_time for accepted worlds.
         wp.launch(
             _advance_sim_time,
             dim=n,
@@ -449,10 +474,12 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
 
     def _capture_graph(self) -> None:
         """Build the CUDA graph for one 3-eval step-doubling attempt."""
-        self._run_3eval_block()  # warm-up: primes JIT + CUDA allocations
+        # Warm-up pass: primes JIT compilation and CUDA allocations.
+        self._run_3eval_block()
 
-        with wp.ScopedCapture() as capture:
-            self._run_3eval_block()
+        with _ScopedDisableGC():
+            with wp.ScopedCapture(force_module_load=False) as capture:
+                self._run_3eval_block()
         self._graph = capture.graph
 
     def _maybe_recapture(self) -> None:
@@ -576,30 +603,38 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         control: Control,
         apply_forces=None,
     ) -> tuple[State, State]:
-        """Advance all worlds by exactly ``dt_outer`` seconds of simulation time.
+        """Advance all worlds by exactly ``dt_outer`` of simulation time.
+
+        Replays the captured CUDA graph (3 MuJoCo evals + L2 error + Drake
+        controller + state select) once per inner iteration, with a single
+        ``int32`` read-back per iteration to check termination.
 
         Args:
-            dt_outer: Outer control/render period [s].
+            dt_outer: Outer control/render period to advance [s].
             state_0: Current state (input/output).
-            state_1: Scratch state (unused; returned unchanged).
+            state_1: Scratch state (unused internally; returned unchanged).
             control: Control inputs (applied once, persists across substeps).
-            apply_forces: Optional ``fn(state)`` for external forces.
+            apply_forces: Optional callable ``fn(state)`` called once before
+                the loop to inject external forces.
 
         Returns:
-            ``(state_0, state_1)`` with ``state_0`` updated.
+            ``(state_0, state_1)`` with ``state_0`` updated to the new state.
         """
         device = self.model.device
         n = self.model.world_count
 
         effective_dt_max = min(self._dt_max, dt_outer)
 
+        # Prime _dt / _dt_half for the first graph replay and apply new dt_max.
         wp.launch(
             _apply_dt_cap,
             dim=n,
-            inputs=[self._ideal_dt, self._dt_min, effective_dt_max, self._dt, self._dt_half],
+            inputs=[self._ideal_dt, self._dt_min, effective_dt_max,
+                    self._dt, self._dt_half],
             device=device,
         )
 
+        # Copy external state into the stable internal buffer.
         wp.copy(self._state_cur.joint_q, state_0.joint_q)
         wp.copy(self._state_cur.joint_qd, state_0.joint_qd)
         if state_0.body_q is not None and self._state_cur.body_q is not None:
@@ -607,39 +642,49 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         if state_0.body_qd is not None and self._state_cur.body_qd is not None:
             wp.copy(self._state_cur.body_qd, state_0.body_qd)
 
+        # Apply control once -- persists in mjw_data.ctrl across all substeps.
         self._apply_mjc_control(self.model, state_0, control, self.mjw_data)
         if apply_forces is not None:
             apply_forces(state_0)
 
         self._enable_rne_postconstraint(self._state_cur)
 
-        wp.launch(_boundary_advance, dim=n, inputs=[self._next_time, dt_outer], device=device)
-        wp.launch(_boundary_reset, dim=1, inputs=[self._boundary_flag], device=device)
+        wp.launch(_boundary_advance, dim=n,
+                  inputs=[self._next_time, dt_outer], device=device)
+        wp.launch(_boundary_reset, dim=1,
+                  inputs=[self._boundary_flag], device=device)
 
+        # Capture on first call.
         self._maybe_recapture()
 
+        # Inner loop: 1 graph replay + 1 int32 sync per iteration.
         while True:
             wp.capture_launch(self._graph)
 
-            # dt cap runs outside the graph so effective_dt_max can change
-            # between step_dt calls without recapture.
+            # Apply dt cap outside the graph so effective_dt_max can change
+            # between step_dt calls without requiring a re-capture.
             wp.launch(
                 _apply_dt_cap,
                 dim=n,
-                inputs=[self._ideal_dt, self._dt_min, effective_dt_max, self._dt, self._dt_half],
+                inputs=[self._ideal_dt, self._dt_min, effective_dt_max,
+                        self._dt, self._dt_half],
                 device=device,
             )
 
-            wp.launch(_boundary_reset, dim=1, inputs=[self._boundary_flag], device=device)
+            # Boundary check: 1 int32 read-back per dt_outer boundary.
+            wp.launch(_boundary_reset, dim=1,
+                      inputs=[self._boundary_flag], device=device)
             wp.launch(
                 _boundary_check,
                 dim=n,
-                inputs=[self._sim_time, self._next_time, self._boundary_flag],
+                inputs=[self._sim_time, self._next_time,
+                        self._boundary_flag],
                 device=device,
             )
             if self._boundary_flag.numpy()[0]:
                 break
 
+        # Copy result from internal buffer back to the external state.
         wp.copy(state_0.joint_q, self._state_cur.joint_q)
         wp.copy(state_0.joint_qd, self._state_cur.joint_qd)
         if state_0.body_q is not None and self._state_cur.body_q is not None:
