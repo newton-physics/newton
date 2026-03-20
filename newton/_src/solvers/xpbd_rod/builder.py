@@ -104,8 +104,6 @@ def add_elastic_rod(
 
     # Quaternion inverse masses (rotation lock)
     quat_inv_masses = np.ones(num_points, dtype=np.float32)
-    if lock_root:
-        quat_inv_masses[0] = 0.0
     if lock_root_rotation:
         quat_inv_masses[0] = 0.0
 

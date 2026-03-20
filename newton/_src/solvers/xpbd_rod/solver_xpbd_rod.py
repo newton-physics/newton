@@ -27,6 +27,7 @@ from ..solver import SolverBase
 from .constants import (
     BAND_LDAB,
     BLOCK_DIM,
+    DIRECT_SOLVE_BACKENDS,
     DIRECT_SOLVE_BANDED_CHOLESKY,
     DIRECT_SOLVE_BLOCK_JACOBI,
     DIRECT_SOLVE_BLOCK_THOMAS,
@@ -304,6 +305,12 @@ class SolverXPBDRod(SolverBase):
         floor_z: float | None = 0.0,
     ):
         super().__init__(model)
+        if solver_backend not in DIRECT_SOLVE_BACKENDS:
+            raise ValueError(
+                f"Unknown solver backend {solver_backend!r}. "
+                f"Expected one of {DIRECT_SOLVE_BACKENDS}"
+            )
+
         self.linear_damping = linear_damping
         self.angular_damping = angular_damping
         self.solver_backend = solver_backend
@@ -313,6 +320,8 @@ class SolverXPBDRod(SolverBase):
 
         # Build rod workspaces from model data stored during build
         self._rods: list[_RodWorkspace] = []
+        self._rod_particle_starts: list[int] = []
+        self._batched_ws: _BatchedRodWorkspace | None = None
 
         if not hasattr(model, "xpbd_rod"):
             return
@@ -528,7 +537,7 @@ class SolverXPBDRod(SolverBase):
             wp.launch(
                 _warp_apply_floor_collisions,
                 dim=ws.num_points,
-                inputs=[ws.positions_wp, ws.predicted_positions_wp, ws.velocities_wp, min_z, 0.0],
+                inputs=[ws.predicted_positions_wp, ws.velocities_wp, min_z, 0.0],
                 device=device,
             )
 
@@ -616,7 +625,7 @@ class SolverXPBDRod(SolverBase):
             wp.launch(
                 _warp_apply_floor_collisions,
                 dim=tp,
-                inputs=[bws.positions, bws.predicted_positions, bws.velocities, float(self.floor_z), 0.0],
+                inputs=[bws.predicted_positions, bws.velocities, float(self.floor_z), 0.0],
                 device=device,
             )
 

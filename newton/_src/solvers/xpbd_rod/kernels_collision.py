@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from .kernels_math import _warp_jacobian_index, _warp_quat_normalize
+from .kernels_math import _inv_inertia_mul_vec, _warp_jacobian_index, _warp_quat_normalize
 
 # ==============================================================================
 # Utility operations
@@ -57,7 +57,6 @@ def _warp_zero_vec3(arr: wp.array(dtype=wp.vec3)):
 
 @wp.kernel
 def _warp_apply_floor_collisions(
-    positions: wp.array(dtype=wp.vec3),
     predicted: wp.array(dtype=wp.vec3),
     velocities: wp.array(dtype=wp.vec3),
     min_z: float,
@@ -80,39 +79,6 @@ def _warp_apply_floor_collisions(
 
 
 @wp.kernel
-def _warp_apply_root_translation(
-    positions: wp.array(dtype=wp.vec3),
-    predicted: wp.array(dtype=wp.vec3),
-    velocities: wp.array(dtype=wp.vec3),
-    dx: float,
-    dy: float,
-    dz: float,
-):
-    """Apply translation to the root particle."""
-    tid = wp.tid()
-    if tid != 0:
-        return
-    pos = positions[0]
-    new_pos = wp.vec3(pos.x + dx, pos.y + dy, pos.z + dz)
-    positions[0] = new_pos
-    predicted[0] = new_pos
-    velocities[0] = wp.vec3(0.0, 0.0, 0.0)
-
-
-@wp.kernel
-def _warp_zero_root_velocities(
-    velocities: wp.array(dtype=wp.vec3),
-    angular_velocities: wp.array(dtype=wp.vec3),
-):
-    """Zero out root particle velocities."""
-    tid = wp.tid()
-    if tid != 0:
-        return
-    velocities[0] = wp.vec3(0.0, 0.0, 0.0)
-    angular_velocities[0] = wp.vec3(0.0, 0.0, 0.0)
-
-
-@wp.kernel
 def _warp_set_root_orientation(
     orientations: wp.array(dtype=wp.quat),
     predicted: wp.array(dtype=wp.quat),
@@ -126,30 +92,6 @@ def _warp_set_root_orientation(
     orientations[0] = q
     predicted[0] = q
     prev[0] = q
-
-
-# ==============================================================================
-# Constraint max computation
-# ==============================================================================
-
-
-@wp.kernel
-def _warp_constraint_max(
-    constraint_values: wp.array(dtype=wp.float32),
-    n_edges: int,
-    out_max: wp.array(dtype=wp.float32),
-):
-    """Compute maximum constraint violation norm (parallel)."""
-    edge = wp.tid()
-    if edge >= n_edges:
-        return
-    base_idx = edge * 6
-    norm_sq = float(0.0)
-    for j in range(6):
-        val = constraint_values[base_idx + j]
-        norm_sq += val * val
-    norm = wp.sqrt(norm_sq)
-    wp.atomic_max(out_max, 0, norm)
 
 
 # ==============================================================================
@@ -209,62 +151,6 @@ def _warp_compute_inv_inertia_world(
     inv_inertia_out[base + 8] = r20 * d0 * r20 + r21 * d1 * r21 + r22 * d2 * r22
 
 
-@wp.kernel
-def _warp_compute_inv_inertia_world_batched(
-    orientations: wp.array(dtype=wp.quat),
-    quat_inv_masses: wp.array(dtype=wp.float32),
-    inv_inertia_local_diag: wp.array(dtype=wp.vec3),
-    particle_rod_id: wp.array(dtype=wp.int32),
-    inv_inertia_out: wp.array(dtype=wp.float32),
-):
-    """Compute inverse inertia tensors for all rods in a single launch."""
-    i = wp.tid()
-    base = i * 9
-
-    if quat_inv_masses[i] <= 0.0:
-        for j in range(9):
-            inv_inertia_out[base + j] = 0.0
-        return
-
-    rod_id = particle_rod_id[i]
-    inv_inertia_local = inv_inertia_local_diag[rod_id]
-
-    q = orientations[i]
-    xx = q.x * q.x
-    yy = q.y * q.y
-    zz = q.z * q.z
-    xy = q.x * q.y
-    xz = q.x * q.z
-    yz = q.y * q.z
-    wx = q.w * q.x
-    wy = q.w * q.y
-    wz = q.w * q.z
-
-    r00 = 1.0 - 2.0 * (yy + zz)
-    r01 = 2.0 * (xy - wz)
-    r02 = 2.0 * (xz + wy)
-    r10 = 2.0 * (xy + wz)
-    r11 = 1.0 - 2.0 * (xx + zz)
-    r12 = 2.0 * (yz - wx)
-    r20 = 2.0 * (xz - wy)
-    r21 = 2.0 * (yz + wx)
-    r22 = 1.0 - 2.0 * (xx + yy)
-
-    d0 = inv_inertia_local.x
-    d1 = inv_inertia_local.y
-    d2 = inv_inertia_local.z
-
-    inv_inertia_out[base + 0] = r00 * d0 * r00 + r01 * d1 * r01 + r02 * d2 * r02
-    inv_inertia_out[base + 1] = r00 * d0 * r10 + r01 * d1 * r11 + r02 * d2 * r12
-    inv_inertia_out[base + 2] = r00 * d0 * r20 + r01 * d1 * r21 + r02 * d2 * r22
-    inv_inertia_out[base + 3] = r10 * d0 * r00 + r11 * d1 * r01 + r12 * d2 * r02
-    inv_inertia_out[base + 4] = r10 * d0 * r10 + r11 * d1 * r11 + r12 * d2 * r12
-    inv_inertia_out[base + 5] = r10 * d0 * r20 + r11 * d1 * r21 + r12 * d2 * r22
-    inv_inertia_out[base + 6] = r20 * d0 * r00 + r21 * d1 * r01 + r22 * d2 * r02
-    inv_inertia_out[base + 7] = r20 * d0 * r10 + r21 * d1 * r11 + r22 * d2 * r12
-    inv_inertia_out[base + 8] = r20 * d0 * r20 + r21 * d1 * r21 + r22 * d2 * r22
-
-
 # ==============================================================================
 # Quaternion correction helper
 # ==============================================================================
@@ -309,17 +195,6 @@ def _warp_jacobian_dot(
         + jacobian[_warp_jacobian_index(edge, 3, col)] * dl3
         + jacobian[_warp_jacobian_index(edge, 4, col)] * dl4
         + jacobian[_warp_jacobian_index(edge, 5, col)] * dl5
-    )
-
-
-@wp.func
-def _inv_inertia_mul_vec_kernels(inv_inertia: wp.array(dtype=wp.float32), particle_idx: int, v: wp.vec3) -> wp.vec3:
-    """Multiply inverse inertia tensor (3x3) by a vector."""
-    base_idx = particle_idx * 9
-    return wp.vec3(
-        inv_inertia[base_idx + 0] * v.x + inv_inertia[base_idx + 1] * v.y + inv_inertia[base_idx + 2] * v.z,
-        inv_inertia[base_idx + 3] * v.x + inv_inertia[base_idx + 4] * v.y + inv_inertia[base_idx + 5] * v.z,
-        inv_inertia[base_idx + 6] * v.x + inv_inertia[base_idx + 7] * v.y + inv_inertia[base_idx + 8] * v.z,
     )
 
 
@@ -393,7 +268,7 @@ def _warp_compute_corrections_parallel(
             _warp_jacobian_dot(jacobian_rot, edge, 1, dl0, dl1, dl2, dl3, dl4, dl5),
             _warp_jacobian_dot(jacobian_rot, edge, 2, dl0, dl1, dl2, dl3, dl4, dl5),
         )
-        dtheta0 = _inv_inertia_mul_vec_kernels(inv_inertia, edge, j_t0_delta)
+        dtheta0 = _inv_inertia_mul_vec(inv_inertia, edge, j_t0_delta)
         wp.atomic_add(rot_corrections, edge, dtheta0)
 
     if quat_inv_masses[edge + 1] > 0.0:
@@ -402,7 +277,7 @@ def _warp_compute_corrections_parallel(
             _warp_jacobian_dot(jacobian_rot, edge, 4, dl0, dl1, dl2, dl3, dl4, dl5),
             _warp_jacobian_dot(jacobian_rot, edge, 5, dl0, dl1, dl2, dl3, dl4, dl5),
         )
-        dtheta1 = _inv_inertia_mul_vec_kernels(inv_inertia, edge + 1, j_t1_delta)
+        dtheta1 = _inv_inertia_mul_vec(inv_inertia, edge + 1, j_t1_delta)
         wp.atomic_add(rot_corrections, edge + 1, dtheta1)
 
 
@@ -479,7 +354,7 @@ def _warp_compute_corrections_parallel_batched(
             _warp_jacobian_dot(jacobian_rot, global_edge, 1, dl0, dl1, dl2, dl3, dl4, dl5),
             _warp_jacobian_dot(jacobian_rot, global_edge, 2, dl0, dl1, dl2, dl3, dl4, dl5),
         )
-        dtheta0 = _inv_inertia_mul_vec_kernels(inv_inertia, p0_idx, j_t0_delta)
+        dtheta0 = _inv_inertia_mul_vec(inv_inertia, p0_idx, j_t0_delta)
         wp.atomic_add(rot_corrections, p0_idx, dtheta0)
 
     if quat_inv_masses[p1_idx] > 0.0:
@@ -488,7 +363,7 @@ def _warp_compute_corrections_parallel_batched(
             _warp_jacobian_dot(jacobian_rot, global_edge, 4, dl0, dl1, dl2, dl3, dl4, dl5),
             _warp_jacobian_dot(jacobian_rot, global_edge, 5, dl0, dl1, dl2, dl3, dl4, dl5),
         )
-        dtheta1 = _inv_inertia_mul_vec_kernels(inv_inertia, p1_idx, j_t1_delta)
+        dtheta1 = _inv_inertia_mul_vec(inv_inertia, p1_idx, j_t1_delta)
         wp.atomic_add(rot_corrections, p1_idx, dtheta1)
 
 

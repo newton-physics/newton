@@ -277,7 +277,7 @@ class Example:
             wp.copy(dest=ws.inv_masses_wp, src=wp.array(root_inv_mass, dtype=wp.float32, device=ws.device), count=1)
 
             free_quat_inv_mass = self._free_quat_inv_masses[rod_idx]
-            root_quat_inv_mass = np.array([0.0 if (self.lock_root or self.lock_root_rotation) else free_quat_inv_mass], dtype=np.float32)
+            root_quat_inv_mass = np.array([0.0 if self.lock_root_rotation else free_quat_inv_mass], dtype=np.float32)
             wp.copy(dest=ws.quat_inv_masses_wp, src=wp.array(root_quat_inv_mass, dtype=wp.float32, device=ws.device), count=1)
 
     def _update_rest_lengths(self):
@@ -327,6 +327,10 @@ class Example:
         imgui.separator()
         _, self.show_directors = imgui.checkbox("Show Material Frames", self.show_directors)
         _, self.director_scale = imgui.slider_float("Director Scale", self.director_scale, 0.01, 0.1)
+
+    def test_final(self):
+        particle_q = self.state_0.particle_q.numpy()
+        assert np.all(np.isfinite(particle_q)), "Particle positions must stay finite"
 
 
 if __name__ == "__main__":

@@ -68,20 +68,6 @@ def _warp_quat_rotate_vector(q: wp.quat, v: wp.vec3) -> wp.vec3:
     )
 
 
-@wp.func
-def _warp_quat_correction(q: wp.quat, dtheta: wp.vec3) -> wp.quat:
-    """Apply a small angular correction to a quaternion."""
-    norm_sq = dtheta.x * dtheta.x + dtheta.y * dtheta.y + dtheta.z * dtheta.z
-    if norm_sq < 1.0e-20:
-        return q
-    corr_x = 0.5 * (q.w * dtheta.x + q.z * dtheta.y - q.y * dtheta.z)
-    corr_y = 0.5 * (-q.z * dtheta.x + q.w * dtheta.y + q.x * dtheta.z)
-    corr_z = 0.5 * (q.y * dtheta.x - q.x * dtheta.y + q.w * dtheta.z)
-    corr_w = 0.5 * (-q.x * dtheta.x - q.y * dtheta.y - q.z * dtheta.z)
-    q_new = wp.quat(q.x + corr_x, q.y + corr_y, q.z + corr_z, q.w + corr_w)
-    return _warp_quat_normalize(q_new)
-
-
 # ==============================================================================
 # Jacobian indexing
 # ==============================================================================
@@ -222,12 +208,6 @@ def _block_index_3x3(block: int, row: int, col: int) -> int:
 
 
 @wp.func
-def _vec_index_3(block: int, row: int) -> int:
-    """Compute flat index for 3-vector storage."""
-    return block * 3 + row
-
-
-@wp.func
 def _load_block_3x3(blocks: wp.array(dtype=wp.float32), block: int) -> wp.mat33:
     """Load a 3x3 block from flat storage."""
     base = block * 9
@@ -242,21 +222,6 @@ def _load_block_3x3(blocks: wp.array(dtype=wp.float32), block: int) -> wp.mat33:
         blocks[base + 7],
         blocks[base + 8],
     )
-
-
-@wp.func
-def _store_block_3x3(blocks: wp.array(dtype=wp.float32), block: int, M: wp.mat33):
-    """Store a 3x3 block to flat storage."""
-    base = block * 9
-    blocks[base + 0] = M[0, 0]
-    blocks[base + 1] = M[0, 1]
-    blocks[base + 2] = M[0, 2]
-    blocks[base + 3] = M[1, 0]
-    blocks[base + 4] = M[1, 1]
-    blocks[base + 5] = M[1, 2]
-    blocks[base + 6] = M[2, 0]
-    blocks[base + 7] = M[2, 1]
-    blocks[base + 8] = M[2, 2]
 
 
 @wp.func
@@ -323,12 +288,6 @@ def _block_index(block: int, row: int, col: int) -> int:
 
 
 @wp.func
-def _vec_index(block: int, row: int) -> int:
-    """Compute flat index for 6-vector storage."""
-    return block * 6 + row
-
-
-@wp.func
 def _load_block(blocks: wp.array(dtype=wp.float32), block: int) -> tuple[wp.mat33, wp.mat33, wp.mat33, wp.mat33]:
     """Load a 6x6 block as four 3x3 matrices."""
     base = block * 36
@@ -385,55 +344,6 @@ def _load_block_offset(
 ) -> tuple[wp.mat33, wp.mat33, wp.mat33, wp.mat33]:
     """Load a 6x6 block with global offset for batched operations."""
     return _load_block(blocks, edge_offset + local_block)
-
-
-@wp.func
-def _store_block(
-    blocks: wp.array(dtype=wp.float32),
-    block: int,
-    A: wp.mat33,
-    B: wp.mat33,
-    C: wp.mat33,
-    D: wp.mat33,
-):
-    """Store four 3x3 matrices as a 6x6 block."""
-    base = block * 36
-    blocks[base + 0] = A[0, 0]
-    blocks[base + 1] = A[0, 1]
-    blocks[base + 2] = A[0, 2]
-    blocks[base + 3] = B[0, 0]
-    blocks[base + 4] = B[0, 1]
-    blocks[base + 5] = B[0, 2]
-    blocks[base + 6] = A[1, 0]
-    blocks[base + 7] = A[1, 1]
-    blocks[base + 8] = A[1, 2]
-    blocks[base + 9] = B[1, 0]
-    blocks[base + 10] = B[1, 1]
-    blocks[base + 11] = B[1, 2]
-    blocks[base + 12] = A[2, 0]
-    blocks[base + 13] = A[2, 1]
-    blocks[base + 14] = A[2, 2]
-    blocks[base + 15] = B[2, 0]
-    blocks[base + 16] = B[2, 1]
-    blocks[base + 17] = B[2, 2]
-    blocks[base + 18] = C[0, 0]
-    blocks[base + 19] = C[0, 1]
-    blocks[base + 20] = C[0, 2]
-    blocks[base + 21] = D[0, 0]
-    blocks[base + 22] = D[0, 1]
-    blocks[base + 23] = D[0, 2]
-    blocks[base + 24] = C[1, 0]
-    blocks[base + 25] = C[1, 1]
-    blocks[base + 26] = C[1, 2]
-    blocks[base + 27] = D[1, 0]
-    blocks[base + 28] = D[1, 1]
-    blocks[base + 29] = D[1, 2]
-    blocks[base + 30] = C[2, 0]
-    blocks[base + 31] = C[2, 1]
-    blocks[base + 32] = C[2, 2]
-    blocks[base + 33] = D[2, 0]
-    blocks[base + 34] = D[2, 1]
-    blocks[base + 35] = D[2, 2]
 
 
 @wp.func
@@ -576,7 +486,11 @@ def _block_solve(
     b0: wp.vec3,
     b1: wp.vec3,
 ) -> tuple[wp.vec3, wp.vec3]:
-    """Solve a 6x6 block system using Cholesky decomposition."""
+    """Solve a 6x6 SPD block system ``[[A, B], [C, D]]`` via Cholesky.
+
+    ``B`` is accepted for API symmetry with :func:`_load_block` but unused
+    because the solver assumes SPD structure where ``B = C^T``.
+    """
     L11 = _mat33_cholesky(A)
     c0 = wp.vec3(C[0, 0], C[0, 1], C[0, 2])
     c1 = wp.vec3(C[1, 0], C[1, 1], C[1, 2])

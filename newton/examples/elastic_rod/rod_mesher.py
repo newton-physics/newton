@@ -95,9 +95,15 @@ def _mesh_one_rod(
     fm = _basis_from_direction(w)
     # Store frame columns at frame_offset (9 floats per rod)
     fo = frame_offset
-    frames[fo + 0] = fm[0, 0]; frames[fo + 1] = fm[1, 0]; frames[fo + 2] = fm[2, 0]
-    frames[fo + 3] = fm[0, 1]; frames[fo + 4] = fm[1, 1]; frames[fo + 5] = fm[2, 1]
-    frames[fo + 6] = fm[0, 2]; frames[fo + 7] = fm[1, 2]; frames[fo + 8] = fm[2, 2]
+    frames[fo + 0] = fm[0, 0]
+    frames[fo + 1] = fm[1, 0]
+    frames[fo + 2] = fm[2, 0]
+    frames[fo + 3] = fm[0, 1]
+    frames[fo + 4] = fm[1, 1]
+    frames[fo + 5] = fm[2, 1]
+    frames[fo + 6] = fm[0, 2]
+    frames[fo + 7] = fm[1, 2]
+    frames[fo + 8] = fm[2, 2]
 
     v_id = vert_offset
     for i in range(num_points - 1):
@@ -131,10 +137,18 @@ def _mesh_one_rod(
                     u_f = wp.vec3(frames[fo + 0], frames[fo + 1], frames[fo + 2])
                     v_f = wp.vec3(frames[fo + 3], frames[fo + 4], frames[fo + 5])
                     w_f = wp.vec3(frames[fo + 6], frames[fo + 7], frames[fo + 8])
-                    u_n = rot * u_f; v_n = rot * v_f; w_n = rot * w_f
-                    frames[fo+0]=u_n[0]; frames[fo+1]=u_n[1]; frames[fo+2]=u_n[2]
-                    frames[fo+3]=v_n[0]; frames[fo+4]=v_n[1]; frames[fo+5]=v_n[2]
-                    frames[fo+6]=w_n[0]; frames[fo+7]=w_n[1]; frames[fo+8]=w_n[2]
+                    u_n = rot * u_f
+                    v_n = rot * v_f
+                    w_n = rot * w_f
+                    frames[fo + 0] = u_n[0]
+                    frames[fo + 1] = u_n[1]
+                    frames[fo + 2] = u_n[2]
+                    frames[fo + 3] = v_n[0]
+                    frames[fo + 4] = v_n[1]
+                    frames[fo + 5] = v_n[2]
+                    frames[fo + 6] = w_n[0]
+                    frames[fo + 7] = w_n[1]
+                    frames[fo + 8] = w_n[2]
 
             for cc in range(resolution):
                 theta = 2.0 * 3.14159265359 * float(cc) / float(resolution)
@@ -340,7 +354,6 @@ class BatchedRodMesher:
 
         self.num_rings = (num_points - 1) * smoothing + 1 if num_points >= 2 else 0
         verts_per_rod = self.num_rings * resolution
-        tris_per_rod = (self.num_rings - 1) * resolution * 2 if self.num_rings > 1 else 0
         self._verts_per_rod = verts_per_rod
 
         # Build topology — indices are 0-based (shared by all rods since
