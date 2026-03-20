@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-
 """Style3D cloth helpers built on :class:`newton.ModelBuilder` custom attributes."""
 
 from __future__ import annotations
