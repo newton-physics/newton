@@ -200,6 +200,8 @@ class RenderContext:
         self.lights_orientation: wp.array(dtype=wp.vec3f) = None
 
     def init_from_model(self, model: Model, load_textures: bool):
+        self.world_count = model.world_count
+
         self.shape_source_ptr = model.shape_source_ptr
         self.shape_bounds = wp.empty((model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.device)
 
