@@ -372,7 +372,7 @@ def update_particle_strains(
     particle_Jp_new = particle_Jp_prev[s.qp_index] * wp.clamp(delta_Jp, MIN_JP_DELTA, MAX_JP_DELTA)
 
     elastic_parameters_vec = get_elastic_parameters(s.qp_index, material_parameters)
-    compliance, poisson, _damping = extract_elastic_parameters(elastic_parameters_vec)
+    compliance, _poisson, _damping = extract_elastic_parameters(elastic_parameters_vec)
 
     yield_parameters_vec = get_yield_parameters(s.qp_index, material_parameters, particle_Jp_new, dt)
     stress_0 = fem.SymmetricTensorMapper.value_to_dof_3d(stress(s))
