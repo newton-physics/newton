@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
@@ -73,23 +61,23 @@ def sample_texture(
     bary_v: wp.float32,
     face_id: wp.int32,
 ) -> wp.vec3f:
-    tex_color = wp.vec3f(1.0, 1.0, 1.0)
+    DEFAULT_RETURN = wp.vec3f(1.0, 1.0, 1.0)
 
     if texture_index == -1:
-        return tex_color
+        return DEFAULT_RETURN
 
     if shape_type == GeoType.PLANE:
-        tex_color = sample_texture_plane(hit_point, shape_transform, texture_data[texture_index])
+        return sample_texture_plane(hit_point, shape_transform, texture_data[texture_index])
 
     if shape_type == GeoType.MESH:
         if face_id < 0 or mesh_data_index < 0:
-            return tex_color
+            return DEFAULT_RETURN
 
         if mesh_data[mesh_data_index].uvs.shape[0] == 0:
-            return tex_color
+            return DEFAULT_RETURN
 
-        tex_color = sample_texture_mesh(
+        return sample_texture_mesh(
             bary_u, bary_v, face_id, mesh_id, mesh_data[mesh_data_index], texture_data[texture_index]
         )
 
-    return tex_color
+    return DEFAULT_RETURN

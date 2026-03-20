@@ -20,6 +20,7 @@
 - Add plastic viscosity, dilatancy, hardening and softening rate as per-particle MPM material properties (`mpm:viscosity`, `mpm:dilatancy`, `mpm:hardening_rate`, `mpm:softening_rate`)
 - Add MPM beam twist, snow ball, and viscous coiling examples
 - Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
+- Add `enable_ambient_lighting` and `enable_particles` options to `SensorTiledCamera.Config`
 
 ### Changed
 
@@ -32,8 +33,17 @@
 - Change implicit MPM residual computation to consider both infinity and l2 norm
 - Change implicit MPM hardening law from exponential to hyperbolic sine (`sinh(-h * log(Jp))`), no longer scales elastic modulus
 - Change implicit MPM collider velocity mode names: `"forward"` / `"backward"` replace `"instantaneous"` / `"finite_difference"`
+- Simplify `SensorContact` force output: add `total_force` (aggregate per sensing object) and `force_matrix` (per-counterpart breakdown, `None` when no counterparts)
+- Add `sensing_obj_idx` (`list[int]`), `counterpart_indices` (`list[list[int]]`), `sensing_obj_type`, and `counterpart_type` attributes. Rename `include_total` to `measure_total`
+- Replace verbose Apache 2.0 boilerplate with two-line SPDX-only license headers across all source and documentation files
 
 ### Deprecated
+
+- Deprecate `SensorContact.net_force` in favor of `SensorContact.total_force` and `SensorContact.force_matrix`
+- Deprecate `SensorContact(include_total=...)` in favor of `SensorContact(measure_total=...)`
+- Deprecate `SensorContact.sensing_objs` in favor of `SensorContact.sensing_obj_idx`
+- Deprecate `SensorContact.counterparts` and `SensorContact.reading_indices` in favor of `SensorContact.counterpart_indices`
+- Deprecate `SensorContact.shape` (use `total_force.shape` and `force_matrix.shape` instead) 
 
 ### Removed
 

@@ -111,8 +111,19 @@ jobs:
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548  # v6.1.0
         with:
           python-version-file: ".python-version"
+      - name: Restore Warp kernel cache
+        if: github.event_name != 'merge_group'
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: |
+            ~/.cache/warp
+            ~/Library/Caches/warp
+            ~\AppData\Local\NVIDIA\warp\Cache
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          restore-keys: |
+            warp-kernels-${{ runner.os }}-${{ runner.arch }}-
       - name: Run Tests
-        run: uv run --extra dev -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
       - name: Test Summary
         uses: test-summary/action@31493c76ec9e7aa675f1585d3ed6f1da69269a86  # v2.4
         with:
