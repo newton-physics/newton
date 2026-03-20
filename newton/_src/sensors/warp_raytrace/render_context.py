@@ -201,6 +201,16 @@ class RenderContext:
 
     def init_from_model(self, model: Model, load_textures: bool):
         self.world_count = model.world_count
+        self.bvh_shapes = None
+        self.bvh_shapes_group_roots = None
+        self.bvh_particles = None
+        self.bvh_particles_group_roots = None
+        self.triangle_mesh = None
+        self.particles_position = None
+        self.particles_radius = None
+        self.particles_world_index = None
+        self.triangle_points = None
+        self.triangle_indices = None
 
         self.shape_source_ptr = model.shape_source_ptr
         self.shape_bounds = wp.empty((model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.device)
