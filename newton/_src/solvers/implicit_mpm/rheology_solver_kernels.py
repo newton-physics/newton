@@ -1052,7 +1052,5 @@ def evaluate_strain_residual(
         _world_to_local(delta_stress[tau_i], delassus_rotation[tau_i]), delassus_diagonal[tau_i]
     )
     r = wp.length_sq(local_strain_delta)
-    if not (r < 1.0e16):
-        r = 0.0
 
     residual[tau_i] = r
