@@ -1,3 +1,15 @@
+This license applies to Newton project documentation.
+
+Source code is licensed under the Apache License, Version 2.0 (see LICENSE.md
+in the repository root).
+
+Per the project charter:
+- All outbound code is made available under the Apache License, Version 2.0.
+- Documentation is made available under the Creative Commons Attribution 4.0
+  International License.
+
+=========================================================================
+
 Attribution 4.0 International
 
 =======================================================================
