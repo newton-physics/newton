@@ -45,6 +45,7 @@
 - Deprecate `SensorContact.counterparts` and `SensorContact.reading_indices` in favor of `SensorContact.counterpart_indices`
 - Deprecate `SensorContact.shape` (use `total_force.shape` and `force_matrix.shape` instead) 
 - Deprecate `SensorTiledCamera.render_context`; prefer SensorTiledCamera's public methods, or `SensorTiledCamera.render_config` for `RenderContext.Config` access.
+- Deprecate `SensorTiledCamera.RenderContext`; use `SensorTiledCamera.RenderConfig` for config types and `SensorTiledCamera.render_config` / public sensor methods for runtime access.
 - Deprecate duplicate fields on `SensorTiledCamera.Config` (`enable_ambient_lighting`, `backface_culling`, `enable_textures`, `enable_particles`); set the corresponding flags on `SensorTiledCamera.Config.render_config` instead (`enable_ambient_lighting`, `enable_backface_culling`, `enable_textures`, `enable_particles`).
 
 ### Removed
