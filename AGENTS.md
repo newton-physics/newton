@@ -14,6 +14,7 @@
 - Imperative mood in commit messages ("Fix X", not "Fixed X"), ~50 char subject, body wraps at 72 chars explaining _what_ and _why_.
 - Verify regression tests fail without the fix before committing.
 - Pin GitHub Actions by SHA: `action@<sha>  # vX.Y.Z`. Check `.github/workflows/` for allowlisted hashes.
+- In SPDX copyright lines, use the year the file was first created. Do not create date ranges or update the year when modifying a file.
 
 Run `uvx pre-commit run -a` to lint/format before committing. Use `uv` for all commands; fall back to `venv`/`conda` if unavailable.
 
@@ -35,7 +36,7 @@ uvx --with virtualenv asv run --launch-method spawn main^!
 ## PR Instructions
 
 - If opening a pull request on GitHub, use the template in `.github/PULL_REQUEST_TEMPLATE.md`.
-- If a change modifies user-facing behavior, append an entry to the `[Unreleased]` section of `CHANGELOG.md`. Use imperative present tense ("Add X"), place under the correct category (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`), and avoid internal implementation details.
+- If a change modifies user-facing behavior, append an entry at the end of the correct category (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`) in `CHANGELOG.md`'s `[Unreleased]` section. Use imperative present tense ("Add X") and avoid internal implementation details.
 - For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: "Deprecate `Model.geo_meshes` in favor of `Model.shapes`".
 
 ## Examples

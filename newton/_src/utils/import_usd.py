@@ -1,27 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
+import collections
 import datetime
 import itertools
 import os
+import posixpath
 import re
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urljoin
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -441,6 +432,17 @@ def parse_usd(
 
     bodies_with_visual_shapes: set[int] = set()
 
+    def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
+        prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
+        if articulation_root_xform is not None:
+            rebase_mat = _xform_to_mat44(wp.transform_inverse(articulation_root_xform))
+            prim_world_mat = rebase_mat @ prim_world_mat
+        if incoming_world_xform is not None:
+            # Apply the incoming world transform in model space (static shapes or when using body_xform).
+            incoming_mat = _xform_to_mat44(incoming_world_xform)
+            prim_world_mat = incoming_mat @ prim_world_mat
+        return prim_world_mat
+
     def _load_visual_shapes_impl(
         parent_body_id: int,
         prim: Usd.Prim,
@@ -466,14 +468,11 @@ def parse_usd(
         if any(re.match(path, path_name) for path in ignore_paths):
             return
 
-        prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
-        if articulation_root_xform is not None:
-            rebase_mat = _xform_to_mat44(wp.transform_inverse(articulation_root_xform))
-            prim_world_mat = rebase_mat @ prim_world_mat
-        if incoming_world_xform is not None and (parent_body_id == -1 or body_xform is not None):
-            # Apply the incoming world transform in model space (static shapes or when using body_xform).
-            incoming_mat = _xform_to_mat44(incoming_world_xform)
-            prim_world_mat = incoming_mat @ prim_world_mat
+        prim_world_mat = _get_prim_world_mat(
+            prim,
+            articulation_root_xform,
+            incoming_world_xform if (parent_body_id == -1 or body_xform is not None) else None,
+        )
         if body_xform is not None:
             # Use the body transform used by the builder to avoid USD/physics pose mismatches.
             body_world_mat = _xform_to_mat44(body_xform)
@@ -599,6 +598,16 @@ def parse_usd(
                     xform,
                     scale=scale,
                     mesh=mesh,
+                    cfg=visual_shape_cfg,
+                    label=path_name,
+                )
+            elif type_name == "particlefield3dgaussiansplat":
+                gaussian = usd.get_gaussian(prim)
+                shape_id = builder.add_shape_gaussian(
+                    parent_body_id,
+                    gaussian=gaussian,
+                    xform=xform,
+                    scale=scale,
                     cfg=visual_shape_cfg,
                     label=path_name,
                 )
@@ -2321,6 +2330,45 @@ def parse_usd(
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
+    # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
+    if load_visual_shapes:
+        prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
+        for gaussian_prim in prims:
+            if str(gaussian_prim.GetPath()).startswith("/Prototypes/"):
+                continue
+
+            if gaussian_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                prims.PruneChildren()
+                continue
+
+            if str(gaussian_prim.GetTypeName()) != "ParticleField3DGaussianSplat":
+                continue
+
+            gaussian_path = str(gaussian_prim.GetPath())
+            if gaussian_path in path_shape_map:
+                continue
+            if any(re.match(p, gaussian_path) for p in ignore_paths):
+                continue
+
+            body_id = -1
+
+            prim_world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+
+            g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
+            gaussian = usd.get_gaussian(gaussian_prim)
+            shape_id = builder.add_shape_gaussian(
+                body_id,
+                gaussian=gaussian,
+                xform=wp.transform(g_pos, g_rot),
+                scale=g_scale,
+                cfg=visual_shape_cfg,
+                label=gaussian_path,
+            )
+            path_shape_map[gaussian_path] = shape_id
+            path_shape_scale[gaussian_path] = g_scale
+            if verbose:
+                print(f"Added Gaussian splat shape {gaussian_path} with id {shape_id}.")
+
     def _zero_mass_information():
         """Create a reusable zero-contribution collider mass payload for callback fallback."""
         mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
@@ -2666,20 +2714,35 @@ def parse_usd(
         )
 
     # Parse Newton actuator prims from the USD stage.
-    from newton_actuators import parse_actuator_prim  # noqa: PLC0415
+    try:
+        from newton_actuators import parse_actuator_prim  # noqa: PLC0415
+    except ImportError:
+        parse_actuator_prim = None
 
     actuator_count = 0
-    path_to_dof = {
-        path: builder.joint_qd_start[idx] for path, idx in path_joint_map.items() if idx < len(builder.joint_qd_start)
-    }
-    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-        parsed = parse_actuator_prim(prim)
-        if parsed is None:
-            continue
-        dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
-        if dof_indices:
-            builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
-            actuator_count += 1
+    if parse_actuator_prim is not None:
+        path_to_dof = {
+            path: builder.joint_qd_start[idx]
+            for path, idx in path_joint_map.items()
+            if idx < len(builder.joint_qd_start)
+        }
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            parsed = parse_actuator_prim(prim)
+            if parsed is None:
+                continue
+            dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
+            if dof_indices:
+                builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
+                actuator_count += 1
+    else:
+        # TODO: Replace this string-based type name check with a proper schema query
+        # once the Newton actuator USD schema is merged
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            if prim.GetTypeName() == "Actuator":
+                raise ImportError(
+                    f"USD stage contains actuator prims (e.g. {prim.GetPath()}) but newton-actuators is not installed. "
+                    "Install with: pip install newton[sim]"
+                )
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 
@@ -2791,7 +2854,8 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
-    response = requests.get(url, allow_redirects=True)
+    request_timeout_s = 30
+    response = requests.get(url, allow_redirects=True, timeout=request_timeout_s)
     if response.status_code != 200:
         raise RuntimeError(f"Failed to download USD file. Status code: {response.status_code}")
     file = response.content
@@ -2816,40 +2880,64 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             f.write(stage_str)
             print(f"Exported USDA file to {usda_filename}.")
 
-    # parse referenced USD files like `references = @./franka_collisions.usd@`
-    downloaded = set()
-    for match in re.finditer(r"references.=.@(.*?)@", stage_str):
-        refname = match.group(1)
-        if refname.startswith("./"):
-            refname = refname[2:]
-        if refname in downloaded:
+    # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
+    # Each entry in the queue is (resolved_url, cache_relative_path).
+    downloaded_urls: set[str] = {url}
+    pending: collections.deque[tuple[str, str]] = collections.deque()
+
+    def _extract_references(layer_str, parent_url_folder, parent_local_folder):
+        """Extract reference paths from a USD layer string and queue them for download."""
+        for match in re.finditer(r"references.=.@(.*?)@", layer_str):
+            raw_ref = match.group(1)
+            ref_url = urljoin(parent_url_folder + "/", raw_ref)
+            local_path = os.path.normpath(os.path.join(parent_local_folder, raw_ref))
+            if os.path.isabs(local_path) or local_path.startswith(".."):
+                print(f"Skipping reference that escapes target folder: {raw_ref}")
+                continue
+            if ref_url not in downloaded_urls:
+                pending.append((ref_url, local_path))
+
+    _extract_references(stage_str, url_folder, "")
+
+    while pending:
+        ref_url, local_path = pending.popleft()
+        if ref_url in downloaded_urls:
             continue
+        downloaded_urls.add(ref_url)
         try:
-            response = requests.get(f"{url_folder}/{refname}", allow_redirects=True)
+            response = requests.get(ref_url, allow_redirects=True, timeout=request_timeout_s)
             if response.status_code != 200:
-                print(f"Failed to download reference {refname}. Status code: {response.status_code}")
+                print(f"Failed to download reference {local_path}. Status code: {response.status_code}")
                 continue
             file = response.content
-            refdir = os.path.dirname(refname)
-            if refdir:
-                os.makedirs(os.path.join(target_folder_name, refdir), exist_ok=True)
-            ref_filename = os.path.join(target_folder_name, refname)
+            local_dir = os.path.dirname(local_path)
+            if local_dir:
+                os.makedirs(os.path.join(target_folder_name, local_dir), exist_ok=True)
+            ref_filename = os.path.join(target_folder_name, local_path)
             if not os.path.exists(ref_filename):
                 with open(ref_filename, "wb") as f:
                     f.write(file)
-            downloaded.add(refname)
-            print(f"Downloaded USD reference {refname} to {ref_filename}.")
+            print(f"Downloaded USD reference {local_path} to {ref_filename}.")
+
+            ref_stage = Usd.Stage.Open(ref_filename, Usd.Stage.LoadNone)
+            ref_stage_str = ref_stage.GetRootLayer().ExportToString()
+
             if export_usda:
-                ref_stage = Usd.Stage.Open(ref_filename, Usd.Stage.LoadNone)
-                ref_stage_str = ref_stage.GetRootLayer().ExportToString()
-                base = os.path.basename(ref_filename)
-                base_name = dot.join(base.split(dot)[:-1])
-                usda_filename = os.path.join(target_folder_name, base_name + ".usda")
+                ref_base = os.path.basename(ref_filename)
+                ref_base_name = dot.join(ref_base.split(dot)[:-1])
+                usda_filename = (
+                    os.path.join(target_folder_name, local_dir, ref_base_name + ".usda")
+                    if local_dir
+                    else os.path.join(target_folder_name, ref_base_name + ".usda")
+                )
                 with open(usda_filename, "w") as f:
                     f.write(ref_stage_str)
                     print(f"Exported USDA file to {usda_filename}.")
+
+            # Recurse: resolve references relative to this file's location
+            _extract_references(ref_stage_str, posixpath.dirname(ref_url), local_dir)
         except Exception:
-            print(f"Failed to download {refname}.")
+            print(f"Failed to download {local_path}.")
     return target_filename
 
 

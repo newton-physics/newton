@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Basic Joints
@@ -172,15 +160,22 @@ class Example:
         builder.joint_q[-4:] = wp.quat_rpy(0.5, 0.6, 0.7)
 
         # finalize model
+        builder.color()
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+        if solver_type == "vbd":
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=2,
+            )
+        else:
+            self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.contacts = self.model.contacts()
@@ -283,7 +278,16 @@ class Example:
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--solver",
+        type=str,
+        choices=["xpbd", "vbd"],
+        default="xpbd",
+        help="Solver backend to use.",
+    )
+    viewer, args = newton.examples.init(parser)
+    viewer._paused = True
 
     # Create viewer and run
     example = Example(viewer, args)

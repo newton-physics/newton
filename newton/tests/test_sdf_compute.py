@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Test compute_sdf_from_shape function for SDF generation.
 
@@ -32,8 +20,12 @@ import warp as wp
 
 import newton
 from newton import GeoType, Mesh
-from newton._src.geometry.sdf_contact import sample_sdf_extrapolated, sample_sdf_grad_extrapolated
-from newton._src.geometry.sdf_utils import SDFData, compute_sdf_from_shape
+from newton._src.geometry.sdf_utils import (
+    SDFData,
+    compute_sdf_from_shape,
+    sample_sdf_extrapolated,
+    sample_sdf_grad_extrapolated,
+)
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 # Skip all tests in this module if CUDA is not available
@@ -1113,7 +1105,7 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
 
         # No compact SDF entry should exist for this shape
         self.assertEqual(int(model.shape_sdf_index.numpy()[0]), -1)
-        self.assertEqual(model.sdf_data.shape[0], 0)
+        self.assertEqual(model.texture_sdf_data.shape[0], 0)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_mesh_build_sdf_works_on_gpu(self):
@@ -1130,10 +1122,10 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         # Should work on GPU
         model = builder.finalize(device="cuda:0")
 
-        # SDF data should be populated in compact table
+        # Texture SDF data should be populated in compact table
         sdf_idx = int(model.shape_sdf_index.numpy()[0])
         self.assertGreaterEqual(sdf_idx, 0)
-        self.assertNotEqual(model.sdf_data.numpy()[sdf_idx]["sparse_sdf_ptr"], 0)
+        self.assertGreater(model.texture_sdf_data.shape[0], sdf_idx)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_mesh_build_sdf_guard_and_clear(self):
@@ -1223,7 +1215,7 @@ class TestSDFPublicApi(unittest.TestCase):
         model = builder.finalize(device="cuda:0")
         sdf_idx = int(model.shape_sdf_index.numpy()[0])
         self.assertGreaterEqual(sdf_idx, 0)
-        self.assertNotEqual(model.sdf_data.numpy()[sdf_idx]["sparse_sdf_ptr"], 0)
+        self.assertGreater(model.texture_sdf_data.shape[0], sdf_idx)
 
 
 class TestSDFNonUniformScaleBrickPyramid(unittest.TestCase):
