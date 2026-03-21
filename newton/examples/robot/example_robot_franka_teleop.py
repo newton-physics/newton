@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pyglet
 import warp as wp
 
 import newton
@@ -43,9 +44,7 @@ import newton.ik as ik
 import newton.solvers
 import newton.utils
 import newton.viewer
-import pyglet
 from newton import JointTargetMode
-
 
 # =========================================================================
 # i18n strings
@@ -89,15 +88,19 @@ STRINGS = {
 # Quaternion helpers
 # =========================================================================
 
+
 def quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
     x1, y1, z1, w1 = q1
     x2, y2, z2, w2 = q2
-    return np.array([
-        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-    ], dtype=np.float32)
+    return np.array(
+        [
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        ],
+        dtype=np.float32,
+    )
 
 
 def quat_inv(q: np.ndarray) -> np.ndarray:
@@ -142,12 +145,17 @@ def quat_from_euler_deg(euler_deg: np.ndarray) -> np.ndarray:
     cr, sr = np.cos(r * 0.5), np.sin(r * 0.5)
     cp, sp = np.cos(p * 0.5), np.sin(p * 0.5)
     cy, sy = np.cos(y * 0.5), np.sin(y * 0.5)
-    return quat_normalize(np.array([
-        sr * cp * cy - cr * sp * sy,
-        cr * sp * cy + sr * cp * sy,
-        cr * cp * sy - sr * sp * cy,
-        cr * cp * cy + sr * sp * sy,
-    ], dtype=np.float32))
+    return quat_normalize(
+        np.array(
+            [
+                sr * cp * cy - cr * sp * sy,
+                cr * sp * cy + sr * cp * sy,
+                cr * cp * sy - sr * sp * cy,
+                cr * cp * cy + sr * sp * sy,
+            ],
+            dtype=np.float32,
+        )
+    )
 
 
 def quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
@@ -166,6 +174,7 @@ def quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
 # =========================================================================
 # Config
 # =========================================================================
+
 
 @dataclass(frozen=True)
 class Config:
@@ -212,6 +221,7 @@ class Config:
 # Scene builder
 # =========================================================================
 
+
 def build_scene(builder: newton.ModelBuilder, cfg: Config) -> int:
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     builder.default_shape_cfg.mu = cfg.robot_contact_mu
@@ -227,35 +237,70 @@ def build_scene(builder: newton.ModelBuilder, cfg: Config) -> int:
     builder.add_ground_plane()
 
     table_cfg = newton.ModelBuilder.ShapeConfig(
-        mu=cfg.table_contact_mu, kd=cfg.table_contact_kd, ke=cfg.table_contact_ke,
-        density=0.0, mu_torsional=cfg.table_contact_mu_torsional, mu_rolling=cfg.table_contact_mu_rolling,
+        mu=cfg.table_contact_mu,
+        kd=cfg.table_contact_kd,
+        ke=cfg.table_contact_ke,
+        density=0.0,
+        mu_torsional=cfg.table_contact_mu_torsional,
+        mu_rolling=cfg.table_contact_mu_rolling,
     )
     cube_cfg = newton.ModelBuilder.ShapeConfig(
-        mu=cfg.cube_contact_mu, kd=cfg.cube_contact_kd, ke=cfg.cube_contact_ke,
-        density=cfg.cube_contact_density, mu_torsional=cfg.cube_contact_mu_torsional,
+        mu=cfg.cube_contact_mu,
+        kd=cfg.cube_contact_kd,
+        ke=cfg.cube_contact_ke,
+        density=cfg.cube_contact_density,
+        mu_torsional=cfg.cube_contact_mu_torsional,
         mu_rolling=cfg.cube_contact_mu_rolling,
     )
 
-    builder.add_shape_box(-1, xform=wp.transform(wp.vec3(*cfg.table_top_center), wp.quat_identity()),
-                          hx=cfg.table_top_half_extents[0], hy=cfg.table_top_half_extents[1],
-                          hz=cfg.table_top_half_extents[2], cfg=table_cfg, label="table_top")
-    builder.add_shape_box(-1, xform=wp.transform(wp.vec3(0.62, 0.0, 0.12), wp.quat_identity()),
-                          hx=0.09, hy=0.12, hz=0.18, cfg=table_cfg, label="table_pedestal")
-    builder.add_shape_box(-1, xform=wp.transform(wp.vec3(0.62, 0.0, -0.06), wp.quat_identity()),
-                          hx=0.18, hy=0.22, hz=0.02, cfg=table_cfg, label="table_base")
+    builder.add_shape_box(
+        -1,
+        xform=wp.transform(wp.vec3(*cfg.table_top_center), wp.quat_identity()),
+        hx=cfg.table_top_half_extents[0],
+        hy=cfg.table_top_half_extents[1],
+        hz=cfg.table_top_half_extents[2],
+        cfg=table_cfg,
+        label="table_top",
+    )
+    builder.add_shape_box(
+        -1,
+        xform=wp.transform(wp.vec3(0.62, 0.0, 0.12), wp.quat_identity()),
+        hx=0.09,
+        hy=0.12,
+        hz=0.18,
+        cfg=table_cfg,
+        label="table_pedestal",
+    )
+    builder.add_shape_box(
+        -1,
+        xform=wp.transform(wp.vec3(0.62, 0.0, -0.06), wp.quat_identity()),
+        hx=0.18,
+        hy=0.22,
+        hz=0.02,
+        cfg=table_cfg,
+        label="table_base",
+    )
 
     cube_body = builder.add_link(
-        xform=wp.transform(wp.vec3(*cfg.cube_spawn_center), wp.quat_identity()), mass=0.0, label="table_cube")
+        xform=wp.transform(wp.vec3(*cfg.cube_spawn_center), wp.quat_identity()), mass=0.0, label="table_cube"
+    )
     cube_joint = builder.add_joint_free(cube_body, label="table_cube_joint")
     builder.add_articulation([cube_joint], label="table_cube_articulation")
-    builder.add_shape_box(cube_body, hx=cfg.cube_half_extent, hy=cfg.cube_half_extent,
-                          hz=cfg.cube_half_extent, cfg=cube_cfg, label="table_cube_shape")
+    builder.add_shape_box(
+        cube_body,
+        hx=cfg.cube_half_extent,
+        hy=cfg.cube_half_extent,
+        hz=cfg.cube_half_extent,
+        cfg=cube_cfg,
+        label="table_cube_shape",
+    )
     return robot_joint_count
 
 
 # =========================================================================
 # ViewerLW — overrides keyboard so Ctrl+keys control the robot
 # =========================================================================
+
 
 class ViewerLW(newton.viewer.ViewerGL):
     def is_ctrl_key(self, key: str | int) -> bool:
@@ -267,7 +312,9 @@ class ViewerLW(newton.viewer.ViewerGL):
         if modifiers is not None and modifiers & pyglet.window.key.MOD_CTRL:
             return True
         try:
-            return self.renderer.is_key_down(pyglet.window.key.LCTRL) or self.renderer.is_key_down(pyglet.window.key.RCTRL)
+            return self.renderer.is_key_down(pyglet.window.key.LCTRL) or self.renderer.is_key_down(
+                pyglet.window.key.RCTRL
+            )
         except Exception:
             return False
 
@@ -327,6 +374,7 @@ def init_viewer(parser=None):
 # Example
 # =========================================================================
 
+
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
@@ -385,11 +433,10 @@ class Example:
         self.home_joint_qd = wp.clone(self.state_0.joint_qd)
 
         # Initial control targets
-        wp.copy(self.control.joint_target_pos[:self.arm_coord_count],
-                self.model.joint_q[:self.arm_coord_count])
+        wp.copy(self.control.joint_target_pos[: self.arm_coord_count], self.model.joint_q[: self.arm_coord_count])
         for idx in self.finger_coord_indices:
             if idx < self.control.joint_target_pos.shape[0]:
-                self.control.joint_target_pos[idx:idx + 1].fill_(self.gripper_q)
+                self.control.joint_target_pos[idx : idx + 1].fill_(self.gripper_q)
 
         self.cube_body_index = self.find_body("table_cube")
 
@@ -479,8 +526,11 @@ class Example:
         delta = self._target_pos_np - self.active_target_pos_np
         dist = float(np.linalg.norm(delta))
         max_step = self.target_linear_speed * self.frame_dt
-        next_pos = self._target_pos_np if dist <= max(max_step, 1e-6) else (
-            self.active_target_pos_np + delta * (max_step / dist))
+        next_pos = (
+            self._target_pos_np
+            if dist <= max(max_step, 1e-6)
+            else (self.active_target_pos_np + delta * (max_step / dist))
+        )
         q0, q1 = quat_normalize(self.active_target_quat_np), quat_normalize(self._target_quat_np)
         angle = 2.0 * float(np.arccos(float(np.clip(np.abs(np.dot(q0, q1)), -1.0, 1.0))))
         max_ang = np.deg2rad(self.target_angular_speed_deg) * self.frame_dt
@@ -545,7 +595,8 @@ class Example:
         )
         self.joint_q_ik = self.model.joint_q.reshape((1, self.model.joint_coord_count))
         self.ik_solver = ik.IKSolver(
-            model=self.model, n_problems=1,
+            model=self.model,
+            n_problems=1,
             objectives=[self.pos_obj, self.rot_obj, self.jlimit_obj],
             lambda_initial=0.1,
             jacobian_mode=ik.IKJacobianType.ANALYTIC,
@@ -586,11 +637,11 @@ class Example:
             s.joint_q.assign(self.home_joint_q)
             s.joint_qd.assign(self.home_joint_qd)
             newton.eval_fk(self.model, s.joint_q, s.joint_qd, s)
-        wp.copy(self.control.joint_target_pos[:self.arm_coord_count], self.home_joint_q[:self.arm_coord_count])
+        wp.copy(self.control.joint_target_pos[: self.arm_coord_count], self.home_joint_q[: self.arm_coord_count])
         self.active_gripper_q = self.gripper_q
         for idx in self.finger_coord_indices:
             if idx < self.control.joint_target_pos.shape[0]:
-                self.control.joint_target_pos[idx:idx + 1].fill_(self.active_gripper_q)
+                self.control.joint_target_pos[idx : idx + 1].fill_(self.active_gripper_q)
 
     # ----- Keyboard teleop (Ctrl+key) ------------------------------------
 
@@ -606,12 +657,18 @@ class Example:
         r = self.ui_rotate_step_deg
 
         for key, fn, kw in [
-            ("w", self.apply_translate, {"dx": s}), ("s", self.apply_translate, {"dx": -s}),
-            ("a", self.apply_translate, {"dy": s}), ("d", self.apply_translate, {"dy": -s}),
-            ("q", self.apply_translate, {"dz": s}), ("e", self.apply_translate, {"dz": -s}),
-            ("u", self.apply_rotate, {"droll": r}), ("o", self.apply_rotate, {"droll": -r}),
-            ("i", self.apply_rotate, {"dpitch": r}), ("k", self.apply_rotate, {"dpitch": -r}),
-            ("j", self.apply_rotate, {"dyaw": r}), ("l", self.apply_rotate, {"dyaw": -r}),
+            ("w", self.apply_translate, {"dx": s}),
+            ("s", self.apply_translate, {"dx": -s}),
+            ("a", self.apply_translate, {"dy": s}),
+            ("d", self.apply_translate, {"dy": -s}),
+            ("q", self.apply_translate, {"dz": s}),
+            ("e", self.apply_translate, {"dz": -s}),
+            ("u", self.apply_rotate, {"droll": r}),
+            ("o", self.apply_rotate, {"droll": -r}),
+            ("i", self.apply_rotate, {"dpitch": r}),
+            ("k", self.apply_rotate, {"dpitch": -r}),
+            ("j", self.apply_rotate, {"dyaw": r}),
+            ("l", self.apply_rotate, {"dyaw": -r}),
         ]:
             if self.viewer.is_key_down_raw(key):
                 fn(**kw)
@@ -639,11 +696,10 @@ class Example:
         self.advance_gripper()
         self.run_ik()
 
-        wp.copy(self.control.joint_target_pos[:self.arm_coord_count],
-                self.model.joint_q[:self.arm_coord_count])
+        wp.copy(self.control.joint_target_pos[: self.arm_coord_count], self.model.joint_q[: self.arm_coord_count])
         for idx in self.finger_coord_indices:
             if idx < self.model.joint_coord_count:
-                self.control.joint_target_pos[idx:idx + 1].fill_(self.active_gripper_q)
+                self.control.joint_target_pos[idx : idx + 1].fill_(self.active_gripper_q)
 
         for _ in range(self.config.sim_substeps):
             self.state_0.clear_forces()
@@ -669,8 +725,8 @@ class Example:
         io = self.viewer.ui.io
         win_size = (420, 560)
         imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - win_size[0] - 24, 24),
-            imgui.Cond_.first_use_ever.value)
+            imgui.ImVec2(io.display_size[0] - win_size[0] - 24, 24), imgui.Cond_.first_use_ever.value
+        )
         imgui.set_next_window_size(imgui.ImVec2(*win_size), imgui.Cond_.first_use_ever.value)
 
         flags = imgui.WindowFlags_.no_collapse.value
@@ -698,33 +754,37 @@ class Example:
             imgui.separator()
 
             changed, position = imgui.drag_float3(
-                self.t("target_pos"), self._target_pos_np.tolist(),
-                self.ui_translate_step, -1.5, 1.5, "%.3f")
+                self.t("target_pos"), self._target_pos_np.tolist(), self.ui_translate_step, -1.5, 1.5, "%.3f"
+            )
             if changed:
                 self.set_target_pose(np.array(position, dtype=np.float32), self._target_quat_np)
 
             changed, rotation = imgui.slider_float3(
-                self.t("target_rot"), self.target_euler_deg.tolist(),
-                -180.0, 180.0, "%.1f deg")
+                self.t("target_rot"), self.target_euler_deg.tolist(), -180.0, 180.0, "%.1f deg"
+            )
             if changed:
-                self.set_target_pose(self._target_pos_np,
-                                     quat_from_euler_deg(np.array(rotation, dtype=np.float32)))
+                self.set_target_pose(self._target_pos_np, quat_from_euler_deg(np.array(rotation, dtype=np.float32)))
 
             _, self.ui_translate_step = imgui.slider_float(
-                self.t("translate_step"), self.ui_translate_step, 0.001, 0.05, "%.3f")
+                self.t("translate_step"), self.ui_translate_step, 0.001, 0.05, "%.3f"
+            )
             _, self.ui_rotate_step_deg = imgui.slider_float(
-                self.t("rotate_step"), self.ui_rotate_step_deg, 1.0, 30.0, "%.1f")
+                self.t("rotate_step"), self.ui_rotate_step_deg, 1.0, 30.0, "%.1f"
+            )
             _, self.gripper_q = imgui.slider_float(
-                self.t("gripper_slider"), self.gripper_q, self.gripper_min, self.gripper_max, "%.3f")
+                self.t("gripper_slider"), self.gripper_q, self.gripper_min, self.gripper_max, "%.3f"
+            )
 
         # ---- Preset actions ----
         imgui.set_next_item_open(True, imgui.Cond_.appearing)
         if imgui.collapsing_header(self.t("preset")):
-            for label, action in [("move_above", self.move_gripper_above_cube),
-                                  ("descend", self.move_gripper_to_cube),
-                                  ("grasp", self.execute_grasp),
-                                  ("lift", self.lift_grasped_object),
-                                  ("reset", self.reset_scene)]:
+            for label, action in [
+                ("move_above", self.move_gripper_above_cube),
+                ("descend", self.move_gripper_to_cube),
+                ("grasp", self.execute_grasp),
+                ("lift", self.lift_grasped_object),
+                ("reset", self.reset_scene),
+            ]:
                 if imgui.button(self.t(label)):
                     action()
 
