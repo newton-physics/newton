@@ -43,6 +43,7 @@ import newton.ik as ik
 import newton.solvers
 import newton.utils
 import newton.viewer
+import pyglet
 from newton import JointTargetMode
 
 
@@ -257,20 +258,12 @@ def build_scene(builder: newton.ModelBuilder, cfg: Config) -> int:
 # =========================================================================
 
 class ViewerLW(newton.viewer.ViewerGL):
-    def _is_ctrl_key(self, key: str | int) -> bool:
-        try:
-            import pyglet
-        except Exception:
-            return False
+    def is_ctrl_key(self, key: str | int) -> bool:
         if isinstance(key, int):
             return key in (pyglet.window.key.LCTRL, pyglet.window.key.RCTRL)
         return key.lower() in {"ctrl", "lctrl", "rctrl", "left_ctrl", "right_ctrl"}
 
     def is_ctrl_active(self, modifiers: int | None = None) -> bool:
-        try:
-            import pyglet
-        except Exception:
-            return False
         if modifiers is not None and modifiers & pyglet.window.key.MOD_CTRL:
             return True
         try:
@@ -290,7 +283,7 @@ class ViewerLW(newton.viewer.ViewerGL):
             super().on_key_release(symbol, modifiers)
 
     def is_key_down(self, key: str | int) -> bool:
-        if self.is_ctrl_active() and not self._is_ctrl_key(key):
+        if self.is_ctrl_active() and not self.is_ctrl_key(key):
             return False
         return super().is_key_down(key)
 
