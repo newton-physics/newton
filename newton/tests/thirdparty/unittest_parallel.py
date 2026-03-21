@@ -42,26 +42,6 @@ except ImportError:
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
 
-def _parallel_download(items, download_fn, description, max_jobs):
-    """Download *items* in parallel via a thread pool, re-raising on first failure."""
-
-    max_workers = max(1, min(max_jobs, len(items)))
-    futures = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for item in items:
-            futures[executor.submit(download_fn, item)] = item
-
-        for future in concurrent.futures.as_completed(futures):
-            item = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                print(f"{description} download failed: {item}: {e}", file=sys.stderr)
-                raise
-
-    print(f"Downloaded {description}")
-
-
 def main(argv=None):
     """
     unittest-parallel command-line script main entry point
@@ -199,62 +179,6 @@ def main(argv=None):
         wp.clear_lto_cache()
         wp.clear_kernel_cache()
         print("Cleared Warp kernel cache")
-
-    # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
-    # For now this avoids races and conflicting downloads in parallel test runs.
-    import newton.utils  # noqa: PLC0415
-
-    assets_to_download = [
-        "anybotics_anymal_c",
-        "anybotics_anymal_d",
-        "apptronik_apollo",
-        "booster_t1",
-        "franka_emika_panda",
-        "manipulation_objects/cup",  # Used in robot.example_robot_panda_hydro
-        "manipulation_objects/pad",  # Used in robot.example_robot_panda_hydro
-        "robotiq_2f85_v4",
-        "shadow_hand",
-        "unitree_go2",
-        "unitree_g1",
-        "unitree_h1",
-        "style3d",
-        "universal_robots_ur5e",
-        "universal_robots_ur10",
-        "wonik_allegro",
-    ]
-    # Passing args.maxjobs to respect CLI cap for parallelism.
-    _parallel_download(
-        assets_to_download,
-        newton.utils.download_asset,
-        "assets",
-        args.maxjobs,
-    )
-
-    # Pre-download only the menagerie folders exercised by non-skipped
-    # menagerie tests and test_robot_composer. Placeholder USD stub classes
-    # without usd_asset_folder now skip before any menagerie download occurs.
-    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
-
-    menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
-    menagerie_folders = [
-        "apptronik_apollo",
-        "booster_t1",
-        "leap_hand",
-        "robotiq_2f85",
-        "robotiq_2f85_v4",
-        "shadow_hand",
-        "unitree_g1",
-        "unitree_h1",
-        "universal_robots_ur5e",
-        "wonik_allegro",
-    ]
-    # Passing args.maxjobs to respect CLI cap for parallelism.
-    _parallel_download(
-        menagerie_folders,
-        lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),
-        "mujoco_menagerie folders",
-        args.maxjobs,
-    )
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
