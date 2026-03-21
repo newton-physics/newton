@@ -33,16 +33,13 @@ while True:
         break
 ```
 
-✅ **Correct** -- `step_dt` uses a CUDA graph + while loop with 1 int32 sync per iteration:
+✅ **Correct** — all logic stays on GPU; exactly one `int32` exits the device, once per DT boundary:
 ```python
-# This is what step_dt does internally -- do not reimplement it.
-while True:
-    wp.capture_launch(self._graph)        # 1 iteration = 3 MuJoCo evals
-    wp.launch(_apply_dt_cap, ...)         # dt cap outside graph
-    wp.launch(_boundary_reset, ...)
-    wp.launch(_boundary_check, ...)
-    if self._boundary_flag.numpy()[0]:    # 1 int32 sync per iteration
-        break
+# This is what step_dt does internally — do not reimplement it.
+wp.launch(_boundary_reset, dim=1, inputs=[flag])
+wp.launch(_boundary_check, dim=n, inputs=[sim_time, next_time, flag])
+if flag.numpy()[0]:   # 1 int32, fires once per render frame
+    break
 ```
 
 ### Why N worlds do not hurt physics throughput — but do hurt render throughput

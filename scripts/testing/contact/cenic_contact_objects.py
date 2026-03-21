@@ -97,6 +97,8 @@ def make_solver(model: newton.Model, tol: float = TOL) -> newton.solvers.SolverM
         dt_inner_init=DT_OUTER,
         dt_inner_min=DT_INNER_MIN,
         dt_inner_max=DT_OUTER,
+        nconmax=128,
+        njmax=640,
     )
 
 
@@ -167,7 +169,7 @@ def main():
     use_fixed = args.fixed_dt is not None
 
     if use_fixed:
-        solver   = newton.solvers.SolverMuJoCo(model)
+        solver   = newton.solvers.SolverMuJoCo(model, separate_worlds=True, nconmax=128, njmax=640)
         contacts = model.contacts()
         n_inner  = round(DT_OUTER / args.fixed_dt)
         print(

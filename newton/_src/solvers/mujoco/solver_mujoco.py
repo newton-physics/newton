@@ -6019,3 +6019,4 @@ class SolverMuJoCo(SolverBase):
     def __del__(self):
         """Cleanup method to close the viewer when the solver is destroyed."""
         self.close_mujoco_viewer()
+        
