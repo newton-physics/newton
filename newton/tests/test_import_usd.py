@@ -6533,8 +6533,8 @@ def Xform "BodyWithoutVisuals" (
         self.assertAlmostEqual(mesh.mass, physics_mesh.mass, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_visualized_collision_mesh_remains_visible_when_body_has_visual_shapes(self):
-        """Mesh colliders with visual material data stay visible even when body visuals exist."""
+    def test_hide_collision_shapes_overrides_visual_material(self):
+        """hide_collision_shapes=True hides colliders even when they have visual material data."""
         stage = self._create_stage_with_pbr_collision_mesh(
             color=(0.9, 0.1, 0.2), roughness=0.55, metallic=0.25, add_visual_sphere=True
         )
@@ -6550,13 +6550,22 @@ def Xform "BodyWithoutVisuals" (
         collision_shape = path_shape_map["/Body/CollisionMesh"]
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags & ShapeFlags.VISIBLE)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
 
-        mesh = builder.shape_source[collision_shape]
-        self.assertIsNotNone(mesh)
-        np.testing.assert_allclose(np.array(mesh.color), np.array([0.9, 0.1, 0.2]), atol=1e-6, rtol=1e-6)
-        self.assertAlmostEqual(mesh.roughness, 0.55, places=6)
-        self.assertAlmostEqual(mesh.metallic, 0.25, places=6)
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_hide_collision_shapes_fallback_with_material(self):
+        """Colliders with material stay visible when the body has no other visual shapes."""
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75, add_visual_sphere=False
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
 
 
 class TestImportUsdMimicJoint(unittest.TestCase):
