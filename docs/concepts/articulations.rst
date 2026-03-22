@@ -25,8 +25,19 @@ Maximal coordinates describe the configuration of an articulation in terms of th
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 
+More precisely, :attr:`newton.State.body_q` stores the body-frame pose/origin,
+while :attr:`newton.State.body_qd` stores the body's COM-referenced twist in
+world coordinates. As a result, ``d/dt(state.body_q[..., :3])`` is not, in
+general, equal to ``state.body_qd[..., :3]`` when ``body_com != 0``.
+
 To convert between these two representations, we use forward and inverse kinematics:
 forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to maximal coordinates, and inverse kinematics (:func:`newton.eval_ik`) converts maximal coordinates to generalized coordinates.
+
+The current public :func:`newton.eval_jacobian` API is a separate quantity:
+its rows are assembled from the internal world-origin screw basis in world
+coordinates. Therefore ``eval_jacobian(...) @ joint_qd`` is not, in general,
+equal to :attr:`newton.State.body_qd` without transporting the screw twist to
+the desired reference point.
 
 Newton supports both parameterizations, and each solver chooses which one it treats as the primary articulation state representation.
 For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`
