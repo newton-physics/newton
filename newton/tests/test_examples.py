@@ -231,6 +231,14 @@ add_example_test(
     test_options={"num-frames": 150},
 )
 
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_global_cosserat_rod",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 60},
+)
+
 
 class TestCableExamples(unittest.TestCase):
     pass
