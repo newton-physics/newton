@@ -25,7 +25,7 @@ Maximal coordinates describe the configuration of an articulation in terms of th
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 
-More precisely, :attr:`newton.State.body_q` stores the body-frame pose/origin,
+More precisely, :attr:`newton.State.body_q` stores the pose of the body-frame origin,
 while :attr:`newton.State.body_qd` stores the body's COM-referenced twist in
 world coordinates. As a result, ``d/dt(state.body_q[..., :3])`` is not, in
 general, equal to ``state.body_qd[..., :3]`` when ``body_com != 0``.
