@@ -132,13 +132,15 @@ jobs:
         if: always()
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1.2.1
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
         with:
           files: ./rspec.xml
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
         with:
+          disable_search: true
           env_vars: OS
           files: ./coverage.xml
           flags: unittests
