@@ -225,7 +225,9 @@ def test_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test,
         child=slider,
         axis=newton.Axis.X,
         parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.4), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        # Nonzero child offset exercises transport from the child joint anchor
+        # to the child body origin in addition to the translated parent path.
+        child_xform=wp.transform(wp.vec3(0.2, 0.0, -0.15), wp.quat_identity()),
     )
     builder.add_articulation([j0, j1])
 
