@@ -144,10 +144,12 @@ class Example:
         builder.joint_q[:9] = [*init_q, 0.05, 0.05]
         builder.joint_target_pos[:9] = [*init_q, 1.0, 1.0]
 
-        builder.joint_target_ke[:9] = [650.0] * 9
-        builder.joint_target_kd[:9] = [100.0] * 9
+        builder.joint_target_ke[:7] = [650.0] * 7
+        builder.joint_target_ke[7:9] = [1000.0] * 2
+        builder.joint_target_kd[:7] = [100.0] * 7
+        builder.joint_target_kd[7:9] = [150.0] * 2
         builder.joint_effort_limit[:7] = [80.0] * 7
-        builder.joint_effort_limit[7:9] = [20.0] * 2
+        builder.joint_effort_limit[7:9] = [40.0] * 2
         builder.joint_armature[:7] = [0.1] * 7
         builder.joint_armature[7:9] = [0.5] * 2
 
@@ -501,7 +503,7 @@ class Example:
         ]
 
         if self.put_in_cup:
-            loose_pos = 0.71
+            loose_pos = 0.695
             wps = []
             cup_pos_higher = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest])
             cup_pos_lower = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest - 0.1])

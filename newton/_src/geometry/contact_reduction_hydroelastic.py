@@ -221,7 +221,7 @@ def get_reduce_hydroelastic_contacts_kernel(skip_aggregates: bool = False):
             voxel_group = voxel_idx // voxels_per_group
             voxel_local_slot = voxel_idx % voxels_per_group
 
-            voxel_bin_id = NUM_NORMAL_BINS + voxel_group
+            voxel_bin_id = wp.static(NUM_NORMAL_BINS) + voxel_group
             voxel_key = make_contact_key(shape_a, shape_b, voxel_bin_id)
 
             voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
@@ -395,8 +395,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 continue
 
             # === Compute stiffness and optional features based on entry type ===
-            # Normal bin entries (bin_id 0-19): have aggregate force, use aggregate stiffness
-            # Voxel bin entries (bin_id 20+): no aggregate force, use per-contact stiffness
+            # Normal bin entries (bin_id 0-11): have aggregate force, use aggregate stiffness
+            # Voxel bin entries (bin_id 12+): no aggregate force, use per-contact stiffness
             agg_force_vec = agg_force[entry_idx]
             agg_force_mag = wp.length(agg_force_vec)
             use_aggregate_stiffness = agg_force_mag > wp.static(EPS_LARGE)
