@@ -222,9 +222,12 @@ def get_reduce_hydroelastic_contacts_kernel():
                 )
                 use_beta = depth < wp.static(BETA_THRESHOLD) * wp.length(aabb_upper - aabb_lower)
                 if use_beta:
+                    # Weight spatial score by sqrt(penetration depth) so that
+                    # deeper contacts are preferred over thin boundary contacts.
+                    pen_weight = wp.sqrt(wp.max(-depth, 0.0))
                     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
                         dir_2d = get_spatial_direction_2d(dir_i)
-                        score = wp.dot(pos_2d, dir_2d)
+                        score = wp.dot(pos_2d, dir_2d) * pen_weight
                         value = make_contact_value(score, i)
                         reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
 
@@ -358,8 +361,8 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
             force direction before computing lever arms.
 
     Returns:
-        A Warp kernel that populates ``agg_moment_unreduced`` and
-        ``agg_moment_reduced``.
+        A Warp kernel that populates ``agg_moment_unreduced``,
+        ``agg_moment_reduced``, and ``agg_moment2_reduced``.
     """
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
@@ -379,6 +382,7 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
         total_normal_reduced: wp.array(dtype=wp.vec3),
         agg_moment_unreduced: wp.array(dtype=wp.float32),
         agg_moment_reduced: wp.array(dtype=wp.float32),
+        agg_moment2_reduced: wp.array(dtype=wp.float32),
         total_num_threads: int,
     ):
         """Accumulate unreduced and reduced friction moments per normal bin."""
@@ -471,6 +475,7 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
                 pos = wp.vec3(pd[0], pd[1], pd[2])
                 lever = wp.length(wp.cross(pos - anchor_pos, rotated_normal))
                 wp.atomic_add(agg_moment_reduced, nbin_idx, pen_mag * lever)
+                wp.atomic_add(agg_moment2_reduced, nbin_idx, pen_mag * lever * lever) # second moment
 
     return accumulate_moments_kernel
 
@@ -545,6 +550,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         # Pre-accumulated friction moments per normal bin (for moment matching)
         agg_moment_unreduced: wp.array(dtype=wp.float32),
         agg_moment_reduced: wp.array(dtype=wp.float32),
+        agg_moment2_reduced: wp.array(dtype=wp.float32),
         # Shape data for margin
         shape_gap: wp.array(dtype=float),
         shape_transform: wp.array(dtype=wp.transform),
@@ -675,26 +681,36 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             if agg_force_mag > wp.static(EPS_SMALL) and total_depth_with_anchor > 0.0:
                 shared_stiffness = k_eff_first * agg_force_mag / total_depth_with_anchor
 
-            # Compute friction scale for moment matching
-            friction_scale = float(1.0)
+            # Moment matching: hybrid uniform / per-contact strategy.
+            moment_alpha = float(0.0)
+            moment_L_avg = float(0.0)
+            uniform_friction_scale = float(1.0)
             anchor_friction_scale = float(1.0)
             if wp.static(moment_matching):
                 m_unr = agg_moment_unreduced[entry_idx]
-                m_red = agg_moment_reduced[entry_idx]
-                denom = agg_force_mag * m_red
-                if m_unr > wp.static(EPS_SMALL) and denom > wp.static(EPS_SMALL):
-                    raw_fs = m_unr * effective_depth / denom
-                    if add_anchor == 1 and entry_total_depth > 0.0:
-                        max_fs = 1.0 + anchor_depth / entry_total_depth
+                m_red = agg_moment_reduced[entry_idx]  # S1 = sum(pen * lever)
+                m_red2 = agg_moment2_reduced[entry_idx]  # S2 = sum(pen * lever^2)
+                s0_total = entry_total_depth + wp.float32(add_anchor) * anchor_depth
+                if m_unr > wp.static(EPS_SMALL) and s0_total > wp.static(EPS_SMALL) and m_red > wp.static(EPS_SMALL) and agg_force_mag > wp.static(EPS_SMALL):
+                    m_target = m_unr * total_depth_with_anchor / agg_force_mag
+                    if m_target < m_red:
+                        # Overshoot: uniform scale down
+                        uniform_friction_scale = m_target / m_red
                     else:
-                        max_fs = 1.0
-                    friction_scale = wp.clamp(raw_fs, 0.0, max_fs)
-                # Compensate on the anchor so total lateral friction is invariant.
-                # Floor at MIN_FRICTION_SCALE to avoid the 0.0 "unset" sentinel.
+                        # Undershoot: per-contact alpha scaling
+                        moment_L_avg = m_red / s0_total
+                        variance = m_red2 * s0_total - m_red * m_red
+                        if variance > wp.static(EPS_SMALL):
+                            moment_alpha = wp.clamp(
+                                (m_target - m_red) * m_red / variance, 0.0, 1.0
+                            )
+                # Anchor compensation:
+                #  - Overshoot: anchor_fs = 1 + (S0/anchor_depth)*(1 - uniform_fs)
+                #  - Undershoot: anchor_fs = 1 - alpha
                 if add_anchor == 1 and anchor_depth > 0.0:
                     anchor_friction_scale = wp.max(
                         wp.static(MIN_FRICTION_SCALE),
-                        1.0 + (entry_total_depth / anchor_depth) * (1.0 - friction_scale),
+                        1.0 + (entry_total_depth / anchor_depth) * (1.0 - uniform_friction_scale) - moment_alpha,
                     )
 
             # Get transform and gap sum (same for all contacts in the entry)
@@ -722,6 +738,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 final_normal = contact_normal
                 area_i = contact_area[contact_id]
 
+                c_friction_scale = float(1.0)
+
                 if has_reliable_agg_direction:
                     # --- Normal-bin entry ---
                     if wp.static(normal_matching) and depth < 0.0:
@@ -733,6 +751,19 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                             c_stiffness = area_i * k_eff_first
                         else:
                             c_stiffness = wp.static(margin_contact_area) * k_eff_first
+
+                    # Moment matching friction adjustment
+                    if wp.static(moment_matching) and depth < 0.0:
+                        if moment_L_avg > wp.static(EPS_SMALL):
+                            # Undershoot: per-contact scaling
+                            lever_i = wp.length(wp.cross(position - anchor_pos, final_normal))
+                            c_friction_scale = wp.max(
+                                wp.static(MIN_FRICTION_SCALE),
+                                1.0 + moment_alpha * (lever_i - moment_L_avg) / moment_L_avg,
+                            )
+                        else:
+                            # Overshoot: uniform scaling
+                            c_friction_scale = uniform_friction_scale
                 else:
                     # --- Voxel-bin entry: look up the normal bin once ---
                     voxel_nbin_id = get_slot(contact_normal)
@@ -777,23 +808,37 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         else:
                             c_stiffness = area_i * k_eff_first
 
-                        # Moment matching: use the same friction_scale as the
-                        # normal bin (without anchor in the numerator, since the
-                        # anchor has zero lever arm).
+                        # Moment matching friction adjustment (voxel entry)
                         if wp.static(moment_matching):
                             voxel_m_unr = agg_moment_unreduced[nbin_entry_idx]
-                            voxel_m_red = agg_moment_reduced[nbin_entry_idx]
-                            voxel_denom = nbin_agg_mag * voxel_m_red
-                            if voxel_m_unr > wp.static(EPS_SMALL) and voxel_denom > wp.static(EPS_SMALL):
-                                voxel_raw_fs = voxel_m_unr * nbin_effective_depth_no_anchor / voxel_denom
-                                nbin_entry_total_depth = total_depth_reduced[nbin_entry_idx]
-                                if nbin_anchor_depth > 0.0 and nbin_entry_total_depth > 0.0:
-                                    voxel_max_fs = 1.0 + nbin_anchor_depth / nbin_entry_total_depth
+                            voxel_s1 = agg_moment_reduced[nbin_entry_idx]
+                            voxel_s2 = agg_moment2_reduced[nbin_entry_idx]
+                            nbin_entry_total_depth = total_depth_reduced[nbin_entry_idx]
+                            voxel_s0 = nbin_entry_total_depth + nbin_anchor_depth
+                            if voxel_m_unr > wp.static(EPS_SMALL) and voxel_s0 > wp.static(EPS_SMALL) and voxel_s1 > wp.static(EPS_SMALL) and nbin_agg_mag > wp.static(EPS_SMALL):
+                                voxel_m_target = voxel_m_unr * nbin_effective_depth / nbin_agg_mag
+                                if voxel_m_target < voxel_s1:
+                                    # Overshoot: uniform scale down
+                                    c_friction_scale = voxel_m_target / voxel_s1
                                 else:
-                                    voxel_max_fs = 1.0
-                                friction_scale = wp.clamp(voxel_raw_fs, 0.0, voxel_max_fs)
-                            else:
-                                friction_scale = 1.0
+                                    # Undershoot: per-contact alpha scaling
+                                    voxel_L_avg = voxel_s1 / voxel_s0
+                                    voxel_variance = voxel_s2 * voxel_s0 - voxel_s1 * voxel_s1
+                                    voxel_alpha = float(0.0)
+                                    if voxel_variance > wp.static(EPS_SMALL):
+                                        voxel_alpha = wp.clamp(
+                                            (voxel_m_target - voxel_s1) * voxel_s1 / voxel_variance, 0.0, 1.0
+                                        )
+                                    voxel_anchor_pos = wp.vec3(0.0, 0.0, 0.0)
+                                    nbin_ws = weight_sum[nbin_entry_idx]
+                                    if nbin_ws > wp.static(EPS_SMALL):
+                                        voxel_anchor_pos = weighted_pos_sum[nbin_entry_idx] / nbin_ws
+                                    voxel_lever = wp.length(wp.cross(position - voxel_anchor_pos, final_normal))
+                                    if voxel_L_avg > wp.static(EPS_SMALL):
+                                        c_friction_scale = wp.max(
+                                            wp.static(MIN_FRICTION_SCALE),
+                                            1.0 + voxel_alpha * (voxel_lever - voxel_L_avg) / voxel_L_avg,
+                                        )
                     elif depth < 0.0:
                         # Penetrating contact with no normal bin: per-contact area.
                         c_stiffness = area_i * k_eff_first
@@ -820,7 +865,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_b = shape_b
                 contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = c_stiffness
-                contact_data.contact_friction_scale = wp.float32(friction_scale)
+                contact_data.contact_friction_scale = wp.float32(c_friction_scale)
 
                 # Call the writer function
                 writer_func(contact_data, writer_data, -1)
@@ -1112,6 +1157,7 @@ class HydroelasticContactReduction:
                     self.reducer.total_normal_reduced,
                     self.reducer.agg_moment_unreduced,
                     self.reducer.agg_moment_reduced,
+                    self.reducer.agg_moment2_reduced,
                     grid_size,
                 ],
                 device=self.device,
@@ -1136,6 +1182,7 @@ class HydroelasticContactReduction:
                 self.reducer.total_normal_reduced,
                 self.reducer.agg_moment_unreduced,
                 self.reducer.agg_moment_reduced,
+                self.reducer.agg_moment2_reduced,
                 shape_gap,
                 shape_transform,
                 writer_data,
