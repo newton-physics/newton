@@ -78,30 +78,28 @@ def _update_lm_state(
 
 
 class IKOptimizerLM:
-    """
-    Modular inverse-kinematics solver.
+    """Levenberg-Marquardt optimizer for batched inverse kinematics.
 
-    The solver uses an adaptive Levenberg-Marquardt loop and supports
-    three Jacobian back-ends:
-
-        * **AUTODIFF**: Warp's reverse-mode autodiff for every objective.
-        * **ANALYTIC**: Objective-specific analytic Jacobians only.
-        * **MIXED**: Analytic where available, autodiff fallback elsewhere.
+    The optimizer solves a batch of independent IK problems that share a
+    single articulation model and objective list. Jacobians can be evaluated
+    with `IKJacobianType.AUTODIFF`, `IKJacobianType.ANALYTIC`, or
+    `IKJacobianType.MIXED`.
 
     Args:
-        model (newton.Model): Singleton articulation shared by all problems.
-        n_batch (int): Number of rows processed in parallel (e.g., `n_problems * n_seeds`).
-        objectives (Sequence[IKObjective]): Ordered list of objectives shared by all problems. Each `IKObjective` instance can carry arrays of per-problem parameters (sized by the true problem count) and should dereference them via `problem_idx`.
-        jacobian_mode (IKJacobianType, optional): Backend used in `compute_jacobian`. Defaults to IKJacobianType.AUTODIFF.
-        lambda_initial (float, optional): Initial LM damping per problem. Defaults to 0.1.
-        lambda_factor (float, optional): Multiplicative update factor for λ. Defaults to 2.0.
-        lambda_min (float, optional): Lower clamp for λ. Defaults to 1e-5.
-        lambda_max (float, optional): Upper clamp for λ. Defaults to 1e10.
-        rho_min (float, optional): Acceptance threshold on predicted vs. actual reduction. Defaults to 1e-3.
-
-    Batch Structure:
-        The solver handles a batch of independent IK problem instances (possibly expanded by sampling) that all reference the same articulation (`model`) and objective list.
-        Per-problem parameters (targets, weights, ...) live in problem space and are accessed through the `problem_idx` indirection supplied by `IKSolver`.
+        model: Shared articulation model.
+        n_batch: Number of evaluation rows solved in parallel. This is
+            typically `n_problems * n_seeds` after any sampling expansion.
+        objectives: Ordered IK objectives applied to every batch row.
+        lambda_initial: Initial LM damping factor for each batch row.
+        jacobian_mode: Jacobian backend to use.
+        lambda_factor: Factor used to increase or decrease the damping term
+            after each trial step.
+        lambda_min: Minimum allowed damping value.
+        lambda_max: Maximum allowed damping value.
+        rho_min: Minimum ratio of actual to predicted decrease required to
+            accept a step.
+        problem_idx: Optional mapping from batch rows to base problem indices
+            for per-problem objective data.
     """
 
     TILE_N_DOFS = None
@@ -438,7 +436,17 @@ class IKOptimizerLM:
         )
 
     def step(self, joint_q_in, joint_q_out, iterations=10, step_size=1.0):
-        """Run LM iterations using the provided joint buffers."""
+        """Run several LM iterations on a batch of joint configurations.
+
+        Args:
+            joint_q_in: Input joint coordinates, shape [n_batch,
+                joint_coord_count], dtype float.
+            joint_q_out: Output buffer for the optimized coordinates. It may
+                alias `joint_q_in` for in-place updates.
+            iterations: Number of LM iterations to execute.
+            step_size: Scalar applied to each computed update before
+                integration.
+        """
         if joint_q_in.shape != (self.n_batch, self.n_coords):
             raise ValueError("joint_q_in has incompatible shape")
         if joint_q_out.shape != (self.n_batch, self.n_coords):
@@ -597,10 +605,20 @@ class IKOptimizerLM:
         )
 
     def reset(self):
+        """Clear LM damping and accept/reject state before a new solve."""
         self.lambda_values.zero_()
         self.accept_flags.zero_()
 
     def compute_costs(self, joint_q):
+        """Evaluate squared residual costs for a batch of joint configurations.
+
+        Args:
+            joint_q: Joint coordinates to evaluate, shape [n_batch,
+                joint_coord_count], dtype float.
+
+        Returns:
+            Costs for each batch row, shape [n_batch], dtype float.
+        """
         self._compute_residuals(joint_q)
         wp.launch(
             compute_costs,

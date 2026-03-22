@@ -100,42 +100,28 @@ class BatchCtx:
 
 
 class IKOptimizerLBFGS:
-    """
-    L-BFGS inverse-kinematics solver with a parallel Wolfe-conditions line search.
+    """L-BFGS optimizer for batched inverse kinematics.
 
-    This solver uses L-BFGS with a parallel line search that seeks to satisfy the
-    strong Wolfe conditions for robust step selection. It supports the same three
-    Jacobian back-ends as the LM solver:
+    The optimizer maintains a limited-memory quasi-Newton approximation and
+    chooses step sizes with a parallel strong-Wolfe line search. It supports
+    the same Jacobian backends as :class:`~newton.ik.IKOptimizerLM`.
 
-    * **AUTODIFF**   — Warp's reverse-mode autodiff for every objective
-    * **ANALYTIC**   — objective-specific analytic Jacobians only
-    * **MIXED**      — analytic where available, autodiff fallback elsewhere
-
-    Parameters
-    ----------
-    model : newton.Model
-        Singleton articulation shared by all problems.
-    n_batch : int
-        Number of rows processed in parallel (e.g., `n_problems * n_seeds`).
-    objectives : Sequence[IKObjective]
-        Ordered list of objectives shared by _all_ problems.
-    jacobian_mode : IKJacobianType, default IKJacobianType.AUTODIFF
-        Backend used in `compute_jacobian`.
-    history_len : int, default 10
-        L-BFGS memory length (number of {s,y} pairs to remember).
-    h0_scale : float, default 1.0
-        Initial Hessian approximation scale factor.
-    line_search_alphas : list[float], default [0.1, 0.2, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0]
-        Parallel step sizes to try in line search.
-    wolfe_c1 : float, default 1e-4
-        Wolfe condition parameter for sufficient decrease (Armijo condition).
-    wolfe_c2 : float, default 0.9
-        Wolfe condition parameter for curvature condition (strong Wolfe).
-
-    Batch structure
-    ---------------
-    Same as the LM solver - handles a batch of independent IK problems that all
-    reference the same articulation and objectives.
+    Args:
+        model: Shared articulation model.
+        n_batch: Number of evaluation rows solved in parallel. This is
+            typically `n_problems * n_seeds` after any sampling expansion.
+        objectives: Ordered IK objectives applied to every batch row.
+        jacobian_mode: Jacobian backend to use.
+        history_len: Number of ``(s, y)`` correction pairs retained in the
+            L-BFGS history.
+        h0_scale: Scalar used for the initial inverse-Hessian
+            approximation.
+        line_search_alphas: Candidate step sizes tested in parallel during
+            the line search.
+        wolfe_c1: Armijo sufficient-decrease constant.
+        wolfe_c2: Strong-Wolfe curvature constant.
+        problem_idx: Optional mapping from batch rows to base problem indices
+            for per-problem objective data.
     """
 
     TILE_N_DOFS = None
@@ -759,7 +745,15 @@ class IKOptimizerLBFGS:
                 fn(obj, offset, *extra)
 
     def step(self, joint_q_in, joint_q_out, iterations=50):
-        """Run L-BFGS iterations using the provided joint buffers."""
+        """Run several L-BFGS iterations on a batch of joint configurations.
+
+        Args:
+            joint_q_in: Input joint coordinates, shape [n_batch,
+                joint_coord_count], dtype float.
+            joint_q_out: Output buffer for the optimized coordinates. It may
+                alias `joint_q_in` for in-place updates.
+            iterations: Number of L-BFGS iterations to execute.
+        """
         if joint_q_in.shape != (self.n_batch, self.n_coords):
             raise ValueError("joint_q_in has incompatible shape")
         if joint_q_out.shape != (self.n_batch, self.n_coords):
@@ -774,6 +768,7 @@ class IKOptimizerLBFGS:
             self._step(joint_q, iteration=i)
 
     def reset(self):
+        """Clear L-BFGS history and cached line-search state."""
         self.history_count.zero_()
         self.history_start.zero_()
         self.s_history.zero_()
@@ -790,6 +785,15 @@ class IKOptimizerLBFGS:
             self.cand_step_dq.zero_()
 
     def compute_costs(self, joint_q):
+        """Evaluate squared residual costs for a batch of joint configurations.
+
+        Args:
+            joint_q: Joint coordinates to evaluate, shape [n_batch,
+                joint_coord_count], dtype float.
+
+        Returns:
+            Costs for each batch row, shape [n_batch], dtype float.
+        """
         self._compute_residuals(joint_q)
         wp.launch(
             compute_costs,
