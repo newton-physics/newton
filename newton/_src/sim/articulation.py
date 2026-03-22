@@ -348,7 +348,9 @@ def eval_single_articulation_fk(
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = com_twist_to_point_velocity(X_wp, body_com[parent], v_wp, wp.transform_get_translation(X_wc))
+            v_parent_origin = com_twist_to_point_velocity(
+                X_wp, body_com[parent], v_wp, wp.transform_get_translation(X_wc)
+            )
 
         # Transform joint motion into world space. The linear part of v_j is defined
         # at the child joint anchor; if the child body origin is offset from that
