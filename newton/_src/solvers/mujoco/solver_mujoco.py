@@ -5467,6 +5467,14 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
+        # Recompute derived quantities after mass/inertia changes.
+        # set_const computes:
+        # - body_subtreemass: mass of body and all descendants (depends on body_mass)
+        # - dof_invweight0, body_invweight0, tendon_invweight0: inverse inertias
+        # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
+        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
+
+
     def _update_body_properties(self):
         """Update body-property dependent MuJoCo DOF parameters.
 
