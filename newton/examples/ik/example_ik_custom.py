@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example IK Custom (custom collision objective + sphere gizmo)
@@ -22,6 +10,7 @@
 # - Adds a custom CollisionSphereAvoidObjective (softplus penalty) for the EE
 # - Adds gizmos for the end-effector target and the obstacle sphere
 # - Re-solves IK every frame from the latest gizmo transforms
+# - EE target gizmo snaps back to solved TCP pose on release
 #
 # Command: python -m newton.examples ik_custom
 ###########################################################################
@@ -315,12 +304,13 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
 
-        # Register EE and obstacle gizmos
-        self.viewer.log_gizmo("target_tcp", self.ee_tf)
-        self.viewer.log_gizmo("obstacle_sphere", self.sphere_tf)
-
-        # Visualize the current articulated state + world-attached shapes
+        # Visualize the current articulated state + world-attached shapes.
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
+        body_q_np = self.state.body_q.numpy()
+
+        # Register EE and obstacle gizmos
+        self.viewer.log_gizmo("target_tcp", self.ee_tf, snap_to=wp.transform(*body_q_np[self.ee_index]))
+        self.viewer.log_gizmo("obstacle_sphere", self.sphere_tf)
 
         self.viewer.log_state(self.state)
 

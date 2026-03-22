@@ -14,6 +14,7 @@
 - Imperative mood in commit messages ("Fix X", not "Fixed X"), ~50 char subject, body wraps at 72 chars explaining _what_ and _why_.
 - Verify regression tests fail without the fix before committing.
 - Pin GitHub Actions by SHA: `action@<sha>  # vX.Y.Z`. Check `.github/workflows/` for allowlisted hashes.
+- In SPDX copyright lines, use the year the file was first created. Do not create date ranges or update the year when modifying a file.
 
 Run `uvx pre-commit run -a` to lint/format before committing. Use `uv` for all commands; fall back to `venv`/`conda` if unavailable.
 
