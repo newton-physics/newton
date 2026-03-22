@@ -1215,9 +1215,7 @@ def mc_iterate_voxel_vertices(
         y = y_id + corner_offset.y
         z = z_id + corner_offset.z
 
-        local_pos_a = sdf_data.sdf_box_lower + wp.cw_mul(
-            wp.vec3(float(x), float(y), float(z)), sdf_data.voxel_size
-        )
+        local_pos_a = sdf_data.sdf_box_lower + wp.cw_mul(wp.vec3(float(x), float(y), float(z)), sdf_data.voxel_size)
         point_b = wp.transform_point(X_a_to_b, local_pos_a)
         valA = texture_sample_sdf_at_voxel(sdf_data, x, y, z)
         valB = texture_sample_sdf(sdf_other_data, point_b)

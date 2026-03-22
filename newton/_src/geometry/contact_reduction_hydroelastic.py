@@ -391,8 +391,7 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
         agg_moment2_reduced: wp.array(dtype=wp.float32),
         total_num_threads: int,
     ):
-        """Accumulate reduced friction moments per normal bin.
-        """
+        """Accumulate reduced friction moments per normal bin."""
         tid = wp.tid()
         ht_capacity = ht_keys.shape[0]
 
@@ -453,7 +452,7 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
                 pos = wp.vec3(pd[0], pd[1], pd[2])
                 lever = wp.length(wp.cross(pos - anchor_pos, rotated_normal))
                 wp.atomic_add(agg_moment_reduced, nbin_idx, pen_mag * lever)
-                wp.atomic_add(agg_moment2_reduced, nbin_idx, pen_mag * lever * lever) # second moment
+                wp.atomic_add(agg_moment2_reduced, nbin_idx, pen_mag * lever * lever)  # second moment
 
     return accumulate_moments_kernel
 
@@ -670,7 +669,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 m_red = agg_moment_reduced[entry_idx]  # S1 = sum(pen * lever)
                 m_red2 = agg_moment2_reduced[entry_idx]  # S2 = sum(pen * lever^2)
                 s0_total = entry_total_depth + wp.float32(add_anchor) * anchor_depth
-                if m_unr > wp.static(EPS_SMALL) and s0_total > wp.static(EPS_SMALL) and m_red > wp.static(EPS_SMALL) and agg_force_mag > wp.static(EPS_SMALL):
+                if (
+                    m_unr > wp.static(EPS_SMALL)
+                    and s0_total > wp.static(EPS_SMALL)
+                    and m_red > wp.static(EPS_SMALL)
+                    and agg_force_mag > wp.static(EPS_SMALL)
+                ):
                     m_target = m_unr * total_depth_with_anchor / agg_force_mag
                     if m_target < m_red:
                         # Overshoot: uniform scale down
@@ -680,9 +684,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         moment_L_avg = m_red / s0_total
                         variance = m_red2 * s0_total - m_red * m_red
                         if variance > wp.static(EPS_SMALL):
-                            moment_alpha = wp.clamp(
-                                (m_target - m_red) * m_red / variance, 0.0, 1.0
-                            )
+                            moment_alpha = wp.clamp((m_target - m_red) * m_red / variance, 0.0, 1.0)
                 # Anchor compensation:
                 #  - Overshoot: anchor_fs = 1 + (S0/anchor_depth)*(1 - uniform_fs)
                 #  - Undershoot: anchor_fs = 1 - alpha
@@ -791,7 +793,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                             voxel_s2 = agg_moment2_reduced[nbin_entry_idx]
                             nbin_entry_total_depth = total_depth_reduced[nbin_entry_idx]
                             voxel_s0 = nbin_entry_total_depth + nbin_anchor_depth
-                            if voxel_m_unr > wp.static(EPS_SMALL) and voxel_s0 > wp.static(EPS_SMALL) and voxel_s1 > wp.static(EPS_SMALL) and nbin_agg_mag > wp.static(EPS_SMALL):
+                            if (
+                                voxel_m_unr > wp.static(EPS_SMALL)
+                                and voxel_s0 > wp.static(EPS_SMALL)
+                                and voxel_s1 > wp.static(EPS_SMALL)
+                                and nbin_agg_mag > wp.static(EPS_SMALL)
+                            ):
                                 voxel_m_target = voxel_m_unr * nbin_effective_depth / nbin_agg_mag
                                 if voxel_m_target < voxel_s1:
                                     # Overshoot: uniform scale down
