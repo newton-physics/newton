@@ -28,7 +28,6 @@ import newton.utils
 import newton.viewer
 from newton import JointTargetMode
 
-
 # =========================================================================
 # Config
 # =========================================================================
@@ -326,11 +325,16 @@ class Example:
         self._target_pos_np, self.target_quat, self.target_pos = self.to_pose(pos, quat, self.min_target_height)
         q = self.target_quat
         x, y, z, w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
-        self.target_euler_deg = np.rad2deg(np.array([
-            np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)),
-            float(np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))),
-            np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)),
-        ], dtype=np.float64)).astype(np.float32)
+        self.target_euler_deg = np.rad2deg(
+            np.array(
+                [
+                    np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)),
+                    float(np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))),
+                    np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)),
+                ],
+                dtype=np.float64,
+            )
+        ).astype(np.float32)
 
     def set_active_target(self, pos: np.ndarray, quat: wp.quat) -> None:
         self.active_target_pos_np, self.active_target_quat, self.active_target_pos = self.to_pose(
