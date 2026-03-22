@@ -330,7 +330,7 @@ def download_git_folder(
         )
 
     # Check if we already have this exact version
-    if cached is not None:
+    if cached is not None and not force_refresh:
         cached_sha_suffix = cached.name.rsplit("_", 1)[-1]
         if latest_commit[:8] == cached_sha_suffix:
             try:
