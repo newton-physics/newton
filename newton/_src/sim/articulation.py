@@ -972,7 +972,8 @@ def eval_articulation_jacobian(
             joint_dof_end = joint_qd_start[j + 1]
             joint_dof_count = joint_dof_end - joint_dof_start
 
-            # Fill out each row of the Jacobian walking up the tree
+            # Public Jacobian rows currently expose the raw world-origin screw
+            # columns. They are not transported to the row body's origin or COM.
             for dof in range(joint_dof_count):
                 col = (joint_dof_start - articulation_dof_start) + dof
                 S = joint_S_s[joint_dof_start + dof]
@@ -995,6 +996,16 @@ def eval_jacobian(
     Computes the spatial Jacobian J that maps joint velocities to spatial
     velocities of each link in world frame. The Jacobian is computed for
     each articulation in the model.
+
+    Important: the current public Jacobian rows are assembled directly from
+    the internal world-frame motion-subspace columns. In other words, each
+    row behaves like a world-origin screw twist in world coordinates; it is
+    not transported to the row body's origin or center of mass.
+
+    As a result, ``J @ joint_qd`` is not, in general, equal to
+    :attr:`newton.State.body_qd`. Newton stores :attr:`newton.State.body_qd`
+    as a COM-referenced twist, so callers that want body-origin or COM point
+    velocities must transport the screw twist to the desired reference point.
 
     Args:
         model: The model containing articulation definitions.

@@ -135,6 +135,13 @@ convert from this convention to MuJoCo's mixed-frame format when using the
 SolverMuJoCo, including both the angular velocity frame conversion (world ↔ body)
 and the linear velocity reference point conversion (CoM ↔ body frame origin).
 
+This COM-twist convention applies to :attr:`newton.State.body_qd`. By contrast,
+the current public :func:`newton.eval_jacobian` rows are assembled from the
+internal world-origin screw basis in world coordinates. Therefore
+``eval_jacobian(...) @ joint_qd`` is not, in general, the same quantity as
+``state.body_qd``; callers must transport that screw twist to the body origin,
+COM, or another point of interest as needed.
+
 
 Summary of Conventions
 ~~~~~~~~~~~~~~~~~~~~~~

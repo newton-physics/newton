@@ -36,6 +36,7 @@
 - Simplify `SensorContact` force output: add `total_force` (aggregate per sensing object) and `force_matrix` (per-counterpart breakdown, `None` when no counterparts)
 - Add `sensing_obj_idx` (`list[int]`), `counterpart_indices` (`list[list[int]]`), `sensing_obj_type`, and `counterpart_type` attributes. Rename `include_total` to `measure_total`
 - Replace verbose Apache 2.0 boilerplate with two-line SPDX-only license headers across all source and documentation files
+- Clarify in the docs that `State.body_q` stores the body-origin pose, `State.body_qd` stores a COM-referenced twist, and `eval_jacobian(...) @ joint_qd` uses world-origin screw rows that must be transported to the desired reference point
 
 ### Deprecated
 
