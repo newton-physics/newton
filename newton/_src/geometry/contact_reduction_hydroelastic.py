@@ -41,7 +41,7 @@ from typing import Any
 
 import warp as wp
 
-from newton._src.geometry.hashtable import hashtable_find, hashtable_find_or_insert
+from newton._src.geometry.hashtable import hashtable_find_or_insert
 
 from .contact_data import ContactData
 from .contact_reduction import (
@@ -180,6 +180,7 @@ def get_reduce_hydroelastic_contacts_kernel():
         shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
         shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
+        agg_moment_unreduced: wp.array(dtype=wp.float32),
         total_num_threads: int,
     ):
         """Register hydroelastic contacts in the hashtable for reduction.
@@ -215,6 +216,11 @@ def get_reduce_hydroelastic_contacts_kernel():
             key = make_contact_key(shape_a, shape_b, bin_id)
 
             entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
+
+            # Cache normal-bin entry index for downstream kernels (avoids repeated hash lookups)
+            if reducer_data.contact_nbin_entry.shape[0] > 0:
+                reducer_data.contact_nbin_entry[i] = entry_idx
+
             if entry_idx >= 0:
                 # k_eff is constant for a shape pair, so redundant writes are safe.
                 reducer_data.entry_k_eff[entry_idx] = _effective_stiffness(
@@ -239,6 +245,15 @@ def get_reduce_hydroelastic_contacts_kernel():
                     reducer_data.ht_values,
                     ht_capacity,
                 )
+
+                if agg_moment_unreduced.shape[0] > 0 and depth < 0.0:
+                    pen_mag = -depth
+                    ws = reducer_data.weight_sum[entry_idx]
+                    if ws > EPS_SMALL:
+                        anchor_pos = reducer_data.weighted_pos_sum[entry_idx] / ws
+                        lever = wp.length(wp.cross(position - anchor_pos, normal))
+                        area_i = reducer_data.contact_area[i]
+                        wp.atomic_add(agg_moment_unreduced, entry_idx, area_i * pen_mag * lever)
             else:
                 wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
 
@@ -294,7 +309,7 @@ def _create_accumulate_reduced_depth_kernel():
         ht_active_slots: wp.array(dtype=wp.int32),
         position_depth: wp.array(dtype=wp.vec4),
         normal: wp.array(dtype=wp.vec2),
-        shape_pairs: wp.array(dtype=wp.vec2i),
+        contact_nbin_entry: wp.array(dtype=wp.int32),
         total_depth_reduced: wp.array(dtype=wp.float32),
         total_normal_reduced: wp.array(dtype=wp.vec3),
         total_num_threads: int,
@@ -336,15 +351,9 @@ def _create_accumulate_reduced_depth_kernel():
                 depth = pd[3]
                 if depth < 0.0:
                     if entry_bin_id < wp.static(NUM_NORMAL_BINS):
-                        # Normal-bin entry: winning contacts map back to this entry.
                         nbin_idx = entry_idx
                     else:
-                        # Voxel-bin entry: need hash lookup for the normal bin.
-                        contact_normal = decode_oct(normal[contact_id])
-                        bin_id = get_slot(contact_normal)
-                        pair = shape_pairs[contact_id]
-                        nbin_key = make_contact_key(pair[0], pair[1], bin_id)
-                        nbin_idx = hashtable_find(nbin_key, ht_keys)
+                        nbin_idx = contact_nbin_entry[contact_id]
                     if nbin_idx >= 0:
                         pen_mag = -depth
                         contact_normal = decode_oct(normal[contact_id])
@@ -373,49 +382,21 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
         ht_active_slots: wp.array(dtype=wp.int32),
         position_depth: wp.array(dtype=wp.vec4),
         normal: wp.array(dtype=wp.vec2),
-        shape_pairs: wp.array(dtype=wp.vec2i),
-        contact_area: wp.array(dtype=wp.float32),
-        contact_count: wp.array(dtype=wp.int32),
+        contact_nbin_entry: wp.array(dtype=wp.int32),
         weighted_pos_sum: wp.array(dtype=wp.vec3),
         weight_sum: wp.array(dtype=wp.float32),
         agg_force: wp.array(dtype=wp.vec3),
         total_normal_reduced: wp.array(dtype=wp.vec3),
-        agg_moment_unreduced: wp.array(dtype=wp.float32),
         agg_moment_reduced: wp.array(dtype=wp.float32),
         agg_moment2_reduced: wp.array(dtype=wp.float32),
         total_num_threads: int,
     ):
-        """Accumulate unreduced and reduced friction moments per normal bin."""
+        """Accumulate reduced friction moments per normal bin.
+        """
         tid = wp.tid()
         ht_capacity = ht_keys.shape[0]
 
-        # === Loop 1: unreduced moment over ALL contacts ===
-        num_contacts = contact_count[0]
-        if num_contacts > position_depth.shape[0]:
-            num_contacts = position_depth.shape[0]
-        for ci in range(tid, num_contacts, total_num_threads):
-            pd = position_depth[ci]
-            depth = pd[3]
-            if depth >= 0.0:
-                continue
-            pen_mag = -depth
-            contact_normal = decode_oct(normal[ci])
-            pair = shape_pairs[ci]
-            bin_id = get_slot(contact_normal)
-            nbin_key = make_contact_key(pair[0], pair[1], bin_id)
-            nbin_idx = hashtable_find(nbin_key, ht_keys)
-            if nbin_idx < 0:
-                continue
-            ws = weight_sum[nbin_idx]
-            if ws <= EPS_SMALL:
-                continue
-            anchor_pos = weighted_pos_sum[nbin_idx] / ws
-            pos = wp.vec3(pd[0], pd[1], pd[2])
-            lever = wp.length(wp.cross(pos - anchor_pos, contact_normal))
-            area_i = contact_area[ci]
-            wp.atomic_add(agg_moment_unreduced, nbin_idx, area_i * pen_mag * lever)
-
-        # === Loop 2: reduced moment over winning contacts ===
+        # Reduced moment over winning contacts
         num_active = ht_active_slots[ht_capacity]
         if num_active == 0:
             return
@@ -446,14 +427,11 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
                 pen_mag = -depth
                 contact_normal = decode_oct(normal[contact_id])
 
-                # Determine normal-bin index
+                # Determine normal-bin index using cached entry
                 if entry_bin_id < wp.static(NUM_NORMAL_BINS):
                     nbin_idx = entry_idx
                 else:
-                    bin_id = get_slot(contact_normal)
-                    pair = shape_pairs[contact_id]
-                    nbin_key = make_contact_key(pair[0], pair[1], bin_id)
-                    nbin_idx = hashtable_find(nbin_key, ht_keys)
+                    nbin_idx = contact_nbin_entry[contact_id]
                 if nbin_idx < 0:
                     continue
 
@@ -543,6 +521,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         shape_pairs: wp.array(dtype=wp.vec2i),
         contact_area: wp.array(dtype=wp.float32),
         entry_k_eff: wp.array(dtype=wp.float32),
+        contact_nbin_entry: wp.array(dtype=wp.int32),
         # Pre-accumulated total depth of winning contacts per normal bin
         total_depth_reduced: wp.array(dtype=wp.float32),
         # Pre-accumulated depth-weighted normal sum of winning contacts per normal bin
@@ -765,11 +744,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                             # Overshoot: uniform scaling
                             c_friction_scale = uniform_friction_scale
                 else:
-                    # --- Voxel-bin entry: look up the normal bin once ---
-                    voxel_nbin_id = get_slot(contact_normal)
-                    voxel_pair = shape_pairs[contact_id]
-                    nbin_key = make_contact_key(voxel_pair[0], voxel_pair[1], voxel_nbin_id)
-                    nbin_entry_idx = hashtable_find(nbin_key, ht_keys)
+                    # --- Voxel-bin entry: use cached normal-bin index ---
+                    nbin_entry_idx = contact_nbin_entry[contact_id]
 
                     if nbin_entry_idx >= 0 and depth < 0.0:
                         nbin_agg_force = agg_force[nbin_entry_idx]
@@ -1094,6 +1070,7 @@ class HydroelasticContactReduction:
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
                 shape_voxel_resolution,
+                self.reducer.agg_moment_unreduced,
                 grid_size,
             ],
             device=self.device,
@@ -1130,14 +1107,14 @@ class HydroelasticContactReduction:
                 self.reducer.hashtable.active_slots,
                 self.reducer.position_depth,
                 self.reducer.normal,
-                self.reducer.shape_pairs,
+                self.reducer.contact_nbin_entry,
                 self.reducer.total_depth_reduced,
                 self.reducer.total_normal_reduced,
                 grid_size,
             ],
             device=self.device,
         )
-        # --- accumulate friction moments per normal bin (Phase 1.5) ---
+        # --- accumulate reduced friction moments per normal bin (Phase 1.5) ---
         if self._accumulate_moments_kernel is not None:
             wp.launch(
                 kernel=self._accumulate_moments_kernel,
@@ -1148,14 +1125,11 @@ class HydroelasticContactReduction:
                     self.reducer.hashtable.active_slots,
                     self.reducer.position_depth,
                     self.reducer.normal,
-                    self.reducer.shape_pairs,
-                    self.reducer.contact_area,
-                    self.reducer.contact_count,
+                    self.reducer.contact_nbin_entry,
                     self.reducer.weighted_pos_sum,
                     self.reducer.weight_sum,
                     self.reducer.agg_force,
                     self.reducer.total_normal_reduced,
-                    self.reducer.agg_moment_unreduced,
                     self.reducer.agg_moment_reduced,
                     self.reducer.agg_moment2_reduced,
                     grid_size,
@@ -1178,6 +1152,7 @@ class HydroelasticContactReduction:
                 self.reducer.shape_pairs,
                 self.reducer.contact_area,
                 self.reducer.entry_k_eff,
+                self.reducer.contact_nbin_entry,
                 self.reducer.total_depth_reduced,
                 self.reducer.total_normal_reduced,
                 self.reducer.agg_moment_unreduced,

@@ -114,6 +114,7 @@ def mc_calc_face_texture(
     corner_offsets_table: wp.array(dtype=wp.vec3ub),
     tri_range_start: wp.int32,
     corner_vals: vec8f,
+    corner_sdf_vals: vec8f,
     sdf_a: TextureSDFData,
     x_id: wp.int32,
     y_id: wp.int32,
@@ -144,16 +145,17 @@ def mc_calc_face_texture(
         p_1 = wp.vec3f(corner_offsets_table[v_idx_to])
         val_diff = wp.float32(val_1 - val_0)
         if wp.abs(val_diff) < 1e-8:
-            p = 0.5 * (p_0 + p_1)
+            t = float(0.5)
         else:
             t = (0.0 - val_0) / val_diff
-            p = p_0 + t * (p_1 - p_0)
+        p = p_0 + t * (p_1 - p_0)
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         local_pos = sdf_a.sdf_box_lower + wp.cw_mul(vol_idx, sdf_a.voxel_size)
         face_verts[vi] = local_pos
-        depth = texture_sample_sdf(sdf_a, local_pos) - thickness
-        if wp.isnan(depth):
-            depth = 0.0
+        # Interpolate SDF depth from cached corner values (avoids texture lookup)
+        sdf_from = wp.float32(corner_sdf_vals[v_idx_from])
+        sdf_to = wp.float32(corner_sdf_vals[v_idx_to])
+        depth = sdf_from + t * (sdf_to - sdf_from) - thickness
         vert_depths[vi] = depth
         if depth < 0.0:
             num_inside += 1
@@ -1119,6 +1121,8 @@ def count_iso_voxels_block(
         # get global voxel coordinates
         bc = in_buffer_collide_coords[tid]
 
+        X_b_to_a = wp.transform_multiply(wp.transform_inverse(X_ws_a), X_ws_b)
+
         num_iso_subblocks = wp.int32(0)
         subblock_idx = wp.uint8(0)
         for x_local in range(n_blocks):
@@ -1127,11 +1131,17 @@ def count_iso_voxels_block(
                     x_global = wp.vec3i(bc) + wp.vec3i(x_local, y_local, z_local) * subblock_size
 
                     # lookup distances at subblock center
-                    # for subblock_size = 1 this is equivalent to the voxel center
                     x_center = wp.vec3f(x_global) + wp.vec3f(0.5 * float(subblock_size))
-                    diff_val, vb, va, is_valid = sdf_diff_sdf(
-                        sdf_data_b, sdf_data_a, X_ws_b, X_ws_a, k_eff_b, k_eff_a, x_center
-                    )
+                    local_pos_b = sdf_data_b.sdf_box_lower + wp.cw_mul(x_center, sdf_data_b.voxel_size)
+                    point_a = wp.transform_point(X_b_to_a, local_pos_b)
+                    vb = texture_sample_sdf(sdf_data_b, local_pos_b)
+                    va = texture_sample_sdf(sdf_data_a, point_a)
+                    is_valid = not (wp.isnan(vb) or wp.isnan(va))
+
+                    if vb < 0.0 and va < 0.0:
+                        diff_val = k_eff_b * vb - k_eff_a * va
+                    else:
+                        diff_val = vb - va
 
                     # check if bounding sphere contains the isosurface and the distance is within contact gap
                     if wp.abs(diff_val) > r_eff or va > r + gap_a or vb > r + gap_b or not is_valid:
@@ -1190,11 +1200,14 @@ def mc_iterate_voxel_vertices(
     k_eff: wp.float32,
     k_eff_other: wp.float32,
     gap_sum: wp.float32,
-) -> tuple[wp.uint8, vec8f, bool, bool]:
+) -> tuple[wp.uint8, vec8f, vec8f, bool, bool]:
     """Iterate over the vertices of a voxel and return the cube index, corner values, and whether any vertices are inside the shape."""
     cube_idx = wp.uint8(0)
     any_verts_inside_gap = False
     corner_vals = vec8f()
+    corner_sdf_vals = vec8f()
+
+    X_a_to_b = wp.transform_multiply(wp.transform_inverse(X_ws_other), X_ws)
 
     for i in range(8):
         corner_offset = wp.vec3i(corner_offsets_table[i])
@@ -1202,22 +1215,32 @@ def mc_iterate_voxel_vertices(
         y = y_id + corner_offset.y
         z = z_id + corner_offset.z
 
-        v_diff, v, _v_other, is_valid = sdf_diff_sdf(
-            sdf_data, sdf_other_data, X_ws, X_ws_other, k_eff, k_eff_other, x, y, z
+        local_pos_a = sdf_data.sdf_box_lower + wp.cw_mul(
+            wp.vec3(float(x), float(y), float(z)), sdf_data.voxel_size
         )
+        point_b = wp.transform_point(X_a_to_b, local_pos_a)
+        valA = texture_sample_sdf_at_voxel(sdf_data, x, y, z)
+        valB = texture_sample_sdf(sdf_other_data, point_b)
 
+        is_valid = not (wp.isnan(valA) or wp.isnan(valB))
         if not is_valid:
-            return wp.uint8(0), corner_vals, False, False
+            return wp.uint8(0), corner_vals, corner_sdf_vals, False, False
+
+        if valA < 0.0 and valB < 0.0:
+            v_diff = k_eff * valA - k_eff_other * valB
+        else:
+            v_diff = valA - valB
 
         corner_vals[i] = v_diff
+        corner_sdf_vals[i] = valA
 
         if v_diff < 0.0:
             cube_idx |= wp.uint8(1) << wp.uint8(i)
 
-        if v <= gap_sum:
+        if valA <= gap_sum:
             any_verts_inside_gap = True
 
-    return cube_idx, corner_vals, any_verts_inside_gap, True
+    return cube_idx, corner_vals, corner_sdf_vals, any_verts_inside_gap, True
 
 
 # =============================================================================
@@ -1421,7 +1444,7 @@ def get_generate_contacts_kernel(
             z_id = wp.int32(iso_coords.z)
 
             # Compute cube state (marching cubes lookup)
-            cube_idx, corner_vals, any_verts_inside, all_verts_valid = mc_iterate_voxel_vertices(
+            cube_idx, corner_vals, corner_sdf_vals, any_verts_inside, all_verts_valid = mc_iterate_voxel_vertices(
                 x_id,
                 y_id,
                 z_id,
@@ -1489,6 +1512,7 @@ def get_generate_contacts_kernel(
                     corner_offsets_table,
                     tri_range_start + 3 * fi,
                     corner_vals,
+                    corner_sdf_vals,
                     sdf_data_b,
                     x_id,
                     y_id,

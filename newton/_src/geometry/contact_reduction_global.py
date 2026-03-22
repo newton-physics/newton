@@ -350,6 +350,9 @@ class GlobalContactReducerData:
     # contact_area: area of contact surface element (per contact)
     contact_area: wp.array(dtype=wp.float32)
 
+    # Cached normal-bin hashtable entry index per contact
+    contact_nbin_entry: wp.array(dtype=wp.int32)
+
     # Effective stiffness coefficient k_a*k_b/(k_a+k_b) per hashtable entry
     # Constant for a given shape pair, stored once per entry instead of per contact
     entry_k_eff: wp.array(dtype=wp.float32)
@@ -537,8 +540,10 @@ class GlobalContactReducer:
         # Optional hydroelastic data arrays
         if store_hydroelastic_data:
             self.contact_area = wp.zeros(capacity, dtype=wp.float32, device=device)
+            self.contact_nbin_entry = wp.zeros(capacity, dtype=wp.int32, device=device)
         else:
             self.contact_area = wp.zeros(0, dtype=wp.float32, device=device)
+            self.contact_nbin_entry = wp.zeros(0, dtype=wp.int32, device=device)
 
         # Per-contact dedup flags for cross-entry deduplication during export
         self.exported_flags = wp.zeros(capacity, dtype=wp.int32, device=device)
@@ -654,6 +659,7 @@ class GlobalContactReducer:
         data.contact_count = self.contact_count
         data.capacity = self.capacity
         data.contact_area = self.contact_area
+        data.contact_nbin_entry = self.contact_nbin_entry
         data.entry_k_eff = self.entry_k_eff
         data.agg_force = self.agg_force
         data.weighted_pos_sum = self.weighted_pos_sum
