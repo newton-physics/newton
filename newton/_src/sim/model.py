@@ -441,6 +441,8 @@ class Model:
         """Joint child body indices, shape [joint_count], int."""
         self.joint_ancestor: wp.array(dtype=wp.int32) | None = None
         """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
+        self.joint_eval_order: wp.array(dtype=wp.int32) | None = None
+        """Per-articulation topological traversal order used by kinematics kernels, shape [joint_count], int."""
         self.joint_X_p: wp.array(dtype=wp.transform) | None = None
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_X_c: wp.array(dtype=wp.transform) | None = None
@@ -741,6 +743,7 @@ class Model:
         self.attribute_frequency["joint_parent"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_child"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_ancestor"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_eval_order"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_articulation"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_X_p"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_X_c"] = Model.AttributeFrequency.JOINT

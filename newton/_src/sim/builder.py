@@ -10065,6 +10065,38 @@ class ModelBuilder:
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
 
+            from ..utils import topological_sort  # noqa: PLC0415
+
+            joint_eval_order = list(range(self.joint_count))
+            for art_idx in range(len(self.articulation_start)):
+                joint_start = self.articulation_start[art_idx]
+                joint_end = (
+                    self.articulation_start[art_idx + 1]
+                    if art_idx + 1 < len(self.articulation_start)
+                    else self.joint_count
+                )
+                art_joints = list(range(joint_start, joint_end))
+                if len(art_joints) <= 1:
+                    continue
+
+                joints_simple = [(int(self.joint_parent[i]), int(self.joint_child[i])) for i in art_joints]
+                try:
+                    joint_eval_order[joint_start:joint_end] = topological_sort(
+                        joints_simple,
+                        use_dfs=True,
+                        custom_indices=art_joints,
+                    )
+                except ValueError as e:
+                    art_key = (
+                        self.articulation_label[art_idx]
+                        if art_idx < len(self.articulation_label)
+                        else f"articulation_{art_idx}"
+                    )
+                    raise ValueError(
+                        f"Failed to compute kinematic evaluation order for articulation '{art_key}' (id={art_idx}): {e}"
+                    ) from e
+            m.joint_eval_order = wp.array(joint_eval_order, dtype=wp.int32)
+
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)

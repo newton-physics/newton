@@ -1216,6 +1216,128 @@ class TestModelJoints(unittest.TestCase):
 
         self.assertIn("DFS topological order", str(cm.warning))
 
+    def test_eval_fk_handles_out_of_order_joints(self):
+        """Test that eval_fk is independent of joint storage order within an articulation."""
+
+        def build_model(out_of_order: bool) -> tuple[newton.Model, list[int]]:
+            builder = ModelBuilder()
+
+            body_a = builder.add_link(mass=1.0)
+            body_b = builder.add_link(mass=1.0)
+            body_c = builder.add_link(mass=1.0)
+
+            root_joint = builder.add_joint_fixed(
+                parent=-1,
+                child=body_a,
+                parent_xform=wp.transform((1.0, -0.5, 0.25), wp.quat_identity()),
+                child_xform=wp.transform_identity(),
+            )
+
+            if out_of_order:
+                child_joint = builder.add_joint_fixed(
+                    parent=body_b,
+                    child=body_c,
+                    parent_xform=wp.transform((0.0, 0.0, 0.75), wp.quat_identity()),
+                    child_xform=wp.transform_identity(),
+                )
+                middle_joint = builder.add_joint_revolute(
+                    parent=body_a,
+                    child=body_b,
+                    axis=(0.0, 1.0, 0.0),
+                    parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
+                    child_xform=wp.transform((0.0, 0.0, -0.25), wp.quat_identity()),
+                )
+            else:
+                middle_joint = builder.add_joint_revolute(
+                    parent=body_a,
+                    child=body_b,
+                    axis=(0.0, 1.0, 0.0),
+                    parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
+                    child_xform=wp.transform((0.0, 0.0, -0.25), wp.quat_identity()),
+                )
+                child_joint = builder.add_joint_fixed(
+                    parent=body_b,
+                    child=body_c,
+                    parent_xform=wp.transform((0.0, 0.0, 0.75), wp.quat_identity()),
+                    child_xform=wp.transform_identity(),
+                )
+
+            builder.add_articulation([root_joint, min(middle_joint, child_joint), max(middle_joint, child_joint)])
+
+            q_start = builder.joint_q_start[middle_joint]
+            qd_start = builder.joint_qd_start[middle_joint]
+            builder.joint_q[q_start] = 0.35
+            builder.joint_qd[qd_start] = -0.2
+
+            model = builder.finalize()
+            return model, [body_a, body_b, body_c]
+
+        ordered_model, ordered_bodies = build_model(out_of_order=False)
+        unordered_model, unordered_bodies = build_model(out_of_order=True)
+
+        ordered_state = ordered_model.state()
+        unordered_state = unordered_model.state()
+
+        newton.eval_fk(ordered_model, ordered_model.joint_q, ordered_model.joint_qd, ordered_state)
+        newton.eval_fk(unordered_model, unordered_model.joint_q, unordered_model.joint_qd, unordered_state)
+
+        ordered_body_q = ordered_state.body_q.numpy()
+        ordered_body_qd = ordered_state.body_qd.numpy()
+        unordered_body_q = unordered_state.body_q.numpy()
+        unordered_body_qd = unordered_state.body_qd.numpy()
+
+        assert_np_equal(unordered_model.joint_eval_order.numpy(), np.array([0, 2, 1], dtype=np.int32))
+
+        for ordered_body, unordered_body in zip(ordered_bodies, unordered_bodies, strict=True):
+            assert_np_equal(unordered_body_q[unordered_body], ordered_body_q[ordered_body], tol=1.0e-5)
+            assert_np_equal(unordered_body_qd[unordered_body], ordered_body_qd[ordered_body], tol=1.0e-5)
+
+    def test_eval_ik_handles_out_of_order_joints(self):
+        """Test that eval_ik reconstructs coordinates for out-of-order articulation joints."""
+
+        builder = ModelBuilder()
+
+        body_a = builder.add_link(mass=1.0)
+        body_b = builder.add_link(mass=1.0)
+        body_c = builder.add_link(mass=1.0)
+
+        root_joint = builder.add_joint_fixed(
+            parent=-1,
+            child=body_a,
+            parent_xform=wp.transform((1.0, -0.5, 0.25), wp.quat_identity()),
+            child_xform=wp.transform_identity(),
+        )
+        child_joint = builder.add_joint_fixed(
+            parent=body_b,
+            child=body_c,
+            parent_xform=wp.transform((0.0, 0.0, 0.75), wp.quat_identity()),
+            child_xform=wp.transform_identity(),
+        )
+        middle_joint = builder.add_joint_revolute(
+            parent=body_a,
+            child=body_b,
+            axis=(0.0, 1.0, 0.0),
+            parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
+            child_xform=wp.transform((0.0, 0.0, -0.25), wp.quat_identity()),
+        )
+        builder.add_articulation([root_joint, child_joint, middle_joint])
+
+        q_start = builder.joint_q_start[middle_joint]
+        qd_start = builder.joint_qd_start[middle_joint]
+        builder.joint_q[q_start] = 0.35
+        builder.joint_qd[qd_start] = -0.2
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        recovered_q = wp.zeros_like(model.joint_q)
+        recovered_qd = wp.zeros_like(model.joint_qd)
+        newton.eval_ik(model, state, recovered_q, recovered_qd)
+
+        assert_np_equal(recovered_q.numpy(), model.joint_q.numpy(), tol=1.0e-5)
+        assert_np_equal(recovered_qd.numpy(), model.joint_qd.numpy(), tol=1.0e-5)
+
     def test_mimic_constraint_programmatic(self):
         """Test programmatic creation of mimic constraints."""
         builder = newton.ModelBuilder()
