@@ -133,6 +133,145 @@ def test_fk_ik_with_analytical_solution(test, device):
         )
 
 
+def test_fk_descendant_linear_velocity_matches_finite_difference(test, device):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    link0 = builder.add_link()
+    link1 = builder.add_link()
+
+    builder.body_com[link0] = wp.vec3(0.35, 0.0, 0.0)
+    builder.body_com[link1] = wp.vec3(0.0, 0.0, 0.0)
+
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=link0,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    j1 = builder.add_joint_revolute(
+        parent=link0,
+        child=link1,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1])
+
+    model = builder.finalize(device=device)
+
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+
+    state = model.state()
+    q = state.joint_q.numpy()
+    qd = state.joint_qd.numpy()
+
+    q[q_start[0]] = 0.7
+    q[q_start[1]] = -0.35
+    qd[qd_start[0]] = 1.1
+    qd[qd_start[1]] = -0.45
+
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    dt = 1.0e-4
+    q_next = q.copy()
+    q_next[q_start[0]] += qd[qd_start[0]] * dt
+    q_next[q_start[1]] += qd[qd_start[1]] * dt
+
+    state_next = model.state()
+    state_next.joint_q.assign(q_next)
+    state_next.joint_qd.assign(qd)
+    newton.eval_fk(model, state_next.joint_q, state_next.joint_qd, state_next)
+
+    body_q = state.body_q.numpy().reshape(-1, 7)
+    body_q_next = state_next.body_q.numpy().reshape(-1, 7)
+    body_qd = state.body_qd.numpy().reshape(-1, 6)
+
+    tip_idx = link1
+    origin_vel_fd = (body_q_next[tip_idx, :3] - body_q[tip_idx, :3]) / dt
+    omega = body_qd[tip_idx, 3:6]
+    quat_xyzw = body_q[tip_idx, 3:7]
+    quat_wp = wp.quat(*quat_xyzw)
+    com_offset_world = np.array(wp.quat_rotate(quat_wp, builder.body_com[tip_idx]), dtype=np.float32)
+    origin_vel_from_body_qd = body_qd[tip_idx, :3] - np.cross(omega, com_offset_world)
+
+    # body_q is float32, so forward finite differences at small dt carry ~1e-3
+    # quantization error. This tolerance is still tight enough to catch the
+    # descendant velocity-propagation bug fixed for articulated chains.
+    assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
+
+
+def test_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test, device):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    base = builder.add_link()
+    slider = builder.add_link()
+
+    builder.body_com[base] = wp.vec3(0.2, 0.0, 0.0)
+    builder.body_com[slider] = wp.vec3(0.35, 0.0, -0.1)
+
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=base,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    j1 = builder.add_joint_prismatic(
+        parent=base,
+        child=slider,
+        axis=newton.Axis.X,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.4), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1])
+
+    model = builder.finalize(device=device)
+
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+
+    state = model.state()
+    q = state.joint_q.numpy()
+    qd = state.joint_qd.numpy()
+
+    q[q_start[0]] = 0.55
+    q[q_start[1]] = 0.8
+    qd[qd_start[0]] = 1.1
+    qd[qd_start[1]] = -0.35
+
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    dt = 1.0e-4
+    q_next = q.copy()
+    q_next[q_start[0]] += qd[qd_start[0]] * dt
+    q_next[q_start[1]] += qd[qd_start[1]] * dt
+
+    state_next = model.state()
+    state_next.joint_q.assign(q_next)
+    state_next.joint_qd.assign(qd)
+    newton.eval_fk(model, state_next.joint_q, state_next.joint_qd, state_next)
+
+    body_q = state.body_q.numpy().reshape(-1, 7)
+    body_q_next = state_next.body_q.numpy().reshape(-1, 7)
+    body_qd = state.body_qd.numpy().reshape(-1, 6)
+
+    tip_idx = slider
+    origin_vel_fd = (body_q_next[tip_idx, :3] - body_q[tip_idx, :3]) / dt
+    omega = body_qd[tip_idx, 3:6]
+    quat_xyzw = body_q[tip_idx, 3:7]
+    quat_wp = wp.quat(*quat_xyzw)
+    com_offset_world = np.array(wp.quat_rotate(quat_wp, builder.body_com[tip_idx]), dtype=np.float32)
+    origin_vel_from_body_qd = body_qd[tip_idx, :3] - np.cross(omega, com_offset_world)
+
+    assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
+
+
 def test_fk_with_indices(test, device):
     """Test eval_fk with articulation indices parameter"""
     builder = newton.ModelBuilder()
@@ -560,6 +699,18 @@ class TestSimKinematics(unittest.TestCase):
 add_function_test(TestSimKinematics, "test_fk_ik", test_fk_ik, devices=devices)
 add_function_test(
     TestSimKinematics, "test_fk_ik_with_analytical_solution", test_fk_ik_with_analytical_solution, devices=devices
+)
+add_function_test(
+    TestSimKinematics,
+    "test_fk_descendant_linear_velocity_matches_finite_difference",
+    test_fk_descendant_linear_velocity_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_fk_prismatic_descendant_linear_velocity_matches_finite_difference",
+    test_fk_prismatic_descendant_linear_velocity_matches_finite_difference,
+    devices=devices,
 )
 add_function_test(TestSimKinematics, "test_fk_with_indices", test_fk_with_indices, devices=devices)
 add_function_test(TestSimKinematics, "test_ik_with_indices", test_ik_with_indices, devices=devices)
