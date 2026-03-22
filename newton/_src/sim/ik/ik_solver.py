@@ -5,10 +5,12 @@
 
 from collections.abc import Sequence
 from enum import Enum
+from typing import Any
 
 import numpy as np
 import warp as wp
 
+from ..model import Model
 from .ik_common import IKJacobianType
 from .ik_lbfgs_optimizer import IKOptimizerLBFGS
 from .ik_lm_optimizer import IKOptimizerLM
@@ -222,7 +224,7 @@ class IKSolver:
 
     def __init__(
         self,
-        model,
+        model: Model,
         n_problems: int,
         objectives: Sequence[IKObjective],
         *,
@@ -241,10 +243,10 @@ class IKSolver:
         # L-BFGS parameters
         history_len: int = 10,
         h0_scale: float = 1.0,
-        line_search_alphas=None,
+        line_search_alphas: Sequence[float] | None = None,
         wolfe_c1: float = 1e-4,
         wolfe_c2: float = 0.9,
-    ):
+    ) -> None:
         if isinstance(optimizer, str):
             optimizer = IKOptimizer(optimizer)
         if isinstance(jacobian_mode, str):
@@ -325,7 +327,13 @@ class IKSolver:
 
         self.costs_expanded = self._impl.costs
 
-    def step(self, joint_q_in: wp.array2d, joint_q_out: wp.array2d, iterations=50, step_size=1.0):
+    def step(
+        self,
+        joint_q_in: wp.array2d(dtype=wp.float32),
+        joint_q_out: wp.array2d(dtype=wp.float32),
+        iterations: int = 50,
+        step_size: float = 1.0,
+    ) -> None:
         """Solve all base problems and write the best result for each one.
 
         Args:
@@ -375,7 +383,7 @@ class IKSolver:
             device=self.device,
         )
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset optimizer state, selected seeds, and the sampler RNG."""
         self._impl.reset()
         self.best_indices.zero_()
@@ -387,19 +395,19 @@ class IKSolver:
         )
 
     @property
-    def joint_q(self):
+    def joint_q(self) -> wp.array2d(dtype=wp.float32):
         """Expanded joint-coordinate buffer that stores all sampled seeds."""
         return self.joint_q_expanded
 
     @property
-    def costs(self):
+    def costs(self) -> wp.array(dtype=wp.float32):
         """Expanded per-seed objective costs from the most recent solve."""
         return self.costs_expanded
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self._impl, name)
 
-    def _sample(self, joint_q_in: wp.array2d):
+    def _sample(self, joint_q_in: wp.array2d(dtype=wp.float32)) -> None:
         wp.launch(
             _pull_seed,
             dim=1,

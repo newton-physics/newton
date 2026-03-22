@@ -5,13 +5,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import warp as wp
 
+from ..model import Model
 from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
+from .ik_objectives import IKObjective
 
 
 @wp.kernel
@@ -76,27 +79,27 @@ def _accumulate_gradients(
 
 @dataclass(slots=True)
 class BatchCtx:
-    joint_q: wp.array2d
-    residuals: wp.array2d
-    fk_body_q: wp.array2d
-    problem_idx: wp.array1d
+    joint_q: wp.array2d(dtype=wp.float32)
+    residuals: wp.array2d(dtype=wp.float32)
+    fk_body_q: wp.array2d(dtype=wp.transform)
+    problem_idx: wp.array(dtype=wp.int32)
 
     # AUTODIFF and MIXED
-    fk_body_qd: wp.array2d | None = None
-    dq_dof: wp.array2d | None = None
-    joint_q_proposed: wp.array2d | None = None
-    joint_qd: wp.array2d | None = None
+    fk_body_qd: wp.array2d(dtype=wp.spatial_vector) | None = None
+    dq_dof: wp.array2d(dtype=wp.float32) | None = None
+    joint_q_proposed: wp.array2d(dtype=wp.float32) | None = None
+    joint_qd: wp.array2d(dtype=wp.float32) | None = None
 
     # ANALYTIC and MIXED
-    jacobian_out: wp.array3d | None = None
-    motion_subspace: wp.array2d | None = None
-    fk_qd_zero: wp.array2d | None = None
-    fk_X_local: wp.array2d | None = None
+    jacobian_out: wp.array3d(dtype=wp.float32) | None = None
+    motion_subspace: wp.array2d(dtype=wp.spatial_vector) | None = None
+    fk_qd_zero: wp.array2d(dtype=wp.float32) | None = None
+    fk_X_local: wp.array2d(dtype=wp.transform) | None = None
 
     # MIXED-only helpers
-    gradient_tmp: wp.array2d | None = None
-    autodiff_mask: wp.array2d | None = None
-    autodiff_seed: wp.array2d | None = None
+    gradient_tmp: wp.array2d(dtype=wp.float32) | None = None
+    autodiff_mask: wp.array2d(dtype=wp.float32) | None = None
+    autodiff_seed: wp.array2d(dtype=wp.float32) | None = None
 
 
 class IKOptimizerLBFGS:
@@ -130,7 +133,14 @@ class IKOptimizerLBFGS:
     TILE_N_LINE_STEPS = None
     _cache: ClassVar[dict[tuple[int, int, int, int, str], type]] = {}
 
-    def __new__(cls, model, n_batch, objectives, *a, **kw):
+    def __new__(
+        cls,
+        model: Model,
+        n_batch: int,
+        objectives: Sequence[IKObjective],
+        *a: Any,
+        **kw: Any,
+    ) -> IKOptimizerLBFGS:
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         history_len = kw.get("history_len", 10)
@@ -148,18 +158,18 @@ class IKOptimizerLBFGS:
 
     def __init__(
         self,
-        model,
-        n_batch,
-        objectives,
-        jacobian_mode=IKJacobianType.AUTODIFF,
-        history_len=10,
-        h0_scale=1.0,
-        line_search_alphas=None,
-        wolfe_c1=1e-4,
-        wolfe_c2=0.9,
+        model: Model,
+        n_batch: int,
+        objectives: Sequence[IKObjective],
+        jacobian_mode: IKJacobianType = IKJacobianType.AUTODIFF,
+        history_len: int = 10,
+        h0_scale: float = 1.0,
+        line_search_alphas: Sequence[float] | None = None,
+        wolfe_c1: float = 1e-4,
+        wolfe_c2: float = 0.9,
         *,
-        problem_idx: wp.array | None = None,
-    ):
+        problem_idx: wp.array(dtype=wp.int32) | None = None,
+    ) -> None:
         if line_search_alphas is None:
             line_search_alphas = [0.1, 0.2, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0]
 
@@ -220,7 +230,7 @@ class IKOptimizerLBFGS:
         self._init_objectives()
         self._init_cuda_streams()
 
-    def _alloc_solver_buffers(self, grad: bool):
+    def _alloc_solver_buffers(self, grad: bool) -> None:
         device = self.device
         model = self.model
 
@@ -257,7 +267,7 @@ class IKOptimizerLBFGS:
         else:
             self.joint_S_s = None
 
-    def _alloc_line_search_buffers(self, grad: bool, line_search_alphas):
+    def _alloc_line_search_buffers(self, grad: bool, line_search_alphas: Sequence[float]) -> None:
         device = self.device
         model = self.model
 
@@ -334,7 +344,7 @@ class IKOptimizerLBFGS:
         else:
             self.cand_qd_zero = None
 
-    def _alloc_line_search_analytic_buffers(self):
+    def _alloc_line_search_analytic_buffers(self) -> None:
         device = self.device
 
         if self.n_line_search > 0:
@@ -364,7 +374,7 @@ class IKOptimizerLBFGS:
         else:
             self.cand_X_local = None
 
-    def _alloc_mixed_buffers(self):
+    def _alloc_mixed_buffers(self) -> None:
         device = self.device
 
         self.gradient_tmp = wp.zeros((self.n_batch, self.n_dofs), dtype=wp.float32, device=device)
@@ -405,14 +415,19 @@ class IKOptimizerLBFGS:
             self.autodiff_residual_mask_candidates = None
             self.candidate_autodiff_residual_grads = None
 
-    def _build_residual_offsets(self):
+    def _build_residual_offsets(self) -> None:
         self.residual_offsets = []
         off = 0
         for obj in self.objectives:
             self.residual_offsets.append(off)
             off += obj.residual_dim()
 
-    def _ctx_solver(self, joint_q, *, residuals=None) -> BatchCtx:
+    def _ctx_solver(
+        self,
+        joint_q: wp.array2d(dtype=wp.float32),
+        *,
+        residuals: wp.array2d(dtype=wp.float32) | None = None,
+    ) -> BatchCtx:
         """Build a context for operations on the solver batch."""
         ctx = BatchCtx(
             joint_q=joint_q,
@@ -552,7 +567,7 @@ class IKOptimizerLBFGS:
             joined = ", ".join(missing)
             raise RuntimeError(f"{label} context missing required buffers: {joined}")
 
-    def _gradient_at(self, ctx: BatchCtx, out_grad: wp.array2d):
+    def _gradient_at(self, ctx: BatchCtx, out_grad: wp.array2d(dtype=wp.float32)) -> None:
         mode = self.jacobian_mode
 
         if mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED):
@@ -563,7 +578,7 @@ class IKOptimizerLBFGS:
         elif mode == IKJacobianType.MIXED and self.has_analytic_objective:
             self._grad_analytic(ctx, out_grad, accumulate=True)
 
-    def _grad_autodiff(self, ctx: BatchCtx, out_grad: wp.array2d):
+    def _grad_autodiff(self, ctx: BatchCtx, out_grad: wp.array2d(dtype=wp.float32)) -> None:
         batch = ctx.joint_q.shape[0]
 
         self.tape.reset()
@@ -607,7 +622,13 @@ class IKOptimizerLBFGS:
         wp.copy(out_grad, self.tape.gradients[ctx.dq_dof])
         self.tape.zero()
 
-    def _grad_analytic(self, ctx: BatchCtx, out_grad: wp.array2d, *, accumulate: bool):
+    def _grad_analytic(
+        self,
+        ctx: BatchCtx,
+        out_grad: wp.array2d(dtype=wp.float32),
+        *,
+        accumulate: bool,
+    ) -> None:
         if not accumulate:
             self._residuals_analytic(ctx)
 
@@ -656,7 +677,7 @@ class IKOptimizerLBFGS:
                 device=self.device,
             )
 
-    def _for_objectives_residuals(self, ctx: BatchCtx):
+    def _for_objectives_residuals(self, ctx: BatchCtx) -> None:
         def _do(obj, offset, body_q_view, joint_q_view, model, output_residuals, base_idx_array):
             obj.compute_residuals(
                 body_q_view,
@@ -676,7 +697,7 @@ class IKOptimizerLBFGS:
             ctx.problem_idx,
         )
 
-    def _residuals_autodiff(self, ctx: BatchCtx):
+    def _residuals_autodiff(self, ctx: BatchCtx) -> None:
         eval_fk_batched(
             self.model,
             ctx.joint_q,
@@ -688,7 +709,7 @@ class IKOptimizerLBFGS:
         ctx.residuals.zero_()
         self._for_objectives_residuals(ctx)
 
-    def _residuals_analytic(self, ctx: BatchCtx):
+    def _residuals_analytic(self, ctx: BatchCtx) -> None:
         self._fk_two_pass(
             self.model,
             ctx.joint_q,
@@ -700,7 +721,7 @@ class IKOptimizerLBFGS:
         ctx.residuals.zero_()
         self._for_objectives_residuals(ctx)
 
-    def _init_objectives(self):
+    def _init_objectives(self) -> None:
         """Allocate any per-objective buffers that must live on `self.device`."""
         for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
             obj.set_batch_layout(self.n_residuals, offset, self.n_batch)
@@ -711,7 +732,7 @@ class IKOptimizerLBFGS:
                 mode = self.jacobian_mode
             obj.init_buffers(model=self.model, jacobian_mode=mode)
 
-    def _init_cuda_streams(self):
+    def _init_cuda_streams(self) -> None:
         """Allocate per-objective Warp streams and sync events."""
         self.objective_streams = []
         self.sync_events = []
@@ -726,7 +747,7 @@ class IKOptimizerLBFGS:
             self.objective_streams = [None] * len(self.objectives)
             self.sync_events = [None] * len(self.objectives)
 
-    def _parallel_for_objectives(self, fn, *extra):
+    def _parallel_for_objectives(self, fn: Callable[..., None], *extra: Any) -> None:
         """Run <fn(obj, offset, *extra)> across objectives on parallel CUDA streams."""
         if self.device.is_cuda:
             main = wp.get_stream(self.device)
@@ -744,7 +765,12 @@ class IKOptimizerLBFGS:
             for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
                 fn(obj, offset, *extra)
 
-    def step(self, joint_q_in, joint_q_out, iterations=50):
+    def step(
+        self,
+        joint_q_in: wp.array2d(dtype=wp.float32),
+        joint_q_out: wp.array2d(dtype=wp.float32),
+        iterations: int = 50,
+    ) -> None:
         """Run several L-BFGS iterations on a batch of joint configurations.
 
         Args:
@@ -767,7 +793,7 @@ class IKOptimizerLBFGS:
         for i in range(iterations):
             self._step(joint_q, iteration=i)
 
-    def reset(self):
+    def reset(self) -> None:
         """Clear L-BFGS history and cached line-search state."""
         self.history_count.zero_()
         self.history_start.zero_()
@@ -784,7 +810,7 @@ class IKOptimizerLBFGS:
         if self.cand_step_dq is not None:
             self.cand_step_dq.zero_()
 
-    def compute_costs(self, joint_q):
+    def compute_costs(self, joint_q: wp.array2d(dtype=wp.float32)) -> wp.array(dtype=wp.float32):
         """Evaluate squared residual costs for a batch of joint configurations.
 
         Args:
@@ -804,7 +830,11 @@ class IKOptimizerLBFGS:
         )
         return self.costs
 
-    def _compute_residuals(self, joint_q, residuals_out=None):
+    def _compute_residuals(
+        self,
+        joint_q: wp.array2d(dtype=wp.float32),
+        residuals_out: wp.array2d(dtype=wp.float32) | None = None,
+    ) -> wp.array2d(dtype=wp.float32):
         residuals = residuals_out if residuals_out is not None else self.residuals
         ctx = self._ctx_solver(joint_q, residuals=residuals)
 
@@ -815,7 +845,13 @@ class IKOptimizerLBFGS:
 
         return ctx.residuals
 
-    def _compute_motion_subspace(self, *, body_q, joint_S_s_out, joint_qd_in):
+    def _compute_motion_subspace(
+        self,
+        *,
+        body_q: wp.array2d(dtype=wp.transform),
+        joint_S_s_out: wp.array2d(dtype=wp.spatial_vector),
+        joint_qd_in: wp.array2d(dtype=wp.float32),
+    ) -> None:
         n_joints = self.model.joint_count
         batch = body_q.shape[0]
         wp.launch(
@@ -839,13 +875,13 @@ class IKOptimizerLBFGS:
 
     def _integrate_dq(
         self,
-        joint_q,
+        joint_q: wp.array2d(dtype=wp.float32),
         *,
-        dq_in,
-        joint_q_out,
-        joint_qd_out,
-        step_size=1.0,
-    ):
+        dq_in: wp.array2d(dtype=wp.float32),
+        joint_q_out: wp.array2d(dtype=wp.float32),
+        joint_qd_out: wp.array2d(dtype=wp.float32),
+        step_size: float = 1.0,
+    ) -> None:
         batch = joint_q.shape[0]
 
         wp.launch(
@@ -869,7 +905,7 @@ class IKOptimizerLBFGS:
         )
         joint_qd_out.zero_()
 
-    def _step(self, joint_q, iteration=0):
+    def _step(self, joint_q: wp.array2d(dtype=wp.float32), iteration: int = 0) -> None:
         """Execute one L-BFGS iteration."""
         self.compute_costs(joint_q)
 
@@ -904,7 +940,7 @@ class IKOptimizerLBFGS:
         self._line_search(joint_q)
         self._line_search_select_best(joint_q)
 
-    def _compute_initial_slope(self):
+    def _compute_initial_slope(self) -> None:
         """Compute and store dot(gradient, search_direction) for the current state."""
         wp.launch_tiled(
             self._compute_slope_tiled,
@@ -915,7 +951,7 @@ class IKOptimizerLBFGS:
             device=self.device,
         )
 
-    def _compute_search_direction(self):
+    def _compute_search_direction(self) -> None:
         """Compute L-BFGS search direction using two-loop recursion."""
         wp.launch_tiled(
             self._compute_search_direction_tiled,
@@ -937,7 +973,7 @@ class IKOptimizerLBFGS:
             device=self.device,
         )
 
-    def _update_history(self):
+    def _update_history(self) -> None:
         """Update L-BFGS history with new s_k and y_k pairs."""
         # if self.device.is_cuda:
         wp.launch_tiled(
@@ -960,7 +996,7 @@ class IKOptimizerLBFGS:
             device=self.device,
         )
 
-    def _line_search(self, joint_q):
+    def _line_search(self, joint_q: wp.array2d(dtype=wp.float32)) -> None:
         """
         Generate candidate configurations and compute their costs and gradients
         to check the Wolfe conditions.
@@ -1022,7 +1058,7 @@ class IKOptimizerLBFGS:
             device=self.device,
         )
 
-    def _line_search_select_best(self, joint_q):
+    def _line_search_select_best(self, joint_q: wp.array2d(dtype=wp.float32)) -> None:
         """Select the best step size based on Wolfe conditions and update joint_q."""
         if self.n_line_search == 0:
             return
@@ -1059,7 +1095,7 @@ class IKOptimizerLBFGS:
         )
 
     @classmethod
-    def _build_specialized(cls, key):
+    def _build_specialized(cls, key: tuple[int, int, int, int, str]) -> type[IKOptimizerLBFGS]:
         """Build a specialized IKOptimizerLBFGS subclass with tiled kernels for given dimensions."""
         C, R, M_HIST, N_LINE_SEARCH, _ARCH = key
 
