@@ -723,6 +723,7 @@ class HydroelasticContactReduction:
                 grid_size,
             ],
             device=self.device,
+            record_tape=False,
         )
 
     def export(
@@ -764,6 +765,7 @@ class HydroelasticContactReduction:
                 grid_size,
             ],
             device=self.device,
+            record_tape=False,
         )
 
     def reduce_and_export(

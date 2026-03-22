@@ -791,6 +791,7 @@ def scan_with_total(
         dim=[1],
         inputs=[counts, prefix_sums, num_elements, counts.shape[0], total],
         device=counts.device,
+        record_tape=False,
     )
 
 

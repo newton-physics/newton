@@ -63,7 +63,7 @@ vec8f = wp.types.vector(length=8, dtype=wp.float32)
 PRE_PRUNE_MAX_PENETRATING = 2
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def map_shape_texture_sdf_data_kernel(
     sdf_data: wp.array(dtype=TextureSDFData),
     shape_sdf_index: wp.array(dtype=wp.int32),
@@ -535,6 +535,9 @@ class HydroelasticSDF:
     ) -> None:
         """Run the full hydroelastic collision pipeline.
 
+        All internal kernel launches use ``record_tape=False`` so that this
+        method is safe to call inside a :class:`warp.Tape` context.
+
         Args:
             texture_sdf_data: Compact texture SDF table.
             shape_sdf_index: Per-shape SDF index into texture_sdf_data.
@@ -554,6 +557,7 @@ class HydroelasticSDF:
             inputs=[texture_sdf_data, shape_sdf_index],
             outputs=[shape_sdf_data],
             device=self.device,
+            record_tape=False,
         )
 
         self._broadphase_sdfs(
@@ -604,6 +608,7 @@ class HydroelasticSDF:
                 self.contact_reduction.reducer.ht_insert_failures,
             ],
             device=self.device,
+            record_tape=False,
         )
 
         # Poll infrequently to avoid per-step host sync overhead while still surfacing
@@ -644,6 +649,7 @@ class HydroelasticSDF:
                 self.num_blocks_per_pair,
             ],
             device=self.device,
+            record_tape=False,
         )
 
         scan_with_total(
@@ -670,6 +676,7 @@ class HydroelasticSDF:
                 self.block_broad_idx,
             ],
             device=self.device,
+            record_tape=False,
         )
 
         wp.launch(
@@ -686,6 +693,7 @@ class HydroelasticSDF:
                 self.block_broad_collide_coords,
             ],
             device=self.device,
+            record_tape=False,
         )
 
     def _find_iso_voxels(
@@ -719,6 +727,7 @@ class HydroelasticSDF:
                     self.iso_subblock_idx_scratch[i],
                 ],
                 device=self.device,
+                record_tape=False,
             )
 
             scan_with_total(
@@ -747,6 +756,7 @@ class HydroelasticSDF:
                     self.iso_buffer_shape_pairs[i + 1],
                 ],
                 device=self.device,
+                record_tape=False,
             )
 
     def _generate_contacts(
@@ -802,6 +812,7 @@ class HydroelasticSDF:
                 self.iso_vertex_shape_pair,
             ],
             device=self.device,
+            record_tape=False,
         )
 
     def _decode_contacts(
@@ -832,6 +843,7 @@ class HydroelasticSDF:
             ],
             outputs=[writer_data],
             device=self.device,
+            record_tape=False,
         )
 
     def _reduce_decode_contacts(

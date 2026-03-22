@@ -12,6 +12,10 @@ from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
 from ..geometry.contact_data import ContactData
+from ..geometry.differentiable_contacts import (
+    launch_differentiable_contact_augment,
+    launch_differentiable_contact_augment_rotation_invariant,
+)
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
@@ -137,7 +141,7 @@ def write_contact(
         writer_data.out_friction[index] = contact_data.contact_friction_scale
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def compute_shape_aabbs(
     body_q: wp.array(dtype=wp.transform),
     shape_transform: wp.array(dtype=wp.transform),
@@ -209,7 +213,7 @@ def compute_shape_aabbs(
         aabb_upper[shape_id] = aabb_max_world + margin_vec
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def prepare_geom_data_kernel(
     shape_transform: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
@@ -385,6 +389,7 @@ class CollisionPipeline:
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         requires_grad: bool | None = None,
+        enable_contact_normal_gradients: bool = True,
         broad_phase: Literal["nxn", "sap", "explicit"]
         | BroadPhaseAllPairs
         | BroadPhaseSAP
@@ -413,6 +418,11 @@ class CollisionPipeline:
                 If None, computed as shape_count * particle_count.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
             requires_grad: Whether to enable gradient computation. If None, uses model.requires_grad.
+            enable_contact_normal_gradients: When ``True`` (and ``requires_grad``
+                is also ``True``), use the rotation-invariant augmentation that
+                makes contact normals differentiable with respect to body
+                orientations.  Slightly more expensive than the default mode
+                which only provides gradients through contact points and distance.
             broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
                 a prebuilt broad phase instance for expert usage.
@@ -463,6 +473,7 @@ class CollisionPipeline:
         self.device = device
         self.reduce_contacts = reduce_contacts
         self.requires_grad = requires_grad
+        self.enable_contact_normal_gradients = enable_contact_normal_gradients
         self.soft_contact_margin = soft_contact_margin
 
         using_expert_components = broad_phase_instance is not None or narrow_phase is not None
@@ -669,14 +680,25 @@ class CollisionPipeline:
         *,
         soft_contact_margin: float | None = None,
     ):
-        """
-        Run the collision pipeline using NarrowPhase.
+        """Run the collision pipeline using NarrowPhase.
+
+        Safe to call inside a :class:`wp.Tape` context.  The non-differentiable
+        broad-phase and narrow-phase kernels are launched with tape recording
+        hardcode ``record_tape=False`` internally.  The differentiable kernels
+        (soft-contact generation and rigid-contact augmentation) are recorded on
+        the tape so that gradients flow through ``state.body_q`` and
+        ``state.particle_q``.
+
+        When ``requires_grad=True``, the differentiable rigid-contact arrays
+        (``contacts.rigid_contact_diff_*``) are populated by a lightweight
+        augmentation kernel that reconstructs world-space contact points from
+        the frozen narrow-phase output through the body transforms.
 
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
-            soft_contact_margin: Margin for soft contact generation. If None, uses the value from construction.
-
+            soft_contact_margin: Margin for soft contact generation.
+                If ``None``, uses the value from construction.
         """
 
         contacts.clear()
@@ -689,135 +711,158 @@ class CollisionPipeline:
         # update any additional parameters
         soft_contact_margin = soft_contact_margin if soft_contact_margin is not None else self.soft_contact_margin
 
-        # When requires_grad, skip rigid contact path so the tape does not record narrow phase
-        # kernels (they have enable_backward=False). Only soft contacts are differentiable.
-        if not self.requires_grad:
-            # Compute AABBs for all shapes (already expanded by per-shape effective gaps)
-            wp.launch(
-                kernel=compute_shape_aabbs,
-                dim=model.shape_count,
-                inputs=[
-                    state.body_q,
-                    model.shape_transform,
-                    model.shape_body,
-                    model.shape_type,
-                    model.shape_scale,
-                    model.shape_collision_radius,
-                    model.shape_source_ptr,
-                    model.shape_margin,
-                    model.shape_gap,
-                ],
-                outputs=[
-                    self.narrow_phase.shape_aabb_lower,
-                    self.narrow_phase.shape_aabb_upper,
-                ],
+        # Rigid contact detection -- broad phase + narrow phase.
+        # These kernels hardcode record_tape=False internally so they are
+        # never captured on an active wp.Tape.  The differentiable
+        # augmentation and soft-contact kernels that follow are tape-safe
+        # and recorded normally.
+
+        # Compute AABBs for all shapes (already expanded by per-shape effective gaps)
+        wp.launch(
+            kernel=compute_shape_aabbs,
+            dim=model.shape_count,
+            inputs=[
+                state.body_q,
+                model.shape_transform,
+                model.shape_body,
+                model.shape_type,
+                model.shape_scale,
+                model.shape_collision_radius,
+                model.shape_source_ptr,
+                model.shape_margin,
+                model.shape_gap,
+            ],
+            outputs=[
+                self.narrow_phase.shape_aabb_lower,
+                self.narrow_phase.shape_aabb_upper,
+            ],
+            device=self.device,
+            record_tape=False,
+        )
+
+        # Run broad phase (AABBs are already expanded by effective gaps, so pass None)
+        if isinstance(self.broad_phase, BroadPhaseAllPairs):
+            self.broad_phase.launch(
+                self.narrow_phase.shape_aabb_lower,
+                self.narrow_phase.shape_aabb_upper,
+                None,  # AABBs are pre-expanded, no additional margin needed
+                model.shape_collision_group,
+                model.shape_world,
+                model.shape_count,
+                self.broad_phase_shape_pairs,
+                self.broad_phase_pair_count,
+                device=self.device,
+                filter_pairs=self.shape_pairs_excluded,
+                num_filter_pairs=self.shape_pairs_excluded_count,
+            )
+        elif isinstance(self.broad_phase, BroadPhaseSAP):
+            self.broad_phase.launch(
+                self.narrow_phase.shape_aabb_lower,
+                self.narrow_phase.shape_aabb_upper,
+                None,  # AABBs are pre-expanded, no additional margin needed
+                model.shape_collision_group,
+                model.shape_world,
+                model.shape_count,
+                self.broad_phase_shape_pairs,
+                self.broad_phase_pair_count,
+                device=self.device,
+                filter_pairs=self.shape_pairs_excluded,
+                num_filter_pairs=self.shape_pairs_excluded_count,
+            )
+        else:  # BroadPhaseExplicit
+            self.broad_phase.launch(
+                self.narrow_phase.shape_aabb_lower,
+                self.narrow_phase.shape_aabb_upper,
+                None,  # AABBs are pre-expanded, no additional margin needed
+                self.shape_pairs_filtered,
+                len(self.shape_pairs_filtered),
+                self.broad_phase_shape_pairs,
+                self.broad_phase_pair_count,
                 device=self.device,
             )
 
-            # Run broad phase (AABBs are already expanded by effective gaps, so pass None)
-            if isinstance(self.broad_phase, BroadPhaseAllPairs):
-                self.broad_phase.launch(
-                    self.narrow_phase.shape_aabb_lower,
-                    self.narrow_phase.shape_aabb_upper,
-                    None,  # AABBs are pre-expanded, no additional margin needed
-                    model.shape_collision_group,
-                    model.shape_world,
-                    model.shape_count,
-                    self.broad_phase_shape_pairs,
-                    self.broad_phase_pair_count,
+        # Prepare geometry data arrays for NarrowPhase API
+        wp.launch(
+            kernel=prepare_geom_data_kernel,
+            dim=model.shape_count,
+            inputs=[
+                model.shape_transform,
+                model.shape_body,
+                model.shape_type,
+                model.shape_scale,
+                model.shape_margin,
+                state.body_q,
+            ],
+            outputs=[
+                self.geom_data,
+                self.geom_transform,
+            ],
+            device=self.device,
+            record_tape=False,
+        )
+
+        # Create ContactWriterData struct for custom contact writing
+        writer_data = ContactWriterData()
+        writer_data.contact_max = contacts.rigid_contact_max
+        writer_data.body_q = state.body_q
+        writer_data.shape_body = model.shape_body
+        writer_data.shape_gap = model.shape_gap
+        writer_data.contact_count = contacts.rigid_contact_count
+        writer_data.out_shape0 = contacts.rigid_contact_shape0
+        writer_data.out_shape1 = contacts.rigid_contact_shape1
+        writer_data.out_point0 = contacts.rigid_contact_point0
+        writer_data.out_point1 = contacts.rigid_contact_point1
+        writer_data.out_offset0 = contacts.rigid_contact_offset0
+        writer_data.out_offset1 = contacts.rigid_contact_offset1
+        writer_data.out_normal = contacts.rigid_contact_normal
+        writer_data.out_margin0 = contacts.rigid_contact_margin0
+        writer_data.out_margin1 = contacts.rigid_contact_margin1
+        writer_data.out_tids = contacts.rigid_contact_tids
+
+        writer_data.out_stiffness = contacts.rigid_contact_stiffness
+        writer_data.out_damping = contacts.rigid_contact_damping
+        writer_data.out_friction = contacts.rigid_contact_friction
+
+        # Run narrow phase with custom contact writer (writes directly to Contacts format)
+        self.narrow_phase.launch_custom_write(
+            candidate_pair=self.broad_phase_shape_pairs,
+            candidate_pair_count=self.broad_phase_pair_count,
+            shape_types=model.shape_type,
+            shape_data=self.geom_data,
+            shape_transform=self.geom_transform,
+            shape_source=model.shape_source_ptr,
+            shape_sdf_index=model.shape_sdf_index,
+            texture_sdf_data=model.texture_sdf_data,
+            shape_gap=model.shape_gap,
+            shape_collision_radius=model.shape_collision_radius,
+            shape_flags=model.shape_flags,
+            shape_collision_aabb_lower=model.shape_collision_aabb_lower,
+            shape_collision_aabb_upper=model.shape_collision_aabb_upper,
+            shape_voxel_resolution=self.narrow_phase.shape_voxel_resolution,
+            shape_heightfield_index=model.shape_heightfield_index,
+            heightfield_data=model.heightfield_data,
+            heightfield_elevations=model.heightfield_elevations,
+            writer_data=writer_data,
+            device=self.device,
+        )
+
+        # Differentiable contact augmentation: reconstruct world-space contact
+        # quantities through body_q so that gradients flow via wp.Tape.
+        if self.requires_grad and contacts.rigid_contact_diff_distance is not None:
+            if self.enable_contact_normal_gradients:
+                launch_differentiable_contact_augment_rotation_invariant(
+                    contacts=contacts,
+                    body_q=state.body_q,
+                    shape_body=model.shape_body,
                     device=self.device,
-                    filter_pairs=self.shape_pairs_excluded,
-                    num_filter_pairs=self.shape_pairs_excluded_count,
                 )
-            elif isinstance(self.broad_phase, BroadPhaseSAP):
-                self.broad_phase.launch(
-                    self.narrow_phase.shape_aabb_lower,
-                    self.narrow_phase.shape_aabb_upper,
-                    None,  # AABBs are pre-expanded, no additional margin needed
-                    model.shape_collision_group,
-                    model.shape_world,
-                    model.shape_count,
-                    self.broad_phase_shape_pairs,
-                    self.broad_phase_pair_count,
-                    device=self.device,
-                    filter_pairs=self.shape_pairs_excluded,
-                    num_filter_pairs=self.shape_pairs_excluded_count,
-                )
-            else:  # BroadPhaseExplicit
-                self.broad_phase.launch(
-                    self.narrow_phase.shape_aabb_lower,
-                    self.narrow_phase.shape_aabb_upper,
-                    None,  # AABBs are pre-expanded, no additional margin needed
-                    self.shape_pairs_filtered,
-                    len(self.shape_pairs_filtered),
-                    self.broad_phase_shape_pairs,
-                    self.broad_phase_pair_count,
+            else:
+                launch_differentiable_contact_augment(
+                    contacts=contacts,
+                    body_q=state.body_q,
+                    shape_body=model.shape_body,
                     device=self.device,
                 )
-
-            # Prepare geometry data arrays for NarrowPhase API
-            wp.launch(
-                kernel=prepare_geom_data_kernel,
-                dim=model.shape_count,
-                inputs=[
-                    model.shape_transform,
-                    model.shape_body,
-                    model.shape_type,
-                    model.shape_scale,
-                    model.shape_margin,
-                    state.body_q,
-                ],
-                outputs=[
-                    self.geom_data,
-                    self.geom_transform,
-                ],
-                device=self.device,
-            )
-
-            # Create ContactWriterData struct for custom contact writing
-            writer_data = ContactWriterData()
-            writer_data.contact_max = contacts.rigid_contact_max
-            writer_data.body_q = state.body_q
-            writer_data.shape_body = model.shape_body
-            writer_data.shape_gap = model.shape_gap
-            writer_data.contact_count = contacts.rigid_contact_count
-            writer_data.out_shape0 = contacts.rigid_contact_shape0
-            writer_data.out_shape1 = contacts.rigid_contact_shape1
-            writer_data.out_point0 = contacts.rigid_contact_point0
-            writer_data.out_point1 = contacts.rigid_contact_point1
-            writer_data.out_offset0 = contacts.rigid_contact_offset0
-            writer_data.out_offset1 = contacts.rigid_contact_offset1
-            writer_data.out_normal = contacts.rigid_contact_normal
-            writer_data.out_margin0 = contacts.rigid_contact_margin0
-            writer_data.out_margin1 = contacts.rigid_contact_margin1
-            writer_data.out_tids = contacts.rigid_contact_tids
-
-            writer_data.out_stiffness = contacts.rigid_contact_stiffness
-            writer_data.out_damping = contacts.rigid_contact_damping
-            writer_data.out_friction = contacts.rigid_contact_friction
-
-            # Run narrow phase with custom contact writer (writes directly to Contacts format)
-            self.narrow_phase.launch_custom_write(
-                candidate_pair=self.broad_phase_shape_pairs,
-                candidate_pair_count=self.broad_phase_pair_count,
-                shape_types=model.shape_type,
-                shape_data=self.geom_data,
-                shape_transform=self.geom_transform,
-                shape_source=model.shape_source_ptr,
-                shape_sdf_index=model.shape_sdf_index,
-                texture_sdf_data=model.texture_sdf_data,
-                shape_gap=model.shape_gap,
-                shape_collision_radius=model.shape_collision_radius,
-                shape_flags=model.shape_flags,
-                shape_collision_aabb_lower=model.shape_collision_aabb_lower,
-                shape_collision_aabb_upper=model.shape_collision_aabb_upper,
-                shape_voxel_resolution=self.narrow_phase.shape_voxel_resolution,
-                shape_heightfield_index=model.shape_heightfield_index,
-                heightfield_data=model.heightfield_data,
-                heightfield_elevations=model.heightfield_elevations,
-                writer_data=writer_data,
-                device=self.device,
-            )
 
         # Generate soft contacts for particles and shapes
         particle_count = len(state.particle_q) if state.particle_q else 0
