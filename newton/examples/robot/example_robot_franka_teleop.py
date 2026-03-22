@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
@@ -633,7 +633,12 @@ class Example:
     # ----- Test ----------------------------------------------------------
 
     def test_final(self) -> None:
-        pass
+        joint_q = self.state_0.joint_q.numpy()
+        joint_qd = self.state_0.joint_qd.numpy()
+        assert np.all(np.isfinite(joint_q)), "joint_q contains non-finite values"
+        assert np.all(np.isfinite(joint_qd)), "joint_qd contains non-finite values"
+        cube_center = self.get_cube_center()
+        assert np.all(np.isfinite(cube_center)), "cube pose contains non-finite values"
 
     @staticmethod
     def create_parser():
