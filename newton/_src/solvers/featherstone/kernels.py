@@ -8,8 +8,10 @@ import warp as wp
 from ...math import transform_twist
 from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
+    com_twist_to_point_velocity,
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
+    origin_twist_to_com_twist,
 )
 from ..semi_implicit.kernels_body import joint_force
 
@@ -1466,20 +1468,6 @@ def eval_single_articulation_fk_with_velocity_conversion(
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
 
-        # parent anchor frame in world space
-        X_wpj = X_pj
-        # velocity of parent anchor point in world space
-        v_wpj = wp.spatial_vector()
-        if parent >= 0:
-            X_wp = body_q[parent]
-            X_wpj = X_wp * X_wpj
-            r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
-
-            v_wp = body_qd[parent]
-            w_p = wp.spatial_bottom(v_wp)
-            v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
-            v_wpj = wp.spatial_vector(v_p, w_p)
-
         q_start = joint_q_start[i]
         qd_start = joint_qd_start[i]
         lin_axis_count = joint_dof_dim[i, 0]
@@ -1581,30 +1569,35 @@ def eval_single_articulation_fk_with_velocity_conversion(
             X_j = wp.transform(pos, rot)
             v_j = wp.spatial_vector(vel_v, vel_w)
 
+        # transform from world to parent joint anchor frame
+        X_wpj = X_pj
+        if parent >= 0:
+            X_wp = body_q[parent]
+            X_wpj = X_wp * X_wpj
+
         # transform from world to joint anchor frame at child body
         X_wcj = X_wpj * X_j
         # transform from world to child body frame
         X_wc = X_wcj * wp.transform_inverse(X_cj)
 
-        # transform velocity across the joint to world space
-        linear_vel = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
-        angular_vel = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+        v_parent_origin = wp.vec3()
+        w_parent = wp.vec3()
+        if parent >= 0:
+            v_wp = body_qd[parent]
+            w_parent = wp.spatial_bottom(v_wp)
+            v_parent_origin = com_twist_to_point_velocity(
+                X_wp, body_com[parent], v_wp, wp.transform_get_translation(X_wc)
+            )
 
-        v_wc = v_wpj + wp.spatial_vector(linear_vel, angular_vel)
+        linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+        angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+        child_origin_offset_world = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wcj)
+        linear_joint_origin = linear_joint_anchor + wp.cross(angular_joint_world, child_origin_offset_world)
+
+        v_wc = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
 
         body_q[child] = X_wc
-
-        # Velocity conversion for FREE and DISTANCE joints:
-        # v_wc is a spatial twist at the origin, but body_qd should store COM velocity
-        # Transform: v_com = v_origin + ω x r_com
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            v_origin = wp.spatial_top(v_wc)
-            omega = wp.spatial_bottom(v_wc)
-            r_com = wp.transform_point(X_wc, body_com[child])
-            v_com = v_origin + wp.cross(omega, r_com)
-            body_qd[child] = wp.spatial_vector(v_com, omega)
-        else:
-            body_qd[child] = v_wc
+        body_qd[child] = origin_twist_to_com_twist(X_wc, body_com[child], v_wc)
 
 
 @wp.kernel
