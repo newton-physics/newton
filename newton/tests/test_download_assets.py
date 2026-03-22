@@ -24,6 +24,7 @@ from newton._src.utils.download_assets import (
     _cleanup_stale_temp_dirs,
     _find_cached_version,
     _find_parent_cache,
+    _get_latest_commit_via_git,
     _safe_rename,
     _safe_rmtree,
     _temp_cache_path,
@@ -170,6 +171,15 @@ class TestDownloadAssets(unittest.TestCase):
         with mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", return_value=None):
             with self.assertRaises(RuntimeError):
                 download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+
+    def test_download_by_tag(self):
+        """Downloading by tag name resolves correctly."""
+        self.work.create_tag("v1.0", message="release v1.0")
+        self.work.git.push("origin", "v1.0")
+
+        p = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="v1.0")
+        self.assertTrue(p.exists())
+        self.assertEqual((p / "foo.txt").read_text(encoding="utf-8"), "v1\n")
 
 
 class TestSafeRename(unittest.TestCase):
@@ -407,6 +417,60 @@ class TestFindParentCache(unittest.TestCase):
     def test_returns_none_for_single_path(self):
         """Single-segment paths have no parent to check."""
         result = _find_parent_cache(self.cache_path, "repo", "unitree_g1", "main", "http://example.git")
+        self.assertIsNone(result)
+
+
+@unittest.skipIf(git is None or shutil.which("git") is None, "GitPython or git not available")
+class TestGetLatestCommitViaGit(unittest.TestCase):
+    def setUp(self):
+        self.remote_dir = tempfile.mkdtemp(prefix="nwtn_remote_")
+        self.work_dir = tempfile.mkdtemp(prefix="nwtn_work_")
+
+        self.remote = git.Repo.init(self.remote_dir, bare=True)
+        self.work = git.Repo.init(self.work_dir)
+        with self.work.config_writer() as cw:
+            cw.set_value("user", "name", "Newton CI")
+            cw.set_value("user", "email", "ci@newton.dev")
+
+        (Path(self.work_dir) / "file.txt").write_text("v1\n", encoding="utf-8")
+        self.work.index.add(["file.txt"])
+        self.work.index.commit("initial")
+        self.work.create_remote("origin", self.remote_dir)
+        self.work.git.branch("-M", "main")
+        self.work.git.push("--set-upstream", "origin", "main")
+        self.commit_sha = self.work.head.commit.hexsha
+
+    def tearDown(self):
+        try:
+            self.work.close()
+        except Exception:
+            pass
+        _safe_rmtree(self.work_dir)
+        _safe_rmtree(self.remote_dir)
+
+    def test_resolves_branch(self):
+        result = _get_latest_commit_via_git(self.remote_dir, "main")
+        self.assertEqual(result, self.commit_sha)
+
+    def test_resolves_lightweight_tag(self):
+        self.work.create_tag("v1.0")
+        self.work.git.push("origin", "v1.0")
+        result = _get_latest_commit_via_git(self.remote_dir, "v1.0")
+        self.assertEqual(result, self.commit_sha)
+
+    def test_resolves_annotated_tag(self):
+        self.work.create_tag("v2.0", message="release v2.0")
+        self.work.git.push("origin", "v2.0")
+        result = _get_latest_commit_via_git(self.remote_dir, "v2.0")
+        # Should return the commit SHA, not the tag object SHA
+        self.assertEqual(result, self.commit_sha)
+
+    def test_full_sha_passthrough(self):
+        result = _get_latest_commit_via_git(self.remote_dir, self.commit_sha)
+        self.assertEqual(result, self.commit_sha)
+
+    def test_nonexistent_ref_returns_none(self):
+        result = _get_latest_commit_via_git(self.remote_dir, "no-such-branch")
         self.assertIsNone(result)
 
 

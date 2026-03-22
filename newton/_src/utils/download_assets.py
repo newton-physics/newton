@@ -129,14 +129,31 @@ def _find_cached_version(cache_path: Path, base_prefix: str) -> Path | None:
     return candidates[0][1]
 
 
-def _get_latest_commit_via_git(git_url: str, branch: str) -> str | None:
-    """Resolve latest commit SHA for a branch via 'git ls-remote'."""
+def _get_latest_commit_via_git(git_url: str, ref: str) -> str | None:
+    """Resolve latest commit SHA for a branch or tag via 'git ls-remote'.
+
+    If *ref* is already a 40-character commit SHA it is returned as-is.
+    For annotated tags the dereferenced commit SHA is preferred.
+    """
+    if re.fullmatch(r"[0-9a-f]{40}", ref):
+        return ref
     try:
         import git
 
-        out = git.cmd.Git().ls_remote("--heads", git_url, branch)
-        # Output format: "<sha>\trefs/heads/<branch>\n"
-        return out.split()[0] if out else None
+        # Request the ref and its dereferenced form (for annotated tags).
+        out = git.cmd.Git().ls_remote(git_url, ref, f"{ref}^{{}}")
+        if not out:
+            return None
+        # Parse lines: "<sha>\t<ref>\n"
+        # Prefer dereferenced tag (^{}) > branch > lightweight tag
+        best = None
+        for line in out.strip().splitlines():
+            sha, refname = line.split("\t", 1)
+            if refname == f"refs/tags/{ref}^{{}}":
+                return sha  # annotated tag → underlying commit SHA
+            if refname in (f"refs/heads/{ref}", f"refs/tags/{ref}"):
+                best = sha
+        return best
     except Exception:
         # Fail silently on any error (offline, auth issue, etc.)
         return None
