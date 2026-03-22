@@ -1,27 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot Franka Teleop
 #
-# Author: Lightwheel AI
-# Contact: https://github.com/lyd405121 | yaodong.lin@lightwheel.ai
-#
 # Interactive teleoperation of a Franka Emika Panda arm with a gripper.
 # Use Ctrl+QWEASD for keyboard jog, and the popup UI for preset
-# grasp actions. Supports Chinese/English UI toggle.
+# grasp actions.
 #
 # Command: python -m newton.examples robot_franka_teleop
 #
@@ -29,10 +14,7 @@
 
 from __future__ import annotations
 
-import os
-import platform
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 import pyglet
@@ -45,130 +27,6 @@ import newton.solvers
 import newton.utils
 import newton.viewer
 from newton import JointTargetMode
-
-# =========================================================================
-# i18n strings
-# =========================================================================
-
-# (zh, en) tuples
-STRINGS = {
-    "win_title": ("Franka 遥操作", "Franka Teleop"),
-    "tcp_control": ("TCP 目标控制", "TCP Target Control"),
-    "lang_btn": ("English", "中文"),
-    "status": ("状态与参数", "Status & Parameters"),
-    "pos_label": ("位置 [m]", "Position [m]"),
-    "rot_label": ("旋转 XYZ [deg]", "Rotation XYZ [deg]"),
-    "cube_label": ("方块中心 [m]", "Cube center [m]"),
-    "target_pos": ("目标位置", "Target position"),
-    "target_rot": ("目标旋转 XYZ", "Target rotation XYZ"),
-    "translate_step": ("平移步长 [m]", "Translate step [m]"),
-    "rotate_step": ("旋转步长 [deg]", "Rotate step [deg]"),
-    "gripper_slider": ("夹爪开合 [m]", "Gripper [m]"),
-    "preset": ("预设动作", "Preset Actions"),
-    "move_above": ("移动到方块上方(张开)", "Move above cube (open)"),
-    "descend": ("下降到抓取高度", "Descend to grasp height"),
-    "grasp": ("执行夹取", "Grasp"),
-    "lift": ("提起已抓取物体", "Lift grasped object"),
-    "reset": ("重置场景", "Reset scene"),
-    "hotkeys": ("快捷键", "Hotkeys"),
-    "hotkeys_hint": ("按住 Ctrl 启用 Franka 键盘点动", "Hold Ctrl for Franka keyboard jog"),
-    "hk_ws": "Ctrl+W / S: +X / -X",
-    "hk_ad": "Ctrl+A / D: +Y / -Y",
-    "hk_qe": "Ctrl+Q / E: +Z / -Z",
-    "hk_uo": ("Ctrl+U / O: +滚转 X / -滚转 X", "Ctrl+U / O: +Roll X / -Roll X"),
-    "hk_ik": ("Ctrl+I / K: +俯仰 Y / -俯仰 Y", "Ctrl+I / K: +Pitch Y / -Pitch Y"),
-    "hk_jl": ("Ctrl+J / L: +偏航 Z / -偏航 Z", "Ctrl+J / L: +Yaw Z / -Yaw Z"),
-    "hk_zx": ("Ctrl+Z / X: 张开 / 闭合夹爪", "Ctrl+Z / X: Open / Close gripper"),
-    "open_gripper": ("张开", "Open"),
-    "close_gripper": ("闭合", "Close"),
-}
-
-
-# =========================================================================
-# Quaternion helpers
-# =========================================================================
-
-
-def quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
-    x1, y1, z1, w1 = q1
-    x2, y2, z2, w2 = q2
-    return np.array(
-        [
-            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-        ],
-        dtype=np.float32,
-    )
-
-
-def quat_inv(q: np.ndarray) -> np.ndarray:
-    x, y, z, w = q
-    n2 = x * x + y * y + z * z + w * w
-    if n2 <= 0.0:
-        return np.array([0, 0, 0, 1], dtype=np.float32)
-    return np.array([-x / n2, -y / n2, -z / n2, w / n2], dtype=np.float32)
-
-
-def quat_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
-    qv = np.array([v[0], v[1], v[2], 0.0], dtype=np.float32)
-    return quat_mul(quat_mul(q, qv), quat_inv(q))[:3]
-
-
-def quat_normalize(q: np.ndarray) -> np.ndarray:
-    n = float(np.linalg.norm(q))
-    return np.array([0, 0, 0, 1], dtype=np.float32) if n <= 0 else (q / n).astype(np.float32)
-
-
-def quat_slerp(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
-    q0n = quat_normalize(q0)
-    q1n = quat_normalize(q1)
-    dot = float(np.dot(q0n, q1n))
-    if dot < 0.0:
-        q1n = -q1n
-        dot = -dot
-    dot = float(np.clip(dot, -1.0, 1.0))
-    if dot > 0.9995:
-        return quat_normalize(q0n + float(t) * (q1n - q0n))
-    theta_0 = float(np.arccos(dot))
-    theta = theta_0 * float(t)
-    sin_theta = float(np.sin(theta))
-    sin_theta_0 = float(np.sin(theta_0))
-    s0 = float(np.cos(theta)) - dot * sin_theta / sin_theta_0
-    s1 = sin_theta / sin_theta_0
-    return quat_normalize((s0 * q0n + s1 * q1n).astype(np.float32))
-
-
-def quat_from_euler_deg(euler_deg: np.ndarray) -> np.ndarray:
-    r, p, y = np.deg2rad(euler_deg.astype(np.float64))
-    cr, sr = np.cos(r * 0.5), np.sin(r * 0.5)
-    cp, sp = np.cos(p * 0.5), np.sin(p * 0.5)
-    cy, sy = np.cos(y * 0.5), np.sin(y * 0.5)
-    return quat_normalize(
-        np.array(
-            [
-                sr * cp * cy - cr * sp * sy,
-                cr * sp * cy + sr * cp * sy,
-                cr * cp * sy - sr * sp * cy,
-                cr * cp * cy + sr * sp * sy,
-            ],
-            dtype=np.float32,
-        )
-    )
-
-
-def quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
-    x, y, z, w = quat_normalize(q).astype(np.float64)
-    sinr_cosp = 2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = np.arctan2(sinr_cosp, cosr_cosp)
-    sinp = np.clip(2.0 * (w * y - z * x), -1.0, 1.0)
-    pitch = np.arcsin(sinp)
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = np.arctan2(siny_cosp, cosy_cosp)
-    return np.rad2deg(np.array([roll, pitch, yaw], dtype=np.float64)).astype(np.float32)
 
 
 # =========================================================================
@@ -399,7 +257,6 @@ class Example:
         self.grasp_lift_height = cfg.grasp_lift_height
         self.target_linear_speed = cfg.target_linear_speed
         self.target_angular_speed_deg = cfg.target_angular_speed_deg
-        self._lang = "en"
         self.arm_coord_count = cfg.arm_coord_count
         self.finger_coord_indices = list(cfg.finger_coord_indices)
 
@@ -420,7 +277,6 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(2.0, 0, 0.7), pitch=0.0, yaw=-180.0)
-        self.setup_ui_fonts()
 
         for s in (self.state_0, self.state_1):
             newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, s)
@@ -446,44 +302,6 @@ class Example:
 
         print("\nCtrl+QWEASD: translate, Ctrl+UIOJKL: rotate, Ctrl+ZX: gripper")
 
-    # ----- UI fonts (Chinese support) ------------------------------------
-
-    def setup_ui_fonts(self) -> None:
-        if not isinstance(self.viewer, newton.viewer.ViewerGL):
-            return
-        if not hasattr(self.viewer, "ui") or not self.viewer.ui.is_available:
-            return
-        if getattr(self, "_ui_fonts_configured", False):
-            return
-        imgui, io = self.viewer.ui.imgui, self.viewer.ui.io
-        font_override = os.environ.get("NEWTON_IMGUI_FONT")
-        font_candidates = [font_override] if font_override else []
-        if platform.system() == "Windows":
-            windir = os.environ.get("WINDIR", r"C:\Windows")
-            font_candidates += [os.path.join(windir, "Fonts", f) for f in ("msyh.ttc", "msyhbd.ttc", "simsun.ttc")]
-        font_candidates += [
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
-        ]
-        if platform.system() == "Darwin":
-            font_candidates += ["/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/STHeiti Light.ttc"]
-        font_path = next((p for p in font_candidates if Path(p).is_file()), None)
-        if font_path is None:
-            return
-        try:
-            if len(io.fonts.fonts) == 0:
-                io.fonts.add_font_default()
-            font_cfg = imgui.ImFontConfig()
-            font_cfg.merge_mode = True
-            font_cfg.pixel_snap_h = True
-            io.fonts.add_font_from_file_ttf(font_path, 18.0, font_cfg)
-            if hasattr(self.viewer.ui.impl, "_update_textures"):
-                self.viewer.ui.impl._update_textures()
-            self._ui_fonts_configured = True
-        except Exception as e:
-            print(f"Warning: failed to load UI font '{font_path}': {e}")
-
     # ----- Body helpers --------------------------------------------------
 
     def find_body(self, suffix: str) -> int:
@@ -497,30 +315,30 @@ class Example:
 
     # ----- Target pose management ----------------------------------------
 
-    def t(self, key: str) -> str:
-        v = STRINGS[key]
-        if isinstance(v, str):
-            return v
-        return v[0] if self._lang == "zh" else v[1]
-
     @staticmethod
-    def _to_pose(pos, quat, min_z):
+    def to_pose(pos, quat: wp.quat, min_z):
         pos = np.array(pos, dtype=np.float32, copy=True)
         pos[2] = max(min_z, float(pos[2]))
-        quat = quat_normalize(np.array(quat, dtype=np.float32, copy=True))
-        return pos, quat, wp.vec3(*pos.tolist()), wp.quat(*quat.tolist())
+        q = wp.normalize(quat)
+        return pos, q, wp.vec3(*pos.tolist())
 
-    def set_target_pose(self, pos: np.ndarray, quat: np.ndarray) -> None:
-        p, q, self.target_pos, self.target_quat = self._to_pose(pos, quat, self.min_target_height)
-        self._target_pos_np, self._target_quat_np = p, q
-        self.target_euler_deg = quat_to_euler_deg(q)
+    def set_target_pose(self, pos: np.ndarray, quat: wp.quat) -> None:
+        self._target_pos_np, self.target_quat, self.target_pos = self.to_pose(pos, quat, self.min_target_height)
+        q = self.target_quat
+        x, y, z, w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+        self.target_euler_deg = np.rad2deg(np.array([
+            np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)),
+            float(np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))),
+            np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)),
+        ], dtype=np.float64)).astype(np.float32)
 
-    def set_active_target(self, pos: np.ndarray, quat: np.ndarray) -> None:
-        p, q, self.active_target_pos, self.active_target_quat = self._to_pose(pos, quat, self.min_target_height)
-        self.active_target_pos_np, self.active_target_quat_np = p, q
+    def set_active_target(self, pos: np.ndarray, quat: wp.quat) -> None:
+        self.active_target_pos_np, self.active_target_quat, self.active_target_pos = self.to_pose(
+            pos, quat, self.min_target_height
+        )
 
     def snap_active_to_command(self) -> None:
-        self.set_active_target(self._target_pos_np, self._target_quat_np)
+        self.set_active_target(self._target_pos_np, self.target_quat)
 
     def advance_active_target(self) -> None:
         delta = self._target_pos_np - self.active_target_pos_np
@@ -531,25 +349,28 @@ class Example:
             if dist <= max(max_step, 1e-6)
             else (self.active_target_pos_np + delta * (max_step / dist))
         )
-        q0, q1 = quat_normalize(self.active_target_quat_np), quat_normalize(self._target_quat_np)
-        angle = 2.0 * float(np.arccos(float(np.clip(np.abs(np.dot(q0, q1)), -1.0, 1.0))))
+        q0 = wp.normalize(self.active_target_quat)
+        q1 = wp.normalize(self.target_quat)
+        dot = abs(float(q0[0] * q1[0] + q0[1] * q1[1] + q0[2] * q1[2] + q0[3] * q1[3]))
+        angle = 2.0 * float(np.arccos(np.clip(dot, -1.0, 1.0)))
         max_ang = np.deg2rad(self.target_angular_speed_deg) * self.frame_dt
-        next_quat = q1 if angle <= max(max_ang, 1e-6) else quat_slerp(q0, q1, max_ang / angle)
+        next_quat = q1 if angle <= max(max_ang, 1e-6) else wp.quat_slerp(q0, q1, max_ang / angle)
         self.set_active_target(next_pos, next_quat)
 
     def reset_target_pose(self) -> None:
-        self.set_target_pose(self.home_target_pos_np, self.home_target_quat_np)
+        self.set_target_pose(self.home_target_pos_np, self.home_target_quat)
         self.snap_active_to_command()
 
     def apply_translate(self, dx=0.0, dy=0.0, dz=0.0) -> None:
         pos = self._target_pos_np.copy()
         pos += np.array([dx, dy, dz], dtype=np.float32)
-        self.set_target_pose(pos, self._target_quat_np)
+        self.set_target_pose(pos, self.target_quat)
 
     def apply_rotate(self, droll=0.0, dpitch=0.0, dyaw=0.0) -> None:
         euler = self.target_euler_deg.copy()
         euler += np.array([droll, dpitch, dyaw], dtype=np.float32)
-        self.set_target_pose(self._target_pos_np, quat_from_euler_deg(euler))
+        r, p, y = np.deg2rad(euler.astype(np.float64))
+        self.set_target_pose(self._target_pos_np, wp.quat_rpy(float(r), float(p), float(y)))
 
     # ----- IK setup & step -----------------------------------------------
 
@@ -566,26 +387,29 @@ class Example:
         tcp_pos = bq[tcp_index, :3].astype(np.float32)
         tcp_quat = bq[tcp_index, 3:7].astype(np.float32)
 
-        hand_inv = quat_inv(hand_quat)
-        self.tool_offset_pos = quat_rotate(hand_inv, tcp_pos - hand_pos)
-        self.tool_offset_quat = quat_mul(hand_inv, tcp_quat)
+        hand_wq = wp.quat(float(hand_quat[0]), float(hand_quat[1]), float(hand_quat[2]), float(hand_quat[3]))
+        hand_inv = wp.quat_inverse(hand_wq)
+        offset_vec = wp.vec3(*(tcp_pos - hand_pos).tolist())
+        self.tool_offset_pos = wp.quat_rotate(hand_inv, offset_vec)
+        tcp_wq = wp.quat(float(tcp_quat[0]), float(tcp_quat[1]), float(tcp_quat[2]), float(tcp_quat[3]))
+        self.tool_offset_quat = hand_inv * tcp_wq
 
-        target_quat = quat_from_euler_deg(np.array(self.config.initial_target_euler_deg, dtype=np.float32))
-        self.set_target_pose(tcp_pos, target_quat)
+        r, p, y = np.deg2rad(np.array(self.config.initial_target_euler_deg, dtype=np.float64))
+        self.set_target_pose(tcp_pos, wp.quat_rpy(float(r), float(p), float(y)))
         self.snap_active_to_command()
         self.home_target_pos_np = self._target_pos_np.copy()
-        self.home_target_quat_np = self._target_quat_np.copy()
-        self.grasp_target_quat_np = self.home_target_quat_np.copy()
+        self.home_target_quat = self.target_quat
+        self.grasp_target_quat = self.home_target_quat
 
         self.pos_obj = ik.IKObjectivePosition(
             link_index=self.hand_index,
-            link_offset=wp.vec3(*self.tool_offset_pos.tolist()),
+            link_offset=self.tool_offset_pos,
             target_positions=wp.array([self.active_target_pos], dtype=wp.vec3),
         )
         tq = self.target_quat
         self.rot_obj = ik.IKObjectiveRotation(
             link_index=self.hand_index,
-            link_offset_rotation=wp.quat(*self.tool_offset_quat.tolist()),
+            link_offset_rotation=self.tool_offset_quat,
             target_rotations=wp.array([wp.vec4(tq[0], tq[1], tq[2], tq[3])], dtype=wp.vec4),
         )
         self.jlimit_obj = ik.IKObjectiveJointLimit(
@@ -614,12 +438,12 @@ class Example:
         self.gripper_q = self.gripper_max
         hover = self.get_cube_center().copy()
         hover[2] += self.grasp_target_z_offset + self.cube_half_extent + self.grasp_hover_clearance
-        self.set_target_pose(hover, self.grasp_target_quat_np)
+        self.set_target_pose(hover, self.grasp_target_quat)
 
     def move_gripper_to_cube(self) -> None:
         grasp = self.get_cube_center().copy()
         grasp[2] += self.grasp_target_z_offset
-        self.set_target_pose(grasp, self.grasp_target_quat_np)
+        self.set_target_pose(grasp, self.grasp_target_quat)
 
     def execute_grasp(self) -> None:
         self.gripper_q = self.grasp_close_q
@@ -627,7 +451,7 @@ class Example:
     def lift_grasped_object(self) -> None:
         lift = self._target_pos_np.copy()
         lift[2] += self.grasp_lift_height
-        self.set_target_pose(lift, self.grasp_target_quat_np)
+        self.set_target_pose(lift, self.grasp_target_quat)
 
     def reset_scene(self) -> None:
         self.gripper_q = self.gripper_max
@@ -730,70 +554,75 @@ class Example:
         imgui.set_next_window_size(imgui.ImVec2(*win_size), imgui.Cond_.first_use_ever.value)
 
         flags = imgui.WindowFlags_.no_collapse.value
-        if not imgui.begin(self.t("win_title"), flags=flags):
+        if not imgui.begin("Franka Teleop", flags=flags):
             imgui.end()
             return
 
-        # Language toggle
-        if imgui.button(self.t("lang_btn")):
-            self._lang = "en" if self._lang == "zh" else "zh"
-        imgui.same_line()
-        imgui.text(self.t("tcp_control"))
+        imgui.text("TCP Target Control")
         imgui.separator()
 
         cube_pos = self.get_cube_center()
 
         # ---- Status & parameters ----
         imgui.set_next_item_open(False, imgui.Cond_.appearing)
-        if imgui.collapsing_header(self.t("status")):
+        if imgui.collapsing_header("Status & Parameters"):
             p = self._target_pos_np
             r = self.target_euler_deg
-            imgui.text(f"{self.t('pos_label')}: ({p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f})")
-            imgui.text(f"{self.t('rot_label')}: ({r[0]:.1f}, {r[1]:.1f}, {r[2]:.1f})")
-            imgui.text(f"{self.t('cube_label')}: ({cube_pos[0]:.3f}, {cube_pos[1]:.3f}, {cube_pos[2]:.3f})")
+            imgui.text(f"Position [m]: ({p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f})")
+            imgui.text(f"Rotation XYZ [deg]: ({r[0]:.1f}, {r[1]:.1f}, {r[2]:.1f})")
+            imgui.text(f"Cube center [m]: ({cube_pos[0]:.3f}, {cube_pos[1]:.3f}, {cube_pos[2]:.3f})")
             imgui.separator()
 
             changed, position = imgui.drag_float3(
-                self.t("target_pos"), self._target_pos_np.tolist(), self.ui_translate_step, -1.5, 1.5, "%.3f"
+                "Target position", self._target_pos_np.tolist(), self.ui_translate_step, -1.5, 1.5, "%.3f"
             )
             if changed:
-                self.set_target_pose(np.array(position, dtype=np.float32), self._target_quat_np)
+                self.set_target_pose(np.array(position, dtype=np.float32), self.target_quat)
 
             changed, rotation = imgui.slider_float3(
-                self.t("target_rot"), self.target_euler_deg.tolist(), -180.0, 180.0, "%.1f deg"
+                "Target rotation XYZ", self.target_euler_deg.tolist(), -180.0, 180.0, "%.1f deg"
             )
             if changed:
-                self.set_target_pose(self._target_pos_np, quat_from_euler_deg(np.array(rotation, dtype=np.float32)))
+                r, p, y = np.deg2rad(np.array(rotation, dtype=np.float64))
+                self.set_target_pose(self._target_pos_np, wp.quat_rpy(float(r), float(p), float(y)))
 
             _, self.ui_translate_step = imgui.slider_float(
-                self.t("translate_step"), self.ui_translate_step, 0.001, 0.05, "%.3f"
+                "Translate step [m]", self.ui_translate_step, 0.001, 0.05, "%.3f"
             )
             _, self.ui_rotate_step_deg = imgui.slider_float(
-                self.t("rotate_step"), self.ui_rotate_step_deg, 1.0, 30.0, "%.1f"
+                "Rotate step [deg]", self.ui_rotate_step_deg, 1.0, 30.0, "%.1f"
             )
             _, self.gripper_q = imgui.slider_float(
-                self.t("gripper_slider"), self.gripper_q, self.gripper_min, self.gripper_max, "%.3f"
+                "Gripper [m]", self.gripper_q, self.gripper_min, self.gripper_max, "%.3f"
             )
 
         # ---- Preset actions ----
         imgui.set_next_item_open(True, imgui.Cond_.appearing)
-        if imgui.collapsing_header(self.t("preset")):
+        if imgui.collapsing_header("Preset Actions"):
             for label, action in [
-                ("move_above", self.move_gripper_above_cube),
-                ("descend", self.move_gripper_to_cube),
-                ("grasp", self.execute_grasp),
-                ("lift", self.lift_grasped_object),
-                ("reset", self.reset_scene),
+                ("Move above cube (open)", self.move_gripper_above_cube),
+                ("Descend to grasp height", self.move_gripper_to_cube),
+                ("Grasp", self.execute_grasp),
+                ("Lift grasped object", self.lift_grasped_object),
+                ("Reset scene", self.reset_scene),
             ]:
-                if imgui.button(self.t(label)):
+                if imgui.button(label):
                     action()
 
         # ---- Hotkeys ----
         imgui.set_next_item_open(False, imgui.Cond_.appearing)
-        if imgui.collapsing_header(self.t("hotkeys")):
-            imgui.text(self.t("hotkeys_hint"))
-            for k in ("hk_ws", "hk_ad", "hk_qe", "hk_uo", "hk_ik", "hk_jl", "hk_zx"):
-                imgui.bullet_text(self.t(k))
+        if imgui.collapsing_header("Hotkeys"):
+            imgui.text("Hold Ctrl for Franka keyboard jog")
+            for hint in (
+                "Ctrl+W / S: +X / -X",
+                "Ctrl+A / D: +Y / -Y",
+                "Ctrl+Q / E: +Z / -Z",
+                "Ctrl+U / O: +Roll X / -Roll X",
+                "Ctrl+I / K: +Pitch Y / -Pitch Y",
+                "Ctrl+J / L: +Yaw Z / -Yaw Z",
+                "Ctrl+Z / X: Open / Close gripper",
+            ):
+                imgui.bullet_text(hint)
 
         imgui.end()
 
