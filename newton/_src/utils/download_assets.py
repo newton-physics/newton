@@ -15,6 +15,14 @@ from pathlib import Path
 
 from warp._src.thirdparty.appdirs import user_cache_dir
 
+NEWTON_ASSETS_URL = "https://github.com/newton-physics/newton-assets.git"
+NEWTON_ASSETS_REF = "8e8df07d2e4829442d3d3d3aeecee1857f9951d7"
+
+MENAGERIE_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
+MENAGERIE_REF = "feadf76d42f8a2162426f7d226a3b539556b3bf5"
+
+_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
 
 def _get_newton_cache_dir() -> str:
     """Gets the persistent Newton cache directory."""
@@ -355,16 +363,16 @@ def download_git_folder(
             )
         print(f"Cloning {git_url} (branch: {branch})...")
 
-        repo = gitpython.Repo.clone_from(
-            git_url,
-            temp_dir,
-            branch=branch,
-            depth=1,
-            no_checkout=True,
-            multi_options=["--filter=blob:none", "--sparse"],
-        )
+        is_sha = bool(_SHA_RE.fullmatch(branch))
+        clone_kwargs = {"depth": 1, "no_checkout": True, "multi_options": ["--filter=blob:none", "--sparse"]}
+        if not is_sha:
+            clone_kwargs["branch"] = branch
+
+        repo = gitpython.Repo.clone_from(git_url, temp_dir, **clone_kwargs)
         try:
             repo.git.sparse_checkout("set", folder_path)
+            if is_sha:
+                repo.git.fetch("origin", branch, "--depth=1")
             repo.git.checkout(branch)
         finally:
             repo.close()
@@ -425,24 +433,31 @@ def clear_git_cache(cache_dir: str | None = None) -> None:
         print("Git cache directory does not exist")
 
 
-def download_asset(asset_folder: str, cache_dir: str | None = None, force_refresh: bool = False) -> Path:
-    """
-    Downloads a specific folder from the newton-assets GitHub repository into a local cache.
+def download_asset(
+    asset_folder: str,
+    cache_dir: str | None = None,
+    force_refresh: bool = False,
+    ref: str | None = None,
+) -> Path:
+    """Download a specific folder from the newton-assets GitHub repository into a local cache.
 
     Args:
-        asset_folder: The folder within the repository to download (e.g., "assets/models")
+        asset_folder: The folder within the repository to download (e.g., ``"franka_emika_panda"``).
         cache_dir: Directory to cache downloads.
             If ``None``, the path is determined in the following order:
             1. ``NEWTON_CACHE_PATH`` environment variable.
             2. System's user cache directory (via ``appdirs.user_cache_dir``).
-        force_refresh: If True, re-downloads even if cached version exists
+        force_refresh: If ``True``, re-downloads even if cached version exists.
+        ref: Git branch, tag, or commit SHA to checkout.  Defaults to the
+            revision pinned in :data:`NEWTON_ASSETS_REF`.
 
     Returns:
-        Path to the downloaded folder in the local cache
+        Path to the downloaded folder in the local cache.
     """
     return download_git_folder(
-        "https://github.com/newton-physics/newton-assets.git",
+        NEWTON_ASSETS_URL,
         asset_folder,
         cache_dir=cache_dir,
+        branch=ref or NEWTON_ASSETS_REF,
         force_refresh=force_refresh,
     )

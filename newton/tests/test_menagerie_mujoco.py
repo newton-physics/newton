@@ -56,7 +56,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.utils.download_assets import download_git_folder
+from newton._src.utils.download_assets import MENAGERIE_REF, MENAGERIE_URL, download_git_folder
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf
 from newton.solvers import SolverMuJoCo
 
@@ -73,8 +73,6 @@ except ImportError:
 # =============================================================================
 # Asset Management
 # =============================================================================
-
-MENAGERIE_GIT_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 
 # If set, use this path as the root of an already-cloned mujoco_menagerie repo
 # instead of downloading. Example: export NEWTON_MENAGERIE_PATH=/path/to/mujoco_menagerie
@@ -107,9 +105,10 @@ def download_menagerie_asset(
             return path
 
     return download_git_folder(
-        MENAGERIE_GIT_URL,
+        MENAGERIE_URL,
         robot_folder,
         cache_dir=cache_dir,
+        branch=MENAGERIE_REF,
         force_refresh=force_refresh,
     )
 
