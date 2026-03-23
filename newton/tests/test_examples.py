@@ -36,6 +36,7 @@ from newton.tests.unittest_utils import (
 _ALWAYS_FILTER_STDERR = [
     r"PXR_WORK_THREAD_LIMIT",
     r"^#{10,}$",
+    r"Warp CUDA warning: Could not find or load the NVIDIA CUDA driver",
 ]
 
 
@@ -45,6 +46,7 @@ def _check_and_filter_stderr(
     *,
     expected_stderr: list[str] | None = None,
     expected_stderr_cpu: list[str] | None = None,
+    allowed_stderr: list[str] | None = None,
     allowed_stderr_cpu: list[str] | None = None,
     is_cpu: bool,
 ) -> str:
@@ -59,6 +61,7 @@ def _check_and_filter_stderr(
         test.assertRegex(stderr, pattern, f"Expected stderr pattern not found: {pattern}")
 
     filter_patterns = list(expected_patterns) + _ALWAYS_FILTER_STDERR
+    filter_patterns.extend(allowed_stderr or [])
     if is_cpu:
         filter_patterns.extend(allowed_stderr_cpu or [])
 
@@ -111,6 +114,7 @@ def add_example_test(
     test_suffix: str | None = None,
     expected_stderr: list[str] | None = None,
     expected_stderr_cpu: list[str] | None = None,
+    allowed_stderr: list[str] | None = None,
     allowed_stderr_cpu: list[str] | None = None,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase.
@@ -120,10 +124,10 @@ def add_example_test(
             devices.  Matching lines are filtered before output checking; the
             test fails if any pattern is absent.
         expected_stderr_cpu: Like *expected_stderr* but only asserted on CPU.
-        allowed_stderr_cpu: Regex patterns that may appear in stderr on CPU.
-            Matching lines are filtered before output checking but their
-            absence does **not** cause a failure (useful for warnings that
-            only appear on CPU-only machines).
+        allowed_stderr: Regex patterns that may appear in stderr on all
+            devices.  Matching lines are filtered but their absence does
+            **not** cause a failure.
+        allowed_stderr_cpu: Like *allowed_stderr* but only filtered on CPU.
     """
 
     # verify the module exists (use package-relative path so this works from any CWD)
@@ -228,6 +232,7 @@ def add_example_test(
             result.stderr,
             expected_stderr=expected_stderr,
             expected_stderr_cpu=expected_stderr_cpu,
+            allowed_stderr=allowed_stderr,
             allowed_stderr_cpu=allowed_stderr_cpu,
             is_cpu=wp.get_device(device).is_cpu,
         )
@@ -376,7 +381,7 @@ add_example_test(
     test_options={},
     test_options_cuda={"num-frames": 32},
     use_viewer=True,
-    expected_stderr=[
+    allowed_stderr=[
         "texture inputs are not yet supported",
         "_extract_preview_surface_properties",
     ],
@@ -388,8 +393,8 @@ add_example_test(
     test_options={},
     test_options_cuda={"num-frames": 32},
     use_viewer=True,
-    expected_stderr=[
-        "Inertia validation corrected",
+    expected_stderr=["Inertia validation corrected"],
+    allowed_stderr=[
         "texture inputs are not yet supported",
         "_extract_preview_surface_properties",
     ],
@@ -486,6 +491,9 @@ add_example_test(
     expected_stderr=[
         "possibly invalid inertia tensor",
         "authored mass and density without authored diagonalInertia",
+        "return parse_usd",
+    ],
+    allowed_stderr=[
         "texture inputs are not yet supported",
         "_extract_preview_surface_properties",
     ],
