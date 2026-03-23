@@ -32,6 +32,41 @@ from newton.tests.unittest_utils import (
 )
 
 
+def _check_and_filter_stderr(
+    test: unittest.TestCase,
+    stderr: str,
+    *,
+    expected_stderr: list[str] | None = None,
+    expected_stderr_cpu: list[str] | None = None,
+    allowed_stderr_cpu: list[str] | None = None,
+    is_cpu: bool,
+) -> str:
+    """Assert expected patterns are present in *stderr*, then filter matching lines.
+
+    Returns the filtered stderr with expected/allowed lines removed.
+    """
+    expected_patterns = list(expected_stderr or [])
+    if is_cpu:
+        expected_patterns.extend(expected_stderr_cpu or [])
+    for pattern in expected_patterns:
+        test.assertRegex(stderr, pattern, f"Expected stderr pattern not found: {pattern}")
+
+    filter_patterns = list(expected_patterns)
+    if is_cpu:
+        filter_patterns.extend(allowed_stderr_cpu or [])
+
+    if stderr:
+        filters = [re.compile(p) for p in filter_patterns]
+        stderr = "\n".join(
+            line
+            for line in stderr.splitlines()
+            if not any(f.search(line) for f in filters)
+            and not re.match(r"^\s+self\.\w", line)  # warning source-code context
+        )
+
+    return stderr
+
+
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
     """Helper function to build command-line options from the test options dictionary."""
     additional_options = []
@@ -181,29 +216,14 @@ def add_example_test(
                 command, capture_output=True, text=True, env=env_vars, timeout=test_timeout, check=False
             )
 
-        # Check expected stderr patterns and filter before printing
-        stderr = result.stderr
-        expected_patterns = list(expected_stderr or [])
-        if wp.get_device(device).is_cpu:
-            expected_patterns.extend(expected_stderr_cpu or [])
-        for pattern in expected_patterns:
-            test.assertRegex(stderr, pattern, f"Expected stderr pattern not found: {pattern}")
-
-        # Build the full filter list: expected (already asserted) + allowed
-        filter_patterns = list(expected_patterns)
-        if wp.get_device(device).is_cpu:
-            filter_patterns.extend(allowed_stderr_cpu or [])
-
-        # Filter expected/allowed lines (and Python warning source-context
-        # lines) so CheckOutput won't flag them
-        if stderr:
-            filters = [re.compile(p) for p in filter_patterns]
-            stderr = "\n".join(
-                line
-                for line in stderr.splitlines()
-                if not any(f.search(line) for f in filters)
-                and not re.match(r"^\s+self\.\w", line)  # warning source-code context
-            )
+        stderr = _check_and_filter_stderr(
+            test,
+            result.stderr,
+            expected_stderr=expected_stderr,
+            expected_stderr_cpu=expected_stderr_cpu,
+            allowed_stderr_cpu=allowed_stderr_cpu,
+            is_cpu=wp.get_device(device).is_cpu,
+        )
 
         if stderr.strip():
             print(stderr)
@@ -820,6 +840,62 @@ add_example_test(
     test_options={"num-frames": 120},
     use_viewer=True,
 )
+
+
+class TestStderrFiltering(unittest.TestCase):
+    """Tests for _check_and_filter_stderr used by add_example_test."""
+
+    def test_expected_stderr_filters_matching_lines(self):
+        stderr = "Warning: mesh-mesh contacts will be skipped\nreal output"
+        result = _check_and_filter_stderr(
+            self, stderr, expected_stderr=["mesh-mesh contacts will be skipped"], is_cpu=False
+        )
+        self.assertEqual(result, "real output")
+
+    def test_expected_stderr_fails_when_absent(self):
+        stderr = "some unrelated output"
+        with self.assertRaises(AssertionError):
+            _check_and_filter_stderr(self, stderr, expected_stderr=["missing pattern"], is_cpu=False)
+
+    def test_expected_stderr_cpu_asserted_on_cpu(self):
+        stderr = "Warning: mesh-mesh contacts will be skipped"
+        result = _check_and_filter_stderr(self, stderr, expected_stderr_cpu=["mesh-mesh contacts"], is_cpu=True)
+        self.assertEqual(result, "")
+
+    def test_expected_stderr_cpu_ignored_on_cuda(self):
+        stderr = "some output"
+        # Should not assert — expected_stderr_cpu is skipped on CUDA
+        result = _check_and_filter_stderr(self, stderr, expected_stderr_cpu=["pattern not present"], is_cpu=False)
+        self.assertEqual(result, "some output")
+
+    def test_allowed_stderr_cpu_filters_without_asserting(self):
+        stderr = "Warp CUDA error 100: no CUDA-capable device is detected\nreal output"
+        result = _check_and_filter_stderr(self, stderr, allowed_stderr_cpu=["Warp CUDA error 100"], is_cpu=True)
+        self.assertEqual(result, "real output")
+
+    def test_allowed_stderr_cpu_absent_does_not_fail(self):
+        stderr = "real output"
+        # Pattern absent — should NOT raise because it's allowed, not expected
+        result = _check_and_filter_stderr(self, stderr, allowed_stderr_cpu=["Warp CUDA error 100"], is_cpu=True)
+        self.assertEqual(result, "real output")
+
+    def test_allowed_stderr_cpu_ignored_on_cuda(self):
+        stderr = "Warp CUDA error 100: no CUDA-capable device is detected"
+        # On CUDA, allowed_stderr_cpu should not filter
+        result = _check_and_filter_stderr(self, stderr, allowed_stderr_cpu=["Warp CUDA error 100"], is_cpu=False)
+        self.assertEqual(result, "Warp CUDA error 100: no CUDA-capable device is detected")
+
+    def test_warning_source_context_lines_filtered(self):
+        stderr = "Warning: something\n  self.some_call()"
+        result = _check_and_filter_stderr(self, stderr, expected_stderr=["Warning: something"], is_cpu=False)
+        self.assertEqual(result, "")
+
+    def test_unmatched_lines_preserved(self):
+        stderr = "expected warning\nunexpected output\nanother expected"
+        result = _check_and_filter_stderr(
+            self, stderr, expected_stderr=["expected warning", "another expected"], is_cpu=False
+        )
+        self.assertEqual(result, "unexpected output")
 
 
 if __name__ == "__main__":
