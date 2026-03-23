@@ -307,7 +307,7 @@ def step_response_control_kernel(
     target: wp.float32,
     num_actuators: int,
 ):
-    """Set ctrl[world_i, act_i] = target only when world_i == act_i, else 0."""
+    """Set ctrl[world_i, act_i] = target when world_i % nu == act_i, else 0."""
     i = wp.tid()
     world_i = i // num_actuators
     act_i = i % num_actuators  # type: ignore[operator]
@@ -2586,7 +2586,11 @@ class TestMenagerieBase(unittest.TestCase):
 
 
 def _disable_collisions(mjw_model: Any) -> None:
-    """Zero out geom_contype and geom_conaffinity to disable all collisions."""
+    """Zero out geom_contype and geom_conaffinity to disable broadphase collisions.
+
+    Note: explicit <pair> contacts in MJCF bypass contype/conaffinity and would
+    still generate contacts. None of our test robots use explicit pairs.
+    """
     contype = mjw_model.geom_contype.numpy()
     contype[:] = 0
     mjw_model.geom_contype.assign(contype)
