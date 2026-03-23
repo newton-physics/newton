@@ -572,7 +572,7 @@ def _apply_warp_config(parser, args):
         setattr(wp.config, key, value)
 
 
-_BENCHMARK_PRIORITY_WARNING = "Benchmark running at default process priority (results may vary)."
+_BENCHMARK_PRIORITY_WARNING = "Warning: Benchmark running at default process priority. Results may vary."
 
 
 def _raise_benchmark_priority(realtime=False):
@@ -591,7 +591,7 @@ def _raise_benchmark_priority(realtime=False):
         try:
             os.nice(-20 if realtime else -15)
         except PermissionError:
-            print(f"{_BENCHMARK_PRIORITY_WARNING} Run with elevated privileges to raise process priority.")
+            print(f"{_BENCHMARK_PRIORITY_WARNING} Run with elevated privileges to automatically raise priority.")
     elif sys.platform == "darwin":
         import ctypes  # noqa: PLC0415
         import ctypes.util  # noqa: PLC0415
@@ -602,9 +602,9 @@ def _raise_benchmark_priority(realtime=False):
             QOS_CLASS_USER_INTERACTIVE = 0x21
             rc = libsystem.pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
             if rc != 0:
-                print(f"{_BENCHMARK_PRIORITY_WARNING} pthread_set_qos_class_self_np returned {rc}.")
+                print(f"{_BENCHMARK_PRIORITY_WARNING} Failed to automatically raise priority (error {rc}).")
         except OSError as e:
-            print(f"{_BENCHMARK_PRIORITY_WARNING} {e}")
+            print(f"{_BENCHMARK_PRIORITY_WARNING} Failed to automatically raise priority: {e}")
 
 
 def init(parser=None):
