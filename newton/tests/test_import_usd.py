@@ -7545,6 +7545,29 @@ class TestTetMesh(unittest.TestCase):
         assert_np_equal(tm.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_left_handed(self):
+        """Test that left-handed TetMesh orientation flips winding order."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def TetMesh "LeftHandedTet" ()
+{
+    uniform token orientation = "leftHanded"
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)]
+    int4[] tetVertexIndices = [(0, 1, 2, 3), (1, 2, 3, 4)]
+}
+"""
+        )
+        prim = stage.GetPrimAtPath("/LeftHandedTet")
+        tm = usd.get_tetmesh(prim)
+
+        # Indices 1 and 2 of each tet should be swapped compared to the original
+        assert_np_equal(tm.tet_indices[:4], np.array([0, 2, 1, 3], dtype=np.int32))
+        assert_np_equal(tm.tet_indices[4:], np.array([1, 3, 2, 4], dtype=np.int32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_tetmesh_create_from_usd(self):
         """Test TetMesh.create_from_usd() static factory method."""
         from pxr import Usd
