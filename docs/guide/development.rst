@@ -300,18 +300,49 @@ When typos reports a word that is valid within the Newton codebase, you can add 
 License headers
 ---------------
 
-Every source file in the repository must carry an `SPDX <https://spdx.dev/>`_ license header.
-A CI check (``pr_license_check.yml``) enforces this on every pull request using
-`Apache SkyWalking Eyes <https://github.com/apache/skywalking-eyes>`_.
+Every source file in the repository must carry a 2-line `SPDX <https://spdx.dev/>`_ license
+header. The project's Apache-2.0 license is in ``LICENSE.md`` at the repository root, and additional and third-party license texts are available in the ``newton/licenses`` directory, so no further
+boilerplate is required in individual files.
 
 The required headers depend on the file type:
 
-- **Python files** (``.py``) — Apache-2.0. See ``.licenserc.yaml`` for the exact template.
-- **Documentation files** (``.rst``) — CC-BY-4.0. See ``.licenserc-docs.yaml`` for the exact template.
-- **Jupyter notebooks** (``.ipynb``) — CC-BY-4.0. Copy the header from an existing notebook.
+- **Python files** (``.py``):
 
-When adding a new file, copy the header from an existing file of the same type. If the
-license check fails on your PR, add the appropriate header to the top of each flagged file.
+  .. code-block:: python
+
+      # SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      # SPDX-License-Identifier: Apache-2.0
+
+- **Documentation files** (``.rst``) — CC-BY-4.0:
+
+  .. code-block:: rst
+
+      .. SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      .. SPDX-License-Identifier: CC-BY-4.0
+
+- **Jupyter notebooks** (``.ipynb``) — CC-BY-4.0 (plain text in the first cell, no comment prefix):
+
+  .. code-block:: text
+
+      SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      SPDX-License-Identifier: CC-BY-4.0
+
+Use the year the file was **first created**. Do not update the year when modifying an
+existing file, and do not use year ranges — git history is the authoritative record of
+when changes were made.
+
+A CI check (``pr_license_check.yml``) enforces headers on every pull request using
+`Apache SkyWalking Eyes <https://github.com/apache/skywalking-eyes>`_.
+
+To run the license checks locally with Docker before pushing:
+
+.. code-block:: console
+
+    # Check Python source headers (Apache-2.0)
+    docker run -it --rm -v $(pwd):/github/workspace apache/skywalking-eyes header check
+
+    # Check documentation headers (CC-BY-4.0)
+    docker run -it --rm -v $(pwd):/github/workspace apache/skywalking-eyes -c .licenserc-docs.yaml header check
 
 Using a local Warp installation with uv
 ---------------------------------------
