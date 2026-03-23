@@ -219,7 +219,7 @@ def get_reduce_hydroelastic_contacts_kernel():
                     ws = reducer_data.weight_sum[entry_idx]
                     anchor = reducer_data.weighted_pos_sum[entry_idx] / ws
                     pos_2d_centered = project_point_to_plane(bin_id, position - anchor)
-                    pen_weight = wp.max(-depth, 0.0) / aabb_size
+                    pen_weight = wp.max(-depth, 0.0)
                     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
                         dir_2d = get_spatial_direction_2d(dir_i)
                         score = wp.dot(pos_2d_centered, dir_2d) * pen_weight
