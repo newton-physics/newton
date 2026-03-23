@@ -573,7 +573,7 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
         import warp as wp  # noqa: PLC0415
 
         if args.no_shared_cache:
-            from warp.thirdparty import appdirs  # noqa: PLC0415
+            from warp._src.thirdparty import appdirs  # noqa: PLC0415
 
             if "WARP_CACHE_ROOT" in os.environ:
                 cache_root_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), f"{wp.config.version}-{worker_index:03d}")
@@ -583,6 +583,7 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
                 )
 
             wp.config.kernel_cache_dir = cache_root_dir
+            os.makedirs(cache_root_dir, exist_ok=True)
 
             if not args.no_cache_clear:
                 wp.clear_lto_cache()

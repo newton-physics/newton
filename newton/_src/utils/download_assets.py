@@ -13,10 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-try:
-    from warp.thirdparty.appdirs import user_cache_dir
-except (ImportError, ModuleNotFoundError):
-    from warp._src.thirdparty.appdirs import user_cache_dir
+from warp._src.thirdparty.appdirs import user_cache_dir
 
 
 def _get_newton_cache_dir() -> str:
