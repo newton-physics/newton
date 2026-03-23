@@ -853,6 +853,62 @@ def compare_mass_matrix_structure_mapped(
     )
 
 
+def compare_tendon_jacobian_structure_mapped(
+    newton_mjw: Any,
+    native_mjw: Any,
+    dof_map: dict[int, int],
+) -> None:
+    """Compare sparse tendon Jacobian sparsity pattern under DOF reordering.
+
+    The tendon Jacobian ten_J uses CSR-like format (ten_J_rowadr, ten_J_rownnz,
+    ten_J_colind) where rows are tendons and columns are DOF indices.  When DOF
+    ordering differs the column indices are permuted but structurally equivalent.
+
+    Gracefully skips if the fields are absent (older mujoco_warp without sparse
+    ten_J support).
+
+    Args:
+        dof_map: native_dof_idx -> newton_dof_idx.
+    """
+    if not hasattr(native_mjw, "ten_J_colind") or not hasattr(newton_mjw, "ten_J_colind"):
+        return
+
+    ntendon = native_mjw.ntendon
+    assert newton_mjw.ntendon == ntendon, f"ntendon mismatch: newton={newton_mjw.ntendon} vs native={ntendon}"
+
+    if ntendon == 0:
+        return
+
+    newton_rowadr = newton_mjw.ten_J_rowadr.numpy().flatten()
+    newton_rownnz = newton_mjw.ten_J_rownnz.numpy().flatten()
+    newton_colind = newton_mjw.ten_J_colind.numpy().flatten()
+    native_rowadr = native_mjw.ten_J_rowadr.numpy().flatten()
+    native_rownnz = native_mjw.ten_J_rownnz.numpy().flatten()
+    native_colind = native_mjw.ten_J_colind.numpy().flatten()
+
+    inv_dof_map = {v: k for k, v in dof_map.items()}
+
+    mismatches = []
+    for t in range(ntendon):
+        nat_start = int(native_rowadr[t])
+        nat_nnz = int(native_rownnz[t])
+        native_cols = {int(native_colind[nat_start + k]) for k in range(nat_nnz)}
+
+        nw_start = int(newton_rowadr[t])
+        nw_nnz = int(newton_rownnz[t])
+        newton_cols_raw = [int(newton_colind[nw_start + k]) for k in range(nw_nnz)]
+        newton_cols = {inv_dof_map.get(c, -1) for c in newton_cols_raw}
+
+        if native_cols != newton_cols:
+            mismatches.append(
+                f"tendon {t}: native cols={sorted(native_cols)}, newton cols (remapped)={sorted(newton_cols)}"
+            )
+
+    assert not mismatches, f"Tendon Jacobian sparsity mismatch for {len(mismatches)}/{ntendon} tendons:\n" + "\n".join(
+        mismatches[:10]
+    )
+
+
 ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_plugin",
     "actuator_user",
@@ -981,6 +1037,10 @@ class TestMenagerieUSD(TestMenagerieBase):
         "jnt_",
         # Sparse mass matrix structure: DOF-indexed, compared via _compare_mass_matrix_structure
         "M_",
+        # Sparse tendon Jacobian structure: DOF-indexed, compared via _compare_tendon_jacobian_structure
+        "ten_J_",
+        "nJten",
+        "max_ten_J_rownnz",
         # Cholesky permutation: derived from body/DOF tree ordering
         "mapM2M",
         "qLD_updates",
@@ -1083,6 +1143,10 @@ class TestMenagerieUSD(TestMenagerieBase):
     def _compare_mass_matrix_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare sparse mass matrix structure using DOF index mapping."""
         compare_mass_matrix_structure_mapped(newton_mjw, native_mjw, self._dof_map)
+
+    def _compare_tendon_jacobian_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse tendon Jacobian structure using DOF index mapping."""
+        compare_tendon_jacobian_structure_mapped(newton_mjw, native_mjw, self._dof_map)
 
     def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare actuator fields using name-based index mapping."""
