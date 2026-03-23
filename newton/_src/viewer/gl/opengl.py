@@ -360,7 +360,7 @@ class MeshGL:
             if self.texture_id is not None:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
             else:
-                gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
@@ -856,7 +856,7 @@ class MeshInstancerGL:
         if self.mesh.texture_id is not None:
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.mesh.texture_id)
         else:
-            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(
@@ -867,6 +867,7 @@ class MeshInstancerGL:
 
 class RendererGL:
     gl = None  # Class-level variable to hold the imported module
+    _fallback_texture = None  # 1x1 white texture bound when no albedo is set (suppresses macOS GL warning)
 
     @classmethod
     def initialize_gl(cls):
@@ -874,6 +875,22 @@ class RendererGL:
             from pyglet import gl
 
             cls.gl = gl
+
+    @classmethod
+    def get_fallback_texture(cls):
+        """Return a 1x1 white RGBA texture, creating it on first use."""
+        if cls._fallback_texture is None:
+            gl = cls.gl
+            tex = gl.GLuint()
+            gl.glGenTextures(1, tex)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+            pixel = (gl.GLubyte * 4)(255, 255, 255, 255)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, 1, 1, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, pixel)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            cls._fallback_texture = tex
+        return cls._fallback_texture
 
     def __init__(self, title="Newton", screen_width=1920, screen_height=1080, vsync=True, headless=None, device=None):
         self.draw_sky = True
@@ -1249,6 +1266,7 @@ class RendererGL:
             self.app.event_loop.dispatch_event("on_exit")
             self.app.platform_event_loop.stop()
 
+        RendererGL._fallback_texture = None
         self.window.close()
 
     def _setup_window_callbacks(self):
