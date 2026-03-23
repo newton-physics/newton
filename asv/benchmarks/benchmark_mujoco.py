@@ -337,7 +337,7 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.sensor_contact = None
-        sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies")
+        sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
         if sensing_bodies is not None:
             self.sensor_contact = SensorContact(self.model, sensing_obj_bodies=sensing_bodies, counterpart_bodies="*")
             self.contacts = newton.Contacts(
