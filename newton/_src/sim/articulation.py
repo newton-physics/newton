@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..math import quat_decompose, transform_twist
+from ..math import quat_decompose, transform_twist, velocity_at_point
 from .enums import BodyFlags, JointType
 from .model import Model
 from .state import State
@@ -120,18 +120,6 @@ def compute_3d_rotational_dofs(
     vel = axis_0 * qd0 + axis_1 * qd1 + axis_2 * qd2
 
     return rot, vel
-
-
-@wp.func
-def origin_twist_to_point_velocity(
-    X_wb: wp.transform,
-    twist_origin: wp.spatial_vector,
-    point_w: wp.vec3,
-):
-    """Evaluate the world-space velocity of a point from a body-origin twist."""
-    omega = wp.spatial_bottom(twist_origin)
-    origin_world = wp.transform_get_translation(X_wb)
-    return wp.spatial_top(twist_origin) + wp.cross(omega, point_w - origin_world)
 
 
 @wp.func
@@ -334,7 +322,9 @@ def eval_single_articulation_fk(
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = origin_twist_to_point_velocity(X_wp, v_wp, wp.transform_get_translation(X_wc))
+            v_parent_origin = velocity_at_point(
+                v_wp, wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
+            )
 
         # Transform joint motion into world space. The linear part of v_j is defined
         # at the child joint anchor; if the child body origin is offset from that
@@ -623,7 +613,7 @@ def eval_articulation_ik(
 
         v_wp = body_qd[parent]
         w_p = wp.spatial_bottom(v_wp)
-        v_p = origin_twist_to_point_velocity(X_wp, v_wp, wp.transform_get_translation(X_wpj))
+        v_p = velocity_at_point(v_wp, wp.transform_get_translation(X_wpj) - wp.transform_get_translation(X_wp))
 
     # child transform and moment arm
     X_wc = body_q[child]
@@ -632,7 +622,7 @@ def eval_articulation_ik(
     v_wc = body_qd[child]
 
     w_c = wp.spatial_bottom(v_wc)
-    v_c = origin_twist_to_point_velocity(X_wc, v_wc, wp.transform_get_translation(X_wcj))
+    v_c = velocity_at_point(v_wc, wp.transform_get_translation(X_wcj) - wp.transform_get_translation(X_wc))
 
     # joint properties
     type = joint_type[joint_idx]

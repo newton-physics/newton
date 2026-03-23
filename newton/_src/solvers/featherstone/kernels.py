@@ -5,12 +5,11 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...math import transform_twist
+from ...math import transform_twist, velocity_at_point
 from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
-    origin_twist_to_point_velocity,
 )
 from ..semi_implicit.kernels_body import joint_force
 
@@ -1584,7 +1583,9 @@ def eval_single_articulation_fk_with_velocity_conversion(
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = origin_twist_to_point_velocity(X_wp, v_wp, wp.transform_get_translation(X_wc))
+            v_parent_origin = velocity_at_point(
+                v_wp, wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
+            )
 
         linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
