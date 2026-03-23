@@ -589,13 +589,9 @@ def _raise_benchmark_priority(realtime=False):
             print(f"{_BENCHMARK_PRIORITY_WARNING} Install 'psutil' to automatically raise priority.")
     elif sys.platform == "linux":
         try:
-            max_pri = os.sched_get_priority_max(os.SCHED_FIFO)
-            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(max_pri))
-        except OSError:
-            print(
-                f"{_BENCHMARK_PRIORITY_WARNING} Add your user to the 'realtime' group"
-                " or run with elevated privileges to enable real-time scheduling."
-            )
+            os.nice(-20 if realtime else -15)
+        except PermissionError:
+            print(f"{_BENCHMARK_PRIORITY_WARNING} Run with elevated privileges to raise process priority.")
     elif sys.platform == "darwin":
         import ctypes  # noqa: PLC0415
         import ctypes.util  # noqa: PLC0415
