@@ -145,6 +145,22 @@ conflicts = [
         { extra = "torch-cu13" },
     ],
 ]
+# Lower bounds for transitive deps whose upstream packages set no floor.
+# Only affects `uv lock --resolution lowest` (minimum-deps CI).
+constraint-dependencies = [
+    "absl-py>=1.0.0",        # mujoco→; <1.0 requires Python 2.7/3.4
+    "appnope>=0.1.0",        # ipykernel→; 0.0.x fails to build on non-macOS
+    "bleach>=5.0.0",          # nbconvert→; ancient sdists fail with modern Python
+    "configargparse>=1.0",    # open3d→; <1.0 requires pypandoc to build
+    "lxml>=5.0.0",            # yourdfpy→; ancient sdists use Python 2 syntax
+    "munch>=4.0.0",           # imgui-bundle→; <4.0 fails with modern setuptools
+    "py>=1.11.0",             # docs deps→; <1.11 fails on Python 3.12
+    "pympler>=1.0.0",         # asv→; <1.0 doesn't support Python 3.12
+    "pyparsing>=3.0.0",       # matplotlib→; <3.0 uses removed collections.MutableMapping
+    "python-json-logger>=2.0.0",  # jupyter→; ancient sdists fail to build
+    "tabulate>=0.8.0",        # asv→; <0.8 missing README.rst in sdist
+    "wheel>=0.37.0",          # asv→; ancient sdists fail to build
+]
 
 [tool.uv.sources]
 warp-lang = { index = "nvidia" }

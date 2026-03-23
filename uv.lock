@@ -18,6 +18,22 @@ conflicts = [[
     { package = "newton", extra = "torch-cu13" },
 ]]
 
+[manifest]
+constraints = [
+    { name = "absl-py", specifier = ">=1.0.0" },
+    { name = "appnope", specifier = ">=0.1.0" },
+    { name = "bleach", specifier = ">=5.0.0" },
+    { name = "configargparse", specifier = ">=1.0" },
+    { name = "lxml", specifier = ">=5.0.0" },
+    { name = "munch", specifier = ">=4.0.0" },
+    { name = "py", specifier = ">=1.11.0" },
+    { name = "pympler", specifier = ">=1.0.0" },
+    { name = "pyparsing", specifier = ">=3.0.0" },
+    { name = "python-json-logger", specifier = ">=2.0.0" },
+    { name = "tabulate", specifier = ">=0.8.0" },
+    { name = "wheel", specifier = ">=0.37.0" },
+]
+
 [[package]]
 name = "absl-py"
 version = "2.3.1"
