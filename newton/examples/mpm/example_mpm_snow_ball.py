@@ -89,6 +89,10 @@ class Example:
 
         self.viewer.set_model(self.model)
 
+        # Position camera for an elevated side view showing the slope and rolling ball
+        if hasattr(self.viewer, "set_camera"):
+            self.viewer.set_camera(pos=wp.vec3(12.0, -8.0, 14.0), pitch=-30.0, yaw=145.0)
+
         if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
 
