@@ -11,6 +11,7 @@ import warp as wp
 
 from ...core.types import vec5
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
+from ...sim.articulation import origin_twist_to_point_velocity
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
@@ -48,17 +49,6 @@ def make_frame(a: wp.vec3):
     c.x, c.y, c.z
   )
     # fmt: on
-
-
-@wp.func
-def origin_twist_to_point_velocity(
-    X_wb: wp.transform,
-    twist_origin: wp.spatial_vector,
-    point_w: wp.vec3,
-):
-    omega = wp.spatial_bottom(twist_origin)
-    origin_world = wp.transform_get_translation(X_wb)
-    return wp.spatial_top(twist_origin) + wp.cross(omega, point_w - origin_world)
 
 
 @wp.func
