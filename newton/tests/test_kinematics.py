@@ -296,26 +296,31 @@ def test_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test,
     assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
 
 
-def test_fk_mjcf_imported_translated_joint_velocity_matches_finite_difference(test, device):
-    mjcf = """
-    <mujoco model="translated_joint_chain">
-      <compiler angle="radian"/>
-      <option gravity="0 0 0"/>
-      <worldbody>
-        <body name="base">
-          <joint name="hinge" type="hinge" axis="0 0 1"/>
-          <inertial pos="0.2 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
-          <body name="slider" pos="1.0 0.0 0.4">
-            <joint name="slide" type="slide" axis="1 0 0" pos="0.2 0 -0.15"/>
-            <inertial pos="0.35 0 -0.1" mass="1" diaginertia="0.1 0.1 0.1"/>
-          </body>
-        </body>
-      </worldbody>
-    </mujoco>
-    """
-
+def test_ik_prismatic_descendant_recovers_joint_state(test, device):
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
-    builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+
+    base = builder.add_link()
+    slider = builder.add_link()
+
+    builder.body_com[base] = wp.vec3(0.2, 0.0, 0.0)
+    builder.body_com[slider] = wp.vec3(0.35, 0.0, -0.1)
+
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=base,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    j1 = builder.add_joint_prismatic(
+        parent=base,
+        child=slider,
+        axis=newton.Axis.X,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.4), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.2, 0.0, -0.15), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1])
+
     model = builder.finalize(device=device)
 
     q_start = model.joint_q_start.numpy()
@@ -334,26 +339,12 @@ def test_fk_mjcf_imported_translated_joint_velocity_matches_finite_difference(te
     state.joint_qd.assign(qd)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    dt = 1.0e-4
-    q_next = q.copy()
-    q_next[q_start[0]] += qd[qd_start[0]] * dt
-    q_next[q_start[1]] += qd[qd_start[1]] * dt
+    recovered_q = wp.zeros_like(state.joint_q)
+    recovered_qd = wp.zeros_like(state.joint_qd)
+    newton.eval_ik(model, state, recovered_q, recovered_qd)
 
-    state_next = model.state()
-    state_next.joint_q.assign(q_next)
-    state_next.joint_qd.assign(qd)
-    newton.eval_fk(model, state_next.joint_q, state_next.joint_qd, state_next)
-
-    body_q = state.body_q.numpy().reshape(-1, 7)
-    body_q_next = state_next.body_q.numpy().reshape(-1, 7)
-    body_qd = state.body_qd.numpy().reshape(-1, 6)
-    body_labels = model.body_label
-    tip_idx = next(i for i, name in enumerate(body_labels) if name.endswith("slider"))
-
-    origin_vel_fd = (body_q_next[tip_idx, :3] - body_q[tip_idx, :3]) / dt
-    origin_vel_from_body_qd = body_qd[tip_idx, :3]
-
-    assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
+    assert_np_equal(recovered_q.numpy(), q, tol=1.0e-6)
+    assert_np_equal(recovered_qd.numpy(), qd, tol=1.0e-6)
 
 
 def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test, device):
@@ -917,8 +908,8 @@ add_function_test(
 )
 add_function_test(
     TestSimKinematics,
-    "test_fk_mjcf_imported_translated_joint_velocity_matches_finite_difference",
-    test_fk_mjcf_imported_translated_joint_velocity_matches_finite_difference,
+    "test_ik_prismatic_descendant_recovers_joint_state",
+    test_ik_prismatic_descendant_recovers_joint_state,
     devices=devices,
 )
 add_function_test(
