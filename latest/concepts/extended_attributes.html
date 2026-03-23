@@ -809,16 +809,42 @@ These <em>extended attributes</em> are allocated on demand when explicitly reque
 <span id="id2"></span><h2>Extended Contact Attributes<a class="headerlink" href="#extended-contact-attributes" title="Link to this heading">#</a></h2>
 <p>Extended contact attributes are optional arrays on <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> (e.g., contact forces for sensors).
 Request them via <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.request_contact_attributes" title="newton.Model.request_contact_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.request_contact_attributes</span></code></a> or <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.request_contact_attributes" title="newton.ModelBuilder.request_contact_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.request_contact_attributes</span></code></a> before creating a <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> object.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
-<span class="c1"># build/import model ...</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 
-<span class="n">sensor</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">sensors</span><span class="o">.</span><span class="n">SensorContact</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>  <span class="c1"># transparently requests &quot;force&quot;</span>
-<span class="n">contacts</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">Contacts</span><span class="p">(</span>
-    <span class="n">rigid_contact_max</span><span class="p">,</span>
-    <span class="n">soft_contact_max</span><span class="p">,</span>
-    <span class="n">requested_attributes</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">get_requested_contact_attributes</span><span class="p">(),</span>
-<span class="p">)</span>
+<span class="c1"># Request the &quot;force&quot; extended attribute directly</span>
+<span class="n">model</span><span class="o">.</span><span class="n">request_contact_attributes</span><span class="p">(</span><span class="s2">&quot;force&quot;</span><span class="p">)</span>
+
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">contacts</span><span class="o">.</span><span class="n">force</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>True
+</pre></div>
+</div>
+<p>Some components request attributes transparently.  For example,
+<a class="reference internal" href="../api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact" title="newton.sensors.SensorContact"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorContact</span></code></a> requests <code class="docutils literal notranslate"><span class="pre">&quot;force&quot;</span></code> at init time, so
+creating the sensor before allocating contacts is sufficient:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.sensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">SensorContact</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_identity</span><span class="p">()))</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;ball&quot;</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">sensor</span> <span class="o">=</span> <span class="n">SensorContact</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sensing_obj_shapes</span><span class="o">=</span><span class="s2">&quot;ball&quot;</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">contacts</span><span class="o">.</span><span class="n">force</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>True
 </pre></div>
 </div>
 <p>The canonical list is <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts.EXTENDED_ATTRIBUTES" title="newton.Contacts.EXTENDED_ATTRIBUTES"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Contacts.EXTENDED_ATTRIBUTES</span></code></a>:</p>
@@ -844,12 +870,18 @@ Request them via <a class="reference internal" href="../api/_generated/newton.Mo
 <span id="id3"></span><h2>Extended State Attributes<a class="headerlink" href="#extended-state-attributes" title="Link to this heading">#</a></h2>
 <p>Extended state attributes are optional arrays on <a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a> (e.g., accelerations for sensors).
 Request them via <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.request_state_attributes" title="newton.Model.request_state_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.request_state_attributes</span></code></a> or <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.request_state_attributes" title="newton.ModelBuilder.request_state_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.request_state_attributes</span></code></a> before calling <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.state" title="newton.Model.state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.state()</span></code></a>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
-<span class="c1"># build/import model ...</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">request_state_attributes</span><span class="p">(</span><span class="s2">&quot;body_qdd&quot;</span><span class="p">)</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 
-<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>  <span class="c1"># state.body_qdd is now allocated</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">body_qdd</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>True
 </pre></div>
 </div>
 <p>The canonical list is <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.EXTENDED_ATTRIBUTES" title="newton.State.EXTENDED_ATTRIBUTES"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.EXTENDED_ATTRIBUTES</span></code></a>:</p>
