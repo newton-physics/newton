@@ -120,7 +120,6 @@ class Example:
         # setup mpm solver
         mpm_options = SolverImplicitMPM.Config()
         mpm_options.voxel_size = voxel_size
-        mpm_options.tolerance = 1.0e-6
         mpm_options.grid_type = "fixed"  # fixed grid so we can graph-capture
         mpm_options.grid_padding = 50
         mpm_options.max_active_cell_count = 1 << 15
@@ -219,7 +218,7 @@ class Example:
         self.simulate_sand()
 
     def collect_collider_impulses(self):
-        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver._collect_collider_impulses(
+        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
             self.sand_state_0
         )
         self.collider_impulse_ids.fill_(-1)
@@ -288,7 +287,7 @@ class Example:
         )
 
         if self.show_impulses:
-            impulses, pos, _cid = self.mpm_solver._collect_collider_impulses(self.sand_state_0)
+            impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(self.sand_state_0)
             self.viewer.log_lines(
                 "/impulses",
                 starts=pos,

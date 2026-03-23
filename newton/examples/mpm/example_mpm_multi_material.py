@@ -39,17 +39,17 @@ class Example:
         # Multi-material setup via model.mpm.* custom attributes
         # Snow: soft, compressible, low friction
         self.model.mpm.yield_pressure[snow_particles].fill_(2.0e4)
-        self.model.mpm.yield_stress[snow_particles].fill_(1.0e3)
-        self.model.mpm.tensile_yield_ratio[snow_particles].fill_(0.05)
+        self.model.mpm.tensile_yield_ratio[snow_particles].fill_(0.2)
         self.model.mpm.friction[snow_particles].fill_(0.1)
         self.model.mpm.hardening[snow_particles].fill_(10.0)
+        self.model.mpm.dilatancy[snow_particles].fill_(1.0)
 
         # Mud: viscous, cohesive
         self.model.mpm.yield_pressure[mud_particles].fill_(1.0e10)
         self.model.mpm.yield_stress[mud_particles].fill_(3.0e2)
         self.model.mpm.tensile_yield_ratio[mud_particles].fill_(1.0)
-        self.model.mpm.hardening[mud_particles].fill_(2.0)
         self.model.mpm.friction[mud_particles].fill_(0.0)
+        self.model.mpm.viscosity[mud_particles].fill_(100.0)
 
         mpm_options = SolverImplicitMPM.Config()
         mpm_options.voxel_size = args.voxel_size
@@ -76,7 +76,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
-            self.solver._project_outside(self.state_1, self.state_1, self.sim_dt)
+            self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -103,22 +103,22 @@ class Example:
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, voxel_size: float):
-        # inactive particles
+        # kinematic particles (mass=0, density=0 triggers infinite-mass BC)
         Example._spawn_particles(
             builder,
             voxel_size,
             bounds_lo=np.array([-0.5, -0.5, 0.0]),
             bounds_hi=np.array([0.5, 0.5, 0.25]),
-            density=1000.0,
-            flags=0,
+            density=0.0,
+            flags=newton.ParticleFlags.ACTIVE,
         )
 
         # sand particles
         sand_particles = Example._spawn_particles(
             builder,
             voxel_size,
-            bounds_lo=np.array([0.25, -0.5, 0.5]),
-            bounds_hi=np.array([0.75, 0.5, 0.75]),
+            bounds_lo=np.array([-0.5, 0.25, 0.5]),
+            bounds_hi=np.array([0.5, 0.75, 0.75]),
             density=2500.0,
             flags=newton.ParticleFlags.ACTIVE,
         )
@@ -127,8 +127,8 @@ class Example:
         snow_particles = Example._spawn_particles(
             builder,
             voxel_size,
-            bounds_lo=np.array([-0.75, -0.5, 0.5]),
-            bounds_hi=np.array([-0.25, 0.5, 0.75]),
+            bounds_lo=np.array([-0.5, -0.75, 0.5]),
+            bounds_hi=np.array([0.5, -0.25, 0.75]),
             density=300,
             flags=newton.ParticleFlags.ACTIVE,
         )
@@ -137,8 +137,8 @@ class Example:
         mud_particles = Example._spawn_particles(
             builder,
             voxel_size,
-            bounds_lo=np.array([-0.5, -0.25, 1.0]),
-            bounds_hi=np.array([0.5, 0.25, 1.5]),
+            bounds_lo=np.array([-0.25, -0.5, 1.0]),
+            bounds_hi=np.array([0.25, 0.5, 1.5]),
             density=1000.0,
             flags=newton.ParticleFlags.ACTIVE,
         )
