@@ -205,25 +205,11 @@ def init_viewer(parser=None):
         args = parser.parse_known_args()[0]
     else:
         args = parser.parse_args()
-    if args.quiet:
-        wp.config.quiet = True
-    if args.device:
-        wp.set_device(args.device)
 
     if args.viewer == "gl":
         viewer = ViewerLW(headless=args.headless)
-    elif args.viewer == "usd":
-        if args.output_path is None:
-            raise ValueError("--output-path is required when using usd viewer")
-        viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
-    elif args.viewer == "rerun":
-        viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
-    elif args.viewer == "null":
-        viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
-    elif args.viewer == "viser":
-        viewer = newton.viewer.ViewerViser()
     else:
-        raise ValueError(f"Invalid viewer: {args.viewer}")
+        viewer, args = newton.examples.init(parser)
     return viewer, args
 
 

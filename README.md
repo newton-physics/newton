@@ -232,7 +232,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_franka_teleop.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_franka_teleop.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_franka_teleop.jpg" alt="Franka Teleop">
       </a>
     </td>
