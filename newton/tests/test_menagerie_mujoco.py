@@ -2227,8 +2227,10 @@ class TestMenagerieBase(unittest.TestCase):
         from mujoco_warp._src import smooth as mjw_smooth
 
         model = self._newton_model
-        state = self._newton_state
         solver = self._newton_solver
+
+        # Use a local state so we don't mutate shared state used by other tests
+        state = model.state()
 
         # Perturb joint positions so FK has something to compute
         rng = np.random.default_rng(seed=42)
@@ -2249,7 +2251,6 @@ class TestMenagerieBase(unittest.TestCase):
                 q = joint_q_np[qi : qi + 4]
                 q /= np.linalg.norm(q)
 
-        model.joint_q.assign(joint_q_np)
         state.joint_q.assign(joint_q_np)
 
         # Sync perturbed joints to Newton's mjwarp qpos

@@ -1284,10 +1284,8 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
     usd_scene_file = "usd_structured/Dual_wrist_camera.usda"
 
     num_worlds = 2
-    num_steps = 100
+    num_steps = 0  # Dynamics disabled: native mujoco_warp crashes with free(): invalid pointer
     control_strategy = StructuredControlStrategy(seed=42)
-
-    skip_reason = "Native mujoco_warp crashes with free(): invalid pointer"
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
