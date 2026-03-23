@@ -95,13 +95,6 @@ def project_grains(
     p_pos = particle_pos[pid]
     p_frame = particle_frames[pid]
 
-    # keep within source particle
-    # pos_loc = wp.inverse(p_frame) @ (pos_adv - p_pos)
-    # dist = wp.max(wp.abs(pos_loc))
-    # if dist > radius:
-    #     pos_loc = pos_loc / dist * radius
-    # p_pos_adv = p_frame @ pos_loc + p_pos
-
     p_frame = (radius[pid] * radius[pid]) * p_frame * wp.transpose(p_frame)
     pos_loc = pos_adv - p_pos
     vn = wp.max(1.0, wp.dot(pos_loc, wp.inverse(p_frame) * pos_loc))

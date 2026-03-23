@@ -2714,20 +2714,35 @@ def parse_usd(
         )
 
     # Parse Newton actuator prims from the USD stage.
-    from newton_actuators import parse_actuator_prim  # noqa: PLC0415
+    try:
+        from newton_actuators import parse_actuator_prim  # noqa: PLC0415
+    except ImportError:
+        parse_actuator_prim = None
 
     actuator_count = 0
-    path_to_dof = {
-        path: builder.joint_qd_start[idx] for path, idx in path_joint_map.items() if idx < len(builder.joint_qd_start)
-    }
-    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-        parsed = parse_actuator_prim(prim)
-        if parsed is None:
-            continue
-        dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
-        if dof_indices:
-            builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
-            actuator_count += 1
+    if parse_actuator_prim is not None:
+        path_to_dof = {
+            path: builder.joint_qd_start[idx]
+            for path, idx in path_joint_map.items()
+            if idx < len(builder.joint_qd_start)
+        }
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            parsed = parse_actuator_prim(prim)
+            if parsed is None:
+                continue
+            dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
+            if dof_indices:
+                builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
+                actuator_count += 1
+    else:
+        # TODO: Replace this string-based type name check with a proper schema query
+        # once the Newton actuator USD schema is merged
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            if prim.GetTypeName() == "Actuator":
+                raise ImportError(
+                    f"USD stage contains actuator prims (e.g. {prim.GetPath()}) but newton-actuators is not installed. "
+                    "Install with: pip install newton[sim]"
+                )
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 

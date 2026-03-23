@@ -658,6 +658,30 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_beam_twist",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 100},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_snow_ball",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30, "voxel-size": 0.2},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_viscous",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30, "voxel-size": 0.01},
+    use_viewer=True,
+)
+
 
 add_example_test(
     TestBasicExamples,

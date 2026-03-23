@@ -133,10 +133,7 @@ class Example:
         mpm_options.max_iterations = 50
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
-        mpm_options.collider_velocity_mode = "finite_difference"
-
-        # Set per-particle hardening via custom attributes
-        self.model.mpm.hardening.fill_(0.0)
+        mpm_options.collider_velocity_mode = "backward"
 
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(
