@@ -214,7 +214,13 @@ class CheckOutput:
             # we allow strings starting of the form "Module xxx load on device xxx"
             # for lazy loaded modules
             filtered_s = "\n".join(
-                [line for line in s.splitlines() if not (line.startswith("Module") and "load on device" in line)]
+                [
+                    line
+                    for line in s.splitlines()
+                    if not (line.startswith("Module") and "load on device" in line)
+                    and not (line.startswith("#") and "PXR_WORK_THREAD_LIMIT" in line)
+                    and not (line == "##################################################################")
+                ]
             )
 
             if filtered_s.strip():
