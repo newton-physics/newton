@@ -67,14 +67,21 @@ def add_example_test(
     test_options_cuda: dict[str, Any] | None = None,
     use_viewer: bool = False,
     test_suffix: str | None = None,
+    expected_stderr: list[str] | None = None,
     expected_stderr_cpu: list[str] | None = None,
+    allowed_stderr_cpu: list[str] | None = None,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase.
 
     Args:
-        expected_stderr_cpu: Regex patterns expected in subprocess stderr on CPU.
-            Matching lines are filtered before output checking; the test fails
-            if any pattern is absent.
+        expected_stderr: Regex patterns expected in subprocess stderr on all
+            devices.  Matching lines are filtered before output checking; the
+            test fails if any pattern is absent.
+        expected_stderr_cpu: Like *expected_stderr* but only asserted on CPU.
+        allowed_stderr_cpu: Regex patterns that may appear in stderr on CPU.
+            Matching lines are filtered before output checking but their
+            absence does **not** cause a failure (useful for warnings that
+            only appear on CPU-only machines).
     """
 
     # verify the module exists (use package-relative path so this works from any CWD)
@@ -174,16 +181,23 @@ def add_example_test(
                 command, capture_output=True, text=True, env=env_vars, timeout=test_timeout, check=False
             )
 
-        # Check expected stderr patterns on CPU and filter before printing
+        # Check expected stderr patterns and filter before printing
         stderr = result.stderr
-        expected_patterns = list(expected_stderr_cpu or []) if wp.get_device(device).is_cpu else []
+        expected_patterns = list(expected_stderr or [])
+        if wp.get_device(device).is_cpu:
+            expected_patterns.extend(expected_stderr_cpu or [])
         for pattern in expected_patterns:
             test.assertRegex(stderr, pattern, f"Expected stderr pattern not found: {pattern}")
 
-        # Filter expected lines (and Python warning source-context lines) so
-        # CheckOutput won't flag them
+        # Build the full filter list: expected (already asserted) + allowed
+        filter_patterns = list(expected_patterns)
+        if wp.get_device(device).is_cpu:
+            filter_patterns.extend(allowed_stderr_cpu or [])
+
+        # Filter expected/allowed lines (and Python warning source-context
+        # lines) so CheckOutput won't flag them
         if stderr:
-            filters = [re.compile(p) for p in expected_patterns]
+            filters = [re.compile(p) for p in filter_patterns]
             stderr = "\n".join(
                 line
                 for line in stderr.splitlines()
@@ -255,6 +269,8 @@ add_example_test(
     test_options={"num-frames": 150},
     expected_stderr_cpu=[
         "mesh-mesh contacts will be skipped",
+    ],
+    allowed_stderr_cpu=[
         "Warp CUDA error 100: no CUDA-capable device is detected",
     ],
 )
@@ -390,6 +406,8 @@ add_example_test(
     use_viewer=True,
     expected_stderr_cpu=[
         "mesh-mesh contacts will be skipped",
+    ],
+    allowed_stderr_cpu=[
         "Warp CUDA error 100: no CUDA-capable device is detected",
     ],
 )
@@ -414,6 +432,7 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expected_stderr=["possibly invalid inertia tensor"],
 )
 add_example_test(
     TestRobotExamples,
@@ -421,6 +440,10 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
+    expected_stderr=[
+        "possibly invalid inertia tensor",
+        "authored mass and density without authored diagonalInertia",
+    ],
 )
 add_example_test(
     TestRobotExamples,
@@ -768,6 +791,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
+    expected_stderr=["Detected non-manifold edge"],
 )
 add_example_test(
     TestMultiphysicsExamples,
