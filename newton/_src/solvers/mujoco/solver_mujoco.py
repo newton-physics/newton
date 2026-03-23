@@ -3067,6 +3067,7 @@ class SolverMuJoCo(SolverBase):
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
             self._update_eq_properties()
             self._update_mimic_eq_properties()
+            need_const_0 = True
         if flags & SolverNotifyFlags.TENDON_PROPERTIES:
             self._update_tendon_properties()
             need_const_0 = True
@@ -3085,6 +3086,11 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.dof_solref[:] = self.mjw_model.dof_solref.numpy()[0]
                 self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
+
+            # Sync eq_data before mj_setConst so it can recompute derived
+            # fields (e.g. body2-frame anchor for CONNECT constraints).
+            if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
+                self.mj_model.eq_data[:] = self.mjw_model.eq_data.numpy()[0]
 
             if need_length_range or need_const_fixed or need_const_0:
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
@@ -5872,6 +5878,7 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
+
 
     def _update_mimic_eq_properties(self):
         """Update mimic constraint properties in the MuJoCo model.

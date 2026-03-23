@@ -3722,6 +3722,95 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
                 err_msg=f"World {w}: CONNECT second anchor (data[3:6]) was incorrectly overwritten",
             )
 
+    def _build_connect_anchor_model(self):
+        """Build a model with a CONNECT constraint for anchor update tests."""
+        builder = newton.ModelBuilder(gravity=0.0)
+
+        root = builder.add_link(mass=0.0, inertia=wp.mat33(0.0))
+        j_root = builder.add_joint_fixed(parent=-1, child=root)
+
+        b1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_prismatic(axis=0, parent=root, child=b1)
+
+        b2 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        j2 = builder.add_joint_prismatic(axis=0, parent=root, child=b2)
+
+        builder.add_articulation(joints=[j_root, j1, j2])
+        builder.add_equality_constraint_connect(
+            body1=b1, body2=b2, anchor=(1.0, 0.0, 0.0),
+        )
+        return builder.finalize()
+
+    def _check_connect_anchor_update(self, solver):
+        """Verify anchor update recomputes eq_data[3:6] on the given solver."""
+        # Capture initial eq_data — anchor=(1,0,0) should give data[3:6]=(1,0,0)
+        # since both bodies are at the origin in qpos0.
+        initial_eq_data = solver.mjw_model.eq_data.numpy().copy()
+        np.testing.assert_allclose(
+            initial_eq_data[0, 0, 0:3], [1.0, 0.0, 0.0], atol=1e-6,
+            err_msg="Initial data[0:3] should be anchor (1,0,0)",
+        )
+        np.testing.assert_allclose(
+            initial_eq_data[0, 0, 3:6], [1.0, 0.0, 0.0], atol=1e-6,
+            err_msg="Initial data[3:6] should be (1,0,0) for co-located bodies",
+        )
+
+        # Update anchor to (0.5, 0, 0).
+        solver.model.equality_constraint_anchor.assign(
+            np.array([[0.5, 0.0, 0.0]], dtype=np.float32),
+        )
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        updated_eq_data = solver.mjw_model.eq_data.numpy()
+        np.testing.assert_allclose(
+            updated_eq_data[0, 0, 0:3], [0.5, 0.0, 0.0], atol=1e-6,
+            err_msg="Updated data[0:3] should be new anchor (0.5,0,0)",
+        )
+        np.testing.assert_allclose(
+            updated_eq_data[0, 0, 3:6], [0.5, 0.0, 0.0], atol=1e-6,
+            err_msg="Updated data[3:6] should be recomputed to (0.5,0,0)",
+        )
+
+    def test_eq_data_connect_anchor_update(self):
+        """Test that updating the CONNECT anchor recomputes eq_data[3:6] (GPU path)."""
+        model = self._build_connect_anchor_model()
+        solver = SolverMuJoCo(
+            model, iterations=100, ls_iterations=50, disable_contacts=True,
+        )
+        self._check_connect_anchor_update(solver)
+
+    def test_eq_data_connect_anchor_update_cpu(self):
+        """Test that updating the CONNECT anchor recomputes eq_data[3:6] (CPU path)."""
+        model = self._build_connect_anchor_model()
+        solver = SolverMuJoCo(
+            model, iterations=100, ls_iterations=50, disable_contacts=True,
+            use_mujoco_cpu=True,
+        )
+
+        # On the CPU path, mj_setConst writes to mj_model.eq_data.
+        np.testing.assert_allclose(
+            solver.mj_model.eq_data[0, 0:3], [1.0, 0.0, 0.0], atol=1e-6,
+            err_msg="Initial data[0:3] should be anchor (1,0,0)",
+        )
+        np.testing.assert_allclose(
+            solver.mj_model.eq_data[0, 3:6], [1.0, 0.0, 0.0], atol=1e-6,
+            err_msg="Initial data[3:6] should be (1,0,0) for co-located bodies",
+        )
+
+        model.equality_constraint_anchor.assign(
+            np.array([[0.5, 0.0, 0.0]], dtype=np.float32),
+        )
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(
+            solver.mj_model.eq_data[0, 0:3], [0.5, 0.0, 0.0], atol=1e-6,
+            err_msg="Updated data[0:3] should be new anchor (0.5,0,0)",
+        )
+        np.testing.assert_allclose(
+            solver.mj_model.eq_data[0, 3:6], [0.5, 0.0, 0.0], atol=1e-6,
+            err_msg="Updated data[3:6] should be recomputed to (0.5,0,0)",
+        )
+
 
 class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
     """Test fixed tendon property replication and runtime updates across multiple worlds."""
