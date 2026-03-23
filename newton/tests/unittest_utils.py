@@ -220,6 +220,7 @@ class CheckOutput:
                     if not (line.startswith("Module") and "load on device" in line)
                     and not (line.startswith("#") and "PXR_WORK_THREAD_LIMIT" in line)
                     and not (line == "##################################################################")
+                    and not line.startswith("Matplotlib is building the font cache")
                 ]
             )
 

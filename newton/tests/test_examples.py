@@ -376,6 +376,10 @@ add_example_test(
     test_options={},
     test_options_cuda={"num-frames": 32},
     use_viewer=True,
+    expected_stderr=[
+        "texture inputs are not yet supported",
+        "_extract_preview_surface_properties",
+    ],
 )
 add_example_test(
     TestClothExamples,
@@ -384,7 +388,11 @@ add_example_test(
     test_options={},
     test_options_cuda={"num-frames": 32},
     use_viewer=True,
-    expected_stderr=["Inertia validation corrected"],
+    expected_stderr=[
+        "Inertia validation corrected",
+        "texture inputs are not yet supported",
+        "_extract_preview_surface_properties",
+    ],
 )
 add_example_test(
     TestClothExamples,
@@ -478,6 +486,8 @@ add_example_test(
     expected_stderr=[
         "possibly invalid inertia tensor",
         "authored mass and density without authored diagonalInertia",
+        "texture inputs are not yet supported",
+        "_extract_preview_surface_properties",
     ],
 )
 add_example_test(
@@ -727,6 +737,7 @@ add_example_test(
     expected_stderr=[
         "possibly invalid inertia tensor",
         "zero mass and zero inertia",
+        "return parse_usd",  # warning source-context line
     ],
 )
 
