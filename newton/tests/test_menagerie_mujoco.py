@@ -1460,9 +1460,13 @@ def compare_mjdata_field(
         newton_np = newton_np[:, 1:]
         native_np = native_np[:, 1:]
 
-    # Quaternion sign handling: q and -q represent the same rotation
+    # Quaternion sign handling: q and -q represent the same rotation.
+    # Pick one sign per quaternion (not per component) to avoid mixing branches.
     if newton_arr.dtype == wp.quat:
-        diff = np.minimum(np.abs(newton_np - native_np), np.abs(newton_np + native_np))
+        direct = np.abs(newton_np - native_np)
+        flipped = np.abs(newton_np + native_np)
+        use_flipped = np.max(flipped, axis=-1, keepdims=True) < np.max(direct, axis=-1, keepdims=True)
+        diff = np.where(use_flipped, flipped, direct)
     else:
         diff = np.abs(newton_np - native_np)
     max_diff = float(np.max(diff))
