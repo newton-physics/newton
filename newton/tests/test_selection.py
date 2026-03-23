@@ -271,7 +271,7 @@ class TestSelection(unittest.TestCase):
             builder.add_articulation([j0, j1], label=label)
             return base, slider, j0, j1
 
-        _target_base, target_slider, target_j0, target_j1 = add_translated_chain("translated_target", 0.0)
+        target_base, target_slider, target_j0, target_j1 = add_translated_chain("translated_target", 0.0)
         other_base, other_slider, other_j0, other_j1 = add_translated_chain("translated_other", 5.0)
 
         model = builder.finalize()
@@ -328,6 +328,7 @@ class TestSelection(unittest.TestCase):
         origin_vel_from_body_qd = body_qd[target_slider, :3]
 
         assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
+        self.assertFalse(np.array_equal(body_q[target_base], sentinel_q[target_base]))
         assert_np_equal(body_q[other_base], sentinel_q[other_base], tol=0.0)
         assert_np_equal(body_q[other_slider], sentinel_q[other_slider], tol=0.0)
         assert_np_equal(body_qd[other_base], sentinel_qd[other_base], tol=0.0)
