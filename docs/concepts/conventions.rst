@@ -107,6 +107,9 @@ Newton Conventions
 
 **Newton** follows the standard physics engine convention for most solvers,
 aligning with Isaac Lab's approach.
+Newton's public ``spatial_vector`` arrays use ``(linear, angular)`` ordering,
+unlike Warp's native ``(angular, linear)`` convention. This applies to arrays
+such as :attr:`newton.State.body_qd` and :attr:`newton.State.body_f`.
 Newton's :attr:`State.body_qd <newton.State.body_qd>` stores **both** linear and angular velocities
 in the world frame.
 
@@ -168,7 +171,7 @@ Summary of Conventions
      - COM, world frame
      - World frame
      - Not named "twist"; typically treated as :math:`[\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]`
-   * - **Newton** (except Featherstone solver, see below)
+   * - **Newton** (except the Featherstone solver; see below)
      - COM, world frame
      - World frame
      - :attr:`~newton.State.body_qd`
@@ -179,7 +182,7 @@ Summary of Conventions
   for free-floating bodies with **non-zero center of mass offsets**. The body may not
   rotate purely about its CoM.
 
-  We will fix this issue with https://github.com/newton-physics/newton/issues/1366.
+  This issue is tracked at https://github.com/newton-physics/newton/issues/1366.
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -265,7 +268,7 @@ the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
 
    \boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}.
 
-This convention is used in all Newton solvers, except for :class:`~newton.solvers.SolverFeatherstone` which does not correctly handle torque application for free-floating bodies with **non-zero center of mass offsets**.
+This convention is used in all Newton solvers, except for :class:`~newton.solvers.SolverFeatherstone`, which does not correctly handle torque application for free-floating bodies with **non-zero center of mass offsets**.
 
 .. warning::
 
@@ -273,7 +276,7 @@ This convention is used in all Newton solvers, except for :class:`~newton.solver
   for free-floating bodies with **non-zero center of mass offsets**. A pure torque will
   incorrectly cause the CoM to translate instead of remaining stationary.
 
-  We will fix this issue with https://github.com/newton-physics/newton/issues/1366.
+  This issue is tracked at https://github.com/newton-physics/newton/issues/1366.
 
 The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
 For free joints, the corresponding 6 dimensions in this array are the spatial wrench applied at the body's center of mass (COM)

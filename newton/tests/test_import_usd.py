@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import math
 import os
@@ -25,7 +13,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.usd as usd
-from newton import JointType
+from newton import BodyFlags, JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
 from newton.math import quat_between_axes
@@ -238,6 +226,81 @@ def Xform "Root" (
         # finalize requires skip_validation_joints=True for orphan joints
         model = builder.finalize(skip_validation_joints=True)
         self.assertEqual(model.body_count, 4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_body_to_world_fixed_joint(self):
+        """A body connected to the world via a PhysicsFixedJoint must be imported
+        with a FIXED joint (not FREE) and placed in its own articulation."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Main articulation: two bodies with a revolute joint.
+        arm = UsdGeom.Xform.Define(stage, "/World/Arm")
+        UsdPhysics.ArticulationRootAPI.Apply(arm.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/Arm/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        base.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+        col_base = UsdGeom.Cube.Define(stage, "/World/Arm/Base/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_base.GetPrim())
+
+        link1 = UsdGeom.Xform.Define(stage, "/World/Arm/Link1")
+        UsdPhysics.RigidBodyAPI.Apply(link1.GetPrim())
+        link1.AddTranslateOp().Set(Gf.Vec3d(1, 0, 0))
+        col_link1 = UsdGeom.Cube.Define(stage, "/World/Arm/Link1/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_link1.GetPrim())
+
+        rev = UsdPhysics.RevoluteJoint.Define(stage, "/World/Arm/RevJoint")
+        rev.CreateBody0Rel().SetTargets([base.GetPath()])
+        rev.CreateBody1Rel().SetTargets([link1.GetPath()])
+        rev.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev.CreateAxisAttr().Set("Z")
+
+        # world_link: a rigid body fixed-jointed to the world (body0 unset = world).
+        wl = UsdGeom.Xform.Define(stage, "/World/WorldLink")
+        UsdPhysics.RigidBodyAPI.Apply(wl.GetPrim())
+        wl.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+        col_wl = UsdGeom.Cube.Define(stage, "/World/WorldLink/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_wl.GetPrim())
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/WorldLink/FixedJoint")
+        fixed.CreateBody1Rel().SetTargets([wl.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        # 3 bodies: Base, Link1, WorldLink.
+        self.assertEqual(builder.body_count, 3)
+
+        wl_body_idx = builder.body_label.index("/World/WorldLink")
+        wl_joint_idx = next(i for i in range(builder.joint_count) if builder.joint_child[i] == wl_body_idx)
+
+        # world_link must have a FIXED joint, not a FREE joint.
+        self.assertEqual(builder.joint_type[wl_joint_idx], newton.JointType.FIXED)
+        # Parent is -1 (world).
+        self.assertEqual(builder.joint_parent[wl_joint_idx], -1)
+        # world_link's FIXED joint must belong to its own articulation,
+        # separate from the main arm articulation.
+        wl_art = builder.joint_articulation[wl_joint_idx]
+        self.assertNotEqual(wl_art, -1)
+
+        rev_joint_idx = builder.joint_label.index("/World/Arm/RevJoint")
+        arm_art = builder.joint_articulation[rev_joint_idx]
+        self.assertNotEqual(wl_art, arm_art)
+
+        # Model must finalize without errors (no orphan joint issues).
+        model = builder.finalize()
+        self.assertEqual(model.body_count, 3)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):
@@ -1213,6 +1276,62 @@ class TestImportUsdPhysics(unittest.TestCase):
         # Verify inertia is also positive (not garbage).
         inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
         self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_kinematic_enabled_flag(self):
+        """USD bodies with physics:kinematicEnabled=true get BodyFlags.KINEMATIC."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Kinematic root body
+        kin_xform = UsdGeom.Xform.Define(stage, "/World/Kinematic")
+        kin_prim = kin_xform.GetPrim()
+        rb_api = UsdPhysics.RigidBodyAPI.Apply(kin_prim)
+        rb_api.CreateKinematicEnabledAttr().Set(True)
+        mass_api = UsdPhysics.MassAPI.Apply(kin_prim)
+        mass_api.CreateMassAttr().Set(1.0)
+        sphere = UsdGeom.Sphere.Define(stage, "/World/Kinematic/Sphere")
+        UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+
+        # Dynamic body
+        dyn_xform = UsdGeom.Xform.Define(stage, "/World/Dynamic")
+        dyn_prim = dyn_xform.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(dyn_prim)
+        mass_api2 = UsdPhysics.MassAPI.Apply(dyn_prim)
+        mass_api2.CreateMassAttr().Set(1.0)
+        sphere2 = UsdGeom.Sphere.Define(stage, "/World/Dynamic/Sphere")
+        UsdPhysics.CollisionAPI.Apply(sphere2.GetPrim())
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        kin_idx = builder.body_label.index("/World/Kinematic")
+        dyn_idx = builder.body_label.index("/World/Dynamic")
+        self.assertTrue(builder.body_flags[kin_idx] & int(BodyFlags.KINEMATIC))
+        self.assertEqual(builder.body_flags[dyn_idx], int(BodyFlags.DYNAMIC))
+
+        model = builder.finalize()
+        flags = model.body_flags.numpy()
+        self.assertTrue(flags[kin_idx] & int(BodyFlags.KINEMATIC))
+        self.assertEqual(flags[dyn_idx], int(BodyFlags.DYNAMIC))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_kinematic_enabled_articulation(self):
+        """Kinematic flag is parsed for articulation root bodies from USD."""
+        builder = newton.ModelBuilder()
+        builder.add_usd(os.path.join(os.path.dirname(__file__), "assets", "actuator_test.usda"))
+
+        base_idx = builder.body_label.index("/World/Robot/Base")
+        self.assertTrue(builder.body_flags[base_idx] & int(BodyFlags.KINEMATIC))
+
+        # Non-root links should be dynamic
+        link1_idx = builder.body_label.index("/World/Robot/Link1")
+        link2_idx = builder.body_label.index("/World/Robot/Link2")
+        self.assertEqual(builder.body_flags[link1_idx], int(BodyFlags.DYNAMIC))
+        self.assertEqual(builder.body_flags[link2_idx], int(BodyFlags.DYNAMIC))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_cube_cylinder_joint_count(self):
@@ -2917,14 +3036,14 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
 
         usd_quat = usd.value_to_warp(shape_spec.localRot)
         newton_pos = newton_transform[:3]
-        newton_quat = newton_transform[3:7]
+        newton_quat = wp.quat(*newton_transform[3:7])
 
         for i, (n_pos, u_pos) in enumerate(zip(newton_pos, shape_spec.localPos, strict=False)):
             test.assertAlmostEqual(
                 n_pos, u_pos, places=5, msg=f"Shape {sid} position[{i}]: USD={u_pos}, Newton={n_pos}"
             )
 
-        if newton_type in [3, 5]:
+        if newton_type in {newton.GeoType.CAPSULE, newton.GeoType.CYLINDER, newton.GeoType.CONE}:
             usd_axis = int(shape_spec.axis) if hasattr(shape_spec, "axis") else 2
             axis_quat = (
                 quat_between_axes(newton.Axis.Z, newton.Axis.X)
@@ -7957,6 +8076,174 @@ def Mesh "JustAMesh" ()
         self.assertEqual(len(builder.particle_q), 10)
         self.assertEqual(len(builder.tet_indices), 4)
         self.assertEqual(len(builder.tri_indices), 12)
+
+
+class TestResolveUsdFromUrl(unittest.TestCase):
+    """Tests for recursive USD reference resolution in :func:`resolve_usd_from_url`."""
+
+    def _run_resolve(self, url_to_layer, base_url="https://example.com/assets/scene.usd"):
+        """Run resolve_usd_from_url with mocked network and USD stage I/O.
+
+        Args:
+            url_to_layer: mapping from URL to USDA layer string content.
+            base_url: the top-level URL passed to resolve_usd_from_url.
+
+        Returns:
+            Tuple of (result_path, target_dir, downloaded_urls).
+        """
+        downloaded_urls = []
+
+        def fake_get(url, **_kwargs):
+            downloaded_urls.append(url)
+            resp = mock.MagicMock()
+            layer = url_to_layer.get(url)
+            if layer is None:
+                resp.status_code = 404
+                return resp
+            resp.status_code = 200
+            resp.content = layer.encode("utf-8")
+            return resp
+
+        # Map cache-relative path -> layer string so the mock stage can return it.
+        file_to_layer = {}
+        tmpdir = tempfile.mkdtemp()
+
+        # Precompute exact local-key -> layer mapping from URLs.
+        base_url_dir = base_url.rsplit("/", 1)[0]
+        local_key_to_layer = {}
+        for url, layer in url_to_layer.items():
+            if url.startswith(base_url_dir + "/"):
+                local_key_to_layer[url[len(base_url_dir) + 1 :]] = layer
+
+        def _local_key(path):
+            return os.path.relpath(path, tmpdir).replace(os.sep, "/")
+
+        def fake_stage_open(path, _load_policy):
+            layer_str = file_to_layer.get(_local_key(path), "")
+            stage = mock.MagicMock()
+            stage.GetRootLayer().ExportToString.return_value = layer_str
+            return stage
+
+        # Track writes so we can populate file_to_layer when the function
+        # writes a downloaded file to disk.
+        real_open = open
+
+        def tracking_open(path, mode="r", **kwargs):
+            fh = real_open(path, mode, **kwargs)
+            if "w" in mode or "b" in mode:
+                key = _local_key(path)
+                if key in local_key_to_layer:
+                    file_to_layer[key] = local_key_to_layer[key]
+            return fh
+
+        mock_requests = mock.MagicMock()
+        mock_requests.get = fake_get
+
+        mock_usd = mock.MagicMock()
+        mock_usd.Stage.Open = fake_stage_open
+        mock_usd.Stage.LoadNone = None
+
+        mock_pxr = mock.MagicMock()
+        mock_pxr.Usd = mock_usd
+
+        from newton._src.utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
+
+        with (
+            mock.patch.dict(
+                "sys.modules",
+                {"requests": mock_requests, "pxr": mock_pxr, "pxr.Usd": mock_usd},
+            ),
+            mock.patch("builtins.open", tracking_open),
+        ):
+            result = resolve_usd_from_url(base_url, target_folder_name=tmpdir)
+
+        return result, tmpdir, downloaded_urls
+
+    def test_single_level_references(self):
+        """References in the root stage are downloaded."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./child_a.usd@\nreferences = @./child_b.usd@",
+            "https://example.com/assets/child_a.usd": "",
+            "https://example.com/assets/child_b.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/child_a.usd", downloaded_urls)
+        self.assertIn("https://example.com/assets/child_b.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "child_a.usd")))
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "child_b.usd")))
+
+    def test_recursive_references(self):
+        """References in child stages are resolved recursively."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./robot.usd@",
+            "https://example.com/assets/robot.usd": "references = @./collisions.usd@",
+            "https://example.com/assets/collisions.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/robot.usd", downloaded_urls)
+        self.assertIn("https://example.com/assets/collisions.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
+
+    def test_deep_recursive_references(self):
+        """Three levels of nesting are resolved."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./level1.usd@",
+            "https://example.com/assets/level1.usd": "references = @./level2.usd@",
+            "https://example.com/assets/level2.usd": "references = @./level3.usd@",
+            "https://example.com/assets/level3.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/level3.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "level3.usd")))
+
+    def test_no_duplicate_downloads(self):
+        """The same reference appearing in multiple stages is downloaded only once."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./a.usd@\nreferences = @./b.usd@",
+            "https://example.com/assets/a.usd": "references = @./shared.usd@",
+            "https://example.com/assets/b.usd": "references = @./shared.usd@",
+            "https://example.com/assets/shared.usd": "",
+        }
+        _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        shared_downloads = [u for u in downloaded_urls if u.endswith("shared.usd")]
+        self.assertEqual(len(shared_downloads), 1)
+
+    def test_cyclic_references(self):
+        """Cyclic references (including back to root) do not cause infinite recursion."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./a.usd@",
+            "https://example.com/assets/a.usd": "references = @./b.usd@",
+            "https://example.com/assets/b.usd": "references = @./scene.usd@",
+        }
+        _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        # Root URL is fetched once at the top level; recursive refs back to it must not re-download.
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/scene.usd"), 1)
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/a.usd"), 1)
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/b.usd"), 1)
+
+    def test_nested_subdirectory_references(self):
+        """References in subdirectories preserve correct local paths."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+            "https://example.com/assets/robots/robot.usd": "references = @./collisions.usd@",
+            "https://example.com/assets/robots/collisions.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/robots/collisions.usd", downloaded_urls)
+        # collisions.usd must be inside robots/, not at cache root
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "robots", "collisions.usd")))
+        self.assertFalse(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
+
+    def test_path_traversal_rejected(self):
+        """References with .. that escape the target folder are skipped."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @../secret.usd@",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        # Escaped reference must not be fetched or written.
+        escaped_urls = [u for u in downloaded_urls if "secret.usd" in u]
+        self.assertEqual(len(escaped_urls), 0)
+        self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
 
 
 if __name__ == "__main__":

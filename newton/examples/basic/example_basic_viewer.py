@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Viewer
@@ -92,10 +80,35 @@ class Example:
         self.time = 0.0
         self.spacing = 2.0
 
+        # Renderer settings
+        self.renderer = getattr(self.viewer, "renderer", None)
+
     def gui(self, ui):
         ui.text("Custom UI text")
         _changed, self.time = ui.slider_float("Time", self.time, 0.0, 100.0)
         _changed, self.spacing = ui.slider_float("Spacing", self.spacing, 0.0, 10.0)
+
+        if self.renderer is not None:
+            ui.separator()
+            ui.text("Renderer Settings")
+            changed, value = ui.slider_float("Exposure", self.renderer.exposure, 0.0, 5.0)
+            if changed:
+                self.renderer.exposure = value
+            changed, value = ui.slider_float("Diffuse Scale", self.renderer.diffuse_scale, 0.0, 5.0)
+            if changed:
+                self.renderer.diffuse_scale = value
+            changed, value = ui.slider_float("Specular Scale", self.renderer.specular_scale, 0.0, 5.0)
+            if changed:
+                self.renderer.specular_scale = value
+            changed, value = ui.slider_float("Shadow Radius", self.renderer.shadow_radius, 0.0, 10.0)
+            if changed:
+                self.renderer.shadow_radius = value
+            changed, value = ui.slider_float("Shadow Extents", self.renderer.shadow_extents, 1.0, 50.0)
+            if changed:
+                self.renderer.shadow_extents = value
+            changed, value = ui.checkbox("Spotlight", self.renderer.spotlight_enabled)
+            if changed:
+                self.renderer.spotlight_enabled = value
 
     def step(self):
         pass

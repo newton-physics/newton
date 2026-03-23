@@ -5,7 +5,10 @@ ci:
   autoupdate_branch: ""
   autoupdate_commit_msg: "[pre-commit.ci] pre-commit autoupdate"
   autoupdate_schedule: quarterly
-  skip: []
+  # pre-commit.ci runs hooks without network access, but uv-lock needs to
+  # resolve hatchling for this dynamically-versioned project.
+  skip:
+    - uv-lock
   submodules: false
 
 # See https://pre-commit.com for more information

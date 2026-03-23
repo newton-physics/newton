@@ -1,23 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
 import ctypes
+import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from importlib import metadata
 from typing import Any, Literal
 
 import numpy as np
@@ -26,7 +16,7 @@ import warp as wp
 import newton as nt
 from newton.selection import ArticulationView
 
-from ..core.types import nparray, override
+from ..core.types import Axis, nparray, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
@@ -34,6 +24,23 @@ from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind
+
+
+def _parse_version_tuple(version: str) -> tuple[int, ...]:
+    parts = re.findall(r"\d+", version)
+    return tuple(int(part) for part in parts[:3])
+
+
+def _imgui_uses_imvec4_color_edit3() -> bool:
+    """Return True when installed imgui_bundle expects ImVec4 in color_edit3."""
+    try:
+        version = metadata.version("imgui_bundle")
+    except metadata.PackageNotFoundError:
+        return False
+    return _parse_version_tuple(version) >= (1, 92, 6)
+
+
+_IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
 
 
 @wp.kernel
@@ -247,6 +254,8 @@ class ViewerGL(ViewerBase):
         else:
             self.ui = None
         self._gizmo_log = None
+        self._gizmo_active = {}
+        self.gizmo_is_using = False
 
         # Performance tracking
         self._fps_history = []
@@ -256,6 +265,12 @@ class ViewerGL(ViewerBase):
 
         # a low resolution sphere mesh for point rendering
         self._point_mesh = None
+
+        # Very low-poly sphere mesh dedicated to Gaussian splat rendering.
+        self._gaussian_mesh: MeshGL | None = None
+
+        # Per-name cache of numpy arrays for Gaussian point cloud rendering.
+        self._gaussian_cache: dict[str, dict] = {}
 
         # UI visibility toggle
         self.show_ui = True
@@ -327,15 +342,45 @@ class ViewerGL(ViewerBase):
         self,
         name: str,
         transform: wp.transform,
+        *,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
+        snap_to: wp.transform | None = None,
     ):
         """Log or update a transform gizmo for the current frame.
 
         Args:
             name: Unique gizmo path/name.
             transform: Gizmo world transform.
+            translate: Axes on which the translation handles are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all translation handles.
+            rotate: Axes on which the rotation rings are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all rotation rings.
+            snap_to: Optional world transform to snap to when this gizmo is
+                released by the user.
         """
-        # Store for this frame; call this every frame you want it drawn/active
-        self._gizmo_log[name] = transform
+        axis_order = (Axis.X, Axis.Y, Axis.Z)
+
+        if translate is None:
+            t = axis_order
+        else:
+            translate_axes = {Axis.from_any(axis) for axis in translate}
+            t = tuple(axis for axis in axis_order if axis in translate_axes)
+
+        if rotate is None:
+            r = axis_order
+        else:
+            rotate_axes = {Axis.from_any(axis) for axis in rotate}
+            r = tuple(axis for axis in axis_order if axis in rotate_axes)
+
+        self._gizmo_log[name] = {
+            "transform": transform,
+            "snap_to": snap_to,
+            "translate": t,
+            "rotate": r,
+        }
 
     @override
     def clear_model(self):
@@ -813,6 +858,151 @@ class ViewerGL(ViewerBase):
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
+    _SH_C0 = 0.28209479177387814
+
+    def _create_gaussian_mesh(self):
+        """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
+        mesh = nt.Mesh.create_sphere(1.0, num_latitudes=3, num_longitudes=4, compute_inertia=False)
+        self._gaussian_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
+        points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+        normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+        uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+        indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
+        self._gaussian_mesh.update(points, indices, normals, uvs)
+
+    @override
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: nt.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """Log a :class:`newton.Gaussian` as a point cloud of spheres.
+
+        Args:
+            name: Unique path/name for the Gaussian point cloud.
+            gaussian: The :class:`newton.Gaussian` asset to visualize.
+            xform: Optional world-space transform applied to all splat centers.
+            hidden: Whether the point cloud should be hidden.
+        """
+        if hidden:
+            if name in self.objects:
+                self.objects[name].hidden = True
+            return
+
+        if self._gaussian_mesh is None:
+            self._create_gaussian_mesh()
+
+        gaussian_cache_key = (id(gaussian), gaussian.count)
+        cache = self._gaussian_cache.get(name)
+        if cache is not None and cache.get("gaussian_cache_key") != gaussian_cache_key:
+            cache = None
+
+        if cache is None:
+            n = gaussian.count
+
+            # Subsample large Gaussians to keep rendering interactive.
+            max_pts = self.gaussians_max_points
+            if n > max_pts:
+                idx = np.linspace(0, n - 1, max_pts, dtype=np.intp)
+                positions = np.ascontiguousarray(gaussian.positions[idx], dtype=np.float32)
+                scales = gaussian.scales[idx]
+                sh = gaussian.sh_coeffs[idx] if gaussian.sh_coeffs is not None else None
+                n = max_pts
+            else:
+                idx = None
+                positions = np.ascontiguousarray(gaussian.positions, dtype=np.float32)
+                scales = gaussian.scales
+                sh = gaussian.sh_coeffs
+
+            radii = np.average(scales, axis=1).astype(np.float32)
+
+            # Pre-build the VBO mat44 buffer: diagonal = radii, [15] = 1.0.
+            vbo = np.zeros((n, 16), dtype=np.float32)
+            vbo[:, 0] = radii
+            vbo[:, 5] = radii
+            vbo[:, 10] = radii
+            vbo[:, 15] = 1.0
+
+            if sh is not None and sh.shape[1] >= 3:
+                colors = np.ascontiguousarray((self._SH_C0 * sh[:, :3] + 0.5).clip(0.0, 1.0).astype(np.float32))
+            else:
+                colors = np.ones((n, 3), dtype=np.float32)
+
+            cache = {
+                "gaussian_cache_key": gaussian_cache_key,
+                "local_pos": positions,
+                "vbo": vbo,
+                "colors": colors,
+                "colors_uploaded": False,
+                "world_pos_buf": np.empty((n, 3), dtype=np.float32),
+                "last_xform": None,
+            }
+            self._gaussian_cache[name] = cache
+
+        n = len(cache["local_pos"])
+
+        recreated = False
+        if name not in self.objects:
+            self.objects[name] = MeshInstancerGL(max(n, 256), self._gaussian_mesh)
+            self.objects[name].cast_shadow = False
+            recreated = True
+        elif n > self.objects[name].num_instances:
+            self.objects[name] = MeshInstancerGL(max(n, self.objects[name].num_instances * 2), self._gaussian_mesh)
+            self.objects[name].cast_shadow = False
+            recreated = True
+
+        instancer = self.objects[name]
+        instancer.active_instances = n
+        instancer.hidden = False
+
+        # Fast-path: skip VBO update when the transform has not changed.
+        xform_key: tuple | None = None
+        if xform is not None:
+            xform_key = (
+                float(xform.p[0]),
+                float(xform.p[1]),
+                float(xform.p[2]),
+                float(xform.q[0]),
+                float(xform.q[1]),
+                float(xform.q[2]),
+                float(xform.q[3]),
+            )
+        if not recreated and cache["last_xform"] == xform_key:
+            return
+        cache["last_xform"] = xform_key
+
+        # Transform local positions to world space (pure numpy, no GPU round-trip).
+        vbo = cache["vbo"]
+        if xform is not None:
+            qx, qy, qz, qw = xform_key[3], xform_key[4], xform_key[5], xform_key[6]
+            R = np.array(
+                [
+                    [1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy - qw * qz), 2.0 * (qx * qz + qw * qy)],
+                    [2.0 * (qx * qy + qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz - qw * qx)],
+                    [2.0 * (qx * qz - qw * qy), 2.0 * (qy * qz + qw * qx), 1.0 - 2.0 * (qx * qx + qy * qy)],
+                ],
+                dtype=np.float32,
+            )
+            t = np.array(xform_key[:3], dtype=np.float32)
+            wp_buf = cache["world_pos_buf"]
+            np.dot(cache["local_pos"], R.T, out=wp_buf)
+            wp_buf += t
+            vbo[:, 12:15] = wp_buf
+        else:
+            vbo[:, 12:15] = cache["local_pos"]
+
+        # Upload transforms directly to GL.
+        gl = RendererGL.gl
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_transform_buffer)
+        gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, n * 64, vbo.ctypes.data)
+
+        if recreated or not cache["colors_uploaded"]:
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_color_buffer)
+            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, n * 12, cache["colors"].ctypes.data)
+            cache["colors_uploaded"] = True
+
     @override
     def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
         """
@@ -905,7 +1095,8 @@ class ViewerGL(ViewerBase):
 
                 shapes.colors_changed = False
 
-            # ---- Non-shape rendering uses standard synchronous paths ----
+            # ---- Gaussians and non-shape rendering use standard synchronous paths ----
+            self._log_gaussian_shapes(state)
             self._log_non_shape_state(state)
             self.model_changed = False
         else:
@@ -1234,7 +1425,7 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         fov_delta = scroll_y * 2.0
@@ -1261,7 +1452,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         import pyglet
@@ -1306,7 +1497,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_mouse():
             return
 
         import pyglet
@@ -1340,6 +1531,32 @@ class ViewerGL(ViewerBase):
         """
         pass
 
+    def _ui_is_capturing_mouse(self) -> bool:
+        """Return whether the UI wants to consume mouse input this frame."""
+        if not self.ui:
+            return False
+
+        if hasattr(self.ui, "is_capturing_mouse"):
+            return bool(self.ui.is_capturing_mouse())
+
+        if hasattr(self.ui, "is_capturing"):
+            return bool(self.ui.is_capturing())
+
+        return False
+
+    def _ui_is_capturing_keyboard(self) -> bool:
+        """Return whether the UI wants to consume keyboard input this frame."""
+        if not self.ui:
+            return False
+
+        if hasattr(self.ui, "is_capturing_keyboard"):
+            return bool(self.ui.is_capturing_keyboard())
+
+        if hasattr(self.ui, "is_capturing"):
+            return bool(self.ui.is_capturing())
+
+        return False
+
     def on_key_press(self, symbol: int, modifiers: int):
         """
         Handle key press events for UI and simulation control.
@@ -1348,7 +1565,7 @@ class ViewerGL(ViewerBase):
             symbol: Key symbol.
             modifiers: Modifier keys.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_keyboard():
             return
 
         try:
@@ -1440,7 +1657,7 @@ class ViewerGL(ViewerBase):
         Args:
             dt: Time delta since last update.
         """
-        if self.ui and self.ui.is_capturing():
+        if self._ui_is_capturing_keyboard():
             return
 
         # camera-relative basis
@@ -1524,7 +1741,12 @@ class ViewerGL(ViewerBase):
             self._frame_count = 0
 
     def _render_gizmos(self):
-        if not self._gizmo_log or not self.ui:
+        self.gizmo_is_using = False
+        if not self._gizmo_log:
+            self._gizmo_active.clear()
+            return
+        if not self.ui:
+            self._gizmo_active.clear()
             return
 
         giz = self.ui.giz
@@ -1536,33 +1758,98 @@ class ViewerGL(ViewerBase):
         giz.set_gizmo_size_clip_space(0.07)
         giz.set_axis_limit(0.0)
         giz.set_plane_limit(0.0)
+        giz.allow_axis_flip(False)
 
         # Camera matrices
         view = self.camera.get_view_matrix().reshape(4, 4).transpose()
         proj = self.camera.get_projection_matrix().reshape(4, 4).transpose()
 
+        def m44_to_mat16(m):
+            """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
+            m = np.asarray(m, dtype=np.float32).reshape(4, 4)
+            return giz.Matrix16(m.flatten(order="F").tolist())
+
+        def safe_bool(value) -> bool:
+            try:
+                return bool(value)
+            except Exception:
+                return False
+
+        view_ = m44_to_mat16(view)
+        proj_ = m44_to_mat16(proj)
+
+        axis_translate = {
+            Axis.X: giz.OPERATION.translate_x,
+            Axis.Y: giz.OPERATION.translate_y,
+            Axis.Z: giz.OPERATION.translate_z,
+        }
+        axis_rotate = {
+            Axis.X: giz.OPERATION.rotate_x,
+            Axis.Y: giz.OPERATION.rotate_y,
+            Axis.Z: giz.OPERATION.rotate_z,
+        }
+
         # Draw & mutate each gizmo
-        for gid, transform in self._gizmo_log.items():
+        logged_ids = set()
+        for gid, gizmo_data in self._gizmo_log.items():
+            logged_ids.add(gid)
+            transform = gizmo_data["transform"]
+            snap_to = gizmo_data["snap_to"]
+            translate = gizmo_data["translate"]
+            rotate = gizmo_data["rotate"]
+
+            # Use compound ops when all axes are active (includes plane handles).
+            if len(translate) == 3:
+                t_ops = (giz.OPERATION.translate,)
+            else:
+                t_ops = tuple(axis_translate[a] for a in translate)
+
+            if len(rotate) == 3:
+                r_ops = (giz.OPERATION.rotate,)
+            else:
+                r_ops = tuple(axis_rotate[a] for a in rotate)
+
+            ops = t_ops + r_ops
+            was_active = self._gizmo_active.get(gid, False)
+            if not ops:
+                if was_active and snap_to is not None:
+                    transform[:] = snap_to
+                self._gizmo_active[gid] = False
+                continue
+
             giz.push_id(str(gid))
 
             M = wp.transform_to_matrix(transform)
-
-            def m44_to_mat16(m):
-                """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
-                m = np.asarray(m, dtype=np.float32).reshape(4, 4)
-                return giz.Matrix16(m.flatten(order="F").tolist())
-
-            view_ = m44_to_mat16(view)
-            proj_ = m44_to_mat16(proj)
             M_ = m44_to_mat16(M)
 
-            giz.manipulate(view_, proj_, giz.OPERATION.rotate, giz.MODE.world, M_, None, None)
-            giz.manipulate(view_, proj_, giz.OPERATION.translate, giz.MODE.world, M_, None, None)
+            op_modified = False
+            for op in ops:
+                op_modified = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_modified
 
-            M[:] = M_.values.reshape(4, 4, order="F")
-            transform[:] = wp.transform_from_matrix(M)
+            any_gizmo_is_using = safe_bool(giz.is_using_any())
+            if hasattr(giz, "is_using"):
+                # manipulate() only reports matrix changes this frame. Keep the
+                # gizmo active across stationary drag frames until release.
+                is_active = safe_bool(giz.is_using()) and any_gizmo_is_using
+            else:
+                is_active = op_modified or (was_active and any_gizmo_is_using)
+
+            if was_active and not is_active and snap_to is not None:
+                transform[:] = snap_to
+            else:
+                M[:] = M_.values.reshape(4, 4, order="F")
+                transform[:] = wp.transform_from_matrix(M)
+
+            self._gizmo_active[gid] = is_active
 
             giz.pop_id()
+
+        # Drop stale interaction state for gizmos that are no longer logged.
+        for gid in tuple(self._gizmo_active):
+            if gid not in logged_ids:
+                del self._gizmo_active[gid]
+
+        self.gizmo_is_using = giz.is_using_any()
 
     def _render_ui(self):
         """
@@ -1691,12 +1978,23 @@ class ViewerGL(ViewerBase):
                 # Wireframe mode
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
+                def _edit_color3(
+                    label: str, color: tuple[float, float, float]
+                ) -> tuple[bool, tuple[float, float, float]]:
+                    """Normalize color_edit3 input/output across imgui_bundle versions."""
+                    if _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3:
+                        changed, updated_color = imgui.color_edit3(label, imgui.ImVec4(*color, 1.0))
+                        return changed, (updated_color.x, updated_color.y, updated_color.z)
+
+                    changed, updated_color = imgui.color_edit3(label, color)
+                    return changed, (updated_color[0], updated_color[1], updated_color[2])
+
                 # Light color
-                changed, self.renderer._light_color = imgui.color_edit3("Light Color", self.renderer._light_color)
+                changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
                 # Sky color
-                changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", self.renderer.sky_upper)
+                changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
                 # Ground color
-                changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", self.renderer.sky_lower)
+                changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
             # Wind Effects section
             if self.wind is not None:

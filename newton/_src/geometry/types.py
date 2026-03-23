@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import enum
 import os
@@ -55,28 +43,31 @@ class GeoType(enum.IntEnum):
     that can be used for collision, rendering, or simulation.
     """
 
-    PLANE = 0
+    NONE = 0
+    """No geometry (placeholder)."""
+
+    PLANE = 1
     """Plane."""
 
-    HFIELD = 1
+    HFIELD = 2
     """Height field (terrain)."""
 
-    SPHERE = 2
+    SPHERE = 3
     """Sphere."""
 
-    CAPSULE = 3
+    CAPSULE = 4
     """Capsule (cylinder with hemispherical ends)."""
 
-    ELLIPSOID = 4
+    ELLIPSOID = 5
     """Ellipsoid."""
 
-    CYLINDER = 5
+    CYLINDER = 6
     """Cylinder."""
 
-    BOX = 6
+    BOX = 7
     """Axis-aligned box."""
 
-    MESH = 7
+    MESH = 8
     """Triangle mesh."""
 
     CONE = 9
@@ -85,8 +76,8 @@ class GeoType(enum.IntEnum):
     CONVEX_MESH = 10
     """Convex hull."""
 
-    NONE = 11
-    """No geometry (placeholder)."""
+    GAUSSIAN = 11
+    """Gaussian splat."""
 
 
 class Mesh:
@@ -668,22 +659,27 @@ class Mesh:
     def build_sdf(
         self,
         *,
+        device: Devicelike | None = None,
         narrow_band_range: tuple[float, float] | None = None,
         target_voxel_size: float | None = None,
         max_resolution: int | None = None,
         margin: float | None = None,
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
+        texture_format: str = "uint16",
     ) -> "SDF":
         """Build and attach an SDF for this mesh.
 
         Args:
+            device: CUDA device for SDF allocation. When ``None``, uses the
+                current :class:`wp.ScopedDevice` or the Warp default device.
             narrow_band_range: Signed narrow-band distance range [m] as
                 ``(inner, outer)``. Uses ``(-0.1, 0.1)`` when not provided.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided,
                 takes precedence over ``max_resolution``.
-            max_resolution: Maximum sparse-grid dimension [voxel] when
-                ``target_voxel_size`` is not provided.
+            max_resolution: Maximum sparse-grid dimension [voxel] along the longest
+                AABB axis, used when ``target_voxel_size`` is not provided. Must be
+                divisible by 8.
             margin: Extra AABB padding [m] added before discretization. Uses
                 ``0.05`` when not provided.
             shape_margin: Shape margin offset [m] to subtract from SDF values.
@@ -695,6 +691,11 @@ class Mesh:
                 and ``scale_baked`` is set to ``True`` in the resulting SDF.
                 Required for hydroelastic collision with non-unit shape scale.
                 Defaults to ``None`` (no scale baking, scale applied at runtime).
+            texture_format: Subgrid texture storage format for the SDF.
+                ``"uint16"`` (default) stores subgrid voxels in 16-bit
+                normalized textures (half the memory of float32).
+                ``"float32"`` stores full-precision values. ``"uint8"`` uses
+                8-bit textures for minimum memory at lower precision.
 
         Returns:
             The attached :class:`SDF` instance.
@@ -705,16 +706,22 @@ class Mesh:
         if self.sdf is not None:
             raise RuntimeError("Mesh already has an SDF. Call clear_sdf() before rebuilding.")
 
+        _valid_tex_fmts = ("float32", "uint16", "uint8")
+        if texture_format not in _valid_tex_fmts:
+            raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_valid_tex_fmts)}.")
+
         from .sdf_utils import SDF  # noqa: PLC0415
 
         self.sdf = SDF.create_from_mesh(
             self,
+            device=device,
             narrow_band_range=narrow_band_range if narrow_band_range is not None else (-0.1, 0.1),
             target_voxel_size=target_voxel_size,
             max_resolution=max_resolution,
             margin=margin if margin is not None else 0.05,
             shape_margin=shape_margin,
             scale=scale,
+            texture_format=texture_format,
         )
         return self.sdf
 
@@ -770,6 +777,16 @@ class Mesh:
         self._texture = _normalize_texture_input(value)
         self._texture_hash = None
         self._cached_hash = None
+
+    @property
+    def texture_hash(self) -> int:
+        """Content-based hash of the assigned texture.
+
+        Returns a stable integer hash derived from the texture data.
+        The value is lazily computed and cached until :attr:`texture`
+        is reassigned.
+        """
+        return self._compute_texture_hash()
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
@@ -1565,3 +1582,423 @@ class Heightfield:
                 )
             )
         return self._cached_hash
+
+
+class Gaussian:
+    """Represents a Gaussian splat asset for rendering and rigid body attachment.
+
+    A Gaussian splat is a collection of oriented, scaled 3D Gaussians with
+    appearance data (color via spherical harmonics or flat RGB). Gaussian
+    objects can be attached to rigid bodies as a shape type (``GeoType.GAUSSIAN``)
+    for rendering, with collision handled by an optional proxy geometry.
+
+    Example:
+        Load a Gaussian splat from a ``.ply`` file and inspect it:
+
+        .. code-block:: python
+
+            import newton
+
+            gaussian = newton.Gaussian.create_from_ply("object.ply")
+            print(gaussian.count, gaussian.sh_degree)
+    """
+
+    @wp.struct
+    class Data:
+        num_points: wp.int32
+        transforms: wp.array(dtype=wp.transformf)
+        scales: wp.array(dtype=wp.vec3f)
+        opacities: wp.array(dtype=wp.float32)
+        sh_coeffs: wp.array(dtype=wp.float32, ndim=2)
+        bvh_id: wp.uint64
+        min_response: wp.float32
+
+    def __init__(
+        self,
+        positions: nparray,
+        rotations: nparray | None = None,
+        scales: nparray | None = None,
+        opacities: nparray | None = None,
+        sh_coeffs: nparray | None = None,
+        sh_degree: int | None = None,
+        min_response: float = 0.1,
+    ):
+        """Construct a Gaussian splat asset from arrays.
+
+        Args:
+            positions: Gaussian centers in local space [m], shape ``(N, 3)``, float.
+            rotations: Quaternion orientations ``(x, y, z, w)``, shape ``(N, 4)``, float.
+                If ``None``, defaults to identity quaternions.
+            scales: Per-axis scales (linear), shape ``(N, 3)``, float.
+                If ``None``, defaults to ones.
+            opacities: Opacity values ``[0, 1]``, shape ``(N,)``, float.
+                If ``None``, defaults to ones (fully opaque).
+            sh_coeffs: Spherical harmonic coefficients, shape ``(N, C)``, float.
+                The number of coefficients *C* determines the SH degree
+                (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.).
+            sh_degree: Spherical harmonic degree.
+            min_response: Minimum response required for alpha testing.
+        """
+
+        self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+        n = self._positions.shape[0]
+
+        if rotations is not None:
+            self._rotations = np.ascontiguousarray(np.asarray(rotations, dtype=np.float32).reshape(n, 4))
+        else:
+            self._rotations = np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (n, 1))
+
+        if scales is not None:
+            self._scales = np.ascontiguousarray(np.asarray(scales, dtype=np.float32).reshape(n, 3))
+        else:
+            self._scales = np.ones((n, 3), dtype=np.float32)
+
+        if opacities is not None:
+            self._opacities = np.ascontiguousarray(np.asarray(opacities, dtype=np.float32).reshape(n))
+        else:
+            self._opacities = np.ones(n, dtype=np.float32)
+
+        if sh_coeffs is not None:
+            self._sh_coeffs = np.ascontiguousarray(np.asarray(sh_coeffs, dtype=np.float32).reshape(n, -1))
+        else:
+            self._sh_coeffs = np.ones((n, 3), dtype=np.float32)
+
+        if sh_degree is not None:
+            self._sh_degree = sh_degree
+        else:
+            self._sh_degree = self._find_sh_degree()
+
+        if not np.isfinite(min_response) or not (0.0 < min_response < 1.0):
+            raise ValueError("min_response must be finite and in (0, 1)")
+        self._min_response = float(min_response)
+
+        self._cached_hash = None
+        self._positions.setflags(write=False)
+        self._rotations.setflags(write=False)
+        self._scales.setflags(write=False)
+        self._opacities.setflags(write=False)
+        self._sh_coeffs.setflags(write=False)
+
+        # GPU arrays populated by finalize()
+        self.warp_bvh: wp.Bvh = None
+        self.warp_data: Gaussian.Data = None
+
+        # Inertia: Gaussians are render-only so they contribute no mass
+        self.has_inertia = False
+        self.mass = 0.0
+        self.com = wp.vec3()
+        self.I = wp.mat33()
+        self.is_solid = False
+
+    # ---- Properties ----------------------------------------------------------
+
+    @property
+    def count(self) -> int:
+        """Number of Gaussians in this asset."""
+        return self._positions.shape[0]
+
+    @property
+    def positions(self) -> nparray:
+        """Gaussian centers in local space [m], shape ``(N, 3)``, float."""
+        return self._positions
+
+    @property
+    def rotations(self) -> nparray:
+        """Quaternion orientations ``(x, y, z, w)``, shape ``(N, 4)``, float."""
+        return self._rotations
+
+    @property
+    def scales(self) -> nparray:
+        """Per-axis linear scales, shape ``(N, 3)``, float."""
+        return self._scales
+
+    @property
+    def opacities(self) -> nparray:
+        """Opacity values ``[0, 1]``, shape ``(N,)``, float."""
+        return self._opacities
+
+    @property
+    def sh_coeffs(self) -> nparray | None:
+        """Spherical harmonic coefficients, shape ``(N, C)``, float."""
+        return self._sh_coeffs
+
+    @property
+    def sh_degree(self) -> int:
+        """Spherical harmonics degree (0-3), int"""
+        return self._sh_degree
+
+    @property
+    def min_response(self) -> float:
+        """Min response, float."""
+        return self._min_response
+
+    def _find_sh_degree(self) -> int:
+        """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
+        c = self._sh_coeffs.shape[1]
+        # SH bands: degree 0 -> 1*3=3, degree 1 -> 4*3=12,
+        #           degree 2 -> 9*3=27, degree 3 -> 16*3=48
+        for deg, num in ((3, 48), (2, 27), (1, 12), (0, 3)):
+            if c >= num:
+                return deg
+        return 0
+
+    # ---- Finalize (GPU upload) -----------------------------------------------
+
+    def finalize(self, device: Devicelike = None) -> Data:
+        """Upload Gaussian data to the GPU as Warp arrays.
+
+        Args:
+            device: Device on which to allocate buffers.
+
+        Returns:
+            Gaussian.Data struct containing the Warp arrays.
+        """
+
+        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+
+        with wp.ScopedDevice(device):
+            self.warp_data = Gaussian.Data()
+            self.warp_data.transforms = wp.array(
+                np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf
+            )
+            self.warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
+            self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
+            self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            self.warp_data.min_response = self.min_response
+            self.warp_data.num_points = self.warp_data.transforms.shape[0]
+
+            lowers = wp.zeros(self.count, dtype=wp.vec3f)
+            uppers = wp.zeros(self.count, dtype=wp.vec3f)
+
+            wp.launch(
+                kernel=compute_gaussian_bvh_bounds,
+                dim=self.count,
+                inputs=[self.warp_data, lowers, uppers],
+            )
+
+            self.warp_bvh = wp.Bvh(lowers, uppers)
+            self.warp_data.bvh_id = self.warp_bvh.id
+        return self.warp_data
+
+    # ---- Factory methods -----------------------------------------------------
+
+    @staticmethod
+    def create_from_ply(filename: str, min_response: float = 0.1) -> "Gaussian":
+        """Load Gaussian splat data from a ``.ply`` file (standard 3DGS format).
+
+        Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
+        (``scale_0..2``, stored as log-scale), opacities (logit-space),
+        and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
+        and logit-opacity to linear values.
+
+        Args:
+            filename: Path to a ``.ply`` file in standard 3DGS format.
+            min_response: Min response (default = 0.1).
+
+        Returns:
+            A new :class:`Gaussian` instance.
+        """
+        import open3d as o3d
+
+        pcd = o3d.t.io.read_point_cloud(filename)
+        point_attrs = {name: np.asarray(tensor.numpy()) for name, tensor in pcd.point.items()}
+
+        positions = point_attrs.get("positions")
+        if positions is None:
+            raise ValueError("PLY Gaussian point cloud is missing required 'positions' attribute")
+        positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+
+        def _get_point_attr(name: str, width: int | None = None) -> nparray | None:
+            values = point_attrs.get(name)
+            if values is None:
+                return None
+
+            values = np.asarray(values, dtype=np.float32)
+            if width is None:
+                return np.ascontiguousarray(values.reshape(-1))
+            return np.ascontiguousarray(values.reshape(-1, width))
+
+        def _require_point_attr(name: str, message: str) -> nparray:
+            values = _get_point_attr(name)
+            if values is None:
+                raise ValueError(message)
+            return values
+
+        # Rotations (quaternion w,x,y,z)
+        if "rot_0" in point_attrs:
+            missing_rotation = "PLY Gaussian point cloud is missing one or more rotation attributes"
+            rot_0 = _require_point_attr("rot_0", missing_rotation)
+            rot_1 = _require_point_attr("rot_1", missing_rotation)
+            rot_2 = _require_point_attr("rot_2", missing_rotation)
+            rot_3 = _require_point_attr("rot_3", missing_rotation)
+
+            rotations = np.stack([rot_1, rot_2, rot_3, rot_0], axis=1).astype(np.float32)
+            rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
+        else:
+            rotations = None
+
+        # Scales (stored as log-scale in standard 3DGS)
+        if "scale_0" in point_attrs:
+            missing_scale = "PLY Gaussian point cloud is missing one or more scale attributes"
+            scale_0 = _require_point_attr("scale_0", missing_scale)
+            scale_1 = _require_point_attr("scale_1", missing_scale)
+            scale_2 = _require_point_attr("scale_2", missing_scale)
+
+            log_scales = np.stack([scale_0, scale_1, scale_2], axis=1).astype(np.float32)
+            scales = np.exp(log_scales)
+        else:
+            scales = None
+
+        # Opacities (stored in logit-space in standard 3DGS)
+        if "opacity" in point_attrs:
+            logit_opacities = _get_point_attr("opacity")
+            opacities = 1.0 / (1.0 + np.exp(-logit_opacities))
+        else:
+            opacities = None
+
+        # Spherical harmonic coefficients
+        sh_dc_names = [f"f_dc_{i}" for i in range(3)]
+        has_sh_dc = all(name in point_attrs for name in sh_dc_names)
+
+        sh_coeffs = None
+        if has_sh_dc:
+            sh_dc = np.stack(
+                [
+                    _require_point_attr(name, "PLY Gaussian point cloud is missing SH DC attributes")
+                    for name in sh_dc_names
+                ],
+                axis=1,
+            ).astype(np.float32)
+
+            rest_names = []
+            i = 0
+            while f"f_rest_{i}" in point_attrs:
+                rest_names.append(f"f_rest_{i}")
+                i += 1
+
+            if rest_names:
+                sh_rest = np.stack(
+                    [
+                        _require_point_attr(name, "PLY Gaussian point cloud is missing SH rest attributes")
+                        for name in rest_names
+                    ],
+                    axis=1,
+                ).astype(np.float32)
+                sh_coeffs = np.concatenate([sh_dc, sh_rest], axis=1)
+            else:
+                sh_coeffs = sh_dc
+
+        return Gaussian(
+            positions=positions,
+            rotations=rotations,
+            scales=scales,
+            opacities=opacities,
+            sh_coeffs=sh_coeffs,
+            min_response=min_response,
+        )
+
+    @staticmethod
+    def create_from_usd(prim, min_response: float = 0.1) -> "Gaussian":
+        """Load Gaussian splat data from a USD prim.
+
+        Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+
+        Args:
+            prim: A USD prim containing Gaussian splat data.
+            min_response: Min response (default = 0.1).
+
+        Returns:
+            A new :class:`Gaussian` instance.
+        """
+
+        from ..usd.utils import get_gaussian  # noqa: PLC0415
+
+        return get_gaussian(prim, min_response=min_response)
+
+    # ---- Utility -------------------------------------------------------------
+
+    def compute_aabb(self) -> tuple[nparray, nparray]:
+        """Compute axis-aligned bounding box of Gaussian centers.
+
+        Returns:
+            Tuple of ``(lower, upper)`` as ``(3,)`` arrays [m].
+        """
+        lower = self._positions.min(axis=0)
+        upper = self._positions.max(axis=0)
+        return lower, upper
+
+    def compute_proxy_mesh(self, method: str = "convex_hull") -> "Mesh":
+        """Generate a proxy collision :class:`Mesh` from Gaussian positions.
+
+        Args:
+            method: ``"convex_hull"`` (default) or ``"alphashape"`` or ``"points"``.
+
+        Returns:
+            A :class:`Mesh` for use as collision proxy.
+        """
+
+        if method == "convex_hull":
+            from .utils import remesh_convex_hull  # noqa: PLC0415
+
+            hull_verts, hull_faces = remesh_convex_hull(self._positions)
+            return Mesh(hull_verts, hull_faces, compute_inertia=True)
+        elif method == "alphashape":
+            from .utils import remesh_alphashape  # noqa: PLC0415
+
+            hull_verts, hull_faces = remesh_alphashape(self._positions)
+            return Mesh(hull_verts, hull_faces, compute_inertia=True)
+        elif method == "points":
+            return self.compute_points_mesh()
+
+        raise ValueError(
+            f"Unsupported proxy mesh method: {method!r}. Supported: 'convex_hull', 'alphashape', 'points'."
+        )
+
+    def compute_points_mesh(self) -> "Mesh":
+        from ..utils.mesh import create_mesh_box  # noqa: PLC0415
+
+        mesh_points, mesh_indices, _normals, _uvs = create_mesh_box(
+            1.0,
+            1.0,
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+        )
+
+        points = (
+            (self.positions[: self.count][:, None] + self.scales[: self.count][:, None] * mesh_points)
+            .flatten()
+            .reshape(-1, 3)
+        )
+        offsets = mesh_points.shape[0] * np.arange(self.count)
+        indices = (offsets[:, None] + mesh_indices).flatten()
+        return Mesh(vertices=points, indices=indices)
+
+    @override
+    def __hash__(self) -> int:
+        if self._cached_hash is None:
+            self._cached_hash = hash(
+                (
+                    self._positions.data.tobytes(),
+                    self._rotations.data.tobytes(),
+                    self._scales.data.tobytes(),
+                    self._opacities.data.tobytes(),
+                    self._sh_coeffs.data.tobytes(),
+                    float(self._min_response),
+                )
+            )
+        return self._cached_hash
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Gaussian):
+            return NotImplemented
+        return (
+            np.array_equal(self._positions, other._positions)
+            and np.array_equal(self._rotations, other._rotations)
+            and np.array_equal(self._scales, other._scales)
+            and np.array_equal(self._opacities, other._opacities)
+            and np.array_equal(self._sh_coeffs, other._sh_coeffs)
+            and self._min_response == other._min_response
+        )

@@ -4,11 +4,13 @@ header:
     copyright-owner: The Newton Developers
 
     content: |
-      SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+      SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
       SPDX-License-Identifier: CC-BY-4.0
 
+    # Pattern is matched against lowercased text where "(c)" is normalized
+    # to the word "copyright", so "Copyright (c)" becomes "copyright copyright".
     pattern: |
-      spdx-filecopyrighttext: copyright \(c\) \d{4} the newton developers
+      spdx-filecopyrighttext: copyright copyright \d{4} the newton developers
       spdx-license-identifier: cc-by-4\.0
 
   paths:

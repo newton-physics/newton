@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import ctypes
 import io
@@ -898,6 +886,21 @@ class RendererGL:
         self.sky_upper = self.background_color
         self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
+        # Lighting settings
+        self._shadow_radius = 3.0
+        self._diffuse_scale = 1.0
+        self._specular_scale = 1.0
+        self.spotlight_enabled = True
+        self._shadow_extents = 10.0
+        self._exposure = 1.6
+
+        # Hemispherical ambient light colors, interpolated by dot(N, up).
+        # Decoupled from the sky background so the visible sky can be a
+        # saturated blue while the ambient fill stays neutral — a stand-in
+        # for a proper irradiance map that we don't precompute yet.
+        self.ambient_sky = (0.8, 0.8, 0.85)
+        self.ambient_ground = (0.3, 0.3, 0.35)
+
         # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
         # that pyglet creates via XWayland. Force GLX so both libraries agree.
         # Must be set before PyOpenGL is first imported (platform is selected
@@ -1036,6 +1039,46 @@ class RendererGL:
 
         if not headless:
             self._setup_window_callbacks()
+
+    @property
+    def shadow_radius(self) -> float:
+        return self._shadow_radius
+
+    @shadow_radius.setter
+    def shadow_radius(self, value: float):
+        self._shadow_radius = max(float(value), 0.0)
+
+    @property
+    def diffuse_scale(self) -> float:
+        return self._diffuse_scale
+
+    @diffuse_scale.setter
+    def diffuse_scale(self, value: float):
+        self._diffuse_scale = max(float(value), 0.0)
+
+    @property
+    def specular_scale(self) -> float:
+        return self._specular_scale
+
+    @specular_scale.setter
+    def specular_scale(self, value: float):
+        self._specular_scale = max(float(value), 0.0)
+
+    @property
+    def shadow_extents(self) -> float:
+        return self._shadow_extents
+
+    @shadow_extents.setter
+    def shadow_extents(self, value: float):
+        self._shadow_extents = max(float(value), 1e-4)
+
+    @property
+    def exposure(self) -> float:
+        return self._exposure
+
+    @exposure.setter
+    def exposure(self, value: float):
+        self._exposure = max(float(value), 0.0)
 
     def update(self):
         self._make_current()
@@ -1624,7 +1667,7 @@ class RendererGL:
 
         self._make_current()
 
-        extents = 10.0
+        extents = self.shadow_extents
 
         light_near = 1.0
         light_far = 1000.0
@@ -1637,9 +1680,10 @@ class RendererGL:
 
         self._shadow_shader.update(self._light_space_matrix)
 
-        # render from light's point of view
+        # render from light's point of view (skip objects that don't cast shadows)
+        shadow_objects = {k: v for k, v in objects.items() if getattr(v, "cast_shadow", True)}
         with self._shadow_shader:
-            self._draw_objects(objects)
+            self._draw_objects(shadow_objects)
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
@@ -1665,10 +1709,16 @@ class RendererGL:
             shadow_texture=self._shadow_texture,
             light_space_matrix=self._light_space_matrix,
             light_color=self._light_color,
-            sky_color=self.sky_upper,
-            ground_color=self.sky_lower,
+            sky_color=self.ambient_sky,
+            ground_color=self.ambient_ground,
             env_texture=self._env_texture,
             env_intensity=self._env_intensity,
+            shadow_radius=self.shadow_radius,
+            diffuse_scale=self.diffuse_scale,
+            specular_scale=self.specular_scale,
+            spotlight_enabled=self.spotlight_enabled,
+            shadow_extents=self.shadow_extents,
+            exposure=self.exposure,
         )
 
         with self._shape_shader:

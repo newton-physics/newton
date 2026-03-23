@@ -1,23 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
 import os
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -26,7 +15,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.types import MAXVAL, nparray
+from ..core.types import MAXVAL, Axis, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -79,7 +68,10 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         self._shape_instances = {}
-        self._inertia_box_instances: ViewerBase.ShapeInstances | None = None
+        # Inertia box wireframe line vertices (12 lines per body)
+        self._inertia_box_points0 = None
+        self._inertia_box_points1 = None
+        self._inertia_box_colors = None
 
         # Geometry mesh cache (geometry hash -> mesh path)
         self._geometry_cache: dict[int, str] = {}
@@ -112,11 +104,14 @@ class ViewerBase(ABC):
         self.show_contacts = False
         self.show_springs = False
         self.show_triangles = True
+        self.show_gaussians = False
         self.show_collision = False
         self.show_visual = True
         self.show_static = False
         self.show_inertia_boxes = False
         self.show_hydro_contact_surface = False
+
+        self.gaussians_max_points = 100_000  # Max number of points to visualize per gaussian
 
         # Hydroelastic contact surface line cache
         self._hydro_surface_line_starts: wp.array | None = None
@@ -130,6 +125,10 @@ class ViewerBase(ABC):
 
         # Isomesh cache for SDF collision visualization
         self._isomesh_cache: dict[int, newton.Mesh | None] = {}
+
+        # Gaussian shapes rendered as point clouds (skipped by the mesh instancing pipeline).
+        # Each entry is (name, gaussian, parent_body, shape_xform, world_index, flags, is_static).
+        self._gaussian_instances: list[tuple[str, newton.Gaussian, int, wp.transform, int, int, bool]] = []
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         self._sdf_isomesh_populated: bool = False
         self._shape_sdf_index_host: nparray | None = None
@@ -175,39 +174,44 @@ class ViewerBase(ABC):
         return min(self.max_worlds, self.model.world_count)
 
     def _get_shape_isomesh(self, shape_idx: int) -> newton.Mesh | None:
-        """Get the isomesh for a collision shape with an SDF volume.
+        """Get the isomesh for a collision shape with a texture SDF.
 
-        Computes the marching-cubes isosurface from the SDF volume and caches it.
-        Uses the volume.id (uint64) as cache key, so shapes sharing the same SDF
-        volume will reuse the same isomesh.
+        Computes the marching-cubes isosurface from the texture SDF and caches it
+        by SDF table index.
 
         Args:
             shape_idx: Index of the shape.
 
         Returns:
-            Mesh object for the isomesh, or None if shape has no SDF volume.
+            Mesh object for the isomesh, or ``None`` if shape has no texture SDF.
         """
         if self.model is None:
             return None
 
-        # Check if this shape has an SDF volume
         sdf_idx = int(self._shape_sdf_index_host[shape_idx]) if self._shape_sdf_index_host is not None else -1
-        sdf_volume = self.model.sdf_volume[sdf_idx] if (sdf_idx >= 0 and self.model.sdf_volume) else None
-        if sdf_volume is None:
+        if sdf_idx < 0 or self.model.texture_sdf_data is None:
             return None
 
-        # Use volume.id as cache key - this is a unique uint64 pointer
-        volume_id = int(sdf_volume.id)
+        if sdf_idx in self._isomesh_cache:
+            return self._isomesh_cache[sdf_idx]
 
-        # Check if already computed. Cached None means "computed but no mesh".
-        if volume_id in self._isomesh_cache:
-            return self._isomesh_cache[volume_id]
+        slots = (
+            self.model.texture_sdf_subgrid_start_slots[sdf_idx]
+            if hasattr(self.model, "texture_sdf_subgrid_start_slots") and self.model.texture_sdf_subgrid_start_slots
+            else None
+        )
+        if slots is None:
+            self._isomesh_cache[sdf_idx] = None
+            return None
 
-        # Compute isomesh from SDF volume
-        from ..geometry.sdf_utils import compute_isomesh  # noqa: PLC0415
+        from ..geometry.sdf_texture import compute_isomesh_from_texture_sdf  # noqa: PLC0415
 
-        isomesh = compute_isomesh(sdf_volume)
-        self._isomesh_cache[volume_id] = isomesh
+        coarse_tex = self.model.texture_sdf_coarse_textures[sdf_idx]
+        coarse_dims = (coarse_tex.width - 1, coarse_tex.height - 1, coarse_tex.depth - 1)
+        isomesh = compute_isomesh_from_texture_sdf(
+            self.model.texture_sdf_data, sdf_idx, slots, coarse_dims, device=self.device
+        )
+        self._isomesh_cache[sdf_idx] = isomesh
         return isomesh
 
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
@@ -300,10 +304,6 @@ class ViewerBase(ABC):
 
     def _auto_compute_world_offsets(self):
         """Automatically compute world offsets based on model extents."""
-        # If only one world or no worlds, no offsets needed
-        if self._get_render_world_count() <= 1:
-            return
-
         max_extents = self._get_world_extents()
         if max_extents is None:
             return
@@ -379,8 +379,41 @@ class ViewerBase(ABC):
 
             shapes.colors_changed = False
 
+        self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
         self.model_changed = False
+
+    def _log_gaussian_shapes(self, state: newton.State):
+        """Render Gaussian shapes as point clouds with current body transforms."""
+        if not self._gaussian_instances:
+            return
+
+        body_q_np = None
+        offsets_np = None
+
+        for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
+            visible = self._should_show_shape(flags, is_static)
+            if not visible or not self.show_gaussians:
+                self.log_gaussian(gname, gaussian, hidden=True)
+                continue
+            if parent >= 0:
+                if body_q_np is None:
+                    body_q_np = state.body_q.numpy()
+
+                body_xform = wp.transform_expand(body_q_np[parent])
+                world_xform = wp.transform_multiply(body_xform, shape_xform)
+            else:
+                world_xform = shape_xform
+
+            if self.world_offsets is not None and world_idx >= 0:
+                if offsets_np is None:
+                    offsets_np = self.world_offsets.numpy()
+                offset = offsets_np[world_idx]
+                world_xform = wp.transformf(
+                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
+                    world_xform.q,
+                )
+            self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
         """Log SDF isomeshes, inertia boxes, triangles, particles, joints, COM."""
@@ -406,20 +439,7 @@ class ViewerBase(ABC):
                 hidden=not visible,
             )
 
-        if self.show_inertia_boxes:
-            if self._inertia_box_instances is None:
-                self._populate_inertia_boxes()
-            self._inertia_box_instances.update(state, world_offsets=self.world_offsets)
-        if self._inertia_box_instances is not None:
-            self.log_instances(
-                self._inertia_box_instances.name,
-                self._inertia_box_instances.mesh,
-                self._inertia_box_instances.world_xforms,
-                self._inertia_box_instances.scales,
-                self._inertia_box_instances.colors,
-                self._inertia_box_instances.materials,
-                hidden=not self.show_inertia_boxes,
-            )
+        self._log_inertia_boxes(state)
 
         self._log_triangles(state)
         self._log_particles(state)
@@ -440,9 +460,9 @@ class ViewerBase(ABC):
             self.log_lines("/contacts", None, None, None)
             return
 
-        # Get contact count (handle case where it might be zero)
-        num_contacts = contacts.rigid_contact_count.numpy()[0]
+        # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
+        num_contacts = min(int(contacts.rigid_contact_count.numpy()[0]), max_contacts)
 
         # Ensure we have buffers for line endpoints
         if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
@@ -681,6 +701,16 @@ class ViewerBase(ABC):
             hidden: Whether the created mesh should be hidden.
         """
 
+        if geo_type == newton.GeoType.GAUSSIAN:
+            if geo_src is None:
+                raise ValueError(f"log_geo requires geo_src for GAUSSIAN (name={name})")
+            if not isinstance(geo_src, newton.Gaussian):
+                raise TypeError(f"log_geo expected newton.Gaussian for GAUSSIAN (name={name})")
+            if not self.show_gaussians:
+                hidden = True
+            self.log_gaussian(name, geo_src, hidden=hidden)
+            return
+
         # Heightfield: convert to mesh for rendering
         if geo_type == newton.GeoType.HFIELD:
             if geo_src is None:
@@ -793,13 +823,24 @@ class ViewerBase(ABC):
         self,
         name: str,
         transform: wp.transform,
+        *,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
+        snap_to: wp.transform | None = None,
     ):
-        """
-        Log a gizmo GUI element for the given name and transform.
+        """Log a gizmo GUI element for the given name and transform.
 
         Args:
             name: The name of the gizmo.
             transform: The transform of the gizmo.
+            translate: Axes on which the translation handles are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all translation handles.
+            rotate: Axes on which the rotation rings are shown.
+                Defaults to all axes when ``None``. Pass an empty sequence
+                to hide all rotation rings.
+            snap_to: Optional world transform to snap to when this gizmo is
+                released by the user.
         """
         return
 
@@ -929,6 +970,31 @@ class ViewerBase(ABC):
             hidden: Whether the points should be hidden.
         """
         pass
+
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """
+        Log a :class:`newton.Gaussian` splat asset as a point cloud of spheres.
+
+        Each Gaussian is rendered as a sphere positioned at its center, with
+        radius equal to the largest per-axis scale and color derived from the
+        DC spherical-harmonics coefficients.
+
+        The default implementation is a no-op.  Override in viewer backends
+        that support point-cloud rendering.
+
+        Args:
+            name: Unique path/name for the Gaussian point cloud.
+            gaussian: The :class:`newton.Gaussian` asset to visualize.
+            xform: Optional world-space transform applied to all splat centers.
+            hidden: Whether the point cloud should be hidden.
+        """
+        return
 
     @abstractmethod
     def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
@@ -1197,6 +1263,17 @@ class ViewerBase(ABC):
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
 
+            # Gaussians bypass the mesh instancing pipeline; render as point clouds.
+            if geo_type == newton.GeoType.GAUSSIAN:
+                if isinstance(geo_src, newton.Gaussian):
+                    parent = shape_body[s]
+                    xform = wp.transform_expand(shape_transform[s])
+                    gname = f"/model/gaussians/gaussian_{len(self._gaussian_instances)}"
+                    self._gaussian_instances.append(
+                        (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
+                    )
+                continue
+
             # check whether we can instance an already created shape with the same geometry
             geo_hash = self._hash_geometry(
                 int(geo_type),
@@ -1214,7 +1291,12 @@ class ViewerBase(ABC):
                     float(geo_thickness),
                     bool(geo_is_solid),
                     geo_src=geo_src
-                    if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+                    if geo_type
+                    in (
+                        newton.GeoType.MESH,
+                        newton.GeoType.CONVEX_MESH,
+                        newton.GeoType.HFIELD,
+                    )
                     else None,
                 )
             else:
@@ -1234,9 +1316,9 @@ class ViewerBase(ABC):
             # visual-only copy exists.
             is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
             is_visible = flags & int(newton.ShapeFlags.VISIBLE)
-            # Check for SDF volume existence without computing the isomesh (lazy evaluation)
+            # Check for texture SDF existence without computing the isomesh (lazy evaluation)
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            has_sdf = sdf_idx >= 0 and self.model.sdf_volume and self.model.sdf_volume[sdf_idx] is not None
+            has_sdf = sdf_idx >= 0 and self.model.texture_sdf_data is not None
             if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
@@ -1341,7 +1423,7 @@ class ViewerBase(ABC):
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        sdf_data = self.model.sdf_data.numpy() if self.model.sdf_data is not None else None
+        tex_sdf_np = self.model.texture_sdf_data.numpy() if self.model.texture_sdf_data is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
@@ -1350,7 +1432,7 @@ class ViewerBase(ABC):
             if not self._should_render_world(shape_world[s]):
                 continue
 
-            # Only process collision shapes with SDF volumes
+            # Only process collision shapes with texture SDFs
             is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
             if not is_collision_shape:
                 continue
@@ -1359,9 +1441,10 @@ class ViewerBase(ABC):
             if isomesh is None:
                 continue
 
-            # Check if scale was baked into the SDF
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            scale_baked = bool(sdf_data[sdf_idx]["scale_baked"]) if (sdf_data is not None and sdf_idx >= 0) else True
+            scale_baked = (
+                bool(tex_sdf_np[sdf_idx]["scale_baked"]) if (tex_sdf_np is not None and sdf_idx >= 0) else True
+            )
 
             # Create isomesh geometry (always use (1,1,1) for geometry since isomesh is in SDF space)
             geo_type = newton.GeoType.MESH
@@ -1448,75 +1531,50 @@ class ViewerBase(ABC):
             if batch_ref is not None:
                 batch_ref.colors_changed = True
 
-    # creates meshes and instances for each shape in the Model
-    def _populate_inertia_boxes(self):
-        # convert to NumPy
+    def _log_inertia_boxes(self, state: newton.State):
+        """Render inertia boxes as wireframe lines."""
+        if not self.show_inertia_boxes:
+            self.log_lines("/model/inertia_boxes", None, None, None)
+            return
+
         body_count = self.model.body_count
-        body_inertia = self.model.body_inertia.numpy()
-        body_inv_mass = self.model.body_inv_mass.numpy()
-        body_com = self.model.body_com.numpy()
-        body_world = self.model.body_world.numpy()
+        if body_count == 0:
+            return
 
-        scale = (1.0, 1.0, 1.0)
-        thickness = 0.0
-        is_solid = True
-        geo_src = None
-        geo_args = (newton.GeoType.BOX, scale, thickness, is_solid, geo_src)
-        geo_hash = self._hash_geometry(*geo_args)
-        if geo_hash not in self._geometry_cache:
-            mesh_name = self._populate_geometry(*geo_args)
-        else:
-            mesh_name = self._geometry_cache[geo_hash]
+        # 12 edges per body
+        num_lines = body_count * 12
 
-        static = False
-        flags = newton.ShapeFlags.VISIBLE
+        if self._inertia_box_points0 is None or len(self._inertia_box_points0) < num_lines:
+            self._inertia_box_points0 = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+            self._inertia_box_points1 = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+            self._inertia_box_colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
 
-        shape_name = "/model/inertia_boxes"
-        batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+        from .kernels import compute_inertia_box_lines  # noqa: PLC0415
 
-        # loop over bodies
-        for body in range(body_count):
-            # skip bodies from worlds beyond max_worlds limit
-            if not self._should_render_world(body_world[body]):
-                continue
+        wp.launch(
+            kernel=compute_inertia_box_lines,
+            dim=num_lines,
+            inputs=[
+                state.body_q,
+                self.model.body_com,
+                self.model.body_inertia,
+                self.model.body_inv_mass,
+                self.model.body_world,
+                self.world_offsets,
+                self.max_worlds if self.max_worlds is not None else -1,
+                wp.vec3(0.5, 0.5, 0.5),  # color
+            ],
+            outputs=[
+                self._inertia_box_points0,
+                self._inertia_box_points1,
+                self._inertia_box_colors,
+            ],
+            device=self.device,
+        )
 
-            rot, principal_inertia = wp.eig3(wp.mat33(body_inertia[body]))
-            xform = wp.transform(body_com[body], wp.quat_from_matrix(rot))
-
-            # computes extents of the solid box that would have similar inertia
-            # Note: GeoType.BOX exemplar has sides of length 2.0
-            box_inertia = principal_inertia * body_inv_mass[body] * (12 / 8.0)
-            scale = (
-                np.sqrt(box_inertia[2] + box_inertia[1] - box_inertia[0]),
-                np.sqrt(box_inertia[0] + box_inertia[2] - box_inertia[1]),
-                np.sqrt(box_inertia[1] + box_inertia[0] - box_inertia[2]),
-            )
-
-            # shape options
-            parent = body
-
-            color = self._shape_color_map(body)
-            if color is None:
-                color = wp.vec3(0.5, 0.5, 0.5)
-            else:
-                color = wp.vec3(color)
-
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
-
-            # add render instance
-            batch.add(
-                parent=parent,
-                xform=xform,
-                scale=scale,
-                color=color,
-                material=material,
-                shape_index=body,
-                world=body_world[body],
-            )
-
-        # batch to the GPU
-        batch.finalize()
-        self._inertia_box_instances = batch
+        self.log_lines(
+            "/model/inertia_boxes", self._inertia_box_points0, self._inertia_box_points1, self._inertia_box_colors
+        )
 
     def _log_joints(self, state: newton.State):
         """

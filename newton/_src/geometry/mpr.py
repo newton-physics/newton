@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This code is based on the MPR implementation from Jitter Physics 2
 # Original: https://github.com/notgiven688/jitterphysics2
@@ -148,10 +136,11 @@ def create_support_map_function(support_func: Any):
         tmp_direction = -direction
         v.B = support_map_b(geom_b, tmp_direction, orientation_b, position_b, data_provider)
 
-        # Apply contact offset extension
-        d = wp.normalize(direction) * extend * 0.5
-        point_a = point_a + d
-        v.B = v.B - d
+        # Apply contact offset extension (skip normalize when extend is zero)
+        if extend != 0.0:
+            d = wp.normalize(direction) * extend * 0.5
+            point_a = point_a + d
+            v.B = v.B - d
 
         # Store BtoA vector
         v.BtoA = point_a - v.B
@@ -181,34 +170,37 @@ def create_support_map_function(support_func: Any):
         """
         center = Vert()
 
-        # Get geometric center of shape A
-        point_a = wp.vec3(0.0)  # center_func(geom_a, data_provider)
-
-        # Get geometric center of shape B and transform to world space
-        center.B = wp.vec3(0.0)  # center_func(geom_b, data_provider)
-        center.B = wp.quat_rotate(orientation_b, center.B)
-        center.B = position_b + center.B
-
-        # Store BtoA vector
-        center.BtoA = point_a - center.B
+        # Both shape centers are at their local origins, so in the relative frame:
+        # center_A = vec3(0), center_B = position_b
+        center.B = position_b
+        center.BtoA = -position_b
 
         return center
 
     return support_map_b, minkowski_support, geometric_center
 
 
-def create_solve_mpr(support_func: Any):
+def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     """
     Factory function to create MPR solver with specific support and center functions.
 
     Args:
-        support_func: Support mapping function for shapes
+        support_func: Support mapping function for shapes.
+        _support_funcs: Pre-built support functions tuple from
+            :func:`create_support_map_function`. When provided, these are reused
+            instead of creating new ones, allowing multiple solvers to share
+            compiled support code.
 
     Returns:
-        MPR solver function
+        ``solve_mpr`` wrapper function.  The core function is available as
+        ``solve_mpr.core`` for callers that want to handle the relative-frame
+        transform themselves (e.g. fused MPR+GJK).
     """
 
-    _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
+    if _support_funcs is not None:
+        _support_map_b, minkowski_support, geometric_center = _support_funcs
+    else:
+        _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
 
     @wp.func
     def solve_mpr_core(
@@ -484,4 +476,5 @@ def create_solve_mpr(support_func: Any):
 
         return collision, signed_distance, point, normal
 
+    solve_mpr.core = solve_mpr_core
     return solve_mpr

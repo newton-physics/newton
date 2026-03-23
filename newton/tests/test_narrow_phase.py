@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Test NarrowPhase collision detection API.
 
@@ -38,7 +26,6 @@ from warp.tests.unittest_utils import StdOutCapture
 import newton
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.narrow_phase import NarrowPhase
-from newton._src.geometry.sdf_utils import SDFData
 from newton._src.geometry.types import GeoType
 
 
@@ -264,7 +251,6 @@ class TestNarrowPhase(unittest.TestCase):
             wp.array(geom_source, dtype=wp.uint64),
             wp.array(shape_gap, dtype=wp.float32),
             wp.array(geom_collision_radius, dtype=wp.float32),
-            wp.zeros(0, dtype=SDFData),  # sdf_data - empty compact table for non-mesh tests
             wp.full(len(geom_list), -1, dtype=wp.int32),  # shape_sdf_index - no SDF for all shapes
             wp.full(
                 len(geom_list), ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32
@@ -291,7 +277,6 @@ class TestNarrowPhase(unittest.TestCase):
             geom_source,
             shape_gap,
             geom_collision_radius,
-            sdf_data,
             shape_sdf_index,
             shape_flags,
             shape_collision_aabb_lower,
@@ -320,7 +305,6 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
-            sdf_data=sdf_data,
             shape_sdf_index=shape_sdf_index,
             shape_gap=shape_gap,
             shape_collision_radius=geom_collision_radius,
@@ -1292,7 +1276,6 @@ class TestNarrowPhase(unittest.TestCase):
             dtype=wp.vec4,
         )
         geom_source = wp.zeros(3, dtype=wp.uint64)
-        sdf_data = wp.zeros(0, dtype=SDFData)  # Compact SDF table (unused in this test)
         shape_sdf_index = wp.full(3, -1, dtype=wp.int32)
         geom_collision_radius = wp.array([1e6, 0.2, 0.2], dtype=wp.float32)
         shape_flags = wp.full(3, ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32)  # Collision enabled, no hydroelastic
@@ -1334,7 +1317,6 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
-            sdf_data=sdf_data,
             shape_sdf_index=shape_sdf_index,
             shape_gap=shape_gap,
             shape_collision_radius=geom_collision_radius,
@@ -1370,7 +1352,6 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
-            sdf_data=sdf_data,
             shape_sdf_index=shape_sdf_index,
             shape_gap=shape_gap,
             shape_collision_radius=geom_collision_radius,
@@ -1407,7 +1388,6 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
-            sdf_data=sdf_data,
             shape_sdf_index=shape_sdf_index,
             shape_gap=shape_gap,
             shape_collision_radius=geom_collision_radius,
@@ -1462,7 +1442,6 @@ class TestNarrowPhase(unittest.TestCase):
                 geom_source,
                 shape_gap,
                 geom_collision_radius,
-                sdf_data,
                 shape_sdf_index,
                 shape_flags,
                 shape_collision_aabb_lower,
@@ -1488,7 +1467,6 @@ class TestNarrowPhase(unittest.TestCase):
                 shape_data=geom_data,
                 shape_transform=geom_transform,
                 shape_source=geom_source,
-                sdf_data=sdf_data,
                 shape_sdf_index=shape_sdf_index,
                 shape_gap=shape_gap,
                 shape_collision_radius=geom_collision_radius,
@@ -1882,7 +1860,6 @@ class TestBufferOverflowWarnings(unittest.TestCase):
             wp.array(geom_source, dtype=wp.uint64),
             wp.array(shape_gap, dtype=wp.float32),
             wp.array(geom_collision_radius, dtype=wp.float32),
-            wp.zeros(n, dtype=SDFData),
             wp.full(n, ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32),
             wp.zeros(n, dtype=wp.vec3),
             wp.ones(n, dtype=wp.vec3),
@@ -1921,13 +1898,12 @@ class TestBufferOverflowWarnings(unittest.TestCase):
             shape_data=arrays[1],
             shape_transform=arrays[2],
             shape_source=arrays[3],
-            shape_sdf_data=arrays[6],
             shape_gap=arrays[4],
             shape_collision_radius=arrays[5],
-            shape_flags=arrays[7],
-            shape_local_aabb_lower=arrays[8],
-            shape_local_aabb_upper=arrays[9],
-            shape_voxel_resolution=arrays[10],
+            shape_flags=arrays[6],
+            shape_local_aabb_lower=arrays[7],
+            shape_local_aabb_upper=arrays[8],
+            shape_voxel_resolution=arrays[9],
             contact_pair=contact_pair,
             contact_position=contact_position,
             contact_normal=contact_normal,
@@ -1986,13 +1962,12 @@ class TestBufferOverflowWarnings(unittest.TestCase):
             shape_data=arrays[1],
             shape_transform=arrays[2],
             shape_source=arrays[3],
-            shape_sdf_data=arrays[6],
             shape_gap=arrays[4],
             shape_collision_radius=arrays[5],
-            shape_flags=arrays[7],
-            shape_local_aabb_lower=arrays[8],
-            shape_local_aabb_upper=arrays[9],
-            shape_voxel_resolution=arrays[10],
+            shape_flags=arrays[6],
+            shape_local_aabb_lower=arrays[7],
+            shape_local_aabb_upper=arrays[8],
+            shape_voxel_resolution=arrays[9],
             contact_pair=contact_pair_out,
             contact_position=contact_position,
             contact_normal=contact_normal,

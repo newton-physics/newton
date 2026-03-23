@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This code is based on the GJK/simplex solver implementation from Jitter Physics 2
 # Original: https://github.com/notgiven688/jitterphysics2
@@ -53,7 +41,7 @@ EPSILON = 1e-8
 Mat83f = wp.types.matrix(shape=(8, 3), dtype=wp.float32)
 
 
-def create_solve_closest_distance(support_func: Any):
+def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None):
     """
     Factory function to create GJK distance solver with specific support and center functions.
 
@@ -69,13 +57,22 @@ def create_solve_closest_distance(support_func: Any):
     - Reduced function call overhead compared to wrapping field access in functions
 
     Args:
-        support_func: Support mapping function for shapes
+        support_func: Support mapping function for shapes.
+        _support_funcs: Pre-built support functions tuple from
+            :func:`create_support_map_function`. When provided, these are reused
+            instead of creating new ones, allowing multiple solvers to share
+            compiled support code.
 
     Returns:
-        GJK distance solver function
+        ``solve_closest_distance`` wrapper function.  The core function is
+        available as ``solve_closest_distance.core`` for callers that want to
+        handle the relative-frame transform themselves.
     """
 
-    _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
+    if _support_funcs is not None:
+        _support_map_b, minkowski_support, geometric_center = _support_funcs
+    else:
+        _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
 
     @wp.func
     def simplex_get_vertex(v: Mat83f, i: int) -> Vert:
@@ -560,4 +557,5 @@ def create_solve_closest_distance(support_func: Any):
 
         return collision, distance, point, normal
 
+    solve_closest_distance.core = solve_closest_distance_core
     return solve_closest_distance

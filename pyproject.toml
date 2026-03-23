@@ -17,17 +17,18 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3 :: Only",
     "Environment :: GPU :: NVIDIA CUDA",
     "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "Environment :: GPU :: NVIDIA CUDA :: 13",
     "Topic :: Scientific/Engineering",
 ]
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.11.0",
-    "newton-actuators",
+    "warp-lang>=1.12.0",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +38,7 @@ sim = [
     # MuJoCo simulation
     "mujoco-warp>=3.5.0.2; python_version < '3.14'",  # MuJoCo, warp-accelerated (depends on mujoco which has no 3.14 wheels yet)
     "mujoco>=3.5.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
+    "newton-actuators",
 ]
 
 # Asset import and mesh processing dependencies
@@ -53,18 +55,19 @@ importers = [
     "meshio>=5.3.0",               # alternative mesh file loader (fallback)
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
     "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs (package://, model://)
+    "open3d>=0.18.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for importing Gaussian .ply files where wheels are available (no 3.13 wheels yet)
 
     # USD core libraries
     "usd-core>=25.5 ; platform_machine != 'aarch64' and python_version < '3.14'",
     "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.1.0rc3",
+    "newton-usd-schemas>=0.1.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
 remesh = [
-    "open3d>=0.18.0; python_version < '3.14'",  # for Poisson surface reconstruction (no 3.14 wheels yet)
+    "open3d>=0.18.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for Poisson surface reconstruction where wheels are available (no 3.13 wheels yet)
     "pyfqmr>=0.5.0",               # for fast mesh simplification
 ]
 
@@ -297,3 +300,4 @@ pnd = "pnd"
 [tool.typos.default.extend-identifiers]
 PNGs = "PNGs"
 Haa = "Haa"
+iy = "iy"

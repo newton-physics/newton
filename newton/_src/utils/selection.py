@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import functools
 from fnmatch import fnmatch
@@ -396,10 +384,25 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
     if isinstance(pattern, str):
         return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
 
-    if all(isinstance(item, int) for item in pattern):
+    if not isinstance(pattern, list):
+        raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {type(pattern)}")
+
+    if len(pattern) == 0:
         return pattern
-    if all(isinstance(item, str) for item in pattern):
+
+    validation_failure = False
+
+    if isinstance(pattern[0], int):
+        # fast path for list[int]
+        for item in pattern:
+            if not isinstance(item, int):
+                validation_failure = True
+                break
+        if not validation_failure:
+            return pattern
+    elif all(isinstance(item, str) for item in pattern):
         return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+
     types = {type(item).__name__ for item in pattern}
     raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
 

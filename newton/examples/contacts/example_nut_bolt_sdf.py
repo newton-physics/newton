@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example SDF Mesh Collision
@@ -132,9 +120,9 @@ class Example:
 
         main_scene = newton.ModelBuilder()
         main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
-        # Add ground plane with offset (plane equation: z = offset)
-        # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d
-        # Therefore, to get plane at z = offset, we need d = -offset
+        # Add ground plane at z = ground_plane_offset.
+        # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d.
+        # Therefore d is the negative offset, and z = offset uses d = -offset.
         main_scene.add_shape_plane(
             plane=(0.0, 0.0, 1.0, -self.ground_plane_offset),
             width=0.0,
@@ -387,6 +375,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=100)
         parser.add_argument(
             "--solver",

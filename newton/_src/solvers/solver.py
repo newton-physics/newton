@@ -1,18 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 
 import warp as wp
 
@@ -170,6 +157,23 @@ def integrate_bodies(
     body_qd_new[tid] = qd_new
 
 
+@wp.kernel
+def _update_effective_inv_mass_inertia(
+    body_flags: wp.array(dtype=wp.int32),
+    model_inv_mass: wp.array(dtype=float),
+    model_inv_inertia: wp.array(dtype=wp.mat33),
+    eff_inv_mass: wp.array(dtype=float),
+    eff_inv_inertia: wp.array(dtype=wp.mat33),
+):
+    tid = wp.tid()
+    if (body_flags[tid] & BodyFlags.KINEMATIC) != 0:
+        eff_inv_mass[tid] = 0.0
+        eff_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    else:
+        eff_inv_mass[tid] = model_inv_mass[tid]
+        eff_inv_inertia[tid] = model_inv_inertia[tid]
+
+
 class SolverBase:
     """Generic base class for solvers.
 
@@ -192,6 +196,31 @@ class SolverBase:
         """
         return self.model.device
 
+    def _init_kinematic_state(self):
+        """Allocate and populate effective inverse mass/inertia arrays."""
+        model = self.model
+        self.body_inv_mass_effective = wp.empty_like(model.body_inv_mass)
+        self.body_inv_inertia_effective = wp.empty_like(model.body_inv_inertia)
+        if model.body_count:
+            self._refresh_kinematic_state()
+
+    def _refresh_kinematic_state(self):
+        """Update effective arrays from model, zeroing kinematic bodies."""
+        model = self.model
+        if model.body_count:
+            wp.launch(
+                kernel=_update_effective_inv_mass_inertia,
+                dim=model.body_count,
+                inputs=[
+                    model.body_flags,
+                    model.body_inv_mass,
+                    model.body_inv_inertia,
+                    self.body_inv_mass_effective,
+                    self.body_inv_inertia_effective,
+                ],
+                device=model.device,
+            )
+
     def integrate_bodies(
         self,
         model: Model,
@@ -199,7 +228,7 @@ class SolverBase:
         state_out: State,
         dt: float,
         angular_damping: float = 0.0,
-    ):
+    ) -> None:
         """
         Integrate the rigid bodies of the model.
 
@@ -240,7 +269,7 @@ class SolverBase:
         state_in: State,
         state_out: State,
         dt: float,
-    ):
+    ) -> None:
         """
         Integrate the particles of the model.
 
@@ -271,7 +300,7 @@ class SolverBase:
 
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
-    ) -> State | None:
+    ) -> None:
         """
         Simulate the model for a given time step using the given control input.
 
@@ -286,7 +315,7 @@ class SolverBase:
         """
         raise NotImplementedError()
 
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the

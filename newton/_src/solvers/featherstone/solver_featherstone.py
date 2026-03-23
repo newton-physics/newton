@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import numpy as np
 import warp as wp
@@ -84,6 +72,19 @@ class SolverFeatherstone(SolverBase):
     See: https://en.wikipedia.org/wiki/Semi-implicit_Euler_method
 
     This solver uses the routines from :class:`~newton.solvers.SolverSemiImplicit` to simulate particles, cloth, and soft bodies.
+
+    Joint limitations:
+        - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
+          CABLE joints are not supported.
+        - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
+          :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
+          are supported.
+        - :attr:`~newton.Model.joint_friction`, :attr:`~newton.Model.joint_effort_limit`,
+          :attr:`~newton.Model.joint_velocity_limit`, :attr:`~newton.Model.joint_enabled`,
+          and :attr:`~newton.Model.joint_target_mode` are not supported.
+        - Equality and mimic constraints are not supported.
+
+        See :ref:`Joint feature support` for the full comparison across solvers.
 
     Example
     -------
@@ -173,7 +174,7 @@ class SolverFeatherstone(SolverBase):
                     self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
 
     @override
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True
@@ -328,7 +329,7 @@ class SolverFeatherstone(SolverBase):
         control: Control,
         contacts: Contacts,
         dt: float,
-    ):
+    ) -> None:
         requires_grad = state_in.requires_grad
 
         # optionally create dynamical auxiliary variables
@@ -757,5 +758,3 @@ class SolverFeatherstone(SolverBase):
             self.integrate_particles(model, state_in, state_out, dt)
 
             self._step += 1
-
-            return state_out

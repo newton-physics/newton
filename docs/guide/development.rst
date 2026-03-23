@@ -11,7 +11,95 @@ Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/governance/b
 Installation
 ------------
 
-To install Newton, see the :doc:`installation` guide.
+For regular end-user installation, see the :doc:`installation` guide.
+
+To install Newton from source for development or contribution, first clone the
+repository:
+
+.. code-block:: console
+
+    git clone https://github.com/newton-physics/newton.git
+    cd newton
+
+Method 1: Using uv (Recommended)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Install `uv <https://docs.astral.sh/uv/>`_ if you don't have it already:
+
+.. tab-set::
+    :sync-group: os
+
+    .. tab-item:: macOS / Linux
+        :sync: linux
+
+        .. code-block:: console
+
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    .. tab-item:: Windows
+        :sync: windows
+
+        .. code-block:: console
+
+            powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+Then create a local project environment with the ``dev`` dependency extras:
+
+.. code-block:: console
+
+    uv sync --extra dev
+
+After syncing, the ``dev`` extras are available to all ``uv run`` commands
+without needing to pass ``--extra dev`` each time. For example, to list all
+available examples:
+
+.. code-block:: console
+
+    uv run -m newton.examples
+
+See the :ref:`extra-dependencies` section of the installation guide for a
+description of all available extras.
+
+Method 2: Using pip in a Virtual Environment
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To manually manage a virtual environment, create and activate one first:
+
+.. tab-set::
+    :sync-group: os
+
+    .. tab-item:: macOS / Linux
+        :sync: linux
+
+        .. code-block:: console
+
+            python -m venv .venv
+            source .venv/bin/activate
+
+    .. tab-item:: Windows (console)
+        :sync: windows
+
+        .. code-block:: console
+
+            python -m venv .venv
+            .venv\Scripts\activate.bat
+
+    .. tab-item:: Windows (PowerShell)
+        :sync: windows-ps
+
+        .. code-block:: console
+
+            python -m venv .venv
+            .venv\Scripts\Activate.ps1
+
+Then locally install Newton in editable mode with its development dependencies:
+
+.. code-block:: console
+
+    pip install -e ".[dev]" --extra-index-url https://pypi.nvidia.com/
+
+The ``--extra-index-url`` flag points pip to the NVIDIA package index, which is
+required to find ``warp-lang`` versions newer than those available on PyPI.
 
 Python Dependency Management
 ----------------------------
@@ -47,9 +135,8 @@ Running the tests
 -----------------
 
 The Newton test suite supports both ``uv`` and standard ``venv`` workflows,
-and by default runs in up to eight parallel processes. On some systems, the
-tests must be run in a serial manner with ``--serial-fallback`` due to an
-outstanding bug.
+and by default runs in up to eight parallel processes. The tests can be run
+in a serial manner with ``--serial-fallback``.
 
 Pass ``--help`` to either run method below to see all available flags.
 
@@ -70,11 +157,14 @@ Pass ``--help`` to either run method below to see all available flags.
         .. code-block:: console
 
             # install dev extras (including testing & coverage deps)
-            python -m pip install -e .[dev]
+            python -m pip install -e ".[dev]"
             # run tests
             python -m newton.tests
             
-Most tests run when the ``dev`` extras are installed. The tests that run examples that use PyTorch to inference an RL policy are skipped if the ``torch`` dependency is not installed. In order to run these tests, include the ``torch-cu12`` extras:
+Most tests run when the ``dev`` extras are installed. The tests using PyTorch
+to run inference on an RL policy are skipped if the ``torch`` dependency is
+not installed. In order to run these tests, include the ``torch-cu12`` or
+``torch-cu13`` extras matching your NVIDIA driver's CUDA support:
 
 .. tab-set::
     :sync-group: env
@@ -93,7 +183,7 @@ Most tests run when the ``dev`` extras are installed. The tests that run example
         .. code-block:: console
 
             # install both dev and torch-cu12 extras (need to pull from PyTorch CUDA 12.8 wheel index)
-            python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e .[dev,torch-cu12]
+            python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e ".[dev,torch-cu12]"
             # run tests
             python -m newton.tests
 
@@ -162,7 +252,7 @@ From the top of the repository, run:
     .. tab-item:: venv
         :sync: venv
 
-        .. code:: console
+        .. code-block:: console
 
             python -m pip install pre-commit
             pre-commit run -a
@@ -182,7 +272,7 @@ To automatically run pre-commit hooks with ``git commit``:
     .. tab-item:: venv
         :sync: venv
 
-        .. code:: console
+        .. code-block:: console
 
             pre-commit install
 
@@ -191,7 +281,7 @@ The hooks can be uninstalled with ``pre-commit uninstall``.
 Typos
 -----
 
-To proactively catch spelling mistakes, Newton uses the `typos <https://github.com/crate-ci/typos>`_ tool. Typos scans source files for common misspellings and is integrated into our pre-commit hooks, so spelling errors in both code and documentation are flagged when you run or install pre-commit (see above). You can also run ``typos`` manually if needed. Refer to the `typos documentation <https://github.com/crate-ci/typos>`_ for more details on usage and configuration options.
+To proactively catch spelling mistakes, Newton uses the `typos <https://github.com/crate-ci/typos>`_ tool. Typos scans source files for common misspellings and is integrated into our pre-commit hooks, so spelling errors in both code and documentation are flagged when you run or install pre-commit (see above). You can also run ``typos`` manually if needed. Refer to the `typos documentation <https://github.com/crate-ci/typos?tab=readme-ov-file#documentation>`_ for more details on usage and configuration options.
 
 Dealing with false positives
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -207,8 +297,52 @@ False positives are managed as follows:
 When typos reports a word that is valid within the Newton codebase, you can add it to the appropriate section in ``pyproject.toml`` to suppress future warnings. After updating, re-run typos (or pre-commit) to confirm that the word is ignored. Use these options to keep the codebase clean while ensuring needed flexibility for accepted project-specific words and identifiers.
 
 
+License headers
+---------------
 
+Every source file in the repository must carry a 2-line `SPDX <https://spdx.dev/>`_ license
+header. The project's Apache-2.0 license is in ``LICENSE.md`` at the repository root, and additional and third-party license texts are available in the ``newton/licenses`` directory, so no further
+boilerplate is required in individual files.
 
+The required headers depend on the file type:
+
+- **Python files** (``.py``):
+
+  .. code-block:: python
+
+      # SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      # SPDX-License-Identifier: Apache-2.0
+
+- **Documentation files** (``.rst``) — CC-BY-4.0:
+
+  .. code-block:: rst
+
+      .. SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      .. SPDX-License-Identifier: CC-BY-4.0
+
+- **Jupyter notebooks** (``.ipynb``) — CC-BY-4.0 (plain text in the first cell, no comment prefix):
+
+  .. code-block:: text
+
+      SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      SPDX-License-Identifier: CC-BY-4.0
+
+Use the year the file was **first created**. Do not update the year when modifying an
+existing file, and do not use year ranges — git history is the authoritative record of
+when changes were made.
+
+A CI check (``pr_license_check.yml``) enforces headers on every pull request using
+`Apache SkyWalking Eyes <https://github.com/apache/skywalking-eyes>`_.
+
+To run the license checks locally with Docker before pushing:
+
+.. code-block:: console
+
+    # Check Python source headers (Apache-2.0)
+    docker run -it --rm -v $(pwd):/github/workspace apache/skywalking-eyes header check
+
+    # Check documentation headers (CC-BY-4.0)
+    docker run -it --rm -v $(pwd):/github/workspace apache/skywalking-eyes -c .licenserc-docs.yaml header check
 
 Using a local Warp installation with uv
 ---------------------------------------
@@ -224,6 +358,8 @@ Use the following steps to run Newton with a local build of Warp:
 
 The Warp initialization message should then properly reflect the local Warp installation instead of the locked version,
 e.g. when running ``python -m newton.examples basic_pendulum``.
+
+.. _building-the-documentation:
 
 Building the documentation
 --------------------------
@@ -244,9 +380,9 @@ To build the documentation locally, ensure you have the documentation dependenci
     .. tab-item:: venv
         :sync: venv
 
-        .. code:: console
+        .. code-block:: console
 
-            python -m pip install -e .[docs]
+            python -m pip install -e ".[docs]"
             cd path/to/newton/docs && make html
 
 The built documentation will be available in ``docs/_build/html``.
@@ -281,15 +417,28 @@ in the tutorial notebooks, which require proper MIME types for WebAssembly and J
     .. tab-item:: venv
         :sync: venv
 
-        .. code:: console
+        .. code-block:: console
 
             python docs/serve.py
 
 Then open http://localhost:8000 in your browser. You can specify a custom port with ``--port``:
 
-.. code-block:: console
+.. tab-set::
+    :sync-group: env
 
-    python docs/serve.py --port 8080
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            uv run docs/serve.py --port 8080
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            python docs/serve.py --port 8080
 
 .. note::
 
@@ -302,12 +451,6 @@ Documentation Versioning
 
 Newton's documentation is versioned and hosted on GitHub Pages. Multiple versions
 are available simultaneously, with a version switcher dropdown in the navigation bar.
-
-**Published documentation URLs:**
-
-- **Latest stable release**: https://newton-physics.github.io/newton/stable/
-- **Development (main branch)**: https://newton-physics.github.io/newton/latest/
-- **Specific versions**: https://newton-physics.github.io/newton/1.0.0/ (etc.)
 
 How It Works
 ^^^^^^^^^^^^
@@ -358,6 +501,43 @@ Manual Operations
 docs with Sphinx, and deploy to the corresponding directory on ``gh-pages``. Update
 ``switcher.json`` after each version using ``scripts/ci/update_docs_switcher.py``.
 
+API documentation
+-----------------
+
+Newton's API reference is auto-generated from the ``__all__`` lists of its public modules.
+The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/`` (git-ignored)
+that Sphinx processes via ``autosummary`` to create individual pages for every public symbol.
+
+Whenever you add, remove, or rename a public symbol in one of the public modules
+(``newton``, ``newton.geometry``, ``newton.solvers``, ``newton.sensors``, etc.),
+regenerate the API pages:
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            uv run python docs/generate_api.py
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            python docs/generate_api.py
+
+After running the script, rebuild the documentation to verify the result (see
+:ref:`building-the-documentation` above).
+
+.. note::
+
+    Only symbols listed in a module's ``__all__`` (or, as a fallback, its public
+    attributes) are included. If a new class or function in ``newton/_src/`` should
+    be visible to users, re-export it through the appropriate public module first.
+
 Testing documentation code snippets
 -----------------------------------
 
@@ -378,12 +558,31 @@ The doctests can be run with:
     .. tab-item:: venv
         :sync: venv
 
-        .. code:: console
+        .. code-block:: console
 
             python -m sphinx -j auto -W -b doctest docs docs/_build/doctest
 
 For more information, see the `sphinx.ext.doctest <https://www.sphinx-doc.org/en/master/usage/extensions/doctest.html>`__
 documentation.
+
+Changelog
+---------
+
+Newton maintains a ``CHANGELOG.md`` at the repository root.
+
+When a pull request modifies user-facing behavior, add an entry under the
+``[Unreleased]`` section in the appropriate category:
+
+- **Added** — new features
+- **Changed** — changes to existing functionality (include migration guidance)
+- **Deprecated** — features that will be removed (include migration guidance,
+  e.g. "Deprecate ``Model.geo_meshes`` in favor of ``Model.shapes``")
+- **Removed** — removed features (include migration guidance)
+- **Fixed** — bug fixes
+
+Use imperative present tense ("Add X", not "Added X") and keep entries concise.
+Internal implementation details (refactors, CI tweaks) that do not affect users
+should **not** be listed.
 
 Style Guide
 -----------
@@ -394,6 +593,83 @@ Style Guide
 - Keep pull requests focused on a single feature or bug fix.
 - Use kebab-case instead of snake_case for command line arguments, e.g. ``--use-cuda-graph`` instead of ``--use_cuda_graph``.
 
+Writing examples
+----------------
+
+Examples live in ``newton/examples/<category>/example_<category>_<name>.py`` (e.g.
+``newton/examples/basic/example_basic_pendulum.py``). Each file defines an ``Example``
+class with the following interface:
+
+.. code-block:: python
+
+    class Example:
+        def __init__(self, viewer, args):
+            """Build the model, create solver/state/control, and set up the viewer."""
+            ...
+
+        def step(self):
+            """Advance the simulation by one frame (typically with substeps)."""
+            ...
+
+        def render(self):
+            """Update the viewer with the current state."""
+            ...
+
+        def test_final(self):
+            """Validate the final simulation state. Required for CI."""
+            ...
+
+        def test_post_step(self):
+            """Optional per-step validation, called after every step() in test mode."""
+            ...
+
+Every example **must** implement ``test_final()`` (or ``test_post_step()``, or both).
+The test harness runs examples with ``--viewer null --test`` and calls these methods to
+verify simulation correctness. An example that implements neither will raise
+``NotImplementedError`` in CI.
+
+Discovery and registration
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Examples are discovered automatically: any file matching
+``newton/examples/<category>/example_*.py`` is picked up by ``newton.examples.get_examples()``.
+The short name used on the command line is the filename without the ``example_`` prefix and
+``.py`` extension (e.g. ``basic_pendulum``).
+
+New examples must also be registered in the examples ``README.md`` with a                                                        
+``python -m newton.examples <example_name>`` command and a 320x320 jpg screenshot.  
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            # list all available examples
+            uv run -m newton.examples
+
+            # run an example by short name
+            uv run -m newton.examples basic_pendulum
+
+            # run in headless test mode (used by CI)
+            uv run -m newton.examples basic_pendulum --viewer null --test
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            # list all available examples
+            python -m newton.examples
+
+            # run an example by short name
+            python -m newton.examples basic_pendulum
+
+            # run in headless test mode (used by CI)
+            python -m newton.examples basic_pendulum --viewer null --test
+
 Roadmap and Future Work
 -----------------------
 
@@ -403,19 +679,28 @@ Roadmap and Future Work
 - More comprehensive sensor models
 - Expanded robotics examples
 
-See the `GitHub Discussions <https://github.com/newton-physics/newton/discussions>`__ for ongoing feature planning.
+See the `GitHub Discussions <https://github.com/newton-physics/newton/discussions>`__ and `GitHub Roadmap <https://github.com/orgs/newton-physics/projects/1>`__ for ongoing feature planning.
 
 Benchmarking with airspeed velocity
 -----------------------------------
 
 The Newton repository contains a benchmarking suite implemented using the `airspeed velocity <https://asv.readthedocs.io/en/latest/>`__ framework.
-The full set of benchmarks are intended to be run on a machine with a CUDA-capable GPU.
+The full set of benchmarks is intended to be run on a machine with a CUDA-capable GPU.
 
 To get started, install airspeed velocity from PyPI:
 
 .. code-block:: console
 
     python -m pip install asv
+
+.. tip::
+
+    With ``uv``, airspeed velocity can be run without installing it into the
+    project environment by using ``uvx``:
+
+    .. code-block:: console
+
+        uvx --with virtualenv asv run --launch-method spawn ...
 
 If airspeed velocity has not been previously run on the machine, it will need to be initialized with:
 
@@ -451,6 +736,90 @@ benchmark code from the ``asv/benchmarks`` directory against the code state of t
 the benchmark definitions themselves are not checked out from different branches—only the code being
 benchmarked is.
 
+Benchmarks can also be run against a range of commits using the ``commit1...commit2`` syntax.
+This is useful for comparing performance across several recent changes:
+
+.. tab-set::
+    :sync-group: shell
+
+    .. tab-item:: Unix
+        :sync: unix
+
+        .. code-block:: console
+
+            asv run --launch-method spawn HEAD~4..HEAD
+
+    .. tab-item:: Windows
+        :sync: windows
+
+        .. code-block:: console
+
+            asv run --launch-method spawn HEAD~4..HEAD
+
+Commit hashes can be used instead of relative references:
+
+.. tab-set::
+    :sync-group: shell
+
+    .. tab-item:: Unix
+        :sync: unix
+
+        .. code-block:: console
+
+            asv run --launch-method spawn abc1234..def5678
+
+    .. tab-item:: Windows
+        :sync: windows
+
+        .. code-block:: console
+
+            asv run --launch-method spawn abc1234..def5678
+
+Running benchmarks standalone
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Benchmark files can also be run directly as Python scripts, without the airspeed velocity
+harness. This is useful for quick iteration during development since it skips the
+environment setup that airspeed velocity performs. Each benchmark file under
+``asv/benchmarks/`` supports a ``--bench`` flag to select specific benchmark classes:
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            uv run python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro
+
+When ``--bench`` is omitted, all benchmarks in the file are run. The ``--bench`` flag can
+be repeated to select multiple benchmarks:
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            uv run python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro --bench FastG1
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            python asv/benchmarks/simulation/bench_mujoco.py --bench FastAllegro --bench FastG1
+
 Tips for writing benchmarks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -465,14 +834,14 @@ to just the ones under development:
 
         .. code-block:: console
 
-            asv run --launch-method spawn main^! --bench example_anymal.PretrainedSimulate
+            asv run --launch-method spawn main^! --bench FastG1
 
     .. tab-item:: Windows
         :sync: windows
 
         .. code-block:: console
 
-            asv run --launch-method spawn main^^! --bench example_anymal.PretrainedSimulate
+            asv run --launch-method spawn main^^! --bench FastG1
 
 The most time-consuming benchmarks are those that measure the time it takes to load and run one frame of the example
 starting from an empty kernel cache.

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import os
 import unittest
@@ -221,6 +209,31 @@ class TestEqualityConstraints(unittest.TestCase):
                 expected_joint2,
                 f"World {world_idx} joint constraint joint2 index incorrect",
             )
+
+    def test_default_equality_constraint_torquescale_is_numeric(self):
+        builder = newton.ModelBuilder()
+
+        base = builder.add_link()
+        link1 = builder.add_link()
+        link2 = builder.add_link()
+
+        joint0 = builder.add_joint_free(parent=-1, child=base)
+        joint1 = builder.add_joint_revolute(parent=base, child=link1, axis=(0, 0, 1))
+        joint2 = builder.add_joint_revolute(parent=link1, child=link2, axis=(0, 0, 1))
+        builder.add_articulation([joint0, joint1, joint2])
+
+        builder.add_equality_constraint_connect(body1=base, body2=link1, anchor=wp.vec3(0.0, 0.0, 0.0))
+        builder.add_equality_constraint_joint(joint1=joint1, joint2=joint2)
+        builder.add_equality_constraint_weld(body1=link1, body2=link2)
+
+        self.assertEqual(builder.equality_constraint_torquescale, [0.0, 0.0, 1.0])
+
+        model = builder.finalize()
+        np.testing.assert_allclose(
+            model.equality_constraint_torquescale.numpy(),
+            np.array([0.0, 0.0, 1.0], dtype=np.float32),
+            rtol=1e-6,
+        )
 
     def test_collapse_fixed_joints_with_equality_constraints(self):
         """Test that equality constraints are properly remapped after collapse_fixed_joints,

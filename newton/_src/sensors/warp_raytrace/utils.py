@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -22,24 +10,38 @@ import numpy as np
 import warp as wp
 
 from ...core import MAXVAL
-from .types import RenderLightType
+from ...geometry import Gaussian, GeoType
+from . import gaussians
+from .types import RenderLightType, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
 @wp.kernel(enable_backward=False)
-def compute_mesh_bounds(in_meshes: wp.array(dtype=wp.uint64), out_bounds: wp.array2d(dtype=wp.vec3f)):
+def compute_shape_bounds(
+    in_shape_type: wp.array(dtype=wp.int32),
+    in_shape_ptr: wp.array(dtype=wp.uint64),
+    in_gaussians: wp.array(dtype=Gaussian.Data),
+    out_bounds: wp.array2d(dtype=wp.vec3f),
+):
     tid = wp.tid()
 
     min_point = wp.vec3(MAXVAL)
     max_point = wp.vec3(-MAXVAL)
 
-    if in_meshes[tid] != 0:
-        mesh = wp.mesh_get(in_meshes[tid])
+    if in_shape_type[tid] == GeoType.MESH:
+        mesh = wp.mesh_get(in_shape_ptr[tid])
         for i in range(mesh.points.shape[0]):
             min_point = wp.min(min_point, mesh.points[i])
             max_point = wp.max(max_point, mesh.points[i])
+
+    elif in_shape_type[tid] == GeoType.GAUSSIAN:
+        gaussian_id = in_shape_ptr[tid]
+        for i in range(in_gaussians[gaussian_id].num_points):
+            lower, upper = gaussians.compute_gaussian_bounds(in_gaussians[gaussian_id], i)
+            min_point = wp.min(min_point, lower)
+            max_point = wp.max(max_point, upper)
 
     out_bounds[tid, 0] = min_point
     out_bounds[tid, 1] = max_point
@@ -159,11 +161,16 @@ class Utils:
     def __init__(self, render_context: RenderContext):
         self.__render_context = render_context
 
-    def compute_mesh_bounds(self):
+    def compute_shape_bounds(self):
         wp.launch(
-            kernel=compute_mesh_bounds,
-            dim=self.__render_context.mesh_ids.size,
-            inputs=[self.__render_context.mesh_ids, self.__render_context.mesh_bounds],
+            kernel=compute_shape_bounds,
+            dim=self.__render_context.shape_source_ptr.size,
+            inputs=[
+                self.__render_context.shape_types,
+                self.__render_context.shape_source_ptr,
+                self.__render_context.gaussians_data,
+                self.__render_context.shape_bounds,
+            ],
             device=self.__render_context.device,
         )
 
@@ -332,30 +339,30 @@ class Utils:
         checkerboard = (
             (np.arange(resolution) // checker_size)[:, None] + (np.arange(resolution) // checker_size)
         ) % 2 == 0
-        pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).flatten()
+
+        pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32)
+
+        texture_ids = np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32)
+
+        self.__checkerboard_data = TextureData()
+        self.__checkerboard_data.texture = wp.Texture2D(
+            pixels.view(np.uint8).reshape(resolution, resolution, 4),
+            filter_mode=wp.TextureFilterMode.CLOSEST,
+            address_mode=wp.TextureAddressMode.WRAP,
+            normalized_coords=True,
+            dtype=wp.uint8,
+            num_channels=4,
+            device=self.__render_context.device,
+        )
+
+        self.__checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
         self.__render_context.config.enable_textures = True
-        self.__render_context.texture_data = wp.array(pixels, dtype=wp.uint32, device=self.__render_context.device)
-        self.__render_context.texture_offsets = wp.array([0], dtype=wp.int32, device=self.__render_context.device)
-        self.__render_context.texture_width = wp.array(
-            [resolution], dtype=wp.int32, device=self.__render_context.device
+        self.__render_context.texture_data = wp.array(
+            [self.__checkerboard_data], dtype=TextureData, device=self.__render_context.device
         )
-        self.__render_context.texture_height = wp.array(
-            [resolution], dtype=wp.int32, device=self.__render_context.device
-        )
-
-        self.__render_context.material_texture_ids = wp.array([0], dtype=wp.int32, device=self.__render_context.device)
-        self.__render_context.material_texture_repeat = wp.array(
-            [wp.vec2f(1.0)], dtype=wp.vec2f, device=self.__render_context.device
-        )
-        self.__render_context.material_rgba = wp.array(
-            [wp.vec4f(1.0)], dtype=wp.vec4f, device=self.__render_context.device
-        )
-
-        self.__render_context.shape_materials = wp.array(
-            np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32),
-            dtype=wp.int32,
-            device=self.__render_context.device,
+        self.__render_context.shape_texture_ids = wp.array(
+            texture_ids, dtype=wp.int32, device=self.__render_context.device
         )
 
     def __reshape_buffer_for_flatten(

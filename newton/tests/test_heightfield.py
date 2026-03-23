@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import os
 import tempfile
@@ -22,6 +10,7 @@ import warp as wp
 
 import newton
 from newton import Heightfield
+from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
 _cuda_available = wp.is_cuda_available()
@@ -223,7 +212,7 @@ class TestHeightfield(unittest.TestCase):
     def test_solver_mujoco_hfield(self):
         """Test converting Newton model with heightfield to MuJoCo."""
         try:
-            import mujoco  # noqa: F401
+            SolverMuJoCo.import_mujoco()
         except ImportError:
             self.skipTest("MuJoCo not installed")
 
@@ -248,7 +237,7 @@ class TestHeightfield(unittest.TestCase):
     def test_heightfield_collision(self):
         """Test that a sphere doesn't fall through a heightfield."""
         try:
-            import mujoco  # noqa: F401
+            SolverMuJoCo.import_mujoco()
         except ImportError:
             self.skipTest("MuJoCo not installed")
 

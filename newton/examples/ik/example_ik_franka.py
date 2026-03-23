@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example IK Franka (positions + rotations)
@@ -19,6 +7,7 @@
 # Inverse kinematics on a Franka FR3 arm targeting the TCP (fr3_hand_tcp).
 # - Single IKObjectivePosition + IKObjectiveRotation
 # - Gizmo controls the TCP target (with ViewerGL.log_gizmo)
+# - On gizmo release, target snaps back to the solved TCP pose
 #
 # Command: python -m newton.examples ik_franka
 ###########################################################################
@@ -155,11 +144,13 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
 
-        # Register gizmo (viewer will draw & mutate transform in-place)
-        self.viewer.log_gizmo("target_tcp", self.ee_tf)
-
-        # Visualize the current articulated state
+        # Visualize the current articulated state.
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
+        body_q_np = self.state.body_q.numpy()
+
+        # Register gizmo (viewer will draw & mutate transform in-place).
+        self.viewer.log_gizmo("target_tcp", self.ee_tf, snap_to=wp.transform(*body_q_np[self.ee_index]))
+
         self.viewer.log_state(self.state)
 
         self.viewer.end_frame()

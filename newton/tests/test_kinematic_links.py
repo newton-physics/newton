@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -182,7 +170,7 @@ KINEMATIC_TEST_WRENCH = np.array([20.0, -15.0, 10.0, 0.5, -0.4, 0.3], dtype=np.f
 
 
 def _uses_maximal_coordinates(solver) -> bool:
-    return isinstance(solver, newton.solvers.SolverXPBD | newton.solvers.SolverSemiImplicit)
+    return isinstance(solver, newton.solvers.SolverXPBD | newton.solvers.SolverSemiImplicit | newton.solvers.SolverVBD)
 
 
 def _create_contacts(model: newton.Model, solver):
@@ -233,6 +221,7 @@ def _build_free_root_scene(device):
     )
     builder.add_shape_sphere(probe_body, radius=0.1)
 
+    builder.color()
     model = builder.finalize(device=device)
     kinematic_joint = _find_joint_for_child(model, kinematic_body)
     return model, kinematic_body, probe_body, kinematic_joint
@@ -277,6 +266,7 @@ def _build_revolute_root_pendulum_scene(device):
     )
     builder.add_shape_sphere(probe_body, radius=0.1)
 
+    builder.color()
     model = builder.finalize(device=device)
     return model, root, pendulum, probe_body, root_joint
 
@@ -302,6 +292,7 @@ def _build_fixed_root_scene(device):
     )
     builder.add_shape_sphere(probe_body, radius=0.12)
 
+    builder.color()
     model = builder.finalize(device=device)
     probe_joint = _find_joint_for_child(model, probe_body)
     return model, static_body, probe_body, probe_joint
@@ -563,6 +554,7 @@ def test_kinematic_runtime_toggle(
         label="toggle_body",
     )
     builder.add_shape_sphere(body, radius=0.1)
+    builder.color()
     model = builder.finalize(device=device)
     solver = solver_fn(model)
     contacts = _create_contacts(model, solver)
@@ -629,6 +621,7 @@ solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    "vbd": lambda model: newton.solvers.SolverVBD(model),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

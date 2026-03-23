@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot Anymal D
@@ -22,13 +10,13 @@
 #
 ###########################################################################
 
-import mujoco
 import warp as wp
 
 import newton
 import newton.examples
 import newton.utils
 from newton import JointTargetMode
+from newton.solvers import SolverMuJoCo
 
 
 class Example:
@@ -83,9 +71,9 @@ class Example:
 
         self.model = builder.finalize()
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
-        self.solver = newton.solvers.SolverMuJoCo(
+        self.solver = SolverMuJoCo(
             self.model,
-            cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
+            cone="elliptic",
             impratio=100,
             iterations=100,
             ls_iterations=50,
@@ -171,6 +159,8 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        newton.examples.add_mujoco_contacts_arg(parser)
         parser.set_defaults(world_count=8)
         return parser
 

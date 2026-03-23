@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # Configuration file for the Sphinx documentation builder.
 #
@@ -161,6 +149,8 @@ autodoc_preserve_defaults = True
 
 autodoc_typehints_description_target = "documented"
 
+toc_object_entries_show_parents = "hide"
+
 autodoc_default_options = {
     "members": True,
     "member-order": "groupwise",
@@ -210,6 +200,13 @@ html_theme_options = {
         "image_dark": "_static/newton-logo-dark.png",
         "text": f"Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>",
         "alt_text": "Newton Physics Logo",
+    },
+    # Keep the right-hand page TOC on by default, but remove it on the
+    # solver API page where several wide comparison tables benefit from the
+    # extra content width.
+    "secondary_sidebar_items": {
+        "**": ["page-toc", "edit-this-page", "sourcelink"],
+        "api/newton_solvers": [],
     },
     # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
 }

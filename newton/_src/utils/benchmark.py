@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import functools
 import itertools
@@ -201,6 +189,9 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
                 print(f"\n[Benchmark] Running {benchmark_cls.__name__}.{attr} with parameters {params}")
                 samples = []
                 if attr.startswith("time_"):
+                    # Warmup run (not measured).
+                    method(*params)
+                    wp.synchronize()
                     # Run timing benchmarks multiple times and measure elapsed time.
                     for _ in range(number):
                         start = time.perf_counter()

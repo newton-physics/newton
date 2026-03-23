@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -173,14 +161,14 @@ def test_runtime_gravity_with_cuda_graph(test, device):
     solver.step(state_0, state_1, control, None, dt)
 
     # Start graph capture
-    wp.capture_begin()
+    wp.capture_begin(device=device)
 
     try:
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, dt)
 
         # End capture and get graph
-        graph = wp.capture_end()
+        graph = wp.capture_end(device=device)
 
         # Now test that we can change gravity and it affects the simulation
         # even when using the captured graph
@@ -217,7 +205,7 @@ def test_runtime_gravity_with_cuda_graph(test, device):
 
     except Exception as e:
         # Make sure to end capture if something goes wrong
-        wp.capture_end()
+        wp.capture_end(device=device)
         raise e
 
 

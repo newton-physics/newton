@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Concrete USD schema resolvers used by :mod:`newton.usd`."""
 
@@ -95,6 +83,9 @@ class SchemaResolverNewton(SchemaResolver):
             # Collisions: newton margin == newton:contactMargin, newton gap == newton:contactGap
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
             "gap": SchemaAttribute("newton:contactGap", float("-inf")),
+            # Contact stiffness/damping
+            "ke": SchemaAttribute("newton:contact_ke", None),
+            "kd": SchemaAttribute("newton:contact_kd", None),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
@@ -331,6 +322,9 @@ class SchemaResolverMjc(SchemaResolver):
                 attribute_names=("mjc:margin", "mjc:gap"),
             ),
             "gap": SchemaAttribute("mjc:gap", 0.0),
+            # Contact stiffness/damping from per-geom solref
+            "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
         PrimType.MATERIAL: {
             # Materials

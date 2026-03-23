@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot Cartpole
@@ -185,13 +173,14 @@ class Example:
             self.model,
             self.state_0,
             "pole2 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel, atol=1e-6),
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=100)
         return parser
 
