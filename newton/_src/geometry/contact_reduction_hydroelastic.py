@@ -200,7 +200,6 @@ def get_reduce_hydroelastic_contacts_kernel():
 
             # === Part 1: Normal-binned reduction ===
             bin_id = get_slot(normal)
-            pos_2d = project_point_to_plane(bin_id, position)
             key = make_contact_key(shape_a, shape_b, bin_id)
 
             entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
@@ -214,14 +213,16 @@ def get_reduce_hydroelastic_contacts_kernel():
                 reducer_data.entry_k_eff[entry_idx] = _effective_stiffness(
                     shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b]
                 )
-                use_beta = depth < wp.static(BETA_THRESHOLD) * wp.length(aabb_upper - aabb_lower)
+                aabb_size = wp.length(aabb_upper - aabb_lower)
+                use_beta = depth < wp.static(BETA_THRESHOLD) * aabb_size
                 if use_beta:
-                    # Weight spatial score by sqrt(penetration depth) so that
-                    # deeper contacts are preferred over thin boundary contacts.
-                    pen_weight = wp.sqrt(wp.max(-depth, 0.0))
+                    ws = reducer_data.weight_sum[entry_idx]
+                    anchor = reducer_data.weighted_pos_sum[entry_idx] / ws
+                    pos_2d_centered = project_point_to_plane(bin_id, position - anchor)
+                    pen_weight = wp.max(-depth, 0.0) / aabb_size
                     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
                         dir_2d = get_spatial_direction_2d(dir_i)
-                        score = wp.dot(pos_2d, dir_2d) * pen_weight
+                        score = wp.dot(pos_2d_centered, dir_2d) * pen_weight
                         value = make_contact_value(score, i)
                         reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
 
