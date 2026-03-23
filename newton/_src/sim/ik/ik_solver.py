@@ -337,13 +337,13 @@ class IKSolver:
         """Solve all base problems and write the best result for each one.
 
         Args:
-            joint_q_in: Input joint coordinates for the base problems, shape
-                [n_problems, joint_coord_count], dtype float.
-            joint_q_out: Output buffer for the selected solution of each base
-                problem. It may alias `joint_q_in`.
+            joint_q_in: Input joint coordinates [m or rad] for the base
+                problems, shape [n_problems, joint_coord_count].
+            joint_q_out: Output joint coordinates [m or rad] for the selected
+                solution of each base problem. It may alias `joint_q_in`.
             iterations: Number of optimizer iterations to run for each sampled
                 seed.
-            step_size: LM step scale. Ignored by the L-BFGS backend.
+            step_size: Unitless LM step scale. Ignored by the L-BFGS backend.
         """
         if joint_q_in.shape != (self.n_problems, self.n_coords):
             raise ValueError("joint_q_in has incompatible shape")

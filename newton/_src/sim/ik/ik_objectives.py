@@ -74,12 +74,15 @@ class IKObjective:
         Args:
             body_q: Batched body transforms for the current evaluation rows,
                 shape [n_batch, body_count], dtype :class:`transform`.
-            joint_q: Batched joint coordinates for the current evaluation
-                rows, shape [n_batch, joint_coord_count], dtype float.
+            joint_q: Batched joint coordinates [m or rad] for the current
+                evaluation rows, shape [n_batch, joint_coord_count], dtype
+                float.
             model: Shared articulation model.
-            residuals: Global residual buffer to update, shape [n_batch,
-                total_residual_count], dtype float.
-            start_idx: First residual row reserved for this objective.
+            residuals: Global residual buffer that receives this objective's
+                residual rows, shape [n_batch, total_residual_count], dtype
+                float.
+            start_idx: First residual row reserved for this objective inside
+                the global residual buffer.
             problem_idx: Mapping from evaluation rows to base problem
                 indices. Use this when objective data is stored once per
                 original problem but the solver expands rows for multiple
@@ -860,7 +863,7 @@ class IKObjectiveRotation(IKObjective):
     Args:
         link_index: Body index whose frame defines the constrained link.
         link_offset_rotation: Local rotation from the body frame to the
-            constrained frame.
+            constrained frame, stored in ``(x, y, z, w)`` order.
         target_rotations: Target orientations, shape [problem_count], dtype
             :class:`vec4`. Each quaternion is stored in ``(x, y, z, w)``
             order.

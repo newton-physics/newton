@@ -143,12 +143,6 @@ class IKOptimizerLM:
         *,
         problem_idx: wp.array(dtype=wp.int32) | None = None,
     ) -> None:
-        """
-        Construct a batch IK solver.
-
-        See class doc-string for parameter semantics.
-        """
-
         self.model = model
         self.device = model.device
         self.n_batch = n_batch
@@ -745,8 +739,8 @@ class IKOptimizerLM:
             # per-row
             joint_q_curr: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
             joint_qd_curr: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  (typically all-zero)
-            dq_dof: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  ← LM update (q̇)
-            dt: float,  # LM step (usually 1.0)
+            dq_dof: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  ← update direction (q̇)
+            dt: float,  # step scale (usually 1.0)
             # outputs
             joint_q_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
             joint_qd_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
