@@ -31,6 +31,13 @@ from newton.tests.unittest_utils import (
     sanitize_identifier,
 )
 
+# Patterns that are always filtered from subprocess stderr — infrastructure
+# noise that is never a test concern.
+_ALWAYS_FILTER_STDERR = [
+    r"PXR_WORK_THREAD_LIMIT",
+    r"^#{10,}$",
+]
+
 
 def _check_and_filter_stderr(
     test: unittest.TestCase,
@@ -51,7 +58,7 @@ def _check_and_filter_stderr(
     for pattern in expected_patterns:
         test.assertRegex(stderr, pattern, f"Expected stderr pattern not found: {pattern}")
 
-    filter_patterns = list(expected_patterns)
+    filter_patterns = list(expected_patterns) + _ALWAYS_FILTER_STDERR
     if is_cpu:
         filter_patterns.extend(allowed_stderr_cpu or [])
 
@@ -265,6 +272,7 @@ add_example_test(
     test_options_cuda={"world_count": 64},
     use_viewer=True,
     test_suffix="xpbd",
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestBasicExamples,
@@ -275,6 +283,7 @@ add_example_test(
     test_options_cuda={"world_count": 64},
     use_viewer=True,
     test_suffix="vbd",
+    expected_stderr=["Inertia validation corrected"],
 )
 
 add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
@@ -313,6 +322,7 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestCableExamples,
@@ -374,6 +384,7 @@ add_example_test(
     test_options={},
     test_options_cuda={"num-frames": 32},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestClothExamples,
@@ -416,6 +427,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500, "torch_required": True},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotExamples,
@@ -424,6 +436,7 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
     expected_stderr_cpu=[
         "mesh-mesh contacts will be skipped",
     ],
@@ -437,6 +450,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotExamples,
@@ -444,6 +458,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotExamples,
@@ -452,7 +467,7 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
-    expected_stderr=["possibly invalid inertia tensor"],
+    expected_stderr=["possibly invalid inertia tensor", "Inertia validation corrected"],
 )
 add_example_test(
     TestRobotExamples,
@@ -471,6 +486,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 720},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 
 
@@ -486,6 +502,7 @@ add_example_test(
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
     test_suffix="G1_29dof",
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -494,6 +511,7 @@ add_example_test(
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
     use_viewer=True,
     test_suffix="G1_23dof",
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -502,6 +520,7 @@ add_example_test(
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
     use_viewer=True,
     test_suffix="G1_23dof_Physx",
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -510,6 +529,7 @@ add_example_test(
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
     use_viewer=True,
     test_suffix="Anymal",
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -518,6 +538,7 @@ add_example_test(
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
     use_viewer=True,
     test_suffix="Anymal_Physx",
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -527,6 +548,7 @@ add_example_test(
     test_options_cuda={"num-frames": 500, "robot": "go2"},
     use_viewer=True,
     test_suffix="Go2",
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -536,6 +558,7 @@ add_example_test(
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
     use_viewer=True,
     test_suffix="Go2_Physx",
+    expected_stderr=["Inertia validation corrected"],
 )
 
 
@@ -549,6 +572,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 100, "torch_required": True},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 
 
@@ -556,11 +580,29 @@ class TestIKExamples(unittest.TestCase):
     pass
 
 
-add_example_test(TestIKExamples, name="ik.example_ik_franka", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_franka",
+    devices=test_devices,
+    use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
+)
 
-add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_h1",
+    devices=test_devices,
+    use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
+)
 
-add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_custom",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
+)
 
 add_example_test(
     TestIKExamples,
@@ -568,6 +610,7 @@ add_example_test(
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 
 
@@ -582,6 +625,7 @@ add_example_test(
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -598,6 +642,7 @@ add_example_test(
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -606,6 +651,7 @@ add_example_test(
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 
 
@@ -678,6 +724,10 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 160},  # required for ball to reach plate
     use_viewer=True,
+    expected_stderr=[
+        "possibly invalid inertia tensor",
+        "zero mass and zero inertia",
+    ],
 )
 
 add_example_test(
@@ -686,6 +736,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 
 add_example_test(
@@ -764,6 +815,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 
 
@@ -791,6 +843,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 1200},
     use_viewer=True,
+    expected_stderr=["Inertia validation corrected"],
 )
 add_example_test(
     TestContactsExamples,
@@ -896,6 +949,25 @@ class TestStderrFiltering(unittest.TestCase):
             self, stderr, expected_stderr=["expected warning", "another expected"], is_cpu=False
         )
         self.assertEqual(result, "unexpected output")
+
+    def test_always_filter_pxr_banner(self):
+        stderr = (
+            "##################################################################\n"
+            "#  PXR_WORK_THREAD_LIMIT is overridden to '1'.  Default is '0'.  #\n"
+            "##################################################################\n"
+            "real output"
+        )
+        result = _check_and_filter_stderr(self, stderr, is_cpu=False)
+        self.assertEqual(result, "real output")
+
+    def test_inertia_validation_not_always_filtered(self):
+        stderr = (
+            "/path/to/example.py:72: UserWarning: Inertia validation corrected 120 bodies."
+            " Set validate_inertia_detailed=True for detailed per-body warnings."
+        )
+        # Without expected_stderr, the warning is NOT filtered
+        result = _check_and_filter_stderr(self, stderr, is_cpu=False)
+        self.assertEqual(result, stderr)
 
 
 if __name__ == "__main__":
