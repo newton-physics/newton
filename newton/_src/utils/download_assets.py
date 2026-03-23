@@ -442,7 +442,7 @@ def download_asset(
     """Download a specific folder from the newton-assets GitHub repository into a local cache.
 
     Args:
-        asset_folder: The folder within the repository to download (e.g., ``"franka_emika_panda"``).
+        asset_folder: The folder within the repository to download (e.g., "assets/models")
         cache_dir: Directory to cache downloads.
             If ``None``, the path is determined in the following order:
             1. ``NEWTON_CACHE_PATH`` environment variable.
