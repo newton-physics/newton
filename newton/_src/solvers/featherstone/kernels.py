@@ -8,10 +8,9 @@ import warp as wp
 from ...math import transform_twist
 from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
-    com_twist_to_point_velocity,
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
-    origin_twist_to_com_twist,
+    origin_twist_to_point_velocity,
 )
 from ..semi_implicit.kernels_body import joint_force
 
@@ -1585,9 +1584,7 @@ def eval_single_articulation_fk_with_velocity_conversion(
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = com_twist_to_point_velocity(
-                X_wp, body_com[parent], v_wp, wp.transform_get_translation(X_wc)
-            )
+            v_parent_origin = origin_twist_to_point_velocity(X_wp, v_wp, wp.transform_get_translation(X_wc))
 
         linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
@@ -1597,7 +1594,52 @@ def eval_single_articulation_fk_with_velocity_conversion(
         v_wc = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
 
         body_q[child] = X_wc
-        body_qd[child] = origin_twist_to_com_twist(X_wc, body_com[child], v_wc)
+        body_qd[child] = v_wc
+
+
+@wp.kernel
+def convert_articulation_free_distance_body_qd(
+    articulation_start: wp.array(dtype=int),
+    articulation_count: int,
+    articulation_mask: wp.array(dtype=bool),
+    articulation_indices: wp.array(dtype=int),
+    joint_type: wp.array(dtype=int),
+    joint_child: wp.array(dtype=int),
+    body_com: wp.array(dtype=wp.vec3),
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+):
+    tid = wp.tid()
+
+    if articulation_indices:
+        articulation_id = articulation_indices[tid]
+    else:
+        articulation_id = tid
+
+    if articulation_id < 0 or articulation_id >= articulation_count:
+        return
+
+    if articulation_mask:
+        if not articulation_mask[articulation_id]:
+            return
+
+    joint_start = articulation_start[articulation_id]
+    joint_end = articulation_start[articulation_id + 1]
+
+    for i in range(joint_start, joint_end):
+        type = joint_type[i]
+        if type != JointType.FREE and type != JointType.DISTANCE:
+            continue
+
+        child = joint_child[i]
+        X_wc = body_q[child]
+        v_wc = body_qd[child]
+
+        v_origin = wp.spatial_top(v_wc)
+        omega = wp.spatial_bottom(v_wc)
+        r_com = wp.transform_point(X_wc, body_com[child])
+        v_com = v_origin + wp.cross(omega, r_com)
+        body_qd[child] = wp.spatial_vector(v_com, omega)
 
 
 @wp.kernel
@@ -1720,6 +1762,25 @@ def eval_fk_with_velocity_conversion(
             model.joint_X_c,
             model.joint_axis,
             model.joint_dof_dim,
+            model.body_com,
+        ],
+        outputs=[
+            state.body_q,
+            state.body_qd,
+        ],
+        device=model.device,
+    )
+
+    wp.launch(
+        kernel=convert_articulation_free_distance_body_qd,
+        dim=num_articulations,
+        inputs=[
+            model.articulation_start,
+            model.articulation_count,
+            mask,
+            indices,
+            model.joint_type,
+            model.joint_child,
             model.body_com,
         ],
         outputs=[

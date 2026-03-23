@@ -123,29 +123,15 @@ def compute_3d_rotational_dofs(
 
 
 @wp.func
-def origin_twist_to_com_twist(
+def origin_twist_to_point_velocity(
     X_wb: wp.transform,
-    body_com_local: wp.vec3,
     twist_origin: wp.spatial_vector,
-):
-    """Convert a body-origin twist into a CoM twist in world coordinates."""
-    omega = wp.spatial_bottom(twist_origin)
-    com_offset_world = wp.transform_vector(X_wb, body_com_local)
-    v_com = wp.spatial_top(twist_origin) + wp.cross(omega, com_offset_world)
-    return wp.spatial_vector(v_com, omega)
-
-
-@wp.func
-def com_twist_to_point_velocity(
-    X_wb: wp.transform,
-    body_com_local: wp.vec3,
-    twist_com: wp.spatial_vector,
     point_w: wp.vec3,
 ):
-    """Evaluate the world-space velocity of a point from a CoM twist."""
-    omega = wp.spatial_bottom(twist_com)
-    com_world = wp.transform_point(X_wb, body_com_local)
-    return wp.spatial_top(twist_com) + wp.cross(omega, point_w - com_world)
+    """Evaluate the world-space velocity of a point from a body-origin twist."""
+    omega = wp.spatial_bottom(twist_origin)
+    origin_world = wp.transform_get_translation(X_wb)
+    return wp.spatial_top(twist_origin) + wp.cross(omega, point_w - origin_world)
 
 
 @wp.func
@@ -348,9 +334,7 @@ def eval_single_articulation_fk(
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = com_twist_to_point_velocity(
-                X_wp, body_com[parent], v_wp, wp.transform_get_translation(X_wc)
-            )
+            v_parent_origin = origin_twist_to_point_velocity(X_wp, v_wp, wp.transform_get_translation(X_wc))
 
         # Transform joint motion into world space. The linear part of v_j is defined
         # at the child joint anchor; if the child body origin is offset from that
@@ -364,7 +348,7 @@ def eval_single_articulation_fk(
 
         if (body_flags[child] & body_flag_filter) != 0:
             body_q[child] = X_wc
-            body_qd[child] = origin_twist_to_com_twist(X_wc, body_com[child], v_wc)
+            body_qd[child] = v_wc
 
 
 @wp.kernel
@@ -639,7 +623,7 @@ def eval_articulation_ik(
 
         v_wp = body_qd[parent]
         w_p = wp.spatial_bottom(v_wp)
-        v_p = com_twist_to_point_velocity(X_wp, body_com[parent], v_wp, wp.transform_get_translation(X_wpj))
+        v_p = origin_twist_to_point_velocity(X_wp, v_wp, wp.transform_get_translation(X_wpj))
 
     # child transform and moment arm
     X_wc = body_q[child]
@@ -648,7 +632,7 @@ def eval_articulation_ik(
     v_wc = body_qd[child]
 
     w_c = wp.spatial_bottom(v_wc)
-    v_c = com_twist_to_point_velocity(X_wc, body_com[child], v_wc, wp.transform_get_translation(X_wcj))
+    v_c = origin_twist_to_point_velocity(X_wc, v_wc, wp.transform_get_translation(X_wcj))
 
     # joint properties
     type = joint_type[joint_idx]

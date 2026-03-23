@@ -51,27 +51,14 @@ def make_frame(a: wp.vec3):
 
 
 @wp.func
-def origin_twist_to_com_twist(
+def origin_twist_to_point_velocity(
     X_wb: wp.transform,
-    body_com_local: wp.vec3,
     twist_origin: wp.spatial_vector,
-):
-    omega = wp.spatial_bottom(twist_origin)
-    com_offset_world = wp.transform_vector(X_wb, body_com_local)
-    v_com = wp.spatial_top(twist_origin) + wp.cross(omega, com_offset_world)
-    return wp.spatial_vector(v_com, omega)
-
-
-@wp.func
-def com_twist_to_point_velocity(
-    X_wb: wp.transform,
-    body_com_local: wp.vec3,
-    twist_com: wp.spatial_vector,
     point_w: wp.vec3,
 ):
-    omega = wp.spatial_bottom(twist_com)
-    com_world = wp.transform_point(X_wb, body_com_local)
-    return wp.spatial_top(twist_com) + wp.cross(omega, point_w - com_world)
+    omega = wp.spatial_bottom(twist_origin)
+    origin_world = wp.transform_get_translation(X_wb)
+    return wp.spatial_top(twist_origin) + wp.cross(omega, point_w - origin_world)
 
 
 @wp.func
@@ -1046,9 +1033,7 @@ def eval_single_articulation_fk(
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = com_twist_to_point_velocity(
-                X_wp, body_com[parent], v_wp, wp.transform_get_translation(X_wc)
-            )
+            v_parent_origin = origin_twist_to_point_velocity(X_wp, v_wp, wp.transform_get_translation(X_wc))
 
         linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
@@ -1061,7 +1046,7 @@ def eval_single_articulation_fk(
         )  # spatial vector with (linear, angular) ordering
 
         body_q[child] = X_wc
-        body_qd[child] = origin_twist_to_com_twist(X_wc, body_com[child], v_wc)
+        body_qd[child] = v_wc
 
 
 @wp.kernel

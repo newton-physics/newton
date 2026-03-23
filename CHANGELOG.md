@@ -68,6 +68,7 @@
 - Fix viewer crash when contact buffer overflows by clamping contact count to buffer size
 - Decompose loop joint constraints by DOF type (WELD for fixed, CONNECT-pair for revolute, single CONNECT for ball) instead of always emitting 2x CONNECT
 - Implicit MPM solver now uses `mass=0` for kinematic particles instead of `ACTIVE` flag
+- Fix forward-kinematics child-origin linear velocity for articulated translated joints
 
 ## [1.0.0] - 2026-03-10
 
