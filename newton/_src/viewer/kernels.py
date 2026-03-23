@@ -436,7 +436,7 @@ def compute_inertia_box_lines(
     # causing the wireframe box to appear randomly rotated.
     max_eig = wp.max(principal_inertia)
     min_eig = wp.min(principal_inertia)
-    if min_eig > 0.0 and max_eig < 1.01 * min_eig:  # within 1% → isotropic
+    if min_eig > 0.0 and max_eig < 1.01 * min_eig:  # within 1% -> isotropic
         rot = wp.identity(3, float)
     elif min_eig > 0.0:
         # Stabilize for axisymmetric inertia (2 of 3 eigenvalues nearly equal, e.g. cylinders).
@@ -446,13 +446,13 @@ def compute_inertia_box_lines(
         d02 = wp.abs(principal_inertia[0] - principal_inertia[2])
         d12 = wp.abs(principal_inertia[1] - principal_inertia[2])
         min_diff = wp.min(d01, wp.min(d02, d12))
-        if min_diff < 0.01 * max_eig:  # within 1% → axisymmetric
+        if min_diff < 0.01 * max_eig:  # within 1% -> axisymmetric
             # Identify unique eigenvector (column not in degenerate pair)
-            if d12 <= d01 and d12 <= d02:  # e1 ≈ e2, unique = col 0
+            if d12 <= d01 and d12 <= d02:  # e1 approx eq e2, unique = col 0
                 u = wp.vec3(rot[0, 0], rot[1, 0], rot[2, 0])
-            elif d02 <= d01:  # e0 ≈ e2, unique = col 1
+            elif d02 <= d01:  # e0 approx eq e2, unique = col 1
                 u = wp.vec3(rot[0, 1], rot[1, 1], rot[2, 1])
-            else:  # e0 ≈ e1, unique = col 2
+            else:  # e0 approx eq e1, unique = col 2
                 u = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
             u = wp.normalize(u)
 
