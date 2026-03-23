@@ -2668,7 +2668,6 @@ wheels = [
 name = "newton"
 source = { editable = "." }
 dependencies = [
-    { name = "newton-actuators" },
     { name = "warp-lang" },
 ]
 
@@ -2684,6 +2683,7 @@ dev = [
     { name = "meshio" },
     { name = "mujoco", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "mujoco-warp", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "newton-actuators" },
     { name = "newton-usd-schemas" },
     { name = "open3d", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64') or (python_full_version < '3.13' and sys_platform != 'linux') or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "pillow" },
@@ -2737,6 +2737,7 @@ examples = [
     { name = "meshio" },
     { name = "mujoco", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "mujoco-warp", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "newton-actuators" },
     { name = "newton-usd-schemas" },
     { name = "open3d", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64') or (python_full_version < '3.13' and sys_platform != 'linux') or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "pillow" },
@@ -2778,6 +2779,7 @@ notebook = [
     { name = "meshio" },
     { name = "mujoco", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "mujoco-warp", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "newton-actuators" },
     { name = "newton-usd-schemas" },
     { name = "open3d", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64') or (python_full_version < '3.13' and sys_platform != 'linux') or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "pillow" },
@@ -2800,6 +2802,7 @@ remesh = [
 sim = [
     { name = "mujoco", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "mujoco-warp", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "newton-actuators" },
 ]
 torch-cu12 = [
     { name = "alphashape" },
@@ -2811,6 +2814,7 @@ torch-cu12 = [
     { name = "meshio" },
     { name = "mujoco", marker = "python_full_version < '3.14'" },
     { name = "mujoco-warp", marker = "python_full_version < '3.14'" },
+    { name = "newton-actuators" },
     { name = "newton-usd-schemas" },
     { name = "open3d", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64') or (python_full_version < '3.13' and sys_platform != 'linux')" },
     { name = "pillow" },
@@ -2836,6 +2840,7 @@ torch-cu13 = [
     { name = "meshio" },
     { name = "mujoco", marker = "python_full_version < '3.14'" },
     { name = "mujoco-warp", marker = "python_full_version < '3.14'" },
+    { name = "newton-actuators" },
     { name = "newton-usd-schemas" },
     { name = "open3d", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64') or (python_full_version < '3.13' and sys_platform != 'linux')" },
     { name = "pillow" },
@@ -2919,7 +2924,12 @@ requires-dist = [
     { name = "mujoco-warp", marker = "python_full_version < '3.14' and extra == 'torch-cu13'", specifier = ">=3.5.0.2" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
-    { name = "newton-actuators" },
+    { name = "newton-actuators", marker = "extra == 'dev'" },
+    { name = "newton-actuators", marker = "extra == 'examples'" },
+    { name = "newton-actuators", marker = "extra == 'notebook'" },
+    { name = "newton-actuators", marker = "extra == 'sim'" },
+    { name = "newton-actuators", marker = "extra == 'torch-cu12'" },
+    { name = "newton-actuators", marker = "extra == 'torch-cu13'" },
     { name = "newton-usd-schemas", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "newton-usd-schemas", marker = "extra == 'docs'", specifier = ">=0.1.0" },
     { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0" },

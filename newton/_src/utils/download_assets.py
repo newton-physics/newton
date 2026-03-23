@@ -1,24 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import re
 import shutil
 import stat
+import threading
 import time
 from pathlib import Path
 
@@ -49,48 +40,123 @@ def _safe_rmtree(path):
         shutil.rmtree(path, onerror=_handle_remove_readonly)
 
 
-def _get_latest_commit_via_git(git_url: str, branch: str) -> str | None:
-    """Resolve latest commit SHA for a branch via 'git ls-remote'."""
+def _safe_rename(src, dst, attempts=5, delay=0.1):
+    """Rename src to dst, tolerating races where another process wins.
+
+    If *dst* already exists (``FileExistsError`` or ``ENOTEMPTY``), the call
+    returns silently — the caller should clean up *src*.  Transient OS errors
+    (e.g. Windows file-lock contention) are retried up to *attempts* times.
+    """
+    for i in range(attempts):
+        try:
+            os.rename(src, dst)
+            return
+        except FileExistsError:
+            return
+        except OSError as e:
+            if e.errno == errno.ENOTEMPTY:
+                return
+            if i < attempts - 1:
+                time.sleep(delay)
+            else:
+                raise
+
+
+def _temp_cache_path(final_dir: Path) -> Path:
+    """Return a per-process, per-thread temp path next to *final_dir*."""
+    return Path(f"{final_dir}_p{os.getpid()}_t{threading.get_ident()}")
+
+
+_TEMP_DIR_RE = re.compile(r"_p\d+_t\d+$")
+
+
+def _cleanup_stale_temp_dirs(cache_path: Path, base_prefix: str, max_age: float = 3600.0) -> None:
+    """Remove orphaned temp directories left by crashed processes.
+
+    Scans *cache_path* for directories matching ``{base_prefix}_*`` whose names
+    contain a temp-dir suffix (``_p{pid}_t{tid}``) and whose mtime is older
+    than *max_age* seconds.  Safe to call concurrently.
+    """
+    now = time.time()
+    try:
+        for entry in cache_path.iterdir():
+            name = entry.name
+            if not name.startswith(f"{base_prefix}_") or not entry.is_dir():
+                continue
+            suffix = name[len(base_prefix) + 1 :]
+            if not _TEMP_DIR_RE.search(suffix):
+                continue
+            try:
+                age = now - entry.stat().st_mtime
+            except OSError:
+                continue
+            if age > max_age:
+                try:
+                    _safe_rmtree(entry)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _find_cached_version(cache_path: Path, base_prefix: str) -> Path | None:
+    """Find an existing content-hash cache directory for the given prefix.
+
+    Scans ``{cache_path}`` for directories matching ``{base_prefix}_*/``,
+    filters out temp directories (matching ``_p\\d+_t\\d+`` suffix), and
+    returns the match with the newest mtime.  Returns ``None`` if no match
+    is found.
+    """
+    candidates = []
+    try:
+        for entry in cache_path.iterdir():
+            name = entry.name
+            if not name.startswith(f"{base_prefix}_") or not entry.is_dir():
+                continue
+            suffix = name[len(base_prefix) + 1 :]
+            if _TEMP_DIR_RE.search(suffix):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            candidates.append((mtime, entry))
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def _get_latest_commit_via_git(git_url: str, ref: str) -> str | None:
+    """Resolve latest commit SHA for a branch or tag via 'git ls-remote'.
+
+    If *ref* is already a 40-character commit SHA it is returned as-is.
+    For annotated tags the dereferenced commit SHA is preferred.
+    """
+    if re.fullmatch(r"[0-9a-f]{40}", ref):
+        return ref
     try:
         import git
 
-        out = git.cmd.Git().ls_remote("--heads", git_url, branch)
-        # Output format: "<sha>\trefs/heads/<branch>\n"
-        return out.split()[0] if out else None
+        # Request the ref and its dereferenced form (for annotated tags).
+        out = git.cmd.Git().ls_remote(git_url, ref, f"{ref}^{{}}")
+        if not out:
+            return None
+        # Parse lines: "<sha>\t<ref>\n"
+        # Prefer dereferenced tag (^{}) > branch > lightweight tag
+        best = None
+        for line in out.strip().splitlines():
+            sha, refname = line.split("\t", 1)
+            if refname == f"refs/tags/{ref}^{{}}":
+                return sha  # annotated tag → underlying commit SHA
+            if refname in (f"refs/heads/{ref}", f"refs/tags/{ref}"):
+                best = sha
+        return best
     except Exception:
         # Fail silently on any error (offline, auth issue, etc.)
         return None
-
-
-def _read_cached_commit(cache_folder: Path) -> str | None:
-    """Return HEAD commit of cached repo, or None on failure."""
-    try:
-        import git
-
-        repo = git.Repo(cache_folder)
-        try:
-            return repo.head.commit.hexsha
-        finally:
-            repo.close()
-    except Exception:
-        return None
-
-
-def _stamp_fresh(stamp_file: Path, ttl_seconds: int) -> bool:
-    """True if stamp file exists and is younger than TTL."""
-    try:
-        return stamp_file.exists() and (time.time() - stamp_file.stat().st_mtime) < ttl_seconds
-    except OSError:
-        return False
-
-
-def _touch(path: Path) -> None:
-    """Create/refresh a file's mtime; ignore filesystem errors."""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch(exist_ok=True)
-    except OSError:
-        pass
 
 
 def _find_parent_cache(
@@ -126,48 +192,67 @@ def _find_parent_cache(
         # Generate the cache folder name for this parent
         parent_hash = hashlib.md5(f"{git_url}#{parent_path}#{branch}".encode()).hexdigest()[:8]
         parent_folder_name = parent_path.replace("/", "_").replace("\\", "_")
-        parent_cache = cache_path / f"{repo_name}_{parent_folder_name}_{parent_hash}"
+        base_prefix = f"{repo_name}_{parent_folder_name}_{parent_hash}"
 
-        # Check if this parent cache exists and contains our target
-        target_in_parent = parent_cache / folder_path
-        if target_in_parent.exists() and (parent_cache / ".git").exists():
-            return (parent_cache, target_in_parent)
+        cached = _find_cached_version(cache_path, base_prefix)
+        if cached is None:
+            continue
+
+        # Check if this parent cache contains our target
+        target_in_parent = cached / folder_path
+        if target_in_parent.exists() and (cached / ".git").exists():
+            return (cached, target_in_parent)
 
     return None
+
+
+def _cleanup_old_versions(cache_path: Path, base_prefix: str, current_dir: Path) -> None:
+    """Best-effort removal of old content-hash directories after a new download.
+
+    Scans for directories matching *base_prefix* (excluding temp dirs and
+    *current_dir*) and removes them.  Failures are silently ignored.
+    """
+    try:
+        for entry in cache_path.iterdir():
+            if entry == current_dir or not entry.is_dir():
+                continue
+            name = entry.name
+            if not name.startswith(f"{base_prefix}_"):
+                continue
+            suffix = name[len(base_prefix) + 1 :]
+            if _TEMP_DIR_RE.search(suffix):
+                continue
+            try:
+                _safe_rmtree(entry)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def download_git_folder(
     git_url: str, folder_path: str, cache_dir: str | None = None, branch: str = "main", force_refresh: bool = False
 ) -> Path:
-    """
-    Downloads a specific folder from a git repository into a local cache.
+    """Downloads a specific folder from a git repository into a local cache.
 
-    Uses the cached version when up-to-date; otherwise refreshes by comparing the
-    cached repo's HEAD with the remote's latest commit (via 'git ls-remote').
+    Uses content-addressed directories: each cached version includes the Git
+    commit SHA in its directory name.  When upstream publishes new assets the
+    SHA changes, producing a new directory — no in-place eviction is needed.
 
     Args:
-        git_url: The git repository URL (HTTPS or SSH)
-        folder_path: The path to the folder within the repository (e.g., "assets/models")
-        cache_dir: Directory to cache downloads.
-            If ``None``, the path is determined in the following order:
-            1. ``NEWTON_CACHE_PATH`` environment variable.
-            2. System's user cache directory (via ``appdirs.user_cache_dir``).
-        branch: Git branch/tag/commit to checkout (default: "main")
-        force_refresh: If True, re-downloads even if cached version exists
+        git_url: The git repository URL (HTTPS or SSH).
+        folder_path: Path to the folder within the repository.
+        cache_dir: Directory to cache downloads.  If ``None``, determined by
+            ``NEWTON_CACHE_PATH`` env-var or the system user cache directory.
+        branch: Git branch/tag/commit to checkout (default: ``"main"``).
+        force_refresh: If ``True``, bypass TTL and verify the cached version
+            against the remote.  Re-downloads only if the remote SHA differs.
 
     Returns:
-        Path to the downloaded folder in the local cache
-
-    Raises:
-        ImportError: If git package is not available
-        RuntimeError: If git operations fail
-
-    Example:
-        >>> folder_path = download_git_folder("https://github.com/user/repo.git", "assets/models", cache_dir="./cache")
-        >>> print(f"Downloaded to: {folder_path}")
+        Path to the downloaded folder in the local cache.
     """
     try:
-        import git
+        import git as gitpython
         from git.exc import GitCommandError
     except ImportError as e:
         raise ImportError(
@@ -180,103 +265,146 @@ def download_git_folder(
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
-    # Create a unique folder name based on git URL, folder path, and branch
-    url_hash = hashlib.md5(f"{git_url}#{folder_path}#{branch}".encode()).hexdigest()[:8]
+    # Compute identity hash (stable across content changes)
+    identity_hash = hashlib.md5(f"{git_url}#{folder_path}#{branch}".encode()).hexdigest()[:8]
     repo_name = Path(git_url.rstrip("/")).stem.replace(".git", "")
     folder_name = folder_path.replace("/", "_").replace("\\", "_")
-    cache_folder = cache_path / f"{repo_name}_{folder_name}_{url_hash}"
+    base_prefix = f"{repo_name}_{folder_name}_{identity_hash}"
 
-    target_folder = cache_folder / folder_path
-
-    # TTL to avoid repeated network checks
     ttl_seconds = 3600
+    latest_commit = None  # reused across parent-cache check and primary resolution to avoid redundant ls-remote
 
-    # Check if the requested folder exists in an already-cached parent
-    # This avoids redundant downloads when a parent folder already contains the subfolder
+    # --- Parent folder optimization ---
     if not force_refresh:
         parent_result = _find_parent_cache(cache_path, repo_name, folder_path, branch, git_url)
         if parent_result is not None:
-            parent_cache, target_in_parent = parent_result
-            stamp_file = parent_cache / ".newton_last_check"
-
-            if _stamp_fresh(stamp_file, ttl_seconds):
+            parent_dir, target_in_parent = parent_result
+            try:
+                age = time.time() - parent_dir.stat().st_mtime
+            except OSError:
+                age = ttl_seconds + 1
+            if age < ttl_seconds:
                 return target_in_parent
 
-            # Verify parent cache is up-to-date
-            current_commit = _read_cached_commit(parent_cache)
+            # TTL expired — check remote
+            parent_sha_suffix = parent_dir.name.rsplit("_", 1)[-1]
             latest_commit = _get_latest_commit_via_git(git_url, branch)
-            if latest_commit is None or (current_commit and latest_commit == current_commit):
-                _touch(stamp_file)
+            if latest_commit is None:
+                # Offline — touch mtime and return cached
+                try:
+                    os.utime(parent_dir, None)
+                except OSError:
+                    pass
                 return target_in_parent
-            # If parent is stale, fall through to download fresh subfolder
+            if latest_commit[:8] == parent_sha_suffix:
+                try:
+                    os.utime(parent_dir, None)
+                except OSError:
+                    pass
+                return target_in_parent
+            # Parent is stale — fall through to download
 
-    # 1. Handle force_refresh
-    if force_refresh and cache_folder.exists():
-        _safe_rmtree(cache_folder)
+    # --- Resolution flow ---
+    cached = _find_cached_version(cache_path, base_prefix)
+    if cached is not None and not force_refresh:
+        try:
+            age = time.time() - cached.stat().st_mtime
+        except OSError:
+            age = ttl_seconds + 1
+        if age < ttl_seconds:
+            return cached / folder_path
 
-    # 2. Check cache validity using Git
-    stamp_file = cache_folder / ".newton_last_check"
-
-    is_cached = target_folder.exists() and (cache_folder / ".git").exists()
-    if is_cached and not force_refresh:
-        if _stamp_fresh(stamp_file, ttl_seconds):
-            return target_folder
-
-        current_commit = _read_cached_commit(cache_folder)
+    # Check remote for current commit (reuse result from parent check if available)
+    if latest_commit is None:
         latest_commit = _get_latest_commit_via_git(git_url, branch)
 
-        # If we cannot determine latest (offline, etc.) or they match, use cache
-        if latest_commit is None or (current_commit is not None and latest_commit == current_commit):
-            _touch(stamp_file)
-            return target_folder
-
-        # Different commit detected: clear cache to refresh
-        print(
-            f"New version of {folder_path} found (cached: {str(current_commit)[:7] if current_commit else 'unknown'}, "
-            f"latest: {latest_commit[:7]}). Refreshing..."
+    if latest_commit is None:
+        if cached is not None:
+            try:
+                os.utime(cached, None)
+            except OSError:
+                pass
+            return cached / folder_path
+        raise RuntimeError(
+            f"Cannot determine remote commit for {git_url} (branch: {branch}) and no cached version exists."
         )
-        _safe_rmtree(cache_folder)
 
-    # 3. Download if not cached (or if cache was just cleared)
+    # Check if we already have this exact version
+    if cached is not None and not force_refresh:
+        cached_sha_suffix = cached.name.rsplit("_", 1)[-1]
+        if latest_commit[:8] == cached_sha_suffix:
+            try:
+                os.utime(cached, None)
+            except OSError:
+                pass
+            return cached / folder_path
+
+    # --- Download into content-addressed directory ---
+    final_dir = cache_path / f"{base_prefix}_{latest_commit[:8]}"
+    temp_dir = _temp_cache_path(final_dir)
+
+    # Clean up orphaned temp directories
+    _cleanup_stale_temp_dirs(cache_path, base_prefix)
+
     try:
-        # Clone with sparse checkout and blob filter so only blobs for the
-        # requested folder are downloaded (instead of the entire repo).
+        if temp_dir.exists():
+            _safe_rmtree(temp_dir)
+
+        if cached is not None:
+            print(
+                f"New version of {folder_path} found "
+                f"(cached: {cached.name.rsplit('_', 1)[-1]}, "
+                f"latest: {latest_commit[:8]}). Refreshing..."
+            )
         print(f"Cloning {git_url} (branch: {branch})...")
-        repo = git.Repo.clone_from(
+
+        repo = gitpython.Repo.clone_from(
             git_url,
-            cache_folder,
+            temp_dir,
             branch=branch,
             depth=1,
             no_checkout=True,
             multi_options=["--filter=blob:none", "--sparse"],
         )
-
         try:
-            # Narrow sparse checkout to just the target folder, then checkout.
             repo.git.sparse_checkout("set", folder_path)
             repo.git.checkout(branch)
         finally:
             repo.close()
 
-        # Verify the folder exists
-        if not target_folder.exists():
+        temp_target = temp_dir / folder_path
+        if not temp_target.exists():
             raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}")
 
-        _touch(stamp_file)
+        # Place the finished download into its final location
+        _safe_rename(temp_dir, final_dir)
 
-        print(f"Successfully downloaded folder to: {target_folder}")
-        return target_folder
+        if temp_dir.exists():
+            # Another process already placed this exact version — use theirs
+            _safe_rmtree(temp_dir)
+
+        # Set mtime to now for TTL tracking
+        os.utime(final_dir, None)
+
+        print(f"Successfully downloaded folder to: {final_dir / folder_path}")
+
+        # Best-effort cleanup of old versions
+        _cleanup_old_versions(cache_path, base_prefix, final_dir)
+
+        return final_dir / folder_path
 
     except GitCommandError as e:
-        # Clean up on failure
-        if cache_folder.exists():
-            _safe_rmtree(cache_folder)
         raise RuntimeError(f"Git operation failed: {e}") from e
+    except RuntimeError:
+        raise
     except Exception as e:
-        # Clean up on failure
-        if cache_folder.exists():
-            _safe_rmtree(cache_folder)
         raise RuntimeError(f"Failed to download git folder: {e}") from e
+    finally:
+        try:
+            if temp_dir.exists():
+                _safe_rmtree(temp_dir)
+        except OSError:
+            pass
 
 
 def clear_git_cache(cache_dir: str | None = None) -> None:

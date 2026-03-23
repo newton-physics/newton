@@ -29,7 +29,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "warp-lang>=1.12.0",
-    "newton-actuators",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +38,7 @@ sim = [
     # MuJoCo simulation
     "mujoco-warp>=3.5.0.2; python_version < '3.14'",  # MuJoCo, warp-accelerated (depends on mujoco which has no 3.14 wheels yet)
     "mujoco>=3.5.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
+    "newton-actuators",
 ]
 
 # Asset import and mesh processing dependencies
