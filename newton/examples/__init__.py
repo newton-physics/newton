@@ -475,7 +475,7 @@ def create_parser():
         "--realtime",
         action="store_true",
         default=False,
-        help="Use real-time process priority in benchmark mode (Windows only).",
+        help="Use the most aggressive process priority in benchmark mode.",
     )
 
     return parser
@@ -572,12 +572,17 @@ def _apply_warp_config(parser, args):
         setattr(wp.config, key, value)
 
 
-_BENCHMARK_PRIORITY_WARNING = "Warning: Benchmark running at default process priority. Results may vary."
-
-
 def _raise_benchmark_priority(realtime=False):
-    """Raise process/thread priority for stable benchmark measurements."""
+    """Raise process/thread priority for stable benchmark measurements.
+
+    When *realtime* is True, try to use the most aggressive process priority; failure to raise priority is a fatal error.
+    """
     import sys  # noqa: PLC0415
+
+    def _fail(msg):
+        if realtime:
+            raise SystemExit(f"Error: {msg}")
+        print(f"Warning: Benchmark running at default process priority. Results may vary. {msg}")
 
     if sys.platform == "win32":
         try:
@@ -586,12 +591,12 @@ def _raise_benchmark_priority(realtime=False):
             priority = psutil.REALTIME_PRIORITY_CLASS if realtime else psutil.HIGH_PRIORITY_CLASS
             psutil.Process().nice(priority)
         except ModuleNotFoundError:
-            print(f"{_BENCHMARK_PRIORITY_WARNING} Install 'psutil' to automatically raise priority.")
+            _fail("Install 'psutil' to automatically raise priority.")
     elif sys.platform == "linux":
         try:
             os.nice(-20 if realtime else -15)
         except PermissionError:
-            print(f"{_BENCHMARK_PRIORITY_WARNING} Run with elevated privileges to automatically raise priority.")
+            _fail("Run with elevated privileges to automatically raise priority.")
     elif sys.platform == "darwin":
         import ctypes  # noqa: PLC0415
         import ctypes.util  # noqa: PLC0415
@@ -599,12 +604,14 @@ def _raise_benchmark_priority(realtime=False):
         try:
             libsystem = ctypes.CDLL(ctypes.util.find_library("System"))
             # From <sys/qos.h>
+            QOS_CLASS_USER_INITIATED = 0x19
             QOS_CLASS_USER_INTERACTIVE = 0x21
-            rc = libsystem.pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+            qos = QOS_CLASS_USER_INTERACTIVE if realtime else QOS_CLASS_USER_INITIATED
+            rc = libsystem.pthread_set_qos_class_self_np(qos, 0)
             if rc != 0:
-                print(f"{_BENCHMARK_PRIORITY_WARNING} Failed to automatically raise priority (error {rc}).")
+                _fail(f"Failed to automatically raise priority (error {rc}).")
         except OSError as e:
-            print(f"{_BENCHMARK_PRIORITY_WARNING} Failed to automatically raise priority: {e}")
+            _fail(f"Failed to automatically raise priority: {e}")
 
 
 def init(parser=None):
@@ -648,7 +655,7 @@ def init(parser=None):
     # Benchmark mode forces null viewer and raises process/thread priority
     if args.benchmark is not False:
         args.viewer = "null"
-        _raise_benchmark_priority(realtime=getattr(args, "realtime", False))
+        _raise_benchmark_priority(realtime=args.realtime)
 
     # Create viewer based on type
     if args.viewer == "gl":
