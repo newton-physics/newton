@@ -78,33 +78,6 @@ BALL_POSITIONS = [
 ]
 
 
-@wp.kernel
-def _cam_occlude_kernel(
-    mesh_ids:       wp.array(dtype=wp.uint64),
-    mesh_to_world:  wp.array(dtype=wp.transform),
-    ray_origin:     wp.vec3,
-    ray_dir:        wp.vec3,
-    max_t:          float,
-    hit_t:          wp.array(dtype=wp.float32),
-):
-    """Single-threaded kernel: nearest ray hit across all static occluder meshes.
-
-    Transforms the world-space ray into each mesh's local space before querying,
-    then writes the nearest hit distance (or *max_t* if no hit) to ``hit_t[0]``.
-    Assumes unit-scale transforms (rotation + translation only).
-    """
-    best = max_t
-    for i in range(mesh_ids.shape[0]):
-        world_to_mesh = wp.transform_inverse(mesh_to_world[i])
-        lo = wp.transform_point(world_to_mesh, ray_origin)
-        ld = wp.transform_vector(world_to_mesh, ray_dir)
-        query = wp.mesh_query_ray(mesh_ids[i], lo, ld, best)
-        if query.result:
-            if query.t < best:
-                best = query.t
-    hit_t[0] = best
-
-
 @dataclass
 class RobotConfig:
     """Configuration for a robot including asset paths and policy paths."""
@@ -267,7 +240,6 @@ def create_model(
         builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
         builder.joint_target_mode[i + 6] = int(JointTargetMode.POSITION)
 
-    terrain_shape_start = builder.shape_count
     add_terrain(
         builder,
         file_path=background_usd_path,
@@ -275,14 +247,13 @@ def create_model(
         usd_collide=background_usd_collide,
         add_ground_plane=True,
     )
-    terrain_shape_end = builder.shape_count
 
     add_balls(builder, num_balls=num_balls)
 
     model = builder.finalize()
     model.set_gravity((0.0, 0.0, -9.81))
 
-    return model, builder, terrain_shape_start, terrain_shape_end
+    return model, builder
 
 
 def clone_model_parameters(src_model, src_builder, dst_model, dst_builder):
@@ -727,7 +698,7 @@ class Example:
         self.torch_device = "cuda" if self.device.is_cuda else "cpu"
 
         # Build the model
-        self.model, builder, terrain_shape_start, terrain_shape_end = create_model(
+        self.model, builder = create_model(
             robot_config.asset_path,
             background_usd_path=background_usd_path,
             background_usd_root=background_usd_root,
@@ -737,7 +708,7 @@ class Example:
 
         if MODEL_HACK:
             # construct a shadow model using the old G1 asset
-            shadow_model, shadow_builder, _, _ = create_model(
+            shadow_model, shadow_builder = create_model(
                 "usd/g1_isaac.usd",
                 background_usd_path=background_usd_path,
                 background_usd_root=background_usd_root,
@@ -864,26 +835,6 @@ class Example:
         self._orbit_pitch_offset: float = 0.0           # accumulated mouse-drag pitch offset (degrees)
         self._orbit_last_yaw: float = 0.0               # camera.yaw stored after last set_camera call (mouse mode)
         self._orbit_last_pitch: float = 0.0             # camera.pitch stored after last set_camera call (mouse mode)
-        self._max_cam_dist: float = self._FOLLOW_DIST   # spring-arm: current maximum camera distance [m]
-
-        # Camera occlusion: collect static mesh shapes from the terrain range
-        self._occluder_mesh_ids: wp.array | None = None    # wp.uint64 handles
-        self._occluder_transforms: wp.array | None = None  # wp.transform mesh-to-world
-        self._cam_hit_t: wp.array | None = None            # scratch float32[1] output
-        if getattr(self.model, "shape_source_ptr", None) is not None:
-            src_ptr = self.model.shape_source_ptr.numpy()
-            xforms  = self.model.shape_transform.numpy()
-            mesh_ids, transforms = [], []
-            for i in range(terrain_shape_start, terrain_shape_end):
-                mid = int(src_ptr[i])
-                if mid != 0:
-                    mesh_ids.append(mid)
-                    transforms.append(xforms[i])
-            if mesh_ids:
-                self._occluder_mesh_ids  = wp.array(mesh_ids,   dtype=wp.uint64,    device=self.device)
-                self._occluder_transforms = wp.array(transforms, dtype=wp.transform, device=self.device)
-                self._cam_hit_t           = wp.zeros(1, dtype=wp.float32, device=self.device)
-                print(f"[INFO] Camera occlusion: {len(mesh_ids)} occluder mesh(es) registered.")
 
         # Force-initialize Newton's collision pipeline now, before CUDA graph capture.
         self.model.collide(self.state_0, self.contacts)
@@ -962,7 +913,6 @@ class Example:
                 self._follow_cam_yaw = 0.0
                 self._orbit_yaw_offset = 0.0
                 self._orbit_pitch_offset = 0.0
-                self._max_cam_dist = self._FOLLOW_DIST
 
         # Snap camera: gamepad B/A or keyboard shift/ctrl (follow mode only, edge-triggered)
         if self._follow_cam_active:
@@ -1019,7 +969,6 @@ class Example:
             self._follow_cam_yaw = robot_yaw_rad
             self._orbit_yaw_offset = 0.0
             self._orbit_pitch_offset = 0.0
-            self._max_cam_dist = self._FOLLOW_DIST
             if hasattr(self.viewer, "camera"):
                 self._orbit_last_yaw = self.viewer.camera.yaw
                 self._orbit_last_pitch = self.viewer.camera.pitch
@@ -1051,74 +1000,12 @@ class Example:
         cam_pitch = self._FOLLOW_PITCH + self._orbit_pitch_offset
         cam_yaw_deg = float(np.degrees(cam_orbit_rad))
 
-        # Occlude camera: pull it in if terrain geometry blocks line of sight
-        cam_pos = self._occlude_follow_camera(cam_pos)
-
         self.viewer.set_camera(cam_pos, cam_pitch, cam_yaw_deg)
 
         # Store normalised camera angles for next-frame mouse-delta computation
         if hasattr(self.viewer, "camera") and self._gamepad._mode != "joystick":
             self._orbit_last_yaw = self.viewer.camera.yaw
             self._orbit_last_pitch = self.viewer.camera.pitch
-
-    # --- camera occlusion constants ---
-    _OCCLUDE_PULLBACK  = 0.3   # metres to pull back from the hit surface
-    _OCCLUDE_MIN_DIST  = 0.5   # never bring camera closer than this to the orbit centre
-    _OCCLUDE_RECOVER   = 10.0   # m/s — speed at which camera extends back after occlusion clears
-
-    def _occlude_follow_camera(self, cam_pos: wp.vec3) -> wp.vec3:
-        """Spring-arm occlusion: snap in immediately on hit, recover slowly when clear.
-
-        Casts a ray from the smoothed orbit centre toward *cam_pos*.  The
-        effective camera distance ``_max_cam_dist`` is clamped down instantly
-        when geometry is hit and recovers at ``_OCCLUDE_RECOVER`` m/s when the
-        path is unobstructed, eliminating the jitter of using the raw hit
-        distance each frame.
-
-        Returns the adjusted camera position (unchanged when no occluders are
-        registered or the path is clear and ``_max_cam_dist == _FOLLOW_DIST``).
-        """
-        if self._occluder_mesh_ids is None or self._follow_cam_pos is None:
-            return cam_pos
-
-        ox = float(self._follow_cam_pos[0])
-        oy = float(self._follow_cam_pos[1])
-        oz = float(self._follow_cam_pos[2])
-        dx = float(cam_pos[0]) - ox
-        dy = float(cam_pos[1]) - oy
-        dz = float(cam_pos[2]) - oz
-        dist = float(np.sqrt(dx * dx + dy * dy + dz * dz))
-        if dist < 1e-4:
-            return cam_pos
-
-        inv = 1.0 / dist
-        origin    = wp.vec3(ox, oy, oz)
-        direction = wp.vec3(dx * inv, dy * inv, dz * inv)
-
-        wp.launch(
-            _cam_occlude_kernel,
-            dim=1,
-            inputs=[self._occluder_mesh_ids, self._occluder_transforms,
-                    origin, direction, dist, self._cam_hit_t],
-            device=self.device,
-        )
-        t = float(self._cam_hit_t.numpy()[0])
-
-        if t < dist:
-            # Geometry hit: snap _max_cam_dist in immediately
-            self._max_cam_dist = min(self._max_cam_dist,
-                                     max(self._OCCLUDE_MIN_DIST, t - self._OCCLUDE_PULLBACK))
-        else:
-            # Path clear: recover gradually toward full follow distance
-            self._max_cam_dist = min(self._FOLLOW_DIST,
-                                     self._max_cam_dist + self._OCCLUDE_RECOVER * self.frame_dt)
-
-        if self._max_cam_dist >= dist:
-            return cam_pos  # no restriction needed
-
-        return wp.vec3(ox + direction[0] * self._max_cam_dist,
-                       oy + direction[1] * self._max_cam_dist,
-                       oz + direction[2] * self._max_cam_dist)
 
     def _update_free_camera_gamepad(self):
         """Drive free camera with gamepad right stick (rotate) and D-pad (dolly/pan)."""
