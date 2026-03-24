@@ -3,6 +3,8 @@
 
 """Objective definitions for inverse kinematics."""
 
+from __future__ import annotations
+
 import numpy as np
 import warp as wp
 
