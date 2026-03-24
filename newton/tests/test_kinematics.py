@@ -438,6 +438,7 @@ def test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite
     # conversion cannot leak back into descendant transport during recursion.
     q = model.joint_q.numpy().copy()
     qd = model.joint_qd.numpy().copy()
+    q[:3] = np.array([0.2, -0.1, 0.15], dtype=np.float32)
     qd[:6] = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.2], dtype=np.float32)
     qd[6] = 0.5
     dt = 1.0e-4
@@ -459,6 +460,21 @@ def test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite
     body_q = state.body_q.numpy().reshape(-1, 7)
     body_q_next = state_next.body_q.numpy().reshape(-1, 7)
     body_qd = state.body_qd.numpy().reshape(-1, 6)
+
+    base_com_local = wp.vec3(0.3, 0.0, 0.0)
+    base_rot = wp.quat(float(body_q[base, 3]), float(body_q[base, 4]), float(body_q[base, 5]), float(body_q[base, 6]))
+    base_rot_next = wp.quat(
+        float(body_q_next[base, 3]),
+        float(body_q_next[base, 4]),
+        float(body_q_next[base, 5]),
+        float(body_q_next[base, 6]),
+    )
+    base_com = body_q[base, :3] + np.array(wp.quat_rotate(base_rot, base_com_local))
+    base_com_next = body_q_next[base, :3] + np.array(wp.quat_rotate(base_rot_next, base_com_local))
+    base_com_fd = (base_com_next - base_com) / dt
+    base_com_from_body_qd = body_qd[base, :3]
+
+    assert_np_equal(base_com_fd, base_com_from_body_qd, tol=5.0e-3)
 
     origin_vel_fd = (body_q_next[child, :3] - body_q[child, :3]) / dt
     origin_vel_from_body_qd = body_qd[child, :3]

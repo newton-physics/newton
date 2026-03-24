@@ -1638,7 +1638,7 @@ def convert_articulation_free_distance_body_qd(
 
         v_origin = wp.spatial_top(v_wc)
         omega = wp.spatial_bottom(v_wc)
-        r_com = wp.transform_point(X_wc, body_com[child])
+        r_com = wp.transform_vector(X_wc, body_com[child])
         v_com = v_origin + wp.cross(omega, r_com)
         body_qd[child] = wp.spatial_vector(v_com, omega)
 
