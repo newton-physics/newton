@@ -259,7 +259,7 @@ class Example:
             "-s",
             type=str,
             default="gauss-seidel",
-            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            choices=["gauss-seidel", "gauss-seidel-reordered", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
         )
         parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
         parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])

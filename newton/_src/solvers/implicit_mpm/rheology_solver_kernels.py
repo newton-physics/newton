@@ -1022,6 +1022,159 @@ def make_gs_solve_kernel(
     return gs_solve_kernel_impl
 
 
+# ── Reordered (SoA) GS solver ───────────────────────────────────────────────
+#
+# Entry-major SoA reordering of the BSR strain matrix for coalesced memory
+# access.  The flat ordering expands color blocks into individual constraint
+# indices, and the strain matrix values are transposed into separate
+# per-component arrays indexed as [entry_k, flat_constraint_idx].
+
+
+@wp.kernel
+def _build_flat_offsets(
+    color_blocks: wp.array2d(dtype=int),
+    color_offsets: wp.array(dtype=int),
+    out: wp.array(dtype=int),
+):
+    """Single-threaded prefix sum over color-block sizes.
+
+    Reads the valid block count from ``color_offsets[-1]`` on device
+    to avoid host synchronization.
+    """
+    num_blocks = color_offsets[color_offsets.shape[0] - 1]
+    cumsum = int(0)
+    out[0] = 0
+    for co in range(num_blocks):
+        cumsum += color_blocks[1, co] - color_blocks[0, co]
+        out[co + 1] = cumsum
+
+
+@wp.kernel
+def _build_flat_color_offsets(
+    color_offsets: wp.array(dtype=int),
+    block_flat_offsets: wp.array(dtype=int),
+    flat_color_offsets: wp.array(dtype=int),
+):
+    c = wp.tid()
+    flat_color_offsets[c] = block_flat_offsets[color_offsets[c]]
+
+
+@wp.kernel
+def _expand_flat_ids(
+    color_blocks: wp.array2d(dtype=int),
+    color_offsets: wp.array(dtype=int),
+    block_flat_offsets: wp.array(dtype=int),
+    flat_constraint_ids: wp.array(dtype=int),
+):
+    co = wp.tid()
+    if co >= color_offsets[color_offsets.shape[0] - 1]:
+        return
+    beg = color_blocks[0, co]
+    end = color_blocks[1, co]
+    start = block_flat_offsets[co]
+    for j in range(end - beg):
+        flat_constraint_ids[start + j] = beg + j
+
+
+@wp.kernel
+def _reorder_strain_mat(
+    flat_constraint_ids: wp.array(dtype=int),
+    strain_mat_offsets: wp.array(dtype=int),
+    strain_mat_columns: wp.array(dtype=int),
+    strain_mat_values: wp.array(dtype=mat13),
+    reordered_cols: wp.array2d(dtype=int),
+    reordered_vals_x: wp.array2d(dtype=float),
+    reordered_vals_y: wp.array2d(dtype=float),
+    reordered_vals_z: wp.array2d(dtype=float),
+    reordered_n_entries: wp.array(dtype=int),
+):
+    """Reorder strain_mat into entry-major SoA layout for coalesced access."""
+    fi = wp.tid()
+    tau_i = flat_constraint_ids[fi]
+    beg = strain_mat_offsets[tau_i]
+    n = strain_mat_offsets[tau_i + 1] - beg
+    reordered_n_entries[fi] = n
+    for k in range(n):
+        b = beg + k
+        v = strain_mat_values[b]
+        reordered_cols[k, fi] = strain_mat_columns[b]
+        reordered_vals_x[k, fi] = v[0]
+        reordered_vals_y[k, fi] = v[1]
+        reordered_vals_z[k, fi] = v[2]
+
+
+def make_reordered_gs_solve_kernel(
+    has_viscosity: bool,
+    has_dilatancy: bool,
+    has_compliance_mat: bool,
+    max_entries: int,
+    strain_velocity_node_count: int = -1,
+    has_rotation: bool = not _ISOTROPIC_LOCAL_LHS,
+):
+    """Return a GS solve kernel using entry-major SoA strain matrix layout.
+
+    The kernel processes strain nodes in color order (one launch per color),
+    with a statically unrolled gather loop over the reordered SoA arrays for
+    coalesced memory access.  Gather, local solve, and velocity scatter are
+    fused into a single kernel launch per color.
+    """
+    key = (has_viscosity, has_dilatancy, has_compliance_mat, has_rotation, max_entries)
+
+    @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
+    def reordered_gs_solve_kernel_impl(
+        color: int,
+        launch_dim: int,
+        flat_color_offsets: wp.array(dtype=int),
+        flat_constraint_ids: wp.array(dtype=int),
+        reordered_n_entries: wp.array(dtype=int),
+        reordered_cols: wp.array2d(dtype=int),
+        reordered_vals_x: wp.array2d(dtype=float),
+        reordered_vals_y: wp.array2d(dtype=float),
+        reordered_vals_z: wp.array2d(dtype=float),
+        yield_params: wp.array(dtype=YieldParamVec),
+        strain_node_volume: wp.array(dtype=float),
+        compliance_mat_offsets: wp.array(dtype=int),
+        compliance_mat_columns: wp.array(dtype=int),
+        compliance_mat_values: wp.array(dtype=mat66),
+        delassus_diagonal: wp.array(dtype=vec6),
+        delassus_rotation: wp.array(dtype=mat55),
+        inv_mass_matrix: wp.array(dtype=float),
+        local_strain_rhs: wp.array(dtype=vec6),
+        velocities: wp.array(dtype=wp.vec3),
+        local_stress: wp.array(dtype=vec6),
+        delta_correction: wp.array(dtype=vec6),
+    ):
+        i = wp.tid()
+        for fi in range(flat_color_offsets[color] + i, flat_color_offsets[color + 1], launch_dim):
+            tau_i = flat_constraint_ids[fi]
+            n = reordered_n_entries[fi]
+
+            # Gather (statically unrolled; zero-padded entries contribute nothing)
+            tau = local_strain_rhs[tau_i]
+            for k in range(wp.static(max_entries)):
+                col = reordered_cols[k, fi]
+                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
+                tau += _symmetric_part_op(val, velocities[col])
+
+            if wp.static(has_compliance_mat):
+                for b in range(compliance_mat_offsets[tau_i], compliance_mat_offsets[tau_i + 1]):
+                    tau += compliance_mat_values[b] @ local_stress[compliance_mat_columns[b]]
+
+            ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
+                tau_i, tau, yield_params, strain_node_volume, delassus_diagonal, delassus_rotation, local_stress,
+            )
+            local_stress[tau_i] += ds
+            delta_correction[tau_i] = ds
+
+            # Scatter
+            for k in range(n):
+                col = reordered_cols[k, fi]
+                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
+                velocities[col] += inv_mass_matrix[col] * _symmetric_part_transposed_op(val, ds)
+
+    return reordered_gs_solve_kernel_impl
+
+
 @wp.kernel
 def jacobi_preconditioner(
     delassus_diagonal: wp.array[vec6],
