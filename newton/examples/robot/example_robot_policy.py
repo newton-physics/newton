@@ -28,8 +28,8 @@
 #   D-pad up/down          — dolly camera forward / back (free mode)
 #   D-pad left/right       — pan camera left / right (free mode)
 #   Y button               — toggle follow cam
-#   A button               — snap camera behind robot
-#   B button               — snap camera to front of robot
+#   B button               — snap camera behind robot
+#   A button               — snap camera to front of robot
 #   X button               — reset (also Select / Back)
 #
 # Keyboard mapping (viewer window must have focus):
@@ -63,9 +63,6 @@ from newton import JointTargetMode, State
 
 # Use new asset for G1, but copy model attributes from the original asset.
 MODEL_HACK = True
-
-# Set to False to disable follow-camera occlusion (spring-arm geometry avoidance).
-CAMERA_OCCLUSION = True
 
 SPAWN_POS = wp.vec3(0.0, 0.0, 0.8)
 SPAWN_ROT = wp.quat(0.0, 0.0, 0.7071, 0.7071)
@@ -660,10 +657,10 @@ class _GamepadInput:
         return triggered
 
     def check_snap_behind(self) -> bool:
-        """Rising edge of snap-behind: gamepad A or keyboard ``shift``."""
+        """Rising edge of snap-behind: gamepad B or keyboard ``shift``."""
         pressed = False
         if self._mode == "joystick":
-            pressed = bool(self._controller.button_a.is_pressed)
+            pressed = bool(self._controller.button_b.is_pressed)
         if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
             pressed = bool(self._viewer.is_key_down("shift"))
         triggered = pressed and not self._snap_behind_prev
@@ -671,10 +668,10 @@ class _GamepadInput:
         return triggered
 
     def check_snap_front(self) -> bool:
-        """Rising edge of snap-to-front: gamepad B or keyboard ``ctrl``."""
+        """Rising edge of snap-to-front: gamepad A or keyboard ``ctrl``."""
         pressed = False
         if self._mode == "joystick":
-            pressed = bool(self._controller.button_b.is_pressed)
+            pressed = bool(self._controller.button_a.is_pressed)
         if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
             pressed = bool(self._viewer.is_key_down("ctrl"))
         triggered = pressed and not self._snap_front_prev
@@ -873,7 +870,7 @@ class Example:
         self._occluder_mesh_ids: wp.array | None = None    # wp.uint64 handles
         self._occluder_transforms: wp.array | None = None  # wp.transform mesh-to-world
         self._cam_hit_t: wp.array | None = None            # scratch float32[1] output
-        if CAMERA_OCCLUSION and getattr(self.model, "shape_source_ptr", None) is not None:
+        if getattr(self.model, "shape_source_ptr", None) is not None:
             src_ptr = self.model.shape_source_ptr.numpy()
             xforms  = self.model.shape_transform.numpy()
             mesh_ids, transforms = [], []
@@ -1055,8 +1052,7 @@ class Example:
         cam_yaw_deg = float(np.degrees(cam_orbit_rad))
 
         # Occlude camera: pull it in if terrain geometry blocks line of sight
-        if CAMERA_OCCLUSION:
-            cam_pos = self._occlude_follow_camera(cam_pos)
+        cam_pos = self._occlude_follow_camera(cam_pos)
 
         self.viewer.set_camera(cam_pos, cam_pitch, cam_yaw_deg)
 
