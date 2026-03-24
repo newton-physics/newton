@@ -364,18 +364,26 @@ def download_git_folder(
         print(f"Cloning {git_url} (branch: {branch})...")
 
         is_sha = bool(_SHA_RE.fullmatch(branch))
-        clone_kwargs = {"depth": 1, "no_checkout": True, "multi_options": ["--filter=blob:none", "--sparse"]}
-        if not is_sha:
-            clone_kwargs["branch"] = branch
-
-        repo = gitpython.Repo.clone_from(git_url, temp_dir, **clone_kwargs)
-        try:
+        if is_sha:
+            # Single fetch — skip the clone, which would download the
+            # default-branch tip only to throw it away.
+            repo = gitpython.Repo.init(temp_dir)
+            repo.create_remote("origin", git_url)
+            repo.git.sparse_checkout("init")
             repo.git.sparse_checkout("set", folder_path)
-            if is_sha:
-                repo.git.fetch("origin", branch, "--depth=1")
-            repo.git.checkout(branch)
-        finally:
+            repo.git.fetch("origin", branch, "--depth=1", "--filter=blob:none")
+            repo.git.checkout("FETCH_HEAD")
             repo.close()
+        else:
+            repo = gitpython.Repo.clone_from(
+                git_url, temp_dir, branch=branch, depth=1,
+                no_checkout=True, multi_options=["--filter=blob:none", "--sparse"],
+            )
+            try:
+                repo.git.sparse_checkout("set", folder_path)
+                repo.git.checkout(branch)
+            finally:
+                repo.close()
 
         temp_target = temp_dir / folder_path
         if not temp_target.exists():
