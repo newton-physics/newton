@@ -272,14 +272,12 @@ class Example:
         num_balls: int = 1,
         background_fn: Callable | None = None,
         terrain_fn: Callable | None = None,
-        steps_per_frame: int = 1,
     ):
         # Timing
         self.sim_dt = 0.02
         self.control_decimation = 1
         num_worlds = 1
         self.env_dt = self.sim_dt * self.control_decimation
-        self.steps_per_frame = steps_per_frame
 
         # USD model path
         USD_MODEL_PATH = os.path.join(_ASSETS_DIR, "bdx_merged.usda")
@@ -458,13 +456,12 @@ class Example:
             self.sim_wrapper.step()
 
     def step(self):
-        for _ in range(self.steps_per_frame):
-            """One RL step: commands -> observe -> infer -> apply -> simulate."""
-            if self.joystick.check_reset():
-                self.reset()
-            self.joystick.update(root_pos_2d=self.sim_wrapper.q_i[:, 0, :2])
-            self.update_input()
-            self.sim_step()
+        """One RL step: commands -> observe -> infer -> apply -> simulate."""
+        if self.joystick.check_reset():
+            self.reset()
+        self.joystick.update(root_pos_2d=self.sim_wrapper.q_i[:, 0, :2])
+        self.update_input()
+        self.sim_step()
 
         # Toggle follow cam: gamepad Y or keyboard 'x' (edge-triggered)
         if self.joystick.check_follow_toggle():
@@ -597,12 +594,6 @@ if __name__ == "__main__":
         default=30.0,
         help="Target render FPS for async mode (default: 30)",
     )
-    parser.add_argument(
-        "--steps-per-frame",
-        type=int,
-        default=1,
-        help="Number of simulation steps per frame",
-    )
     args = parser.parse_args()
 
     np.set_printoptions(linewidth=20000, precision=6, threshold=10000, suppress=True)
@@ -641,7 +632,6 @@ if __name__ == "__main__":
         num_balls=args.num_balls,
         background_fn=background_fn,
         terrain_fn=terrain_fn,
-        steps_per_frame=args.steps_per_frame,
     )
 
     try:
