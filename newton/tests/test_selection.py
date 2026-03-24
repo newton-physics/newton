@@ -303,7 +303,7 @@ class TestSelection(unittest.TestCase):
         state = model.state()
         state_next = model.state()
 
-        sentinel_q = state.body_q.numpy()
+        sentinel_q = state.body_q.numpy().copy()
         sentinel_q[:, :3] = -99.0
         sentinel_q[:, 3:7] = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
         sentinel_qd = np.full_like(state.body_qd.numpy(), -77.0)
