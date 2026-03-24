@@ -448,6 +448,52 @@ class TestInertiaValidationParity(unittest.TestCase):
         self._assert_parity(results)
         np.testing.assert_allclose(results["detailed"]["model_inertia"], np.diag([2.0, 3.0, 4.0]), atol=1e-5)
 
+    def test_custom_tolerance_model_builder(self):
+        """Test that ModelBuilder.inertia_tolerance is respected in both paths."""
+        # Franka Panda finger-like inertia (7.5e-7 < default 1e-6 threshold)
+        diag = [2.375e-6, 2.375e-6, 7.5e-7]
+        small_inertia = wp.mat33(np.diag(diag).astype(np.float32))
+
+        for detailed in [True, False]:
+            with self.subTest(detailed=detailed):
+                # Default tolerance: should correct
+                b1 = ModelBuilder()
+                b1.validate_inertia_detailed = detailed
+                b1.add_body(mass=0.015, inertia=small_inertia, label="finger")
+                with warnings.catch_warnings(record=True) as w1:
+                    b1.finalize()
+                self.assertGreater(len(w1), 0)
+
+                # Lower tolerance: should not correct
+                b2 = ModelBuilder()
+                b2.validate_inertia_detailed = detailed
+                b2.inertia_tolerance = 1e-9
+                idx = b2.add_body(mass=0.015, inertia=small_inertia, label="finger")
+                with warnings.catch_warnings(record=True) as w2:
+                    m2 = b2.finalize()
+                self.assertEqual(len(w2), 0)
+                np.testing.assert_allclose(m2.body_inertia.numpy()[idx].diagonal(), diag, atol=1e-10)
+
+    def test_custom_tolerance_parity(self):
+        """Test that both paths produce identical results with custom tolerance."""
+        small_inertia = np.diag([4.74e-7, 3.65e-7, 1.24e-7])
+        for tol in [1e-9, 1e-8, 1e-6]:
+            with self.subTest(tolerance=tol):
+                results = {}
+                for detailed in [True, False]:
+                    builder = ModelBuilder()
+                    builder.validate_inertia_detailed = detailed
+                    builder.inertia_tolerance = tol
+                    idx = builder.add_body(mass=0.0035, inertia=wp.mat33(small_inertia.astype(np.float32)), label="pad")
+                    with warnings.catch_warnings(record=True):
+                        model = builder.finalize()
+                    mode = "detailed" if detailed else "fast"
+                    results[mode] = {
+                        "model_mass": float(model.body_mass.numpy()[idx]),
+                        "model_inertia": np.array(model.body_inertia.numpy()[idx]),
+                    }
+                self._assert_parity(results)
+
     def test_builder_state_unchanged_after_finalize(self):
         """finalize() should not mutate builder state — corrections live only on the Model."""
         for detailed in (True, False):

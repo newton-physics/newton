@@ -824,6 +824,11 @@ class ModelBuilder:
         moments of inertia are at least this value. Set to None to disable inertia eigenvalue
         clamping. Default: None."""
 
+        self.inertia_tolerance: float = 1e-6
+        """Tolerance for inertia eigenvalue positivity checks and triangle inequality
+        validation [kg·m²]. Lower this for models with lightweight components (< ~50g).
+        Default: 1e-6."""
+
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
@@ -9860,7 +9865,13 @@ class ModelBuilder:
                         body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
 
                         new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
-                            mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia, body_label
+                            mass,
+                            inertia,
+                            self.balance_inertia,
+                            self.bound_mass,
+                            self.bound_inertia,
+                            body_label,
+                            self.inertia_tolerance,
                         )
 
                         if was_corrected:
@@ -9903,6 +9914,7 @@ class ModelBuilder:
                             self.balance_inertia,
                             self.bound_mass if self.bound_mass is not None else 0.0,
                             self.bound_inertia if self.bound_inertia is not None else 0.0,
+                            self.inertia_tolerance,
                             correction_count,
                         ],
                     )
