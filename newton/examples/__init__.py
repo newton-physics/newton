@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import importlib
 import os
 import warnings
@@ -449,6 +450,13 @@ def create_parser():
         metavar="SECONDS",
         help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
     )
+    parser.add_argument(
+        "--warp-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a warp.config attribute (e.g. --warp-config optimization_level=2). May be repeated.",
+    )
 
     return parser
 
@@ -512,6 +520,54 @@ def default_args(parser=None):
     return parser.parse_known_args([])[0]
 
 
+def apply_warp_config(overrides: list[str]) -> None:
+    """Apply ``KEY=VALUE`` overrides to :obj:`warp.config`.
+
+    Each entry in *overrides* must have the form ``KEY=VALUE``.  The key is
+    validated against public names in :obj:`warp.config` (names not starting
+    with ``_``).  The value is parsed with :func:`ast.literal_eval`; if that
+    fails the raw string is used, provided its type is compatible with the
+    attribute's current type.
+
+    Args:
+        overrides: List of ``"KEY=VALUE"`` strings.
+
+    Raises:
+        SystemExit: If a key is not a public ``warp.config`` attribute, the
+            entry is not in ``KEY=VALUE`` form, or the parsed value type does
+            not match the attribute's existing type.
+    """
+    public_attrs = {a for a in dir(wp.config) if not a.startswith("_")}
+
+    for entry in overrides:
+        if "=" not in entry:
+            raise SystemExit(f"Error: --warp-config value must be KEY=VALUE, got: {entry!r}")
+
+        key, value_str = entry.split("=", 1)
+
+        if key not in public_attrs:
+            raise SystemExit(
+                f"Error: '{key}' is not a public warp.config attribute.\n"
+                f"Valid attributes: {', '.join(sorted(public_attrs))}"
+            )
+
+        try:
+            value = ast.literal_eval(value_str)
+        except (ValueError, SyntaxError):
+            value = value_str
+
+        current = getattr(wp.config, key)
+        if current is not None and not isinstance(value, type(current)):
+            raise SystemExit(
+                f"Error: warp.config.{key} expects {type(current).__name__}, got {type(value).__name__}: {value!r}"
+            )
+
+        try:
+            setattr(wp.config, key, value)
+        except Exception as e:
+            raise SystemExit(f"Error: failed to set warp.config.{key} = {value!r}: {e}") from e
+
+
 def init(parser=None):
     """Initialize Newton example components from parsed arguments.
 
@@ -537,9 +593,14 @@ def init(parser=None):
         # When parser is provided, use parse_args() to properly handle --help
         args = parser.parse_args()
 
-    # Suppress Warp compilation messages if requested
+    # Suppress Warp compilation messages if requested (applied before
+    # --warp-config so that an explicit --warp-config quiet=... wins).
     if args.quiet:
         wp.config.quiet = True
+
+    # Apply warp.config overrides before device setup and kernel compilation
+    if args.warp_config:
+        apply_warp_config(args.warp_config)
 
     # Set device if specified
     if args.device:
@@ -632,6 +693,7 @@ __all__ = [
     "add_max_worlds_arg",
     "add_mujoco_contacts_arg",
     "add_world_count_arg",
+    "apply_warp_config",
     "create_parser",
     "default_args",
     "get_examples",
