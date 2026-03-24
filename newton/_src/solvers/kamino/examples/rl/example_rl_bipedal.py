@@ -317,6 +317,9 @@ class Example:
         self._orbit_pitch_offset: float = 0.0
         self._orbit_last_yaw: float = 0.0
         self._orbit_last_pitch: float = 0.0
+        self._follow_key_prev = False
+        self._snap_behind_key_prev = False
+        self._snap_front_key_prev = False
 
     # Convenience accessors for the main block
     @property
@@ -335,14 +338,11 @@ class Example:
         root_yaw = quat_to_projected_yaw(self.sim_wrapper.q_i[:, 0, 3:])
         self.joystick.reset(root_pos_2d=root_pos_2d, root_yaw=root_yaw)
         self.actions[:] = self.sim_wrapper.q_j[:, self._act_idx]
-        # Reset camera to initial state.
-        self._follow_cam_active = False
+        # Clear follow-camera smoothing so it snaps to the reset position.
         self._follow_cam_pos = None
         self._follow_cam_yaw = 0.0
         self._orbit_yaw_offset = 0.0
         self._orbit_pitch_offset = 0.0
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(self._INIT_CAM_POS, self._INIT_CAM_PITCH, self._INIT_CAM_YAW)
 
     def step_once(self):
         """Single physics step (used by run_headless warm-up)."""
@@ -398,23 +398,31 @@ class Example:
         self.update_input()
         self.sim_step()
 
-        # Toggle follow cam: gamepad Y or keyboard 'x' (edge-triggered)
-        if self.joystick.check_follow_toggle():
-            self._follow_cam_active = not self._follow_cam_active
-            if not self._follow_cam_active:
-                self._follow_cam_pos = None
-                self._follow_cam_yaw = 0.0
-                self._orbit_yaw_offset = 0.0
-                self._orbit_pitch_offset = 0.0
+        # Toggle third-person follow camera when 'X' is pressed (edge-triggered)
+        if hasattr(self.viewer, "is_key_down"):
+            follow_down = bool(self.viewer.is_key_down("x"))
+            if follow_down and not self._follow_key_prev:
+                self._follow_cam_active = not self._follow_cam_active
+                if not self._follow_cam_active:
+                    self._follow_cam_pos = None
+                    self._follow_cam_yaw = 0.0
+                    self._orbit_yaw_offset = 0.0
+                    self._orbit_pitch_offset = 0.0
+            self._follow_key_prev = follow_down
 
-        # Snap camera: gamepad A/B or keyboard shift/ctrl (follow mode only, edge-triggered)
-        if self._follow_cam_active:
-            if self.joystick.check_snap_behind():
-                self._orbit_yaw_offset = 0.0
-                self._orbit_pitch_offset = 0.0
-            if self.joystick.check_snap_front():
-                self._orbit_yaw_offset = 180.0
-                self._orbit_pitch_offset = 0.0
+            # SHIFT → snap behind robot; CTRL → snap to front (both edge-triggered)
+            if self._follow_cam_active:
+                shift_down = bool(self.viewer.is_key_down("shift"))
+                if shift_down and not self._snap_behind_key_prev:
+                    self._orbit_yaw_offset = 0.0
+                    self._orbit_pitch_offset = 0.0
+                self._snap_behind_key_prev = shift_down
+
+                ctrl_down = bool(self.viewer.is_key_down("ctrl"))
+                if ctrl_down and not self._snap_front_key_prev:
+                    self._orbit_yaw_offset = 180.0
+                    self._orbit_pitch_offset = 0.0
+                self._snap_front_key_prev = ctrl_down
 
     # --- third-person camera constants ---
     _FOLLOW_DIST      = 3.0
@@ -422,11 +430,6 @@ class Example:
     _FOLLOW_PITCH     = -15.0
     _FOLLOW_POS_ALPHA = 0.05
     _FOLLOW_YAW_ALPHA = 0.02
-
-    # --- initial free-camera defaults (must match the set_camera call in __main__) ---
-    _INIT_CAM_POS   = wp.vec3(2.5, 1.5, 1.0)
-    _INIT_CAM_PITCH = -10.0
-    _INIT_CAM_YAW   = 225.0
 
     def _update_follow_camera(self):
         """Orbit camera: follows the robot, mouse left-drag to orbit 360°."""
@@ -576,7 +579,7 @@ if __name__ == "__main__":
         else:
             msg.notif(f"Running in Viewer mode ({args.mode})...")
             if hasattr(example.viewer, "set_camera"):
-                example.viewer.set_camera(Example._INIT_CAM_POS, Example._INIT_CAM_PITCH, Example._INIT_CAM_YAW)
+                example.viewer.set_camera(wp.vec3(2.5, 1.5, 1.0), -10.0, 225.0)
             SimulationRunner(example, mode=args.mode, render_fps=args.render_fps).run()
     except KeyboardInterrupt:
         pass

@@ -181,10 +181,6 @@ class JoystickController:
 
         # Reset edge-detection state
         self._reset_prev = False
-        # Camera button edge-detection state
-        self._follow_toggle_prev = False
-        self._snap_behind_prev = False
-        self._snap_front_prev = False
 
         # --- Input mode detection ---
         self._controller = None
@@ -307,39 +303,6 @@ class JoystickController:
             diff = self.path_position - root_pos_2d
             clipped = diff.renorm(p=2, dim=0, maxnorm=cfg.path_deviation_max)
             self.path_position[:] = root_pos_2d + clipped
-
-    def check_follow_toggle(self) -> bool:
-        """Rising edge of follow-cam toggle: gamepad Y or keyboard ``x``."""
-        pressed = False
-        if self._mode == "joystick":
-            pressed = bool(self._controller.button_y.is_pressed)
-        if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
-            pressed = bool(self._viewer.is_key_down("x"))
-        triggered = pressed and not self._follow_toggle_prev
-        self._follow_toggle_prev = pressed
-        return triggered
-
-    def check_snap_behind(self) -> bool:
-        """Rising edge of snap-behind: gamepad A or keyboard ``shift``."""
-        pressed = False
-        if self._mode == "joystick":
-            pressed = bool(self._controller.button_a.is_pressed)
-        if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
-            pressed = bool(self._viewer.is_key_down("shift"))
-        triggered = pressed and not self._snap_behind_prev
-        self._snap_behind_prev = pressed
-        return triggered
-
-    def check_snap_front(self) -> bool:
-        """Rising edge of snap-to-front: gamepad B or keyboard ``ctrl``."""
-        pressed = False
-        if self._mode == "joystick":
-            pressed = bool(self._controller.button_b.is_pressed)
-        if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
-            pressed = bool(self._viewer.is_key_down("ctrl"))
-        triggered = pressed and not self._snap_front_prev
-        self._snap_front_prev = pressed
-        return triggered
 
     def close(self) -> None:
         """Release gamepad resources so the process can exit cleanly."""
