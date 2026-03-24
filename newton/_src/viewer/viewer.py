@@ -1987,16 +1987,30 @@ class ViewerBase(ABC):
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:
-            # just set colors on first frame
+            points = state.particle_q
+            radii = self.model.particle_radius
+
+            # Filter out inactive particles so emitters/culled particles are not rendered.
+            if self.model.particle_flags is not None:
+                flags = self.model.particle_flags.numpy()
+                active_mask = (flags & int(newton.ParticleFlags.ACTIVE)) != 0
+                if not active_mask.any():
+                    return
+                if not active_mask.all():
+                    points = wp.array(points.numpy()[active_mask], dtype=wp.vec3, device=self.device)
+                    radii_np = radii.numpy() if isinstance(radii, wp.array) else None
+                    if radii_np is not None:
+                        radii = wp.array(radii_np[active_mask], dtype=wp.float32, device=self.device)
+
             if self.model_changed:
-                colors = wp.full(shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
+                colors = wp.full(shape=len(points), value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
             else:
                 colors = None
 
             self.log_points(
                 name="/model/particles",
-                points=state.particle_q,
-                radii=self.model.particle_radius,
+                points=points,
+                radii=radii,
                 colors=colors,
                 hidden=not self.show_particles,
             )
