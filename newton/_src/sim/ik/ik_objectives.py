@@ -17,7 +17,7 @@ class IKObjective:
     system and can optionally provide an analytic Jacobian. Objective
     instances are shared across a batch of problems, so per-problem data such
     as targets should live in device arrays and be indexed through the
-    `problem_idx` mapping supplied at evaluation time.
+    ``problem_idx`` mapping supplied at evaluation time.
 
     Subclasses should override :meth:`residual_dim`,
     :meth:`compute_residuals`, and :meth:`compute_jacobian_autodiff`. They can
@@ -43,9 +43,9 @@ class IKObjective:
                 expanded solver batch, not necessarily the number of base IK
                 problems.
 
-        Notes:
+        .. note::
             Per-problem buffers such as targets should still be sized by the
-            base problem count and accessed through the `problem_idx` mapping
+            base problem count and accessed through the ``problem_idx`` mapping
             supplied during residual and Jacobian evaluation.
         """
         self.total_residuals = total_residuals
@@ -385,7 +385,7 @@ class IKObjectivePosition(IKObjective):
                 shape [n_batch, total_residual_count].
             start_idx: First residual row reserved for this objective.
             problem_idx: Mapping from evaluation rows to base problem
-                indices, shape [n_batch], used to fetch `target_positions`.
+                indices, shape [n_batch], used to fetch ``target_positions``.
         """
         count = body_q.shape[0]
         wp.launch(
@@ -1010,7 +1010,7 @@ class IKObjectiveRotation(IKObjective):
                 shape [n_batch, total_residual_count].
             start_idx: First residual row reserved for this objective.
             problem_idx: Mapping from evaluation rows to base problem
-                indices, shape [n_batch], used to fetch `target_rotations`.
+                indices, shape [n_batch], used to fetch ``target_rotations``.
         """
         count = body_q.shape[0]
         wp.launch(

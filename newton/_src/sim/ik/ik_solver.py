@@ -194,7 +194,7 @@ def _set_seed(
 class IKSolver:
     """High-level inverse-kinematics front end with optional multi-seed sampling.
 
-    `IKSolver` expands each base problem into one or more candidate seeds,
+    ``IKSolver`` expands each base problem into one or more candidate seeds,
     delegates optimization to :class:`~newton.ik.IKOptimizerLM` or
     :class:`~newton.ik.IKOptimizerLBFGS`, and keeps the lowest-cost candidate for each
     base problem.
@@ -341,7 +341,7 @@ class IKSolver:
                 problems, shape [n_problems, joint_coord_count].
             joint_q_out: Output joint coordinates [m or rad] for the selected
                 solution of each base problem, shape [n_problems, joint_coord_count].
-                It may alias `joint_q_in`.
+                It may alias ``joint_q_in``.
             iterations: Number of optimizer iterations to run for each sampled
                 seed.
             step_size: Unitless LM step scale. Ignored by the L-BFGS backend.

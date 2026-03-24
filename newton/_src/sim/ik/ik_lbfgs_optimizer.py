@@ -112,7 +112,7 @@ class IKOptimizerLBFGS:
     Args:
         model: Shared articulation model.
         n_batch: Number of evaluation rows solved in parallel. This is
-            typically `n_problems * n_seeds` after any sampling expansion.
+            typically ``n_problems * n_seeds`` after any sampling expansion.
         objectives: Ordered IK objectives applied to every batch row.
         jacobian_mode: Jacobian backend to use.
         history_len: Number of ``(s, y)`` correction pairs retained in the
@@ -722,7 +722,7 @@ class IKOptimizerLBFGS:
         self._for_objectives_residuals(ctx)
 
     def _init_objectives(self) -> None:
-        """Allocate any per-objective buffers that must live on `self.device`."""
+        """Allocate any per-objective buffers that must live on ``self.device``."""
         for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
             obj.set_batch_layout(self.n_residuals, offset, self.n_batch)
             obj.bind_device(self.device)
@@ -776,7 +776,7 @@ class IKOptimizerLBFGS:
         Args:
             joint_q_in: Input joint coordinates, shape [n_batch, joint_coord_count].
             joint_q_out: Output buffer for the optimized coordinates, shape
-                [n_batch, joint_coord_count]. It may alias `joint_q_in` for
+                [n_batch, joint_coord_count]. It may alias ``joint_q_in`` for
                 in-place updates.
             iterations: Number of L-BFGS iterations to execute.
         """
@@ -1369,14 +1369,14 @@ class IKOptimizerLBFGS:
             joint_qd_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
         ):
             """
-            Integrate the candidate update `dq_dof` (interpreted as a joint-space
-            velocity times `dt`) into a new configuration.
+            Integrate the candidate update ``dq_dof`` (interpreted as a
+            joint-space velocity times ``dt``) into a new configuration.
 
             q_out  = integrate(q_curr, dq_dof)
 
-            One thread handles one joint of one batch row. All joint types supported by
-            `jcalc_integrate` (revolute, prismatic, ball, free, D6, ...) work out of the
-            box.
+            One thread handles one joint of one batch row. All joint types
+            supported by ``jcalc_integrate`` (revolute, prismatic, ball,
+            free, D6, ...) work out of the box.
             """
             row, joint_idx = wp.tid()
 

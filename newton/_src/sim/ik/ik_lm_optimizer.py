@@ -85,13 +85,13 @@ class IKOptimizerLM:
 
     The optimizer solves a batch of independent IK problems that share a
     single articulation model and objective list. Jacobians can be evaluated
-    with `IKJacobianType.AUTODIFF`, `IKJacobianType.ANALYTIC`, or
-    `IKJacobianType.MIXED`.
+    with ``IKJacobianType.AUTODIFF``, ``IKJacobianType.ANALYTIC``, or
+    ``IKJacobianType.MIXED``.
 
     Args:
         model: Shared articulation model.
         n_batch: Number of evaluation rows solved in parallel. This is
-            typically `n_problems * n_seeds` after any sampling expansion.
+            typically ``n_problems * n_seeds`` after any sampling expansion.
         objectives: Ordered IK objectives applied to every batch row.
         lambda_initial: Initial LM damping factor for each batch row.
         jacobian_mode: Jacobian backend to use.
@@ -178,7 +178,7 @@ class IKOptimizerLM:
         self._init_cuda_streams()
 
     def _init_objectives(self) -> None:
-        """Allocate any per-objective buffers that must live on `self.device`."""
+        """Allocate any per-objective buffers that must live on ``self.device``."""
         for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
             obj.set_batch_layout(self.n_residuals, offset, self.n_batch)
             obj.bind_device(self.device)
@@ -457,7 +457,7 @@ class IKOptimizerLM:
         Args:
             joint_q_in: Input joint coordinates, shape [n_batch, joint_coord_count].
             joint_q_out: Output buffer for the optimized coordinates, shape
-                [n_batch, joint_coord_count]. It may alias `joint_q_in` for
+                [n_batch, joint_coord_count]. It may alias ``joint_q_in`` for
                 in-place updates.
             iterations: Number of LM iterations to execute.
             step_size: Scalar applied to each computed update before
@@ -745,14 +745,14 @@ class IKOptimizerLM:
             joint_qd_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
         ):
             """
-            Integrate the candidate update `dq_dof` (interpreted as a joint-space
-            velocity times `dt`) into a new configuration.
+            Integrate the candidate update ``dq_dof`` (interpreted as a
+            joint-space velocity times ``dt``) into a new configuration.
 
             q_out  = integrate(q_curr, dq_dof)
 
-            One thread handles one joint of one batch row. All joint types supported by
-            `jcalc_integrate` (revolute, prismatic, ball, free, D6, ...) work out of the
-            box.
+            One thread handles one joint of one batch row. All joint types
+            supported by ``jcalc_integrate`` (revolute, prismatic, ball,
+            free, D6, ...) work out of the box.
             """
             row, joint_idx = wp.tid()
 
