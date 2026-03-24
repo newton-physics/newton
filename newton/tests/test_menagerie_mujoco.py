@@ -2117,10 +2117,11 @@ class TestMenagerieBase(unittest.TestCase):
     def _ensure_models(self):
         """Create Newton and native models if not already done (lazy init).
 
-        Stores models and solver on ``self`` so all test methods can access them
-        without re-creating expensive GPU resources. Safe to call multiple times.
+        Stores models on the **class** so all test method instances share
+        them without re-creating expensive GPU resources.
         """
-        if hasattr(self, "_newton_solver"):
+        cls = self.__class__
+        if hasattr(cls, "_newton_solver"):
             return
 
         assert _mujoco is not None
@@ -2129,10 +2130,10 @@ class TestMenagerieBase(unittest.TestCase):
         if self.debug_visual:
             self.num_worlds = 1
 
-        # Create models and solvers
-        self._newton_model = self._create_newton_model()
-        self._newton_state = self._newton_model.state()
-        self._newton_control = self._newton_model.control()
+        # Create models and solvers — stored on cls for reuse across test methods
+        cls._newton_model = self._create_newton_model()
+        cls._newton_state = cls._newton_model.state()
+        cls._newton_control = cls._newton_model.control()
         solver_kwargs = {
             "skip_visual_only_geoms": not self.parse_visuals,
             "njmax": self.njmax,
@@ -2141,27 +2142,27 @@ class TestMenagerieBase(unittest.TestCase):
         if self.solver_integrator is not None:
             solver_kwargs["integrator"] = self.solver_integrator
 
-        self._newton_solver = SolverMuJoCo(self._newton_model, **solver_kwargs)
+        cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
 
-        self._mj_model, self._mj_data_native, self._native_mjw_model, self._native_mjw_data = (
+        cls._mj_model, cls._mj_data_native, cls._native_mjw_model, cls._native_mjw_data = (
             self._create_native_mujoco_warp()
         )
 
         # Expand native model's batched arrays to match Newton's shapes
         # Newton is the reference - only expand fields that Newton has expanded
-        expand_mjw_model_to_match(self._native_mjw_model, self._newton_solver.mjw_model)
+        expand_mjw_model_to_match(cls._native_mjw_model, cls._newton_solver.mjw_model)
 
         # Extract timestep from native model (Newton doesn't parse <option timestep="..."/> yet)
         # TODO: Remove this workaround once Newton's MJCF parser supports timestep extraction
-        self._dt = float(self._mj_model.opt.timestep)
+        cls._dt = float(cls._mj_model.opt.timestep)
 
         # Hook for subclass-specific model alignment (USD fixups, etc.)
-        self._align_models(self._newton_solver, self._native_mjw_model, self._mj_model)
+        self._align_models(cls._newton_solver, cls._native_mjw_model, cls._mj_model)
 
         # Disable sensor_rne_postconstraint on native — Newton doesn't support
         # sensors, so rne_postconstraint would compute cacc/cfrc_int on native
         # but not on Newton, causing spurious diffs.
-        self._native_mjw_model.sensor_rne_postconstraint = False
+        cls._native_mjw_model.sensor_rne_postconstraint = False
 
     def _run_model_comparisons(self):
         """Run all model field comparisons and subclass hooks."""
