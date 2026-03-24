@@ -1391,9 +1391,11 @@ class ViewerBase(ABC):
                     if has_texture:
                         material = wp.vec4(material.x, material.y, material.z, 1.0)
 
-            # plane appearance: checkerboard + gray
-            if geo_type == newton.GeoType.PLANE and shape_display_color is None:
-                color = wp.vec3(0.125, 0.125, 0.15)
+            # Planes keep their checkerboard material even when model.shape_color
+            # is populated with resolved default colors.
+            if geo_type == newton.GeoType.PLANE:
+                if shape_display_color is None:
+                    color = wp.vec3(0.125, 0.125, 0.15)
                 material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
             # add render instance
@@ -1437,7 +1439,9 @@ class ViewerBase(ABC):
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
-        self._model_shape_color_host = np.array(shape_display_color, copy=True) if shape_display_color is not None else None
+        self._model_shape_color_host = (
+            np.array(shape_display_color, copy=True) if shape_display_color is not None else None
+        )
 
         # Note: SDF isomesh instances are populated lazily when show_collision is True
         # to avoid GPU memory allocation until actually needed for visualization
