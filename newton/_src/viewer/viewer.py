@@ -612,7 +612,7 @@ class ViewerBase(ABC):
             materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
             geo_thickness: Optional thickness used for hashing and solidification.
             geo_is_solid: If False, use shell-thickening for mesh-based geometry.
-            geo_src: Source geometry to use only when :paramref:`geo_type` is
+            geo_src: Source geometry to use only when ``geo_type`` is
                 :attr:`newton.GeoType.MESH`.
             hidden: If True, the shape will not be rendered
         """
@@ -697,7 +697,7 @@ class ViewerBase(ABC):
             geo_is_solid: Whether to render mesh geometry as a solid.
             geo_src: Source :class:`newton.Mesh` or
                 :class:`newton.Heightfield` data when required
-                by :paramref:`geo_type`.
+                by ``geo_type``.
             hidden: Whether the created mesh should be hidden.
         """
 
