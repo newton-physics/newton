@@ -76,6 +76,32 @@ else:
     UsdStage = Any
 
 
+_DEFAULT_NON_COLLIDING_SHAPE_COLOR = (0.5, 0.5, 0.5)
+_DEFAULT_PLANE_SHAPE_COLOR = (0.125, 0.125, 0.15)
+_SHAPE_COLOR_PALETTE = (
+    (68, 119, 170),
+    (102, 204, 238),
+    (34, 136, 51),
+    (204, 187, 68),
+    (238, 102, 119),
+    (170, 51, 119),
+    (187, 187, 187),
+    (238, 153, 51),
+    (0, 153, 136),
+)
+
+
+def _shape_palette_color(index: int) -> tuple[float, float, float]:
+    color = _SHAPE_COLOR_PALETTE[index % len(_SHAPE_COLOR_PALETTE)]
+    return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
+
+
+def _normalize_shape_display_color(color: Vec3 | None) -> tuple[float, float, float] | None:
+    if color is None:
+        return None
+    return (float(color[0]), float(color[1]), float(color[2]))
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -868,6 +894,8 @@ class ModelBuilder:
         """Shape scales accumulated for :attr:`Model.shape_scale`."""
         self.shape_source: list[Any] = []
         """Source geometry objects accumulated for :attr:`Model.shape_source`."""
+        self.shape_color: list[tuple[float, float, float] | None] = []
+        """Optional explicit display colors accumulated for :attr:`Model.shape_color`."""
         self.shape_is_solid: list[bool] = []
         """Solid-vs-hollow flags accumulated for :attr:`Model.shape_is_solid`."""
         self.shape_margin: list[float] = []
@@ -1243,6 +1271,16 @@ class ModelBuilder:
         """
         key = attribute.key
 
+        if (
+            attribute.namespace is None
+            and attribute.assignment == Model.AttributeAssignment.MODEL
+            and attribute.name == "shape_color"
+        ):
+            raise ValueError(
+                "Custom attribute 'shape_color' is reserved for the built-in per-shape display color. "
+                "Use a different attribute name or place the attribute in a namespace."
+            )
+
         existing = self.custom_attributes.get(key)
         if existing:
             # validate that specification matches exactly
@@ -1337,6 +1375,26 @@ class ModelBuilder:
             Custom attributes matching the requested frequencies.
         """
         return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
+
+    def _resolve_shape_display_color(self, shape: int) -> tuple[float, float, float]:
+        explicit_color = self.shape_color[shape]
+        if explicit_color is not None:
+            return explicit_color
+
+        shape_type = self.shape_type[shape]
+        shape_src = self.shape_source[shape]
+        if shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and shape_src is not None:
+            mesh_color = _normalize_shape_display_color(getattr(shape_src, "color", None))
+            if mesh_color is not None:
+                return mesh_color
+
+        if shape_type == GeoType.PLANE:
+            return _DEFAULT_PLANE_SHAPE_COLOR
+
+        if (self.shape_flags[shape] & int(ShapeFlags.COLLIDE_SHAPES)) == 0:
+            return _DEFAULT_NON_COLLIDING_SHAPE_COLOR
+
+        return _shape_palette_color(shape)
 
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
@@ -3052,6 +3110,7 @@ class ModelBuilder:
             "shape_type",
             "shape_scale",
             "shape_source",
+            "shape_color",
             "shape_is_solid",
             "shape_margin",
             "shape_material_ke",
@@ -5089,13 +5148,15 @@ class ModelBuilder:
 
     def add_shape(
         self,
+        *,
         body: int,
         type: int,
         xform: Transform | None = None,
         cfg: ShapeConfig | None = None,
         scale: Vec3 | None = None,
-        src: Mesh | Any | None = None,
+        src: Mesh | Gaussian | Heightfield | Any | None = None,
         is_static: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5111,6 +5172,7 @@ class ModelBuilder:
             scale: The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color. Mesh-backed shapes fall back to :attr:`Mesh.color`.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5191,6 +5253,7 @@ class ModelBuilder:
         self.shape_type.append(type)
         self.shape_scale.append((scale[0], scale[1], scale[2]))
         self.shape_source.append(src)
+        self.shape_color.append(_normalize_shape_display_color(color))
         self.shape_margin.append(cfg.margin)
         self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
@@ -5245,6 +5308,7 @@ class ModelBuilder:
         length: float = 10.0,
         body: int = -1,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5266,6 +5330,7 @@ class ModelBuilder:
             length: The visual/collision extent of the plane along its local Y-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             body: The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default plane display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5297,6 +5362,7 @@ class ModelBuilder:
             is_static=True,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_ground_plane(
@@ -5304,6 +5370,8 @@ class ModelBuilder:
         height: float = 0.0,
         cfg: ShapeConfig | None = None,
         label: str | None = None,
+        *,
+        color: Vec3 | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
 
@@ -5311,6 +5379,7 @@ class ModelBuilder:
             height: The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default plane display color.
 
         Returns:
             The index of the newly added shape.
@@ -5321,6 +5390,7 @@ class ModelBuilder:
             length=0.0,
             cfg=cfg,
             label=label or "ground_plane",
+            color=color,
         )
 
     def add_shape_sphere(
@@ -5330,6 +5400,7 @@ class ModelBuilder:
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5341,6 +5412,7 @@ class ModelBuilder:
             radius: The radius of the sphere. Defaults to `1.0`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5362,6 +5434,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_ellipsoid(
@@ -5373,6 +5446,7 @@ class ModelBuilder:
         c: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5393,6 +5467,7 @@ class ModelBuilder:
             c: The semi-axis of the ellipsoid along its local Z-axis. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5433,6 +5508,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_box(
@@ -5444,6 +5520,7 @@ class ModelBuilder:
         hz: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5459,6 +5536,7 @@ class ModelBuilder:
             hz: The half-extent of the box along its local Z-axis. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5480,6 +5558,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_capsule(
@@ -5490,6 +5569,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5504,6 +5584,7 @@ class ModelBuilder:
             half_height: The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5530,6 +5611,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_cylinder(
@@ -5540,6 +5622,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5554,6 +5637,7 @@ class ModelBuilder:
             half_height: The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5580,6 +5664,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_cone(
@@ -5590,6 +5675,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5605,6 +5691,7 @@ class ModelBuilder:
             half_height: The half-height of the cone (distance from the geometric center to either the base or apex). The total height is 2*half_height. Defaults to `0.5`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5631,6 +5718,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_mesh(
@@ -5640,6 +5728,7 @@ class ModelBuilder:
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5651,6 +5740,7 @@ class ModelBuilder:
             mesh: The :class:`Mesh` object containing the vertex and triangle data. Defaults to `None`.
             scale: The scale of the mesh. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`Mesh.color` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5669,6 +5759,7 @@ class ModelBuilder:
             src=mesh,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_convex_hull(
@@ -5678,6 +5769,7 @@ class ModelBuilder:
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
     ) -> int:
         """Adds a convex hull collision shape to a body.
@@ -5688,6 +5780,7 @@ class ModelBuilder:
             mesh: The :class:`Mesh` object containing the vertex data for the convex hull. Defaults to `None`.
             scale: The scale of the convex hull. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`Mesh.color` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
 
         Returns:
@@ -5704,6 +5797,7 @@ class ModelBuilder:
             scale=scale,
             src=mesh,
             label=label,
+            color=color,
         )
 
     def add_shape_heightfield(
@@ -5712,6 +5806,7 @@ class ModelBuilder:
         heightfield: Heightfield | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5726,6 +5821,7 @@ class ModelBuilder:
             heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
             scale: The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5747,6 +5843,7 @@ class ModelBuilder:
             is_static=True,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_gaussian(
@@ -5757,6 +5854,7 @@ class ModelBuilder:
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         collision_proxy: str | Mesh | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5779,6 +5877,7 @@ class ModelBuilder:
                 - ``None``: no collision (render-only).
                 - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
                 - A :class:`Mesh` instance: use the provided mesh as collision proxy.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: Optional unique label for identifying the shape.
             custom_attributes: Dictionary of custom attribute values for SHAPE
                 frequency attributes.
@@ -5828,6 +5927,7 @@ class ModelBuilder:
             is_static=True,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_site(
@@ -9382,6 +9482,8 @@ class ModelBuilder:
             m.shape_world = wp.array(self.shape_world, dtype=wp.int32)
 
             m.shape_source = self.shape_source  # used for rendering
+            resolved_shape_colors = [self._resolve_shape_display_color(shape) for shape in range(self.shape_count)]
+            m.shape_color = wp.array(resolved_shape_colors, dtype=wp.vec3)
 
             m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)

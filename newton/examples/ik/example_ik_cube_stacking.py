@@ -258,10 +258,6 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
 
-        # Set cube colors
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
-        self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.cube_colors.items()})
-
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_world_offsets(wp.vec3(1.5, 1.5, 0.0))
 
@@ -421,7 +417,6 @@ class Example:
         return builder
 
     def build_scene(self, franka_with_table: newton.ModelBuilder):
-        self.cube_colors = {}
         rng = np.random.default_rng(42)
 
         # Range of values for the cube properties
@@ -497,7 +492,24 @@ class Example:
 
             half_size = 0.5 * self.cube_size
             cube_shape_idx = scene.shape_count
-            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, label=key)
+            if i == 0:
+                cube_color = [0.8, 0.2, 0.2]
+            elif i == 1:
+                cube_color = [0.2, 0.8, 0.2]
+            elif i == 2:
+                cube_color = [0.2, 0.2, 0.8]
+            else:
+                cube_color = [0.2, 0.2, 0.2]
+
+            scene.add_shape_box(
+                body=mesh_body,
+                hx=half_size,
+                hy=half_size,
+                hz=half_size,
+                cfg=shape_cfg,
+                label=key,
+                color=cube_color,
+            )
 
             if self.use_mujoco_contacts:
                 # Set condim=4 (torsional friction) on cube shapes
@@ -505,16 +517,6 @@ class Example:
                 if condim_attr.values is None:
                     condim_attr.values = {}
                 condim_attr.values[cube_shape_idx] = 4
-
-            # Set the color of the cube based on the index
-            if i == 0:
-                self.cube_colors[key] = [0.8, 0.2, 0.2]
-            elif i == 1:
-                self.cube_colors[key] = [0.2, 0.8, 0.2]
-            elif i == 2:
-                self.cube_colors[key] = [0.2, 0.2, 0.8]
-            else:
-                self.cube_colors[key] = [0.2, 0.2, 0.2]
 
     def setup_ik(self):
         self.ee_index = 11
