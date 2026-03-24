@@ -2201,6 +2201,10 @@ class TestMenagerieBase(unittest.TestCase):
 
         if self.debug_visual:
             self.num_worlds = 1
+        # Robots with import bugs (#2170) temporarily only run model comparison / FK.
+        # These are deterministic and don't benefit from multiple worlds.
+        elif self.num_steps <= 0 and not self.step_response_enabled:
+            self.num_worlds = 1
 
         # Create models and solvers — stored on cls for reuse across test methods
         cls._newton_model = self._create_newton_model()
