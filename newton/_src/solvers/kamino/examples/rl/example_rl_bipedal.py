@@ -234,10 +234,10 @@ JoystickVec = wp.types.vector(5, wp.float32)
 
 @wp.kernel
 def _fill_cmd(
-    cmd: wp.array(dtype=wp.float32),  # (num_worlds * CMD_DIM,)  flat
+    cmd: wp.array(dtype=wp.float32),           # (num_worlds * CMD_DIM,)  flat
     path_heading: wp.array(dtype=wp.float32),  # (num_worlds,)            flat from (num_worlds, 1)
-    path_position: wp.array(dtype=wp.float32),  # (num_worlds * 2,)        flat from (num_worlds, 2)
-    js: JoystickVec,  # [fwd_vel, lat_vel, ang_vel, head_pitch, head_yaw]
+    path_position: wp.array(dtype=wp.float32), # (num_worlds * 2,)        flat from (num_worlds, 2)
+    js: JoystickVec,                           # [fwd_vel, lat_vel, ang_vel, head_pitch, head_yaw]
 ):
     w = wp.tid()
     base = w * _CMD_DIM
@@ -251,10 +251,10 @@ def _fill_cmd(
     hp = js[3]
     hy = js[4]
     fwd = wp.max(hp, float(0.0)) * float(0.4)
-    cmd[base + 6] = wp.min(wp.max(fwd, float(-1.0)), float(0.3))  # head_z
-    cmd[base + 7] = float(0.0)  # head_roll
+    cmd[base + 6] = wp.min(wp.max(fwd, float(-1.0)), float(0.3))   # head_z
+    cmd[base + 7] = float(0.0)                                       # head_roll
     cmd[base + 8] = wp.min(wp.max(fwd + hp, float(-0.6)), float(1.0))  # head_pitch
-    cmd[base + 9] = wp.min(wp.max(hy, float(-1.0)), float(1.0))  # head_yaw
+    cmd[base + 9] = wp.min(wp.max(hy, float(-1.0)), float(1.0))    # head_yaw
 
 
 ###########################################################################
@@ -282,12 +282,6 @@ class Example:
         # USD model path
         USD_MODEL_PATH = os.path.join(_ASSETS_DIR, "bdx_merged.usda")
 
-        # Build solver settings
-        settings = RigidBodySim.default_settings(self.sim_dt)
-        settings.solver.padmm.max_iterations = 80
-        settings.solver.padmm.use_acceleration = False
-        settings.solver.padmm.use_graph_conditionals = False
-
         # Create generic articulated body simulator with rolling terrain
         self.sim_wrapper = RigidBodySim(
             usd_model_path=USD_MODEL_PATH,
@@ -297,7 +291,6 @@ class Example:
             headless=headless,
             body_pose_offset=(0.0, 0.0, 0.33, 0.0, 0.0, 0.0, 1.0),
             use_cuda_graph=True,
-            settings=settings,
             render_config=ViewerConfig(
                 diffuse_scale=1.0,
                 specular_scale=0.3,
@@ -383,7 +376,7 @@ class Example:
         # Third-person follow camera state
         self._follow_cam_active = False
         self._follow_cam_pos: np.ndarray | None = None  # smoothed robot position (orbit centre)
-        self._follow_cam_yaw: float = 0.0  # smoothed robot yaw in radians
+        self._follow_cam_yaw: float = 0.0               # smoothed robot yaw in radians
         self._orbit_yaw_offset: float = 0.0
         self._orbit_pitch_offset: float = 0.0
         self._orbit_last_yaw: float = 0.0
@@ -482,20 +475,20 @@ class Example:
                 self._orbit_pitch_offset = 0.0
 
     # --- third-person camera constants ---
-    _FOLLOW_DIST = 3.0
-    _FOLLOW_HEIGHT = 1.5
-    _FOLLOW_PITCH = -15.0
+    _FOLLOW_DIST      = 3.0
+    _FOLLOW_HEIGHT    = 1.5
+    _FOLLOW_PITCH     = -15.0
     _FOLLOW_POS_ALPHA = 0.05
     _FOLLOW_YAW_ALPHA = 0.02
 
     # --- initial free-camera defaults (must match the set_camera call in __main__) ---
-    _INIT_CAM_POS = wp.vec3(2.5, 1.5, 1.0)
+    _INIT_CAM_POS   = wp.vec3(2.5, 1.5, 1.0)
     _INIT_CAM_PITCH = -10.0
-    _INIT_CAM_YAW = 225.0
+    _INIT_CAM_YAW   = 225.0
 
     def _update_follow_camera(self):
         """Orbit camera: follows the robot, mouse left-drag to orbit 360°."""
-        q = self.sim_wrapper.q_i[0, 0]  # (7,) tensor: xyz + xyzw quat
+        q = self.sim_wrapper.q_i[0, 0]   # (7,) tensor: xyz + xyzw quat
         rx, ry, rz = q[0].item(), q[1].item(), q[2].item()
         robot_yaw_rad = quat_to_projected_yaw(q[3:].unsqueeze(0))[0, 0].item()
 
