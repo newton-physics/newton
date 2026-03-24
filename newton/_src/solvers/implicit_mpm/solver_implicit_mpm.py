@@ -616,8 +616,8 @@ class SolverImplicitMPM(SolverBase):
         """Maximum number of iterations for the rheology solver."""
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
-        solver: Literal["gauss-seidel", "jacobi", "cg"] = "gauss-seidel"
-        """Solver to use for the rheology solver."""
+        solver: str = "gauss-seidel"
+        """Solver to use for the rheology solver. May be one of gauss-seidel, gauss-seidel-reordered, jacobi, cg."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver."""
         collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
@@ -2113,6 +2113,21 @@ class SolverImplicitMPM(SolverBase):
                 rigidity_operator=rigidity_operator,
                 collider_impulse=scratch.impulse_field.dof_values,
             )
+
+            if getattr(self, "dump_rheology_path", None):
+                from ._debug_rheology_io import dump_rheology_data
+
+                wp.synchronize_device()
+                dump_rheology_data(
+                    self.dump_rheology_path,
+                    self.solver,
+                    self.max_iterations,
+                    self.tolerance,
+                    momentum_data,
+                    rheology_data,
+                    collision_data,
+                )
+                self.dump_rheology_path = None
 
             # Retain graph to avoid immediate CPU synch
             solve_graph = solve_rheology(
