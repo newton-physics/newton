@@ -4,6 +4,7 @@
 import ast
 import importlib
 import os
+import typing
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
@@ -538,6 +539,7 @@ def apply_warp_config(overrides: list[str]) -> None:
             not match the attribute's existing type.
     """
     public_attrs = {a for a in dir(wp.config) if not a.startswith("_")}
+    hints = typing.get_type_hints(wp.config)
 
     for entry in overrides:
         if "=" not in entry:
@@ -556,10 +558,16 @@ def apply_warp_config(overrides: list[str]) -> None:
         except (ValueError, SyntaxError):
             value = value_str
 
-        current = getattr(wp.config, key)
-        if current is not None and not isinstance(value, type(current)):
+        ann = hints.get(key)
+        expected = None
+        if ann is not None:
+            args = typing.get_args(ann)
+            non_none = [a for a in args if a is not type(None)]
+            expected = non_none[0] if len(non_none) == 1 else ann if isinstance(ann, type) else None
+
+        if expected is not None and not isinstance(value, expected):
             raise SystemExit(
-                f"Error: warp.config.{key} expects {type(current).__name__}, got {type(value).__name__}: {value!r}"
+                f"Error: warp.config.{key} expects {expected.__name__}, got {type(value).__name__}: {value!r}"
             )
 
         try:
