@@ -3563,12 +3563,10 @@ a <code class="docutils literal notranslate"><span class="pre">ValueError</span>
 <li><p><strong>load_sites</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.</p></li>
 <li><p><strong>load_visual_shapes</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by <code class="docutils literal notranslate"><span class="pre">load_sites</span></code>). Default is True.</p></li>
 <li><p><strong>hide_collision_shapes</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, collision shapes on bodies that already
-have visual-only geometry are hidden. Collision shapes on bodies
-without visual-only geometry remain visible as a rendering fallback.
-Mesh colliders with authored PBR material data (texture,
-roughness, or metallic) also remain visible so collision-only
-render meshes are not lost.
-Default is False.</p></li>
+have visual-only geometry are hidden unconditionally, regardless of
+whether the collider has authored PBR material data. Collision
+shapes on bodies without visual-only geometry remain visible as a
+rendering fallback. Default is False.</p></li>
 <li><p><strong>force_show_colliders</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, collision shapes get the VISIBLE flag
 regardless of whether visual shapes exist on the same body. Note that
 <code class="docutils literal notranslate"><span class="pre">hide_collision_shapes=True</span></code> still suppresses the VISIBLE flag for
