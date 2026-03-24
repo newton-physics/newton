@@ -1123,14 +1123,17 @@ class TestMenagerieUSD(TestMenagerieBase):
             if isinstance(native_val, (int, float, bool)):
                 setattr(newton_opt, attr, native_val)
 
-        self._body_map = build_body_index_map(newton_solver.mj_model, mj_model)
-        self._jnt_map = build_jnt_index_map(newton_solver.mj_model, mj_model)
-        self._dof_map = build_dof_index_map(
+        # Store maps on class — _ensure_models stores models on cls, so hooks
+        # that access these maps via self will find them on the class.
+        cls = self.__class__
+        cls._body_map = build_body_index_map(newton_solver.mj_model, mj_model)
+        cls._jnt_map = build_jnt_index_map(newton_solver.mj_model, mj_model)
+        cls._dof_map = build_dof_index_map(
             newton_solver.mjw_model,
             native_mjw_model,
-            self._jnt_map,
+            cls._jnt_map,
         )
-        self._actuator_map = build_actuator_index_map(newton_solver.mj_model, mj_model)
+        cls._actuator_map = build_actuator_index_map(newton_solver.mj_model, mj_model)
 
     def _compare_body_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare physics-relevant body fields using name-based index mapping."""
