@@ -134,21 +134,17 @@ def add_terrain(builder,
             if root_prim is None:
                 root_prim = "/"
 
-            cfg = newton.ModelBuilder.ShapeConfig()
-            cfg.margin = 0.01
-            cfg.gap = 0.02
-            saved_cfg = builder.default_shape_cfg
-            builder.default_shape_cfg = cfg
-
             shape_start = builder.shape_count
             builder.add_usd(file_path, root_path=root_prim, hide_collision_shapes=True, load_visual_shapes=False)
-
-            builder.default_shape_cfg = saved_cfg
 
             # clear ShapeFlags.VISIBLE to hide the collision shape
             for idx in range(shape_start, builder.shape_count):
                 flags = builder.shape_flags[idx]
                 builder.shape_flags[idx] = flags & ~newton.ShapeFlags.VISIBLE
+
+            # approximate the terrain mesh using convex decomposition
+            terrain_shapes = list(range(shape_start, builder.shape_count))
+            builder.approximate_meshes("vhacd", shape_indices=terrain_shapes)
 
         # add ground plane, but make it invisible
         if add_ground_plane:
@@ -358,7 +354,7 @@ class Example:
             joint_ordering="dfs",
             hide_collision_shapes=True,
         )
-        builder.approximate_meshes("convex_hull")
+        # builder.approximate_meshes("convex_hull")
 
         add_terrain(
             builder,
@@ -403,7 +399,7 @@ class Example:
                 joint_ordering="dfs",
                 hide_collision_shapes=True,
             )
-            shadow_builder.approximate_meshes("convex_hull")
+            # shadow_builder.approximate_meshes("convex_hull")
 
             add_terrain(
                 shadow_builder,
@@ -413,7 +409,7 @@ class Example:
                 add_ground_plane=True,
             )
 
-            shadow_builder.joint_q[:3] = [0.0, 0.0, 0.8]
+            shadow_builder.joint_q[:3] = [0.0, 0.0, 0.76]
             shadow_builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
             shadow_builder.joint_q[7:] = config["mjw_joint_pos"]
 
@@ -530,7 +526,7 @@ class Example:
             solver="newton",
             nconmax=200,
             njmax=1000,
-            use_mujoco_contacts=False,
+            # ccd_iterations=50,
         )
 
         # Initialize state objects
@@ -630,9 +626,6 @@ class Example:
         # Track if camera has been set in first render
         self._camera_set_in_render = False
 
-        # Force-initialize Newton's collision pipeline now, before CUDA graph capture.
-        self.model.collide(self.state_0, self.contacts)
-
         # Call capture at the end
         self.capture()
 
@@ -659,10 +652,7 @@ class Example:
             # Apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
-
-            self.solver.step(self.state_0, self.state_1, self.control,
-                             self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
             # Swap states - handle CUDA graph case specially
             if need_state_copy and i == self.sim_substeps - 1:
