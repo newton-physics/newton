@@ -920,13 +920,23 @@ When both rigid and soft contacts are present, soft contact forces follow rigid 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Contacts.rigid_contact_margin0">
 <span class="sig-name descname"><span class="pre">rigid_contact_margin0</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_margin0" title="Link to this definition">#</a></dt>
-<dd><p>Contact margin for shape 0 [m], shape (rigid_contact_max,), dtype float.</p>
+<dd><p>effective radius + margin [m], shape (rigid_contact_max,), dtype float.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Surface thickness for shape 0</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Contacts.rigid_contact_margin1">
 <span class="sig-name descname"><span class="pre">rigid_contact_margin1</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_margin1" title="Link to this definition">#</a></dt>
-<dd><p>Contact margin for shape 1 [m], shape (rigid_contact_max,), dtype float.</p>
+<dd><p>effective radius + margin [m], shape (rigid_contact_max,), dtype float.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Surface thickness for shape 1</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py attribute">
@@ -938,25 +948,35 @@ When both rigid and soft contacts are present, soft contact forces follow rigid 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Contacts.rigid_contact_offset0">
 <span class="sig-name descname"><span class="pre">rigid_contact_offset0</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_offset0" title="Link to this definition">#</a></dt>
-<dd><p>Contact offset on shape 0 [m], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<dd><p>Body-frame friction anchor offset for shape 0 [m], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<p>Equal to the contact normal scaled by <code class="docutils literal notranslate"><span class="pre">effective_radius</span> <span class="pre">+</span> <span class="pre">margin</span></code> and
+expressed in shape 0’s body frame. Combined with
+<code class="docutils literal notranslate"><span class="pre">rigid_contact_point0</span></code> to form a shifted friction anchor that accounts
+for rotational effects of finite contact thickness in tangential friction
+calculations.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Contacts.rigid_contact_offset1">
 <span class="sig-name descname"><span class="pre">rigid_contact_offset1</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_offset1" title="Link to this definition">#</a></dt>
-<dd><p>Contact offset on shape 1 [m], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<dd><p>Body-frame friction anchor offset for shape 1 [m], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<p>Equal to the contact normal scaled by <code class="docutils literal notranslate"><span class="pre">effective_radius</span> <span class="pre">+</span> <span class="pre">margin</span></code> and
+expressed in shape 1’s body frame. Combined with
+<code class="docutils literal notranslate"><span class="pre">rigid_contact_point1</span></code> to form a shifted friction anchor that accounts
+for rotational effects of finite contact thickness in tangential friction
+calculations.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Contacts.rigid_contact_point0">
 <span class="sig-name descname"><span class="pre">rigid_contact_point0</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_point0" title="Link to this definition">#</a></dt>
-<dd><p>Contact point on shape 0 [m], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<dd><p>Body-frame contact point on shape 0 [m], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Contacts.rigid_contact_point1">
 <span class="sig-name descname"><span class="pre">rigid_contact_point1</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_point1" title="Link to this definition">#</a></dt>
-<dd><p>Contact point on shape 1 [m], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<dd><p>Body-frame contact point on shape 1 [m], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">

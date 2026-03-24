@@ -50,6 +50,442 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true, "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]}, "displayMath": [["$$", "$$"], ["\\[", "\\]"]], "processEnvironments": true, "tags": "ams", "macros": {"RR": "{\\mathbb{R}}", "bold": ["{\\mathbf{#1}}", 1], "vec": ["{\\mathbf{#1}}", 1]}}, "options": {"ignoreHtmlClass": "annotation", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
     <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.esm.min.mjs";
+
+
+
+
+
+const initStyles = () => {
+    const defaultStyle = document.createElement('style');
+    defaultStyle.textContent = `pre.mermaid {
+    /* Same as .mermaid-container > pre */
+    display: block;
+    width: 100%;
+}
+
+pre.mermaid > svg {
+    /* Same as .mermaid-container > pre > svg */
+    height: 500px;
+    width: 100%;
+    max-width: 100% !important;
+}`;
+    document.head.appendChild(defaultStyle);
+
+    const fullscreenStyle = document.createElement('style');
+    fullscreenStyle.textContent = `.mermaid-container {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+}
+
+.mermaid-container > pre {
+    display: block;
+    width: 100%;
+}
+
+.mermaid-container > pre > svg {
+    height: 500px;
+    width: 100%;
+    max-width: 100% !important;
+}
+
+.mermaid-fullscreen-btn {
+    width: 28px;
+    height: 28px;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    color: #333;
+}
+
+.mermaid-fullscreen-btn:hover {
+    opacity: 100% !important;
+    background: rgba(255, 255, 255, 1);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+    transform: scale(1.1);
+}
+
+.mermaid-fullscreen-btn.dark-theme {
+    background: rgba(50, 50, 50, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #e0e0e0;
+}
+
+.mermaid-fullscreen-btn.dark-theme:hover {
+    background: rgba(60, 60, 60, 1);
+    box-shadow: 0 3px 10px rgba(255, 255, 255, 0.2);
+}
+
+.mermaid-fullscreen-modal {
+    display: none;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 95vw;
+    height: 100vh;
+    background: rgba(255, 255, 255, 0.98);
+    z-index: 9999;
+    padding: 20px;
+    overflow: auto;
+}
+
+.mermaid-fullscreen-modal.dark-theme {
+    background: rgba(0, 0, 0, 0.98);
+}
+
+.mermaid-fullscreen-modal.active {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mermaid-container-fullscreen {
+    position: relative;
+    width: 95vw;
+    height: 90vh;
+    max-width: 95vw;
+    max-height: 90vh;
+    background: white;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mermaid-container-fullscreen.dark-theme {
+    background: #1a1a1a;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+}
+
+.mermaid-container-fullscreen pre.mermaid {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mermaid-container-fullscreen .mermaid svg {
+    height: 100% !important;
+    width: 100% !important;
+    cursor: grab;
+}
+
+.mermaid-fullscreen-close {
+    position: fixed !important;
+    top: 20px !important;
+    right: 20px !important;
+    width: 40px;
+    height: 40px;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 50%;
+    cursor: pointer;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s;
+    font-size: 24px;
+    line-height: 1;
+    color: #333;
+}
+
+.mermaid-fullscreen-close:hover {
+    background: white;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+    transform: scale(1.1);
+}
+
+.mermaid-fullscreen-close.dark-theme {
+    background: rgba(50, 50, 50, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #e0e0e0;
+}
+
+.mermaid-fullscreen-close.dark-theme:hover {
+    background: rgba(60, 60, 60, 1);
+    box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);
+}
+
+.mermaid-fullscreen-modal .mermaid-fullscreen-btn {
+    display: none !important;
+}`;
+    document.head.appendChild(fullscreenStyle);
+}
+
+// Detect if page has dark background
+const isDarkTheme = () => {
+    // We use a set of heuristics:
+    // 1. Check for common dark mode classes or attributes
+    // 2. Check computed background color brightness
+    if (document.documentElement.classList.contains('dark') ||
+        document.documentElement.getAttribute('data-theme') === 'dark' ||
+        document.body.classList.contains('dark') ||
+        document.body.getAttribute('data-theme') === 'dark') {
+        // console.log("Dark theme detected via class/attribute");
+        return true;
+    }
+    if (document.documentElement.classList.contains('light') ||
+        document.documentElement.getAttribute('data-theme') === 'light' ||
+        document.body.classList.contains('light') ||
+        document.body.getAttribute('data-theme') === 'light') {
+        // console.log("Light theme detected via class/attribute");
+        return false;
+    }
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        // console.log("Dark theme detected via prefers-color-scheme");
+        return true;
+    }
+    const bgColor = window.getComputedStyle(document.body).backgroundColor;
+    const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        // console.log("Background color brightness:", brightness);
+        return brightness < 128;
+    }
+    // console.log("No dark or light theme detected, defaulting to light theme");
+    return false;
+};
+
+let darkTheme = isDarkTheme();
+let modal = null;
+let modalContent = null;
+let previousScrollOffset = [window.scrollX, window.scrollY];
+
+const runMermaid = async (rerun) => {
+    console.log("Running mermaid diagrams, rerun =", rerun);
+    // clear all existing mermaid charts
+    let all_mermaids = document.querySelectorAll(".mermaid");
+
+    if (rerun) {
+        all_mermaids.forEach((el) => {
+            if(!el.hasAttribute("data-original-code")) {
+                // store original code
+                // console.log(`Storing original code for first run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+            if(el.getAttribute("data-processed") === "true") {
+                // remove and restore original
+                el.removeAttribute("data-processed");
+                // console.log(`Restoring original code for re-run: `, el.getAttribute('data-original-code'));
+                el.innerHTML = el.getAttribute('data-original-code');
+            } else {
+                // store original code
+                // console.log(`Storing original code for re-run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+        });
+        await mermaid.run();
+    }
+
+    all_mermaids = document.querySelectorAll(".mermaid");
+    const mermaids_processed = document.querySelectorAll(".mermaid[data-processed='true']");
+
+    if ("False" === "True") {
+        const mermaids_to_add_zoom = -1 === -1 ? all_mermaids.length : -1;
+        if(mermaids_to_add_zoom > 0) {
+            var svgs = d3.selectAll("");
+            if(all_mermaids.length !== mermaids_processed.length) {
+                setTimeout(() => runMermaid(false), 200);
+                return;
+            } else if(svgs.size() !== mermaids_to_add_zoom) {
+                setTimeout(() => runMermaid(false), 200);
+                return;
+            } else {
+                svgs.each(function() {
+                    var svg = d3.select(this);
+                    svg.html("<g class='wrapper'>" + svg.html() + "</g>");
+                    var inner = svg.select("g");
+                    var zoom = d3.zoom().on("zoom", function(event) {
+                        inner.attr("transform", event.transform);
+                    });
+                    svg.call(zoom);
+                });
+            }
+        }
+    } else if(all_mermaids.length !== mermaids_processed.length) {
+        // Wait for mermaid to process all diagrams
+        setTimeout(() => runMermaid(false), 200);
+        return;
+    }
+
+    // Stop here if not adding fullscreen capability
+    if ("True" !== "True") return;
+
+    if (modal !== null ) {
+        // Destroy existing modal
+        modal.remove();
+        modal = null;
+        modalContent = null;
+    }
+
+    modal = document.createElement('div');
+    modal.className = 'mermaid-fullscreen-modal' + (darkTheme ? ' dark-theme' : '');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Fullscreen diagram viewer');
+    modal.innerHTML = `
+        <button class="mermaid-fullscreen-close${darkTheme ? ' dark-theme' : ''}" aria-label="Close fullscreen">✕</button>
+        <div class="mermaid-container-fullscreen${darkTheme ? ' dark-theme' : ''}"></div>
+    `;
+    document.body.appendChild(modal);
+
+    modalContent = modal.querySelector('.mermaid-container-fullscreen');
+    const closeBtn = modal.querySelector('.mermaid-fullscreen-close');
+
+    const closeModal = () => {
+        modal.classList.remove('active');
+        modalContent.innerHTML = '';
+        document.body.style.overflow = ''
+        window.scrollTo({left: previousScrollOffset[0], top: previousScrollOffset[1], behavior: 'instant'});
+    };
+
+    closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modal.classList.contains('active')) {
+            closeModal();
+        }
+    });
+
+    document.querySelectorAll('.mermaid').forEach((mermaidDiv) => {
+        if (mermaidDiv.parentNode.classList.contains('mermaid-container') ||
+            mermaidDiv.closest('.mermaid-fullscreen-modal')) {
+            // Already processed, adjust button class if needed
+            const existingBtn = mermaidDiv.parentNode.querySelector('.mermaid-fullscreen-btn');
+            if (existingBtn) {
+                existingBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+            }
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.className = 'mermaid-container';
+        mermaidDiv.parentNode.insertBefore(container, mermaidDiv);
+        container.appendChild(mermaidDiv);
+
+        const fullscreenBtn = document.createElement('button');
+        fullscreenBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+        fullscreenBtn.setAttribute('aria-label', 'View diagram in fullscreen');
+        fullscreenBtn.textContent = '⛶';
+        fullscreenBtn.style.opacity = '50%';
+
+        // Calculate dynamic position based on diagram's margin and padding
+        const diagramStyle = window.getComputedStyle(mermaidDiv);
+        const marginTop = parseFloat(diagramStyle.marginTop) || 0;
+        const marginRight = parseFloat(diagramStyle.marginRight) || 0;
+        const paddingTop = parseFloat(diagramStyle.paddingTop) || 0;
+        const paddingRight = parseFloat(diagramStyle.paddingRight) || 0;
+        fullscreenBtn.style.top = `${marginTop + paddingTop + 4}px`;
+        fullscreenBtn.style.right = `${marginRight + paddingRight + 4}px`;
+
+        fullscreenBtn.addEventListener('click', () => {
+            previousScrollOffset = [window.scroll, window.scrollY];
+            const clone = mermaidDiv.cloneNode(true);
+            modalContent.innerHTML = '';
+            modalContent.appendChild(clone);
+
+            const svg = clone.querySelector('svg');
+            if (svg) {
+                svg.removeAttribute('width');
+                svg.removeAttribute('height');
+                svg.style.width = '100%';
+                svg.style.height = 'auto';
+                svg.style.maxWidth = '100%';
+                svg.style.sdisplay = 'block';
+
+                if ("False" === "True") {
+                    setTimeout(() => {
+                        const g = svg.querySelector('g');
+                        if (g) {
+                            var svgD3 = d3.select(svg);
+                            svgD3.html("<g class='wrapper'>" + svgD3.html() + "</g>");
+                            var inner = svgD3.select("g");
+                            var zoom = d3.zoom().on("zoom", function(event) {
+                                inner.attr("transform", event.transform);
+                            });
+                            svgD3.call(zoom);
+                        }
+                    }, 100);
+                }
+            }
+
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        });
+        container.appendChild(fullscreenBtn);
+    });
+};
+
+const load = async () => {
+    initStyles();
+
+    await runMermaid(true);
+
+    const reRunIfThemeChanges = async () => {
+        const newDarkTheme = isDarkTheme();
+        if (newDarkTheme !== darkTheme) {
+            darkTheme = newDarkTheme;
+            console.log("Theme change detected, re-running mermaid with", darkTheme ? "dark" : "default", "theme");
+            await mermaid.initialize(
+                {...JSON.parse(
+                    `{"startOnLoad": false}`
+                ),
+                ...{ darkMode: darkTheme, theme: darkTheme ? 'dark' : 'default' },
+                }
+            );
+            await runMermaid(true);
+        }
+    };
+
+    // Update theme classes when theme changes
+    const themeObserver = new MutationObserver(reRunIfThemeChanges);
+    themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+    themeObserver.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+};
+
+
+
+
+
+console.log("Initializing mermaid with", darkTheme ? "dark" : "default", "theme");
+mermaid.initialize(
+    {...JSON.parse(
+        `{"startOnLoad": false}`
+    ),
+    ...{ darkMode: darkTheme, theme: darkTheme ? 'dark' : 'default' },
+    }
+);
+
+window.addEventListener("load", load);
+window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/collisions';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
@@ -805,10 +1241,133 @@
                   
   <section id="collisions">
 <span id="id1"></span><h1>Collisions<a class="headerlink" href="#collisions" title="Link to this heading">#</a></h1>
-<p>Newton provides a flexible collision detection system for rigid-rigid and soft-rigid contacts. The pipeline handles broad phase culling, narrow phase contact generation, and filtering.</p>
-<p>Newton’s collision system is also compatible with <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>, replacing MuJoCo’s built-in contact generation to enable advanced contact models (SDF, hydroelastic). See <code class="docutils literal notranslate"><span class="pre">examples/contacts/</span></code> for usage (e.g., <code class="docutils literal notranslate"><span class="pre">example_nut_bolt_hydro.py</span></code>, <code class="docutils literal notranslate"><span class="pre">example_nut_bolt_sdf.py</span></code>).</p>
+<p>Newton provides a GPU-accelerated collision detection system with:</p>
+<ul class="simple">
+<li><p><strong>Full shape-pair coverage</strong> — every shape type collides with every other shape type
+(see <a class="reference internal" href="#shape-compatibility"><span class="std std-ref">Shape Compatibility</span></a>).</p></li>
+<li><p><strong>Mesh-mesh contacts</strong> via precomputed SDFs for O(1) distance queries on complex
+geometry.</p></li>
+<li><p><strong>Hydroelastic contacts</strong> that sample contacts across the contact surface for improved
+fidelity in torsional friction and force distribution, especially in non-convex and
+manipulation scenarios.</p></li>
+<li><p><strong>Drop-in replacement for MuJoCo’s contacts</strong> — use Newton’s pipeline with
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> for advanced contact models (see
+<a class="reference internal" href="#mujoco-warp-integration"><span class="std std-ref">MuJoCo Warp Integration</span></a>).</p></li>
+</ul>
+<p>This page starts with a <a class="reference internal" href="#collision-overview"><span class="std std-ref">conceptual overview</span></a> of how geometry
+representations and narrow phase algorithms combine, then covers each stage in detail.</p>
+<section id="conceptual-overview">
+<span id="collision-overview"></span><h2>Conceptual Overview<a class="headerlink" href="#conceptual-overview" title="Link to this heading">#</a></h2>
+<p>Newton’s collision pipeline runs in two stages: a <strong>broad phase</strong> that quickly
+eliminates shape pairs whose bounding boxes do not overlap, followed by a <strong>narrow
+phase</strong> that computes the actual contact geometry for surviving pairs.</p>
+<p>The narrow phase algorithm used for a given pair depends on how the shapes are
+represented:</p>
+<pre  class="mermaid">
+        ---
+config:
+  theme: forest
+  themeVariables:
+    lineColor: '#76b900'
+
+---
+flowchart LR
+  BP[&quot;Broad Phase&lt;br/&gt;(AABB culling)&quot;] --&gt; Triage
+  subgraph Triage [&quot;Pair Triage&quot;]
+    G1[&quot;Convex / primitive&lt;br/&gt;pairs&quot;]
+    G2[&quot;Mesh pairs&lt;br/&gt;(BVH or SDF)&quot;]
+  end
+  subgraph NP [&quot;Narrow Phase&quot;]
+    A[&quot;MPR / GJK&quot;]
+    B[&quot;Distance queries&lt;br/&gt;+ contact reduction&quot;]
+    C[&quot;Hydroelastic&lt;br/&gt;+ contact reduction&quot;]
+  end
+  G1 --&gt; A --&gt; Contacts
+  G2 --&gt; B --&gt; Contacts
+  G2 -.-&gt;|&quot;both shapes&lt;br/&gt;hydroelastic&quot;| C --&gt; Contacts
+    </pre><p><strong>Geometry representations</strong></p>
+<ol class="arabic simple">
+<li><p><strong>Convex hulls and primitives</strong> — sphere, box, capsule, cylinder, cone, ellipsoid,
+and convex mesh shapes expose canonical support functions. These feed directly into
+the <strong>MPR/GJK</strong> narrow phase which produces contact points without further reduction.
+See <a class="reference internal" href="#narrow-phase"><span class="std std-ref">Narrow Phase Algorithms</span></a>.</p></li>
+<li><p><strong>Live BVH queries</strong> — triangle meshes that do <em>not</em> have a precomputed SDF are
+queried through Warp’s BVH (Bounding Volume Hierarchy). This path computes on-the-fly
+distance queries and generates contacts with optional contact reduction. It works out
+of the box but can be slow for high-triangle-count meshes. Hydroelastic contacts are
+<strong>not</strong> available on this path. See <a class="reference internal" href="#mesh-collisions"><span class="std std-ref">Mesh Collision Handling</span></a>.</p></li>
+<li><p><strong>Precomputed SDFs</strong> — calling <code class="docutils literal notranslate"><span class="pre">mesh.build_sdf(...)</span></code> on a mesh precomputes a
+signed distance field that provides O(1) distance lookups. Primitive shapes can also
+generate SDF grids via <code class="docutils literal notranslate"><span class="pre">ShapeConfig</span></code> SDF parameters (see <a class="reference internal" href="#shape-configuration"><span class="std std-ref">Shape Configuration</span></a>).
+This path supports both <strong>distance-query</strong> and <strong>hydroelastic</strong> contact generation
+(with contact reduction). Hydroelastic contacts require SDF on <em>both</em> shapes in a
+pair. See <a class="reference internal" href="#mesh-collisions"><span class="std std-ref">Mesh Collision Handling</span></a> and <a class="reference internal" href="#hydroelastic-contacts"><span class="std std-ref">Hydroelastic Contacts</span></a>.</p></li>
+</ol>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Contact reduction</strong> applies to the SDF-based and hydroelastic paths where many raw
+contacts are generated from distance field queries. The direct MPR/GJK path for
+convex pairs produces a small number of contacts and does not require reduction. See
+<a class="reference internal" href="#contact-reduction"><span class="std std-ref">Contact Reduction</span></a>.</p>
+</div>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>For scenes with expensive collision (SDF or hydroelastic), running <code class="docutils literal notranslate"><span class="pre">collide</span></code> once
+per frame instead of every substep can significantly improve performance. See
+<a class="reference internal" href="#common-patterns"><span class="std std-ref">Common Patterns</span></a> for the different collision-frequency patterns.</p>
+</div>
+<section id="contact-geometry">
+<span id="contact-model"></span><h3>Contact Geometry<a class="headerlink" href="#contact-geometry" title="Link to this heading">#</a></h3>
+<p>The output of the narrow phase is a set of <strong>contacts</strong>: lightweight geometric
+descriptors that decouple the solver from the underlying shape complexity. A mesh may
+contain hundreds of thousands of triangles, but the collision pipeline distills the
+interaction into a manageable number of contacts that the solver can process efficiently.</p>
+<p>Each contact carries the following geometric data:</p>
+<figure class="align-center" id="id17">
+<a class="reference internal image-reference" href="../_images/contact_model.svg"><img alt="Contact geometry: normal, contact points, contact distance" src="../_images/contact_model.svg" style="width: 70%;" />
+</a>
+<figcaption>
+<p><span class="caption-text">A contact between two shapes (A and B). The <strong>contact normal</strong> (blue, unit length)
+points from shape A to shape B. <strong>Body-frame contact points</strong> (yellow) are stored in
+each body’s local frame. The <strong>contact midpoint</strong> (red) — the average of the two
+world-space contact points — is not stored but is useful for visualization and
+debugging. The <strong>contact distance</strong> encodes the signed separation or penetration depth.</span><a class="headerlink" href="#id17" title="Link to this image">#</a></p>
+</figcaption>
+</figure>
+<ul class="simple">
+<li><p><strong>Contact normal</strong> (world frame) — a unit vector pointing from shape A toward shape B.</p></li>
+<li><p><strong>Contact points</strong> (body frame) — the contact location on each shape
+(<code class="docutils literal notranslate"><span class="pre">rigid_contact_point0/1</span></code>), stored in the parent body’s local coordinate frame.</p></li>
+<li><p><strong>Contact distance</strong> — the signed separation between the two contact points along the
+normal. Negative values indicate penetration.</p></li>
+</ul>
+<p>Because contacts are self-contained geometric objects, the solver never needs to query
+mesh triangles or SDF grids — it only works with the contact arrays stored in
+<a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a>. See <a class="reference internal" href="#contact-generation"><span class="std std-ref">Contact Data</span></a> for the full data layout.</p>
+</section>
+<section id="mujoco-warp-integration">
+<span id="id2"></span><h3>MuJoCo Warp Integration<a class="headerlink" href="#mujoco-warp-integration" title="Link to this heading">#</a></h3>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> (the MuJoCo Warp backend) ships with its own
+built-in collision pipeline that handles convex primitive contacts. For many use cases
+this is sufficient and requires no extra setup.</p>
+<p>Newton’s collision pipeline can also <strong>replace</strong> MuJoCo’s contact generation, enabling
+SDF-based mesh-mesh contacts and hydroelastic contacts that MuJoCo’s built-in pipeline
+does not support.</p>
+<p>Examples:</p>
+<ul class="simple">
+<li><p><strong>Hydroelastic mesh contacts</strong> —
+<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_nut_bolt_hydro.py">newton/examples/contacts/example_nut_bolt_hydro.py</a></p></li>
+<li><p><strong>SDF mesh contacts</strong> —
+<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_nut_bolt_sdf.py">newton/examples/contacts/example_nut_bolt_sdf.py</a></p></li>
+<li><p><strong>Robot manipulation with SDF</strong> —
+<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_brick_stacking.py">newton/examples/contacts/example_brick_stacking.py</a></p></li>
+</ul>
+<p>See <a class="reference internal" href="#solver-integration"><span class="std std-ref">Solver Integration</span></a> for the full code pattern showing how to configure
+this.</p>
+</section>
+</section>
 <section id="collision-pipeline">
-<span id="id2"></span><h2>Collision Pipeline<a class="headerlink" href="#collision-pipeline" title="Link to this heading">#</a></h2>
+<span id="id3"></span><h2>Collision Pipeline<a class="headerlink" href="#collision-pipeline" title="Link to this heading">#</a></h2>
 <p>Newton’s collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See <a class="reference internal" href="#collision-pipeline-details"><span class="std std-ref">Broad Phase and Shape Compatibility</span></a> for details.</p>
 <p>Basic usage:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Default: creates CollisionPipeline with EXPLICIT broad phase (precomputed pairs)</span>
@@ -828,7 +1387,7 @@
 </div>
 </section>
 <section id="quick-start">
-<span id="id3"></span><h2>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">#</a></h2>
+<span id="id4"></span><h2>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">#</a></h2>
 <p>A minimal end-to-end example that creates shapes, runs collision detection, and steps the
 solver (see also the <a class="reference internal" href="../tutorials/00_introduction.html"><span class="doc">Introduction tutorial</span></a> and
 <code class="docutils literal notranslate"><span class="pre">example_basic_shapes.py</span></code> — <a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_shapes.py">newton/examples/basic/example_basic_shapes.py</a>):</p>
@@ -861,7 +1420,7 @@ solver (see also the <a class="reference internal" href="../tutorials/00_introdu
 </div>
 </section>
 <section id="supported-shape-types">
-<span id="id4"></span><h2>Supported Shape Types<a class="headerlink" href="#supported-shape-types" title="Link to this heading">#</a></h2>
+<span id="id5"></span><h2>Supported Shape Types<a class="headerlink" href="#supported-shape-types" title="Link to this heading">#</a></h2>
 <p>Newton supports the following geometry types via <a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType" title="newton.GeoType"><code class="xref py py-class docutils literal notranslate"><span class="pre">GeoType</span></code></a>:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
@@ -934,7 +1493,7 @@ an SDF explicitly with <code class="docutils literal notranslate"><span class="p
 <p>Contacts are generated between shapes, not bodies. Depending on the type of solver, the motion of the bodies is affected by forces or constraints that resolve the penetrations between their attached shapes.</p>
 </section>
 <section id="collision-filtering">
-<span id="id5"></span><h2>Collision Filtering<a class="headerlink" href="#collision-filtering" title="Link to this heading">#</a></h2>
+<span id="id6"></span><h2>Collision Filtering<a class="headerlink" href="#collision-filtering" title="Link to this heading">#</a></h2>
 <p>The collision pipeline uses filtering rules based on world indices and collision groups.</p>
 <section id="world-indices">
 <span id="world-ids"></span><h3>World Indices<a class="headerlink" href="#world-indices" title="Link to this heading">#</a></h3>
@@ -984,7 +1543,7 @@ out many copies of a template environment builder into separate worlds in one ca
 <p>World indices are stored in <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_world</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.body_world</span></code>, etc.</p>
 </section>
 <section id="collision-groups">
-<span id="id6"></span><h3>Collision Groups<a class="headerlink" href="#collision-groups" title="Link to this heading">#</a></h3>
+<span id="id7"></span><h3>Collision Groups<a class="headerlink" href="#collision-groups" title="Link to this heading">#</a></h3>
 <p>Collision groups control which shapes collide within the same world:</p>
 <ul class="simple">
 <li><p><strong>Group 0</strong>: Collisions disabled</p></li>
@@ -1203,7 +1762,7 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 </pre></div>
 </div>
 <section id="shape-compatibility">
-<span id="id7"></span><h3>Shape Compatibility<a class="headerlink" href="#shape-compatibility" title="Link to this heading">#</a></h3>
+<span id="id8"></span><h3>Shape Compatibility<a class="headerlink" href="#shape-compatibility" title="Link to this heading">#</a></h3>
 <p>Shape compatibility summary (rigid + soft particle-shape):</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
@@ -1417,21 +1976,21 @@ often be improved by attaching a precomputed SDF to the mesh (<code class="docut
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><code class="docutils literal notranslate"><span class="pre">Particle</span></code> in this table refers to soft particle-shape contacts generated by
-<code class="docutils literal notranslate"><span class="pre">create_soft_contacts</span></code>. These contacts additionally require the shape to have
-particle collision enabled (<code class="docutils literal notranslate"><span class="pre">ShapeFlags.COLLIDE_PARTICLES</span></code> /
-<code class="docutils literal notranslate"><span class="pre">ShapeConfig.has_particle_collision</span></code>). For examples, see cloth and cable
-scenes that use the collision pipeline for particle-shape contacts.</p>
+<p><code class="docutils literal notranslate"><span class="pre">Particle</span></code> in this table refers to soft particle-shape contacts generated
+automatically by the collision pipeline. These contacts additionally require
+the shape to have particle collision enabled
+(<code class="docutils literal notranslate"><span class="pre">ShapeFlags.COLLIDE_PARTICLES</span></code> / <code class="docutils literal notranslate"><span class="pre">ShapeConfig.has_particle_collision</span></code>).
+For examples, see cloth and cable scenes that use the collision pipeline for
+particle-shape contacts.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p><strong>Heightfield representation:</strong> A heightfield (<code class="docutils literal notranslate"><span class="pre">HFIELD</span></code>) stores a regular 2D grid
-of elevation samples (<code class="docutils literal notranslate"><span class="pre">HeightfieldData</span></code> + normalized elevation values). For rigid
-contacts, Newton uses dedicated heightfield narrow-phase routes:
-heightfield-vs-convex uses per-cell triangle GJK/MPR, while mesh-vs-heightfield
-routes through the mesh/SDF path with on-the-fly triangle extraction from the grid.
-For soft contacts, <code class="docutils literal notranslate"><span class="pre">create_soft_contacts</span></code> samples the heightfield signed distance
-and normal directly.</p>
+of elevation samples. For rigid contacts, Newton uses dedicated heightfield
+narrow-phase routes: heightfield-vs-convex uses per-cell triangle GJK/MPR, while
+mesh-vs-heightfield routes through the mesh/SDF path with on-the-fly triangle
+extraction from the grid. For soft contacts, the collision pipeline automatically
+samples the heightfield signed distance and normal.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -1444,11 +2003,21 @@ and provide O(1) distance queries.</p>
 </section>
 <section id="narrow-phase-algorithms">
 <span id="narrow-phase"></span><h2>Narrow Phase Algorithms<a class="headerlink" href="#narrow-phase-algorithms" title="Link to this heading">#</a></h2>
-<p>After broad phase identifies candidate pairs, the narrow phase generates contact points.</p>
-<p><strong>MPR (Minkowski Portal Refinement)</strong></p>
-<p>The primary algorithm for convex shape pairs. Uses support mapping functions to find the closest points between shapes via Minkowski difference sampling. Works with all convex primitives (sphere, box, capsule, cylinder, cone, ellipsoid) and convex meshes.</p>
-<p><strong>Multi-contact Generation</strong></p>
-<p>For shape pairs, multiple contact points are generated for stable stacking and resting contacts. The collision pipeline estimates buffer sizes based on the model; you can override this value with <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> when instantiating the pipeline.</p>
+<p>After broad phase identifies candidate pairs, the narrow phase generates contact points.
+The algorithm used depends on the shape types in each pair.</p>
+<section id="convex-primitive-contacts">
+<span id="id9"></span><h3>Convex Primitive Contacts<a class="headerlink" href="#convex-primitive-contacts" title="Link to this heading">#</a></h3>
+<p><strong>MPR (Minkowski Portal Refinement) and GJK</strong></p>
+<p>MPR is the primary algorithm for convex shape pairs. It uses support mapping functions to
+find the closest points between shapes via Minkowski difference sampling. Works with all
+convex primitives (sphere, box, capsule, cylinder, cone, ellipsoid) and convex meshes.
+Newton uses MPR for penetration depth computation (not EPA); GJK handles the
+separated-shapes distance query.</p>
+<p><strong>Multi-contact generation</strong></p>
+<p>For convex primitive pairs, multiple contact points are generated for stable stacking and
+resting contacts. The collision pipeline estimates buffer sizes based on the model; you
+can override this value with <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> when instantiating the pipeline.</p>
+</section>
 <section id="mesh-collision-handling">
 <span id="mesh-collisions"></span><h3>Mesh Collision Handling<a class="headerlink" href="#mesh-collision-handling" title="Link to this heading">#</a></h3>
 <p>Mesh collisions use different strategies depending on the pair type:</p>
@@ -1521,7 +2090,7 @@ visual-only shape alongside the simplified collision shape.</p>
 </div>
 </section>
 <section id="contact-reduction">
-<span id="id8"></span><h3>Contact Reduction<a class="headerlink" href="#contact-reduction" title="Link to this heading">#</a></h3>
+<span id="id10"></span><h3>Contact Reduction<a class="headerlink" href="#contact-reduction" title="Link to this heading">#</a></h3>
 <p>Contact reduction is enabled by default. For scenes with many mesh-mesh interactions that generate thousands of contacts, reduction selects a significantly smaller representative set that maintains stable contact behavior while improving solver performance.</p>
 <p><strong>How it works:</strong></p>
 <ol class="arabic simple">
@@ -1575,7 +2144,7 @@ geometric area. This provides a floor value so they still generate repulsive for
 </section>
 </section>
 <section id="shape-configuration">
-<span id="id9"></span><h2>Shape Configuration<a class="headerlink" href="#shape-configuration" title="Link to this heading">#</a></h2>
+<span id="id11"></span><h2>Shape Configuration<a class="headerlink" href="#shape-configuration" title="Link to this heading">#</a></h2>
 <p>Shape collision behavior is controlled via <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShapeConfig</span></code></a>:</p>
 <p><strong>Collision control:</strong></p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1655,13 +2224,13 @@ geometric area. This provides a floor value so they still generate repulsive for
 <p>This keeps broad-phase culling and narrow-phase contact generation consistent.
 The solver enforces <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code>, so objects at rest settle with surfaces separated
 by <code class="docutils literal notranslate"><span class="pre">margin_a</span> <span class="pre">+</span> <span class="pre">margin_b</span></code>.</p>
-<figure class="align-center" id="id15">
+<figure class="align-center" id="id18">
 <a class="reference internal image-reference" href="../_images/margin_and_gap.svg"><img alt="Margin and gap contact generation phases" src="../_images/margin_and_gap.svg" style="width: 90%;" />
 </a>
 <figcaption>
 <p><span class="caption-text">Margin sets contact location (surface offset), while gap adds speculative
 detection distance on top of margin. Left: no contact generated. Middle:
-contact generated but not yet active. Right: active contact support.</span><a class="headerlink" href="#id15" title="Link to this image">#</a></p>
+contact generated but not yet active. Right: active contact support.</span><a class="headerlink" href="#id18" title="Link to this image">#</a></p>
 </figcaption>
 </figure>
 <p><strong>SDF configuration (primitive generation defaults):</strong></p>
@@ -1709,7 +2278,7 @@ options in one call:</p>
 <p>The builder’s <code class="docutils literal notranslate"><span class="pre">rigid_gap</span></code> (default 0.1) applies to shapes without explicit <code class="docutils literal notranslate"><span class="pre">gap</span></code>. Alternatively, use <code class="docutils literal notranslate"><span class="pre">builder.default_shape_cfg.gap</span></code>.</p>
 </section>
 <section id="common-patterns">
-<span id="id10"></span><h2>Common Patterns<a class="headerlink" href="#common-patterns" title="Link to this heading">#</a></h2>
+<span id="id12"></span><h2>Common Patterns<a class="headerlink" href="#common-patterns" title="Link to this heading">#</a></h2>
 <p><strong>Creating static/ground geometry</strong></p>
 <p>Use <code class="docutils literal notranslate"><span class="pre">body=-1</span></code> to attach shapes to the static world frame:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
@@ -1798,16 +2367,20 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <td><p>Indices of colliding shapes.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_point0</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_contact_point1</span></code></p></td>
-<td><p>World-space contact points on each shape.</p></td>
+<td><p>Contact point on each shape (body frame). This is the narrow-phase contact
+location used by the solver for the normal constraint and lever-arm computation.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_offset0</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_contact_offset1</span></code></p></td>
-<td><p>Contact point offsets in body-local space.</p></td>
+<td><p>Body-frame friction-anchor offset per shape, equal to the contact normal scaled
+by <code class="docutils literal notranslate"><span class="pre">effective_radius</span> <span class="pre">+</span> <span class="pre">margin</span></code>. Added to the contact point to form a shifted
+friction anchor that accounts for rotational effects of finite contact thickness
+in tangential friction calculations.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_normal</span></code></p></td>
-<td><p>Contact normal direction (from shape0 to shape1).</p></td>
+<td><p>Contact normal, pointing from shape 0 toward shape 1 (world frame).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_margin0</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_contact_margin1</span></code></p></td>
-<td><p>Shape margin offsets at each contact point.</p></td>
+<td><p>Per-shape thickness: effective radius + margin (scalar).</p></td>
 </tr>
 </tbody>
 </table>
@@ -1909,7 +2482,7 @@ pipeline. When <code class="docutils literal notranslate"><span class="pre">cont
 </div>
 </section>
 <section id="hydroelastic-contacts">
-<span id="id11"></span><h2>Hydroelastic Contacts<a class="headerlink" href="#hydroelastic-contacts" title="Link to this heading">#</a></h2>
+<span id="id13"></span><h2>Hydroelastic Contacts<a class="headerlink" href="#hydroelastic-contacts" title="Link to this heading">#</a></h2>
 <p>Hydroelastic contacts are an <strong>opt-in</strong> feature that generates contact areas (not just points) using SDF-based collision detection. This provides more realistic and continuous force distribution, particularly useful for robotic manipulation scenarios.</p>
 <p><strong>Default behavior (hydroelastic disabled):</strong></p>
 <p>When <code class="docutils literal notranslate"><span class="pre">is_hydroelastic=False</span></code> (default), shapes use <strong>hard SDF contacts</strong> - point contacts computed from SDF distance queries. This is efficient and suitable for most rigid body simulations.</p>
@@ -2091,7 +2664,7 @@ behavior.</p>
 <p>See <a class="reference internal" href="custom_attributes.html"><span class="doc">Custom Attributes</span></a> and <a class="reference internal" href="usd_parsing.html"><span class="doc">USD Parsing and Schema Resolver System</span></a> for details.</p>
 </section>
 <section id="performance">
-<span id="id12"></span><h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
+<span id="id14"></span><h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Use <strong>EXPLICIT</strong> (default) when collision pairs are limited (&lt;100 shapes with most pairs filtered)</p></li>
 <li><p>Use <strong>SAP</strong> for &gt;100 shapes with spatial coherence</p></li>
@@ -2102,7 +2675,7 @@ behavior.</p>
 <li><p>Contact reduction is enabled by default for mesh-heavy scenes</p></li>
 <li><p>Pass <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> to <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> to limit memory in complex scenes</p></li>
 <li><p>Use <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.approximate_meshes" title="newton.ModelBuilder.approximate_meshes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">approximate_meshes()</span></code></a> to replace detailed visual meshes with convex hulls for collision</p></li>
-<li><p>Use <code class="docutils literal notranslate"><span class="pre">viewer.log_contacts(contacts)</span></code> in the render loop to visualize contact points and normals for debugging</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">viewer.log_contacts(contacts,</span> <span class="pre">state)</span></code> in the render loop to visualize contact points and normals for debugging</p></li>
 </ul>
 <p><strong>Troubleshooting</strong></p>
 <ul class="simple">
@@ -2129,7 +2702,7 @@ Place <code class="docutils literal notranslate"><span class="pre">collide</span
 </div>
 </section>
 <section id="solver-integration">
-<span id="id13"></span><h2>Solver Integration<a class="headerlink" href="#solver-integration" title="Link to this heading">#</a></h2>
+<span id="id15"></span><h2>Solver Integration<a class="headerlink" href="#solver-integration" title="Link to this heading">#</a></h2>
 <p>Newton’s collision pipeline works with all built-in solvers
 (<a class="reference internal" href="../api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a>, <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a>,
 <a class="reference internal" href="../api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>, <a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>,
@@ -2138,7 +2711,7 @@ object to <a class="reference internal" href="../api/_generated/newton.solvers.S
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
 </pre></div>
 </div>
-<p><strong>MuJoCo solver</strong></p>
+<p><strong>MuJoCo solver</strong> (see also <a class="reference internal" href="#mujoco-warp-integration"><span class="std std-ref">MuJoCo Warp Integration</span></a>)</p>
 <p>By default (<code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts=True</span></code>), <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> runs its own
 contact generation and the <code class="docutils literal notranslate"><span class="pre">contacts</span></code> argument to <code class="docutils literal notranslate"><span class="pre">step</span></code> should be <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p>
 <p>To replace MuJoCo’s contact generation with Newton’s pipeline — enabling advanced contact models
@@ -2158,7 +2731,7 @@ contact generation and the <code class="docutils literal notranslate"><span clas
 </div>
 </section>
 <section id="advanced-customization">
-<span id="id14"></span><h2>Advanced Customization<a class="headerlink" href="#advanced-customization" title="Link to this heading">#</a></h2>
+<span id="id16"></span><h2>Advanced Customization<a class="headerlink" href="#advanced-customization" title="Link to this heading">#</a></h2>
 <p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> covers the vast majority of use cases, but Newton also
 exposes the underlying broad phase, narrow phase, and primitive collision building blocks
 for users who need full control — for example, writing contacts in a custom format,
@@ -2220,12 +2793,12 @@ and <code class="docutils literal notranslate"><span class="pre">sort_type</span
 generates contacts:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">NarrowPhase</span>
 
-<span class="n">np</span> <span class="o">=</span> <span class="n">NarrowPhase</span><span class="p">(</span>
+<span class="n">narrow_phase</span> <span class="o">=</span> <span class="n">NarrowPhase</span><span class="p">(</span>
     <span class="n">max_candidate_pairs</span><span class="o">=</span><span class="mi">10000</span><span class="p">,</span>
     <span class="n">reduce_contacts</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
     <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
 <span class="p">)</span>
-<span class="n">np</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+<span class="n">narrow_phase</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
     <span class="n">candidate_pair</span><span class="o">=</span><span class="n">candidate_pairs</span><span class="p">,</span>
     <span class="n">candidate_pair_count</span><span class="o">=</span><span class="n">pair_count</span><span class="p">,</span>
     <span class="n">shape_types</span><span class="o">=...</span><span class="p">,</span>
@@ -2271,8 +2844,12 @@ collision and signed distance.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">create_solve_convex_multi_contact(support_func,</span> <span class="pre">writer_func,</span> <span class="pre">post_process_contact)</span></code>
 — generates a stable multi-contact manifold and writes results through a callback.</p></li>
 </ul>
-<p>These are available from <code class="docutils literal notranslate"><span class="pre">newton._src.geometry</span></code> and are intended for users building
-custom narrow-phase routines.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>These factory functions are internal building blocks available from
+<code class="docutils literal notranslate"><span class="pre">newton._src.geometry</span></code>. They are not part of the public API and may change between
+releases, but are accessible for advanced users building custom narrow-phase routines.</p>
+</div>
 </section>
 <section id="see-also">
 <h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
@@ -2350,6 +2927,11 @@ custom narrow-phase routines.</p>
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#conceptual-overview">Conceptual Overview</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-geometry">Contact Geometry</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mujoco-warp-integration">MuJoCo Warp Integration</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-pipeline">Collision Pipeline</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-start">Quick Start</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-shape-types">Supported Shape Types</a></li>
@@ -2366,6 +2948,7 @@ custom narrow-phase routines.</p>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#narrow-phase-algorithms">Narrow Phase Algorithms</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#convex-primitive-contacts">Convex Primitive Contacts</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mesh-collision-handling">Mesh Collision Handling</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-reduction">Contact Reduction</a></li>
 </ul>
