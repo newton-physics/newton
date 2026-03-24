@@ -1995,6 +1995,7 @@ class ViewerBase(ABC):
                 flags = self.model.particle_flags.numpy()
                 active_mask = (flags & int(newton.ParticleFlags.ACTIVE)) != 0
                 if not active_mask.any():
+                    self.log_points(name="/model/particles", points=None, hidden=True)
                     return
                 if not active_mask.all():
                     points = wp.array(points.numpy()[active_mask], dtype=wp.vec3, device=self.device)
