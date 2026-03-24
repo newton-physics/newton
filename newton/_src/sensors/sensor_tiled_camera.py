@@ -103,7 +103,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         enable_particles: bool = True
         """.. deprecated:: Use ``render_config.enable_particles`` instead."""
 
-    def __init__(self, model: Model, *, config: Config | RenderConfig | None = None):
+    def __init__(self, model: Model, *, config: Config | RenderConfig | None = None, load_textures: bool = True):
         self.model = model
 
         render_config = config
@@ -130,7 +130,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             device=self.model.device,
         )
 
-        self.__render_context.init_from_model(self.model)
+        self.__render_context.init_from_model(self.model, load_textures)
 
         self.utils = self.__render_context.utils
 
