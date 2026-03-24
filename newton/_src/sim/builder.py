@@ -76,32 +76,6 @@ else:
     UsdStage = Any
 
 
-_DEFAULT_NON_COLLIDING_SHAPE_COLOR = (0.5, 0.5, 0.5)
-_DEFAULT_PLANE_SHAPE_COLOR = (0.125, 0.125, 0.15)
-_SHAPE_COLOR_PALETTE = (
-    (68, 119, 170),
-    (102, 204, 238),
-    (34, 136, 51),
-    (204, 187, 68),
-    (238, 102, 119),
-    (170, 51, 119),
-    (187, 187, 187),
-    (238, 153, 51),
-    (0, 153, 136),
-)
-
-
-def _shape_palette_color(index: int) -> tuple[float, float, float]:
-    color = _SHAPE_COLOR_PALETTE[index % len(_SHAPE_COLOR_PALETTE)]
-    return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
-
-
-def _normalize_shape_display_color(color: Vec3 | None) -> tuple[float, float, float] | None:
-    if color is None:
-        return None
-    return (float(color[0]), float(color[1]), float(color[2]))
-
-
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -189,6 +163,24 @@ class ModelBuilder:
         desired.
 
     """
+
+    _DEFAULT_GROUND_PLANE_COLOR = (0.125, 0.125, 0.15)
+    _SHAPE_COLOR_PALETTE = (
+        # Paul Tol - Bright 9
+        (68, 119, 170),  # blue
+        (102, 204, 238),  # cyan
+        (34, 136, 51),  # green
+        (204, 187, 68),  # yellow
+        (238, 102, 119),  # red
+        (170, 51, 119),  # magenta
+        (238, 153, 51),  # orange
+        (0, 153, 136),  # teal
+    )
+
+    @staticmethod
+    def _shape_palette_color(index: int) -> tuple[float, float, float]:
+        color = ModelBuilder._SHAPE_COLOR_PALETTE[index % len(ModelBuilder._SHAPE_COLOR_PALETTE)]
+        return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
 
     @dataclass
     class ActuatorEntry:
@@ -894,8 +886,8 @@ class ModelBuilder:
         """Shape scales accumulated for :attr:`Model.shape_scale`."""
         self.shape_source: list[Any] = []
         """Source geometry objects accumulated for :attr:`Model.shape_source`."""
-        self.shape_color: list[tuple[float, float, float] | None] = []
-        """Optional explicit display colors accumulated for :attr:`Model.shape_color`."""
+        self.shape_color: list[Vec3] = []
+        """Resolved display colors accumulated for :attr:`Model.shape_color`."""
         self.shape_is_solid: list[bool] = []
         """Solid-vs-hollow flags accumulated for :attr:`Model.shape_is_solid`."""
         self.shape_margin: list[float] = []
@@ -1271,16 +1263,6 @@ class ModelBuilder:
         """
         key = attribute.key
 
-        if (
-            attribute.namespace is None
-            and attribute.assignment == Model.AttributeAssignment.MODEL
-            and attribute.name == "shape_color"
-        ):
-            raise ValueError(
-                "Custom attribute 'shape_color' is reserved for the built-in per-shape display color. "
-                "Use a different attribute name or place the attribute in a namespace."
-            )
-
         existing = self.custom_attributes.get(key)
         if existing:
             # validate that specification matches exactly
@@ -1375,26 +1357,6 @@ class ModelBuilder:
             Custom attributes matching the requested frequencies.
         """
         return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
-
-    def _resolve_shape_display_color(self, shape: int) -> tuple[float, float, float]:
-        explicit_color = self.shape_color[shape]
-        if explicit_color is not None:
-            return explicit_color
-
-        shape_type = self.shape_type[shape]
-        shape_src = self.shape_source[shape]
-        if shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and shape_src is not None:
-            mesh_color = _normalize_shape_display_color(getattr(shape_src, "color", None))
-            if mesh_color is not None:
-                return mesh_color
-
-        if shape_type == GeoType.PLANE:
-            return _DEFAULT_PLANE_SHAPE_COLOR
-
-        if (self.shape_flags[shape] & int(ShapeFlags.COLLIDE_SHAPES)) == 0:
-            return _DEFAULT_NON_COLLIDING_SHAPE_COLOR
-
-        return _shape_palette_color(shape)
 
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
@@ -5249,11 +5211,20 @@ class ModelBuilder:
             shape_flags &= (
                 ~ShapeFlags.HYDROELASTIC
             )  # Falling back to mesh/primitive collisions for plane and hfield shapes
+
+        if GeoType(type) in (GeoType.MESH, GeoType.CONVEX_MESH) and src is not None:
+            color = getattr(src, "color", None)
+
+        if color is None:
+            resolved_color = ModelBuilder._shape_palette_color(shape)
+        else:
+            resolved_color = color
+
         self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
-        self.shape_scale.append((scale[0], scale[1], scale[2]))
+        self.shape_scale.append((float(scale[0]), float(scale[1]), float(scale[2])))
         self.shape_source.append(src)
-        self.shape_color.append(_normalize_shape_display_color(color))
+        self.shape_color.append(resolved_color)
         self.shape_margin.append(cfg.margin)
         self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
@@ -5330,7 +5301,7 @@ class ModelBuilder:
             length: The visual/collision extent of the plane along its local Y-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             body: The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default plane display color.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5369,9 +5340,8 @@ class ModelBuilder:
         self,
         height: float = 0.0,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = _DEFAULT_GROUND_PLANE_COLOR,
         label: str | None = None,
-        *,
-        color: Vec3 | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
 
@@ -5379,7 +5349,7 @@ class ModelBuilder:
             height: The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default plane display color.
+            color: Optional display RGB color with values in [0, 1]. Uses the default ground plane display color.
 
         Returns:
             The index of the newly added shape.
@@ -9482,8 +9452,7 @@ class ModelBuilder:
             m.shape_world = wp.array(self.shape_world, dtype=wp.int32)
 
             m.shape_source = self.shape_source  # used for rendering
-            resolved_shape_colors = [self._resolve_shape_display_color(shape) for shape in range(self.shape_count)]
-            m.shape_color = wp.array(resolved_shape_colors, dtype=wp.vec3)
+            m.shape_color = wp.array(self.shape_color, dtype=wp.vec3)
 
             m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
