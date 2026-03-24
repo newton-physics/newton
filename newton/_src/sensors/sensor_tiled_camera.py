@@ -18,7 +18,7 @@ from .warp_raytrace import (
 )
 
 
-class DeprecatedFields(type):
+class _SensorTiledCameraMeta(type):
     @property
     def RenderContext(cls) -> type[RenderContext]:
         warnings.warn(
@@ -29,7 +29,7 @@ class DeprecatedFields(type):
         return RenderContext
 
 
-class SensorTiledCamera(metaclass=DeprecatedFields):
+class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 
     Renders up to five image channels per (world, camera) pair:
