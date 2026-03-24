@@ -2094,7 +2094,7 @@ visual-only shape alongside the simplified collision shape.</p>
 <p>Contact reduction is enabled by default. For scenes with many mesh-mesh interactions that generate thousands of contacts, reduction selects a significantly smaller representative set that maintains stable contact behavior while improving solver performance.</p>
 <p><strong>How it works:</strong></p>
 <ol class="arabic simple">
-<li><p>Contacts are binned by normal direction (20 icosahedron face directions)</p></li>
+<li><p>Contacts are binned by normal direction (polyhedron face directions)</p></li>
 <li><p>Within each bin, contacts are scored by spatial distribution and penetration depth</p></li>
 <li><p>Representative contacts are selected to preserve coverage and depth cues</p></li>
 </ol>
