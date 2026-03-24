@@ -21,8 +21,6 @@
 #
 # Press "p" to reset the robot.
 # Press "i", "j", "k", "l", "u", "o" to move the robot.
-# Press "x" to toggle third-person camera follow mode.
-# In follow mode, left-drag to orbit; press SHIFT to snap behind, CTRL to snap to front.
 # Run this example with:
 # python -m newton.examples robot_policy --robot g1_29dof
 # python -m newton.examples robot_policy --robot g1_23dof
@@ -653,18 +651,6 @@ class Example:
         # Track if camera has been set in first render
         self._camera_set_in_render = False
 
-        # Third-person follow camera state
-        self._follow_cam_active = False
-        self._follow_cam_pos: np.ndarray | None = None  # smoothed robot position (orbit centre)
-        self._follow_cam_yaw: float = 0.0               # smoothed robot yaw in radians
-        self._orbit_yaw_offset: float = 0.0             # accumulated mouse-drag orbit offset (degrees)
-        self._orbit_pitch_offset: float = 0.0           # accumulated mouse-drag pitch offset (degrees)
-        self._orbit_last_yaw: float = 0.0               # camera.yaw stored after last set_camera call
-        self._orbit_last_pitch: float = 0.0             # camera.pitch stored after last set_camera call
-        self._follow_key_prev = False
-        self._snap_behind_key_prev = False
-        self._snap_front_key_prev = False
-
         # Force-initialize Newton's collision pipeline now, before CUDA graph capture.
         self.model.collide(self.state_0, self.contacts)
 
@@ -719,11 +705,6 @@ class Example:
         # Recompute forward kinematics to refresh derived state.
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.state_1.joint_q, self.state_1.joint_qd, self.state_1)
-        # Clear follow-camera smoothing so it snaps to the reset position.
-        self._follow_cam_pos = None
-        self._follow_cam_yaw = 0.0
-        self._orbit_yaw_offset = 0.0
-        self._orbit_pitch_offset = 0.0
 
     def step(self):
         # Build command from viewer keyboard
@@ -739,31 +720,6 @@ class Example:
             if reset_down and not self._reset_key_prev:
                 self.reset()
             self._reset_key_prev = reset_down
-
-            # Toggle third-person follow camera when 'X' is pressed (edge-triggered)
-            follow_down = bool(self.viewer.is_key_down("x"))
-            if follow_down and not self._follow_key_prev:
-                self._follow_cam_active = not self._follow_cam_active
-                if not self._follow_cam_active:
-                    self._follow_cam_pos = None  # clear smoothing state on exit
-                    self._follow_cam_yaw = 0.0
-                    self._orbit_yaw_offset = 0.0
-                    self._orbit_pitch_offset = 0.0
-            self._follow_key_prev = follow_down
-
-            # SHIFT → snap behind robot; CTRL → snap to front (both edge-triggered)
-            if self._follow_cam_active:
-                shift_down = bool(self.viewer.is_key_down("shift"))
-                if shift_down and not self._snap_behind_key_prev:
-                    self._orbit_yaw_offset = 0.0
-                    self._orbit_pitch_offset = 0.0
-                self._snap_behind_key_prev = shift_down
-
-                ctrl_down = bool(self.viewer.is_key_down("ctrl"))
-                if ctrl_down and not self._snap_front_key_prev:
-                    self._orbit_yaw_offset = 180.0
-                    self._orbit_pitch_offset = 0.0
-                self._snap_front_key_prev = ctrl_down
 
         obs = compute_obs(
             self.act,
@@ -790,64 +746,9 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    # --- third-person camera constants ---
-    _FOLLOW_DIST      = 3.0   # metres from robot
-    _FOLLOW_HEIGHT    = 1.5   # metres above robot root
-    _FOLLOW_PITCH     = -15.0 # default pitch in degrees
-    _FOLLOW_POS_ALPHA = 0.05  # position smoothing (smaller = more stable)
-    _FOLLOW_YAW_ALPHA = 0.02  # yaw smoothing (slow to suppress body wobble)
-
-    def _update_follow_camera(self):
-        """Orbit camera: follows the robot, mouse left-drag to orbit 360°."""
-        joint_q = self.state_0.joint_q.numpy()
-        rx, ry, rz = joint_q[0], joint_q[1], joint_q[2]
-        qx, qy, qz, qw = joint_q[3], joint_q[4], joint_q[5], joint_q[6]
-
-        robot_yaw_rad = np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
-
-        if self._follow_cam_pos is None:
-            # First frame: snap to robot position and zero orbit offset
-            self._follow_cam_pos = np.array([rx, ry, rz], dtype=np.float32)
-            self._follow_cam_yaw = robot_yaw_rad
-            self._orbit_yaw_offset = 0.0
-            self._orbit_pitch_offset = 0.0
-            if hasattr(self.viewer, "camera"):
-                self._orbit_last_yaw = self.viewer.camera.yaw
-                self._orbit_last_pitch = self.viewer.camera.pitch
-        else:
-            # Accumulate mouse-drag deltas as orbit offsets
-            if hasattr(self.viewer, "camera"):
-                dyaw = (self.viewer.camera.yaw - self._orbit_last_yaw + 180.0) % 360.0 - 180.0
-                dpitch = self.viewer.camera.pitch - self._orbit_last_pitch
-                self._orbit_yaw_offset += dyaw
-                self._orbit_pitch_offset = max(-70.0, min(70.0, self._orbit_pitch_offset + dpitch))
-
-            # Smooth-track robot position and heading
-            dyaw = (robot_yaw_rad - self._follow_cam_yaw + np.pi) % (2 * np.pi) - np.pi
-            self._follow_cam_yaw += self._FOLLOW_YAW_ALPHA * dyaw
-            target = np.array([rx, ry, rz], dtype=np.float32)
-            self._follow_cam_pos += self._FOLLOW_POS_ALPHA * (target - self._follow_cam_pos)
-
-        # Camera sits at orbit angle around the smoothed robot position
-        cam_orbit_rad = self._follow_cam_yaw + np.radians(self._orbit_yaw_offset)
-        cam_pos = wp.vec3(
-            float(self._follow_cam_pos[0] - self._FOLLOW_DIST * np.cos(cam_orbit_rad)),
-            float(self._follow_cam_pos[1] - self._FOLLOW_DIST * np.sin(cam_orbit_rad)),
-            float(self._follow_cam_pos[2] + self._FOLLOW_HEIGHT),
-        )
-        cam_pitch = self._FOLLOW_PITCH + self._orbit_pitch_offset
-        cam_yaw_deg = float(np.degrees(cam_orbit_rad))
-
-        self.viewer.set_camera(cam_pos, cam_pitch, cam_yaw_deg)
-
-        # Store normalised camera angles for next-frame delta computation
-        if hasattr(self.viewer, "camera"):
-            self._orbit_last_yaw = self.viewer.camera.yaw
-            self._orbit_last_pitch = self.viewer.camera.pitch
-
     def render(self):
-        # Set camera on first render to ensure it's applied (free-cam mode only)
-        if not self._camera_set_in_render and not self._follow_cam_active:
+        # Set camera on first render to ensure it's applied
+        if not self._camera_set_in_render:
             if hasattr(self.viewer, "set_camera"):
                 self.viewer.set_camera(
                     pos=self.cam_pos,
@@ -861,11 +762,7 @@ class Example:
                 self.viewer.camera.yaw = self.cam_yaw
                 if hasattr(self.viewer, "_camera_dirty"):
                     self.viewer._camera_dirty = True
-        if not self._camera_set_in_render:
             self._camera_set_in_render = True
-
-        if self._follow_cam_active:
-            self._update_follow_camera()
 
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
