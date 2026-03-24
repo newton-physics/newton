@@ -14,25 +14,11 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Robot control via keyboard or Xbox gamepad
+# Example Robot control via keyboard
 #
 # Shows how to control robot pretrained in IsaacLab with RL.
-# When an Xbox 360/One controller is detected it is used automatically;
-# otherwise falls back to keyboard input via the 3-D viewer.
+# The policy is loaded from a file and the robot is controlled via keyboard.
 #
-# Xbox gamepad mapping:
-#   Left stick Y           — forward / backward
-#   Left stick X           — turn left / right (yaw)
-#   Triggers (L minus R)   — strafe left / right
-#   Right stick X/Y        — orbit / rotate camera (both follow and free modes)
-#   D-pad up/down          — dolly camera forward / back (free mode)
-#   D-pad left/right       — pan camera left / right (free mode)
-#   Y button               — toggle follow cam
-#   B button               — snap camera behind robot
-#   A button               — snap camera to front of robot
-#   Select / Back          — reset
-#
-# Keyboard mapping (viewer window must have focus):
 # Press "p" to reset the robot.
 # Press "i", "j", "k", "l", "u", "o" to move the robot.
 # Press "x" to toggle third-person camera follow mode.
@@ -501,163 +487,6 @@ def get_camera_from_usd(usd_path: str, up_axis: int = 2) -> tuple[wp.vec3, float
         return None
 
 
-class _GamepadInput:
-    """Optional Xbox gamepad input with keyboard fallback.
-
-    Tries to connect an Xbox 360/One controller on initialisation.  When
-    none is found, falls back to viewer keyboard (same keys as before).
-
-    Gamepad camera mapping::
-
-        Right stick X/Y   orbit / rotate camera (both follow and free modes)
-        D-pad up/down     dolly forward / back   (free mode only)
-        D-pad left/right  pan left / right       (free mode only)
-        Y button          toggle follow cam      (keyboard: x)
-        B button          snap camera behind     (keyboard: shift)
-        A button          snap camera to front   (keyboard: ctrl)
-    """
-
-    _DEADBAND         = 0.2
-    _ORBIT_YAW_RATE   = 120.0  # deg/s — right stick X
-    _ORBIT_PITCH_RATE =  80.0  # deg/s — right stick Y
-    _DOLLY_SPEED      =   3.0  # m/s   — D-pad up/down
-    _PAN_SPEED        =   3.0  # m/s   — D-pad left/right
-
-    def __init__(self, viewer=None) -> None:
-        self._viewer = viewer
-        self._controller = None
-        self._mode: str | None = None  # "joystick" | "keyboard" | None
-        self._reset_prev = False
-        # Camera button edge-detection state
-        self._follow_toggle_prev = False
-        self._snap_behind_prev = False
-        self._snap_front_prev = False
-
-        try:
-            from xbox360controller import Xbox360Controller  # noqa: PLC0415
-
-            self._controller = Xbox360Controller(0, axis_threshold=0.015)
-            self._mode = "joystick"
-            print("[INFO] Xbox controller connected.")
-        except Exception:
-            if viewer is not None and hasattr(viewer, "is_key_down"):
-                self._mode = "keyboard"
-                print(
-                    "[INFO] No gamepad found.  Using keyboard:\n"
-                    "  I/K — forward/backward    J/L — strafe left/right\n"
-                    "  U/O — turn left/right     P   — reset\n"
-                    "  X   — toggle follow cam   Shift — snap behind   Ctrl — snap front"
-                )
-
-    @staticmethod
-    def _db(v: float, threshold: float) -> float:
-        return v if abs(v) > threshold else 0.0
-
-    def read(self) -> tuple[float, float, float]:
-        """Return ``(forward, lateral, angular)`` commands in ``[-1, 1]``."""
-        db = self._DEADBAND
-        if self._mode == "joystick":
-            c = self._controller
-            return (
-                self._db(-c.axis_l.y, db),                          # forward
-                self._db(c.trigger_l.value - c.trigger_r.value, db),  # lateral
-                self._db(-c.axis_l.x, db),                          # angular
-            )
-        if self._mode == "keyboard":
-            v = self._viewer
-            fwd = 1.0 if v.is_key_down("i") else (-1.0 if v.is_key_down("k") else 0.0)
-            lat = 0.5 if v.is_key_down("j") else (-0.5 if v.is_key_down("l") else 0.0)
-            ang = 1.0 if v.is_key_down("u") else (-1.0 if v.is_key_down("o") else 0.0)
-            return fwd, lat, ang
-        return 0.0, 0.0, 0.0
-
-    def check_reset(self) -> bool:
-        """Return ``True`` on the rising edge of the reset input.
-
-        Gamepad: Select / Back button.  Keyboard: ``p`` key.
-        """
-        pressed = False
-        if self._mode == "joystick":
-            pressed = bool(self._controller.button_select.is_pressed)
-            # Also allow keyboard 'p' when a gamepad is connected
-            if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
-                pressed = bool(self._viewer.is_key_down("p"))
-        elif self._mode == "keyboard" and self._viewer is not None:
-            pressed = bool(self._viewer.is_key_down("p"))
-        triggered = pressed and not self._reset_prev
-        self._reset_prev = pressed
-        return triggered
-
-    def read_camera_orbit(self, dt: float) -> tuple[float, float]:
-        """Return ``(dyaw_deg, dpitch_deg)`` from right stick scaled by *dt*.
-
-        Positive dyaw  → orbit / rotate camera right.
-        Positive dpitch → tilt camera up.
-        Returns ``(0, 0)`` in keyboard mode (mouse drag handles orbit there).
-        """
-        if self._mode != "joystick":
-            return 0.0, 0.0
-        c = self._controller
-        dyaw   = self._db( c.axis_r.x, self._DEADBAND) * self._ORBIT_YAW_RATE   * dt
-        dpitch = self._db(-c.axis_r.y, self._DEADBAND) * self._ORBIT_PITCH_RATE * dt
-        return dyaw, dpitch
-
-    def read_camera_move(self, dt: float) -> tuple[float, float]:
-        """Return ``(dolly, pan)`` distances [m] from D-pad scaled by *dt*.
-
-        Positive dolly → move forward.  Positive pan → strafe right.
-        Returns ``(0, 0)`` in keyboard mode.
-        """
-        if self._mode != "joystick":
-            return 0.0, 0.0
-        c = self._controller
-        dolly = float( c.hat.y) * self._DOLLY_SPEED * dt
-        pan   = float( c.hat.x) * self._PAN_SPEED   * dt
-        return dolly, pan
-
-    def check_follow_toggle(self) -> bool:
-        """Rising edge of follow-cam toggle: gamepad Y or keyboard ``x``."""
-        pressed = False
-        if self._mode == "joystick":
-            pressed = bool(self._controller.button_y.is_pressed)
-        if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
-            pressed = bool(self._viewer.is_key_down("x"))
-        triggered = pressed and not self._follow_toggle_prev
-        self._follow_toggle_prev = pressed
-        return triggered
-
-    def check_snap_behind(self) -> bool:
-        """Rising edge of snap-behind: gamepad B or keyboard ``shift``."""
-        pressed = False
-        if self._mode == "joystick":
-            pressed = bool(self._controller.button_b.is_pressed)
-        if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
-            pressed = bool(self._viewer.is_key_down("shift"))
-        triggered = pressed and not self._snap_behind_prev
-        self._snap_behind_prev = pressed
-        return triggered
-
-    def check_snap_front(self) -> bool:
-        """Rising edge of snap-to-front: gamepad A or keyboard ``ctrl``."""
-        pressed = False
-        if self._mode == "joystick":
-            pressed = bool(self._controller.button_a.is_pressed)
-        if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
-            pressed = bool(self._viewer.is_key_down("ctrl"))
-        triggered = pressed and not self._snap_front_prev
-        self._snap_front_prev = pressed
-        return triggered
-
-    def close(self) -> None:
-        """Release gamepad resources so the process can exit cleanly."""
-        if self._controller is not None:
-            try:
-                self._controller.close()
-            except Exception:
-                pass
-            self._controller = None
-
-
 class Example:
     def __init__(
         self,
@@ -812,9 +641,7 @@ class Example:
         self.mjc_to_physx_indices = torch.tensor(mjc_to_physx, device=self.torch_device, dtype=torch.long)
         self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
-
-        # Gamepad / keyboard input (auto-detects Xbox controller, falls back to keyboard)
-        self._gamepad = _GamepadInput(viewer=viewer)
+        self._reset_key_prev = False
 
         # Initialize policy-related attributes
         # (will be set by load_policy_and_setup_tensors)
@@ -832,8 +659,11 @@ class Example:
         self._follow_cam_yaw: float = 0.0               # smoothed robot yaw in radians
         self._orbit_yaw_offset: float = 0.0             # accumulated mouse-drag orbit offset (degrees)
         self._orbit_pitch_offset: float = 0.0           # accumulated mouse-drag pitch offset (degrees)
-        self._orbit_last_yaw: float = 0.0               # camera.yaw stored after last set_camera call (mouse mode)
-        self._orbit_last_pitch: float = 0.0             # camera.pitch stored after last set_camera call (mouse mode)
+        self._orbit_last_yaw: float = 0.0               # camera.yaw stored after last set_camera call
+        self._orbit_last_pitch: float = 0.0             # camera.pitch stored after last set_camera call
+        self._follow_key_prev = False
+        self._snap_behind_key_prev = False
+        self._snap_front_key_prev = False
 
         # Force-initialize Newton's collision pipeline now, before CUDA graph capture.
         self.model.collide(self.state_0, self.contacts)
@@ -896,31 +726,44 @@ class Example:
         self._orbit_pitch_offset = 0.0
 
     def step(self):
-        # Read velocity commands from gamepad or keyboard
-        fwd, lat, rot = self._gamepad.read()
-        self.command[0, 0] = float(fwd)
-        self.command[0, 1] = float(lat)
-        self.command[0, 2] = float(rot)
-        if self._gamepad.check_reset():
-            self.reset()
+        # Build command from viewer keyboard
+        if hasattr(self.viewer, "is_key_down"):
+            fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+            lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+            rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+            self.command[0, 0] = float(fwd)
+            self.command[0, 1] = float(lat)
+            self.command[0, 2] = float(rot)
+            # Reset when 'P' is pressed (edge-triggered)
+            reset_down = bool(self.viewer.is_key_down("p"))
+            if reset_down and not self._reset_key_prev:
+                self.reset()
+            self._reset_key_prev = reset_down
 
-        # Toggle follow cam: gamepad Y or keyboard 'x' (edge-triggered)
-        if self._gamepad.check_follow_toggle():
-            self._follow_cam_active = not self._follow_cam_active
-            if not self._follow_cam_active:
-                self._follow_cam_pos = None
-                self._follow_cam_yaw = 0.0
-                self._orbit_yaw_offset = 0.0
-                self._orbit_pitch_offset = 0.0
+            # Toggle third-person follow camera when 'X' is pressed (edge-triggered)
+            follow_down = bool(self.viewer.is_key_down("x"))
+            if follow_down and not self._follow_key_prev:
+                self._follow_cam_active = not self._follow_cam_active
+                if not self._follow_cam_active:
+                    self._follow_cam_pos = None  # clear smoothing state on exit
+                    self._follow_cam_yaw = 0.0
+                    self._orbit_yaw_offset = 0.0
+                    self._orbit_pitch_offset = 0.0
+            self._follow_key_prev = follow_down
 
-        # Snap camera: gamepad B/A or keyboard shift/ctrl (follow mode only, edge-triggered)
-        if self._follow_cam_active:
-            if self._gamepad.check_snap_behind():
-                self._orbit_yaw_offset = 0.0
-                self._orbit_pitch_offset = 0.0
-            if self._gamepad.check_snap_front():
-                self._orbit_yaw_offset = 180.0
-                self._orbit_pitch_offset = 0.0
+            # SHIFT → snap behind robot; CTRL → snap to front (both edge-triggered)
+            if self._follow_cam_active:
+                shift_down = bool(self.viewer.is_key_down("shift"))
+                if shift_down and not self._snap_behind_key_prev:
+                    self._orbit_yaw_offset = 0.0
+                    self._orbit_pitch_offset = 0.0
+                self._snap_behind_key_prev = shift_down
+
+                ctrl_down = bool(self.viewer.is_key_down("ctrl"))
+                if ctrl_down and not self._snap_front_key_prev:
+                    self._orbit_yaw_offset = 180.0
+                    self._orbit_pitch_offset = 0.0
+                self._snap_front_key_prev = ctrl_down
 
         obs = compute_obs(
             self.act,
@@ -972,12 +815,8 @@ class Example:
                 self._orbit_last_yaw = self.viewer.camera.yaw
                 self._orbit_last_pitch = self.viewer.camera.pitch
         else:
-            # Accumulate orbit offsets: gamepad right stick OR mouse drag
-            if self._gamepad._mode == "joystick":
-                dyaw, dpitch = self._gamepad.read_camera_orbit(self.frame_dt)
-                self._orbit_yaw_offset += dyaw
-                self._orbit_pitch_offset = max(-70.0, min(70.0, self._orbit_pitch_offset + dpitch))
-            elif hasattr(self.viewer, "camera"):
+            # Accumulate mouse-drag deltas as orbit offsets
+            if hasattr(self.viewer, "camera"):
                 dyaw = (self.viewer.camera.yaw - self._orbit_last_yaw + 180.0) % 360.0 - 180.0
                 dpitch = self.viewer.camera.pitch - self._orbit_last_pitch
                 self._orbit_yaw_offset += dyaw
@@ -1001,47 +840,10 @@ class Example:
 
         self.viewer.set_camera(cam_pos, cam_pitch, cam_yaw_deg)
 
-        # Store normalised camera angles for next-frame mouse-delta computation
-        if hasattr(self.viewer, "camera") and self._gamepad._mode != "joystick":
+        # Store normalised camera angles for next-frame delta computation
+        if hasattr(self.viewer, "camera"):
             self._orbit_last_yaw = self.viewer.camera.yaw
             self._orbit_last_pitch = self.viewer.camera.pitch
-
-    def _update_free_camera_gamepad(self):
-        """Drive free camera with gamepad right stick (rotate) and D-pad (dolly/pan)."""
-        if self._gamepad._mode != "joystick" or not hasattr(self.viewer, "camera"):
-            return
-
-        dt = self.frame_dt
-        dyaw, dpitch = self._gamepad.read_camera_orbit(dt)
-        dolly, pan   = self._gamepad.read_camera_move(dt)
-
-        if dyaw == 0.0 and dpitch == 0.0 and dolly == 0.0 and pan == 0.0:
-            return
-
-        # Read current camera state
-        pos      = self.viewer.camera.pos
-        cx, cy, cz = float(pos.x), float(pos.y), float(pos.z)
-        yaw   = float(self.viewer.camera.yaw)
-        pitch = float(self.viewer.camera.pitch)
-
-        # Apply rotation
-        new_yaw   = yaw + dyaw
-        new_pitch = max(-89.0, min(89.0, pitch + dpitch))
-
-        # Dolly/pan along the camera's horizontal look direction
-        yaw_rad = np.radians(new_yaw)
-        fwd_x, fwd_y =  np.cos(yaw_rad),  np.sin(yaw_rad)   # forward in XY
-        rgt_x, rgt_y =  np.sin(yaw_rad), -np.cos(yaw_rad)   # right in XY
-        cx += dolly * fwd_x + pan * rgt_x
-        cy += dolly * fwd_y + pan * rgt_y
-
-        self.viewer.set_camera(wp.vec3(cx, cy, cz), new_pitch, new_yaw)
-        from pyglet.math import Vec3 as PyVec3
-        self.viewer.camera.pos   = PyVec3(cx, cy, cz)
-        self.viewer.camera.pitch = new_pitch
-        self.viewer.camera.yaw   = new_yaw
-        if hasattr(self.viewer, "_camera_dirty"):
-            self.viewer._camera_dirty = True
 
     def render(self):
         # Set camera on first render to ensure it's applied (free-cam mode only)
@@ -1064,8 +866,6 @@ class Example:
 
         if self._follow_cam_active:
             self._update_follow_camera()
-        else:
-            self._update_free_camera_gamepad()
 
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
@@ -1165,7 +965,4 @@ if __name__ == "__main__":
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, 7 + config["num_dofs"]))
 
     # Run using standard example loop
-    try:
-        newton.examples.run(example, args)
-    finally:
-        example._gamepad.close()
+    newton.examples.run(example, args)
