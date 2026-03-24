@@ -1194,6 +1194,13 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
     vertices = np.array(points_attr, dtype=np.float32)
     tet_indices = np.array(tet_indices_attr, dtype=np.int32).flatten()
 
+    # Flip winding order for left-handed meshes (e.g. Houdini exports)
+    handedness = tet_mesh.GetOrientationAttr().Get()
+    if handedness and handedness.lower() == "lefthanded" and tet_indices.size % 4 == 0:
+        tet_indices = tet_indices.reshape(-1, 4)
+        tet_indices[:, [1, 2]] = tet_indices[:, [2, 1]]
+        tet_indices = tet_indices.reshape(-1)
+
     # Try to read physics material properties if bound
     k_mu = None
     k_lambda = None

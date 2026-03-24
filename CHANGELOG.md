@@ -61,6 +61,7 @@
 - Fix MJCF mesh scale resolution to use the mesh asset's own class rather than the geom's default class, avoiding incorrect vertex scaling for models like Robotiq 2F-85 V4
 - Fix articulated bodies drifting laterally on the ground in XPBD solver by solving rigid contacts before joints
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
+- Fix `hide_collision_shapes=True` not hiding collision meshes that have bound PBR materials
 - Fix concurrent asset download races on Windows by using content-addressed cache directories
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
 - Fix body `gravcomp` not being written to the MuJoCo spec, causing it to be absent from XML saved via `save_to_mjcf`
@@ -71,6 +72,7 @@
 - Decompose loop joint constraints by DOF type (WELD for fixed, CONNECT-pair for revolute, single CONNECT for ball) instead of always emitting 2x CONNECT
 - Fix inertia box wireframe rotation for isotropic and axisymmetric bodies in viewer
 - Implicit MPM solver now uses `mass=0` for kinematic particles instead of `ACTIVE` flag
+- Fix `get_tetmesh()` winding order for left-handed USD meshes
 
 ## [1.0.0] - 2026-03-10
 
