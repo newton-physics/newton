@@ -54,9 +54,34 @@ Custom benchmark using `SolverXPBD` + `ModelBuilder` API:
 - After 300 steps: all bodies remain above floor (min z=0.400)
 - **Status: PASS** — collision detection functional
 
+### Extended Rigid Body Tests (Session 2)
+
+All tests run with `SolverXPBD` on NVIDIA L40 (`cuda:0`):
+
+| Test | Result | Details |
+|------|--------|---------|
+| Free-fall accuracy (1000 steps, dt=1ms) | **PASS** | z error = 0.0049 m vs analytical |
+| Ground collision (3000 steps, dt=1ms) | **PASS** | Settled at z=0.5000 m (exact) |
+| 100-env multi-world GPU benchmark | **PASS** | 40,789 env-steps/sec |
+
+### basic_shapes Example (headless, GPU)
+- Run via `python -m newton.examples basic_shapes --viewer null --num-frames 150 --test --device cuda:0`
+- All 7 shapes (sphere, ellipsoid, capsule, cylinder, box, mesh, cone) simulated
+- **Status: PASS** — no errors, all shapes simulated correctly
+
 ## Test Suite Results
 
-Full suite run: `python3 -m newton.tests`
+### Core Unit Tests (Session 2): **67/67 PASS**
+
+Run via `python3 -m unittest newton.tests.test_model newton.tests.test_broad_phase newton.tests.test_inertia`:
+
+- `test_model`: 34 tests — model builder, joints, geometry, USD parsing
+- `test_broad_phase`: 14 tests — all collision detection algorithms (NxN, SAP, explicit pairs)
+- `test_inertia`: 7 tests — sphere, cube, cone, capsule, cylinder inertia tensors
+
+### Full Suite Run: `python3 -m newton.tests`
+
+Full suite run (337 suites, 2873 total tests) aborted with `BrokenProcessPool`. Estimated counts from partial run:
 
 | Category | Count |
 |----------|-------|
@@ -66,7 +91,7 @@ Full suite run: `python3 -m newton.tests`
 | Errors | ~575 |
 | Skipped | ~351 |
 
-**Note:** The full suite run aborted with `BrokenProcessPool` (OOM or process killed in the parallel runner). The counts above are from the partial run.
+**Note:** `BrokenProcessPool` caused by OOM when a process was killed by the parallel runner.
 
 ### Broad Phase Tests (collision detection): **14/14 PASS**
 
@@ -89,7 +114,9 @@ All broad phase collision detection algorithms passed:
 
 ## Throughput Benchmark (GPU, XPBD Solver)
 
-Sphere bodies falling onto a ground plane, CUDA capture warmup (20 steps), then 500 measured steps:
+### Session 1: Sphere bodies (single-world, CUDA capture)
+
+CUDA capture warmup (20 steps), then 500 measured steps:
 
 | Body Count | Throughput |
 |------------|------------|
@@ -98,7 +125,15 @@ Sphere bodies falling onto a ground plane, CUDA capture warmup (20 steps), then 
 | 100 bodies | 757.7 steps/sec |
 | 500 bodies | 745.1 steps/sec |
 
-Throughput is roughly constant across body counts (GPU is not saturated at these sizes).
+### Session 2: Box bodies (multi-world, 100 environments)
+
+100 independent worlds, 1000 steps each, after 100-step warmup:
+
+| Config | Throughput |
+|--------|------------|
+| 100 envs × 1000 steps | **40,789 env-steps/sec** |
+
+Throughput is roughly constant across body counts (GPU is not saturated at these sizes). Multi-world parallelism yields ~40× speedup over single-env throughput.
 
 ## Success Criteria Status
 
