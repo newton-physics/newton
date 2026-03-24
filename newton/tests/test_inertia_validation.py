@@ -459,10 +459,12 @@ class TestInertiaValidationParity(unittest.TestCase):
                 # Default tolerance: should correct
                 b1 = ModelBuilder()
                 b1.validate_inertia_detailed = detailed
-                b1.add_body(mass=0.015, inertia=small_inertia, label="finger")
+                idx1 = b1.add_body(mass=0.015, inertia=small_inertia, label="finger")
                 with warnings.catch_warnings(record=True) as w1:
-                    b1.finalize()
+                    m1 = b1.finalize()
                 self.assertGreater(len(w1), 0)
+                # Verify inertia was actually corrected (not equal to original)
+                self.assertFalse(np.allclose(m1.body_inertia.numpy()[idx1].diagonal(), diag, atol=1e-10))
 
                 # Lower tolerance: should not correct
                 b2 = ModelBuilder()

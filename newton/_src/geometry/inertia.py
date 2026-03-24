@@ -665,7 +665,7 @@ def verify_and_correct_inertia(
         # Check for negative or near-zero eigenvalues (ensure positive-definite)
         if np.any(eigenvalues < tolerance):
             warnings.warn(
-                f"Non-positive eigenvalues detected{body_id}: {eigenvalues}, making positive definite",
+                f"Eigenvalues below tolerance {tolerance:g} detected{body_id}: {eigenvalues}, making positive definite",
                 stacklevel=2,
             )
             # Make positive definite by adjusting eigenvalues
