@@ -371,9 +371,7 @@ void main() {
             if symbol == pyglet.window.key.V:
                 if self.gui:
                     self.gui.show_ui = not self.gui.show_ui
-            # FIXME: temporarily rebind model zoom to Z instead of F so it doesn't interfere with robot controls
-            # elif symbol == pyglet.window.key.F:
-            elif symbol == pyglet.window.key.Z:
+            elif symbol == pyglet.window.key.F:
                 self._frame_camera_on_model()
 
         @self._window.event
