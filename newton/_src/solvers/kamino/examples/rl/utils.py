@@ -283,13 +283,12 @@ def _load_policy_checkpoint(path: str, device: str) -> callable:
 
     actor = _build_mlp_from_state_dict(model_sd, "actor").to(device)
     actor.eval()
-    actor.requires_grad_(False)
 
     # Observation normalizer (if present)
     obs_norm_sd = ckpt.get("obs_norm_state_dict")
     if obs_norm_sd is not None:
-        mean = obs_norm_sd["_mean"].to(device).detach()
-        std = obs_norm_sd["_std"].to(device).detach()
+        mean = obs_norm_sd["_mean"].to(device)
+        std = obs_norm_sd["_std"].to(device)
         eps = 1e-2
 
         def policy(obs: torch.Tensor) -> torch.Tensor:

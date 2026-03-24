@@ -216,48 +216,6 @@ def _make_balls_fn(num_balls: int = 1):
 
 
 ###########################################################################
-# Warp kernel: fill the observation command tensor from joystick state
-###########################################################################
-
-# CMD layout (BipedalObservation.CMD_*):
-#   [0]    path_heading
-#   [1:3]  path_position xy
-#   [3:5]  cmd_vel xy (forward, lateral)
-#   [5]    yaw_rate
-#   [6:10] neck cmd (head_z, head_roll, head_pitch, head_yaw)
-_CMD_DIM = wp.constant(BipedalObservation.CMD_DIM)
-
-# 5-element value type: [fwd_vel, lat_vel, ang_vel, head_pitch, head_yaw]
-# Passed by value to the kernel — no GPU buffer or H2D copy needed.
-JoystickVec = wp.types.vector(5, wp.float32)
-
-
-@wp.kernel
-def _fill_cmd(
-    cmd: wp.array(dtype=wp.float32),           # (num_worlds * CMD_DIM,)  flat
-    path_heading: wp.array(dtype=wp.float32),  # (num_worlds,)            flat from (num_worlds, 1)
-    path_position: wp.array(dtype=wp.float32), # (num_worlds * 2,)        flat from (num_worlds, 2)
-    js: JoystickVec,                           # [fwd_vel, lat_vel, ang_vel, head_pitch, head_yaw]
-):
-    w = wp.tid()
-    base = w * _CMD_DIM
-    cmd[base + 0] = path_heading[w]
-    cmd[base + 1] = path_position[w * 2 + 0]
-    cmd[base + 2] = path_position[w * 2 + 1]
-    cmd[base + 3] = js[0]
-    cmd[base + 4] = js[1]
-    cmd[base + 5] = js[2]
-    # Head command: head_forward couples pitch to a vertical raise
-    hp = js[3]
-    hy = js[4]
-    fwd = wp.max(hp, float(0.0)) * float(0.4)
-    cmd[base + 6] = wp.min(wp.max(fwd, float(-1.0)), float(0.3))   # head_z
-    cmd[base + 7] = float(0.0)                                       # head_roll
-    cmd[base + 8] = wp.min(wp.max(fwd + hp, float(-0.6)), float(1.0))  # head_pitch
-    cmd[base + 9] = wp.min(wp.max(hy, float(-1.0)), float(1.0))    # head_yaw
-
-
-###########################################################################
 # Example class
 ###########################################################################
 
@@ -344,34 +302,12 @@ class Example:
         # Action buffer (actuated joints only)
         self.actions = self.sim_wrapper.q_j[:, self._act_idx].clone()
 
-        # Warp views of command and joystick tensors — pre-allocated once, reused every step
-        self._wp_cmd = wp.from_torch(self.obs.command.reshape(-1))
-        self._wp_path_heading = wp.from_torch(self.joystick.path_heading.reshape(-1))
-        self._wp_path_position = wp.from_torch(self.joystick.path_position.reshape(-1))
+        # Pre-allocated command buffers (eliminates per-step torch.tensor())
+        self._cmd_vel_buf = torch.zeros(1, 2, device=self.torch_device)
+        self._neck_cmd_buf = torch.zeros(4, device=self.torch_device)
 
-        # Policy (None = zero actions) — JIT-traced for faster inference
-        if policy is not None:
-            _example_obs = torch.zeros(1, self.obs.num_observations, device=self.torch_device)
-            with torch.no_grad():
-                policy = torch.jit.trace(policy, _example_obs)
+        # Policy (None = zero actions)
         self.policy = policy
-
-        # CUDA graph for policy inference + action scaling
-        self._policy_cuda_graph: torch.cuda.CUDAGraph | None = None
-        if self.policy is not None and "cuda" in str(self.torch_device):
-            _s = torch.cuda.Stream()
-            _s.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(_s):
-                for _ in range(3):
-                    _r = self.policy(self.obs._obs_buffer)
-                    torch.mul(_r, self.joint_pos_scale, out=self.actions)
-                    self.actions.add_(self.joint_pos_offset)
-            torch.cuda.current_stream().wait_stream(_s)
-            self._policy_cuda_graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(self._policy_cuda_graph, capture_error_mode="thread_local"):
-                _r = self.policy(self.obs._obs_buffer)
-                torch.mul(_r, self.joint_pos_scale, out=self.actions)
-                self.actions.add_(self.joint_pos_offset)
 
         # Third-person follow camera state
         self._follow_cam_active = False
@@ -414,18 +350,27 @@ class Example:
 
     def update_input(self):
         """Transfer joystick commands to the observation command tensor."""
+        cmd = self.obs.command
+        cmd[:, BipedalObservation.CMD_PATH_HEADING] = self.joystick.path_heading[:, 0]
+        cmd[:, BipedalObservation.CMD_PATH_POSITION] = self.joystick.path_position
+        self._cmd_vel_buf[0, 0] = self.joystick.forward_velocity
+        self._cmd_vel_buf[0, 1] = self.joystick.lateral_velocity
+        cmd[:, BipedalObservation.CMD_VEL] = self._cmd_vel_buf
+        cmd[:, BipedalObservation.CMD_YAW_RATE] = self.joystick.angular_velocity
+
+        # Head command: head_forward is an up-bias coupled to head pitch
+        # (looking up also raises the head). head_pitch = forward + pitch.
         js = self.joystick
-        wp.launch(
-            _fill_cmd,
-            dim=1,
-            inputs=[
-                self._wp_cmd,
-                self._wp_path_heading,
-                self._wp_path_position,
-                JoystickVec(js.forward_velocity, js.lateral_velocity, js.angular_velocity, js.head_pitch, js.head_yaw),
-            ],
-            device=self.sim_wrapper.device,
-        )
+        head_forward = max(js.head_pitch, 0.0) * 0.4
+        head_z_des = max(-1.0, min(head_forward, 0.3))
+        head_roll_des = 0.0
+        head_pitch_des = max(-0.6, min(head_forward + js.head_pitch, 1.0))
+        head_yaw_des = max(-1.0, min(js.head_yaw, 1.0))
+        self._neck_cmd_buf[0] = head_z_des
+        self._neck_cmd_buf[1] = head_roll_des
+        self._neck_cmd_buf[2] = head_pitch_des
+        self._neck_cmd_buf[3] = head_yaw_des
+        cmd[:, BipedalObservation.CMD_HEAD] = self._neck_cmd_buf
 
     def sim_step(self):
         """Observations -> policy inference -> actions -> physics step."""
@@ -433,13 +378,10 @@ class Example:
         obs = self.obs.compute(setpoints=self.actions)
 
         # Policy inference (in-place: no clone, no intermediates)
-        if self._policy_cuda_graph is not None:
-            self._policy_cuda_graph.replay()
-        else:
-            with torch.inference_mode():
-                raw = self.policy(obs)
-                torch.mul(raw, self.joint_pos_scale, out=self.actions)
-                self.actions.add_(self.joint_pos_offset)
+        with torch.inference_mode():
+            raw = self.policy(obs)
+            torch.mul(raw, self.joint_pos_scale, out=self.actions)
+            self.actions.add_(self.joint_pos_offset)
 
         # Write action targets to actuated joints only
         self.sim_wrapper.q_j_ref[:, self._act_idx] = self.actions

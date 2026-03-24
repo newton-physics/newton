@@ -53,56 +53,14 @@ import dataclasses
 
 # Thirdparty
 import torch  # noqa: TID253
-import warp as wp
 
-from newton._src.solvers.kamino.examples.rl.utils import RateLimitedValue, _deadband, _LowPassFilter, _scale_asym
-
-# ---------------------------------------------------------------------------
-# Warp kernel: mid-point path integration + deviation clipping (all worlds)
-# ---------------------------------------------------------------------------
-_Z_AXIS = wp.constant(wp.vec3(0.0, 0.0, 1.0))
-
-
-@wp.kernel
-def _integrate_path(
-    path_heading: wp.array(dtype=wp.float32),   # (num_worlds,)      flat, updated in-place
-    path_position: wp.array(dtype=wp.float32),  # (num_worlds * 2,)  flat, updated in-place
-    root_pos_2d: wp.array(dtype=wp.float32),    # (num_worlds * 2,)  flat, read-only
-    fwd_vel: float,
-    lat_vel: float,
-    ang_vel: float,
-    dt: float,
-    path_deviation_max: float,
-):
-    w = wp.tid()
-    pp = w * 2
-
-    # Mid-point heading for more accurate integration
-    mid_h = path_heading[w] + float(0.5) * dt * ang_vel
-
-    # Rotate body-frame velocity into world frame
-    q = wp.quat_from_axis_angle(_Z_AXIS, mid_h)
-    vel_w = wp.quat_rotate(q, wp.vec3(fwd_vel, lat_vel, float(0.0)))
-
-    # Integrate position
-    new_px = path_position[pp + 0] + vel_w[0] * dt
-    new_py = path_position[pp + 1] + vel_w[1] * dt
-
-    # Update heading
-    path_heading[w] = path_heading[w] + ang_vel * dt
-
-    # Clip XY deviation from the robot's current ground position
-    rx = root_pos_2d[pp + 0]
-    ry = root_pos_2d[pp + 1]
-    dx = new_px - rx
-    dy = new_py - ry
-    dist = wp.sqrt(dx * dx + dy * dy)
-    if dist > path_deviation_max:
-        scale = path_deviation_max / dist
-        dx = dx * scale
-        dy = dy * scale
-    path_position[pp + 0] = rx + dx
-    path_position[pp + 1] = ry + dy
+from newton._src.solvers.kamino.examples.rl.utils import (
+    RateLimitedValue,
+    _deadband,
+    _LowPassFilter,
+    _scale_asym,
+    yaw_apply_2d,
+)
 
 
 @dataclasses.dataclass
@@ -218,15 +176,8 @@ class JoystickController:
         self.head_yaw: float = 0.0
         self.turbo_alpha: float = 0.0
 
-        # Pre-cached Warp views for path state (no data copy, just pointer wrapping)
-        self._wp_path_heading = wp.from_torch(self.path_heading.reshape(-1))
-        self._wp_path_position = wp.from_torch(self.path_position.reshape(-1))
-
-        # Use the same CUDA stream as PyTorch so the kernel is serialised with
-        # subsequent torch/warp ops that read path_heading / path_position.
-        self._wp_stream = (
-            wp.stream_from_torch(torch.cuda.current_stream()) if "cuda" in str(device) else None
-        )
+        # Pre-allocated command velocity buffer (eliminates per-step torch.tensor())
+        self._cmd_vel_buf = torch.zeros(1, 2, device=device)
 
         # Reset edge-detection state
         self._reset_prev = False
@@ -341,27 +292,21 @@ class JoystickController:
 
         # --- Path integration ---
         if root_pos_2d is not None:
-            _wp_root = wp.from_torch(root_pos_2d.contiguous().reshape(-1))
-            _launch_kw = (
-                {"stream": self._wp_stream}
-                if self._wp_stream is not None
-                else {"device": str(self._device)}
-            )
-            wp.launch(
-                _integrate_path,
-                dim=self._num_worlds,
-                inputs=[
-                    self._wp_path_heading,
-                    self._wp_path_position,
-                    _wp_root,
-                    self.forward_velocity,
-                    self.lateral_velocity,
-                    self.angular_velocity,
-                    self._dt,
-                    cfg.path_deviation_max,
-                ],
-                **_launch_kw,
-            )
+            dt = self._dt
+            self._cmd_vel_buf[0, 0] = self.forward_velocity
+            self._cmd_vel_buf[0, 1] = self.lateral_velocity
+
+            # Mid-point heading integration
+            mid_heading = self.path_heading + 0.5 * dt * self.angular_velocity
+            self.path_position += yaw_apply_2d(mid_heading, self._cmd_vel_buf) * dt
+
+            # Update heading
+            self.path_heading += self.angular_velocity * dt
+
+            # Clip path deviation to root position
+            diff = self.path_position - root_pos_2d
+            clipped = diff.renorm(p=2, dim=0, maxnorm=cfg.path_deviation_max)
+            self.path_position[:] = root_pos_2d + clipped
 
     def check_follow_toggle(self) -> bool:
         """Rising edge of follow-cam toggle: gamepad Y or keyboard ``x``."""
