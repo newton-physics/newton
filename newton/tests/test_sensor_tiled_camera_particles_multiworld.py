@@ -98,9 +98,9 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
 
     sensor = SensorTiledCamera(
         model=model,
-        config=SensorTiledCamera.Config(render_config=SensorTiledCamera.RenderConfig(max_distance=max_distance)),
+        config=SensorTiledCamera.RenderConfig(max_distance=max_distance),
     )
-    camera_rays = sensor.compute_pinhole_camera_rays(width, height, fov)
+    camera_rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
 
     cam_quat = wp.quat_identity()
     camera_transforms = wp.array(
@@ -117,7 +117,7 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
         device=device,
     )
 
-    depth_image = sensor.create_depth_image_output(width, height, camera_count=1)
+    depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
     sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
     wp.synchronize()
 

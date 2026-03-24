@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ...core import MAXVAL
 from ...geometry import Gaussian, GeoType, Mesh, ShapeFlags
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
@@ -19,9 +20,39 @@ from .bvh import (
     compute_particle_bvh_bounds,
     compute_shape_bvh_bounds,
 )
+from .gaussians import compute_gaussian_bounds
 from .render import create_kernel
 from .types import GaussianRenderMode, MeshData, RenderOrder, TextureData
 from .utils import Utils
+
+
+@wp.kernel(enable_backward=False)
+def compute_shape_bounds(
+    in_shape_type: wp.array(dtype=wp.int32),
+    in_shape_ptr: wp.array(dtype=wp.uint64),
+    in_gaussians: wp.array(dtype=Gaussian.Data),
+    out_bounds: wp.array2d(dtype=wp.vec3f),
+):
+    tid = wp.tid()
+
+    min_point = wp.vec3(MAXVAL)
+    max_point = wp.vec3(-MAXVAL)
+
+    if in_shape_type[tid] == GeoType.MESH:
+        mesh = wp.mesh_get(in_shape_ptr[tid])
+        for i in range(mesh.points.shape[0]):
+            min_point = wp.min(min_point, mesh.points[i])
+            max_point = wp.max(max_point, mesh.points[i])
+
+    elif in_shape_type[tid] == GeoType.GAUSSIAN:
+        gaussian_id = in_shape_ptr[tid]
+        for i in range(in_gaussians[gaussian_id].num_points):
+            lower, upper = compute_gaussian_bounds(in_gaussians[gaussian_id], i)
+            min_point = wp.min(min_point, lower)
+            max_point = wp.max(max_point, upper)
+
+    out_bounds[tid, 0] = min_point
+    out_bounds[tid, 1] = max_point
 
 
 @wp.kernel(enable_backward=False)
@@ -133,6 +164,8 @@ class RenderContext:
 
     @dataclass(unsafe_hash=True)
     class State:
+        """Mutable flags tracking which render outputs are active."""
+
         num_gaussians: int = 0
         render_color: bool = False
         render_depth: bool = False
@@ -142,6 +175,8 @@ class RenderContext:
 
     @dataclass(unsafe_hash=True)
     class ClearData:
+        """Default values written to output images before rendering."""
+
         clear_color: int = 0
         clear_depth: float = 0.0
         clear_shape_index: int = 0xFFFFFFFF
@@ -151,6 +186,15 @@ class RenderContext:
     DEFAULT_CLEAR_DATA = ClearData()
 
     def __init__(self, world_count: int = 1, config: Config | None = None, device: str | None = None):
+        """Create a new render context.
+
+        Args:
+            world_count: Number of simulation worlds to render.
+            config: Render configuration. If ``None``, uses default
+                :class:`Config` settings.
+            device: Warp device string (e.g. ``"cuda:0"``). If ``None``,
+                the default Warp device is used.
+        """
         self.device = device
         self.utils = Utils(self)
         self.config = config if config else RenderContext.Config()
@@ -199,7 +243,18 @@ class RenderContext:
         self.lights_position: wp.array(dtype=wp.vec3f) = None
         self.lights_orientation: wp.array(dtype=wp.vec3f) = None
 
-    def init_from_model(self, model: Model, load_textures: bool):
+    def init_from_model(self, model: Model, load_textures: bool = True):
+        """Initialize render context state from a Newton simulation model.
+
+        Populates shape, particle, triangle, and texture data from *model*.
+        Call once after construction or when the model topology changes.
+
+        Args:
+            model: Newton simulation model providing shapes and particles.
+            load_textures: Load mesh textures from disk. Set False for
+                checkerboard or custom texture workflows.
+        """
+
         self.world_count = model.world_count
         self.bvh_shapes = None
         self.bvh_shapes_group_roots = None
@@ -251,9 +306,17 @@ class RenderContext:
         )
         self.shape_count_total = model.shape_count
         self.shape_count_enabled = int(num_enabled_shapes.numpy()[0])
-        self.utils.compute_shape_bounds()
+        self.__compute_shape_bounds()
 
     def update(self, model: Model, state: State):
+        """Synchronize transforms and particle positions from simulation state.
+
+        Args:
+            model: Newton simulation model (for shape metadata).
+            state: Current simulation state with body transforms and
+                particle positions.
+        """
+
         if self.has_shapes:
             wp.launch(
                 kernel=convert_newton_transform,
@@ -276,6 +339,11 @@ class RenderContext:
             self.particles_position = state.particle_q
 
     def refit_bvh(self):
+        """Rebuild or refit the BVH acceleration structures.
+
+        Updates shape, particle, and triangle-mesh BVHs so that
+        subsequent :meth:`render` calls use current geometry positions.
+        """
         self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(
             self.bvh_shapes, self.bvh_shapes_group_roots, self.shape_count_enabled, self.__compute_bvh_bounds_shapes
         )
@@ -304,6 +372,27 @@ class RenderContext:
         refit_bvh: bool = True,
         clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
     ):
+        """Raytrace the scene into the provided output images.
+
+        At least one output image must be supplied. All non-``None``
+        output arrays must have shape
+        ``(world_count, camera_count, height, width)``.
+
+        Args:
+            camera_transforms: Per-camera transforms, shape
+                ``(camera_count, world_count)``.
+            camera_rays: Ray origins and directions, shape
+                ``(camera_count, height, width, 2)``.
+            color_image: Output RGBA color buffer (packed ``uint32``).
+            depth_image: Output depth buffer [m].
+            shape_index_image: Output shape-index buffer.
+            normal_image: Output world-space surface normals.
+            albedo_image: Output albedo buffer (packed ``uint32``).
+            refit_bvh: If ``True``, call :meth:`refit_bvh` before
+                rendering.
+            clear_data: Values used to clear output images before
+                rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
+        """
         if self.has_shapes or self.has_particles or self.has_triangle_mesh or self.has_gaussians:
             if refit_bvh:
                 self.refit_bvh()
@@ -542,6 +631,22 @@ class RenderContext:
         size: int,
         bounds_callback: Callable[[wp.array(dtype=wp.vec3f), wp.array(dtype=wp.vec3f), wp.array(dtype=wp.int32)], None],
     ):
+        """Build a new BVH or refit an existing one.
+
+        If *bvh* is ``None`` a new :class:`wp.Bvh` is constructed and
+        group roots are computed; otherwise the existing BVH is refit
+        in-place.
+
+        Args:
+            bvh: Existing BVH to refit, or ``None`` to build a new one.
+            group_roots: Existing group-root array, or ``None``.
+            size: Number of primitives (shapes or particles).
+            bounds_callback: Callback that fills lower/upper/group
+                arrays for the BVH primitives.
+
+        Returns:
+            Tuple of ``(bvh, group_roots)``.
+        """
         if size:
             lowers = bvh.lowers if bvh is not None else wp.zeros(size, dtype=wp.vec3f, device=self.device)
             uppers = bvh.uppers if bvh is not None else wp.zeros(size, dtype=wp.vec3f, device=self.device)
@@ -567,6 +672,7 @@ class RenderContext:
     def __compute_bvh_bounds_shapes(
         self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)
     ):
+        """Compute axis-aligned bounding boxes for enabled shapes."""
         wp.launch(
             kernel=compute_shape_bvh_bounds,
             dim=self.shape_count_enabled,
@@ -589,6 +695,7 @@ class RenderContext:
     def __compute_bvh_bounds_particles(
         self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)
     ):
+        """Compute axis-aligned bounding boxes for particles."""
         wp.launch(
             kernel=compute_particle_bvh_bounds,
             dim=self.particle_count_total,
@@ -605,7 +712,34 @@ class RenderContext:
             device=self.device,
         )
 
+    def __compute_shape_bounds(self):
+        """Compute per-shape local-space bounding boxes for meshes and Gaussians."""
+        wp.launch(
+            kernel=compute_shape_bounds,
+            dim=self.shape_source_ptr.size,
+            inputs=[
+                self.shape_types,
+                self.shape_source_ptr,
+                self.gaussians_data,
+                self.shape_bounds,
+            ],
+            device=self.device,
+        )
+
     def __get_shape_color(self, index: int, shape: Any):
+        """Return the RGB color tuple for a shape.
+
+        Uses the shape's own ``color`` attribute when available,
+        otherwise cycles through a predefined color palette.
+
+        Args:
+            index: Shape index used to cycle the palette.
+            shape: Shape source object, optionally carrying a ``color``
+                attribute.
+
+        Returns:
+            RGB color as a 3-tuple of floats in ``[0, 1]``.
+        """
         SHAPE_COLOR_MAP = [
             (68 / 255.0, 119 / 255.0, 170 / 255.0),  # blue
             (102 / 255.0, 204 / 255.0, 238 / 255.0),  # cyan
@@ -623,6 +757,17 @@ class RenderContext:
         return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
 
     def __load_texture_and_mesh_data(self, model: Model, load_textures: bool):
+        """Load mesh UV/normal data and textures from *model*.
+
+        Populates :attr:`mesh_data`, :attr:`texture_data`, and the
+        per-shape texture/mesh-data index arrays. Textures and mesh
+        data are deduplicated by hash/identity.
+
+        Args:
+            model: Newton simulation model containing shape sources.
+            load_textures: If ``True``, load image textures from disk;
+                otherwise assign ``-1`` texture IDs to all shapes.
+        """
         self.__mesh_data = []
         self.__texture_data = []
 
@@ -691,8 +836,13 @@ class RenderContext:
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
+        """Create an output array for color rendering.
+
+        .. deprecated::
+            Use :meth:`SensorTiledCamera.utils.create_color_image_output`.
+        """
         warnings.warn(
-            "RenderContext.create_color_image_output is deprecated, use SensorTiledCamera.create_color_image_output instead.",
+            "RenderContext.create_color_image_output is deprecated, use SensorTiledCamera.utils.create_color_image_output instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -701,8 +851,13 @@ class RenderContext:
     def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.float32, ndim=4
     ):
+        """Create an output array for depth rendering.
+
+        .. deprecated::
+            Use :meth:`SensorTiledCamera.utils.create_depth_image_output`.
+        """
         warnings.warn(
-            "RenderContext.create_depth_image_output is deprecated, use SensorTiledCamera.create_depth_image_output instead.",
+            "RenderContext.create_depth_image_output is deprecated, use SensorTiledCamera.utils.create_depth_image_output instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -711,8 +866,13 @@ class RenderContext:
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
+        """Create an output array for shape-index rendering.
+
+        .. deprecated::
+            Use :meth:`SensorTiledCamera.utils.create_shape_index_image_output`.
+        """
         warnings.warn(
-            "RenderContext.create_shape_index_image_output is deprecated, use SensorTiledCamera.create_shape_index_image_output instead.",
+            "RenderContext.create_shape_index_image_output is deprecated, use SensorTiledCamera.utils.create_shape_index_image_output instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -721,8 +881,13 @@ class RenderContext:
     def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.vec3f, ndim=4
     ):
+        """Create an output array for surface-normal rendering.
+
+        .. deprecated::
+            Use :meth:`SensorTiledCamera.utils.create_normal_image_output`.
+        """
         warnings.warn(
-            "RenderContext.create_normal_image_output is deprecated, use SensorTiledCamera.create_normal_image_output instead.",
+            "RenderContext.create_normal_image_output is deprecated, use SensorTiledCamera.utils.create_normal_image_output instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -731,8 +896,13 @@ class RenderContext:
     def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
+        """Create an output array for albedo rendering.
+
+        .. deprecated::
+            Use :meth:`SensorTiledCamera.utils.create_albedo_image_output`.
+        """
         warnings.warn(
-            "RenderContext.create_albedo_image_output is deprecated, use SensorTiledCamera.create_albedo_image_output instead.",
+            "RenderContext.create_albedo_image_output is deprecated, use SensorTiledCamera.utils.create_albedo_image_output instead.",
             DeprecationWarning,
             stacklevel=2,
         )

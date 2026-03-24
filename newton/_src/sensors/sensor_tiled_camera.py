@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
@@ -20,7 +20,7 @@ from .warp_raytrace import (
 
 class DeprecatedFields(type):
     @property
-    def RenderContext(cls) -> RenderContext:
+    def RenderContext(cls) -> type[RenderContext]:
         warnings.warn(
             "Access to SensorTiledCamera.RenderContext is deprecated.",
             DeprecationWarning,
@@ -70,89 +70,79 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
 
     @dataclass
     class Config:
-        """Rendering configuration."""
+        """Sensor configuration.
+
+        .. deprecated::
+            Use :class:`RenderConfig` and ``SensorTiledCamera.utils.*`` instead.
+        """
 
         checkerboard_texture: bool = False
-        """Apply a checkerboard texture to all shapes."""
+        """.. deprecated:: Use ``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes()`` instead."""
 
         default_light: bool = False
-        """Add a default directional light to the scene."""
+        """.. deprecated:: Use ``SensorTiledCamera.utils.create_default_light()`` instead."""
 
         default_light_shadows: bool = False
-        """Enable shadows for the default light (requires ``default_light``)."""
+        """.. deprecated:: Use ``SensorTiledCamera.utils.create_default_light(enable_shadows=True)`` instead."""
 
-        enable_ambient_lighting: bool | None = None
-        """Deprecated: use ``render_config.enable_ambient_lighting`` instead."""
+        enable_ambient_lighting: bool = True
+        """.. deprecated:: Use ``render_config.enable_ambient_lighting`` instead."""
 
         colors_per_world: bool = False
-        """Assign a random color palette per world."""
+        """.. deprecated:: Use ``SensorTiledCamera.utils.assign_random_colors_per_world()`` instead."""
 
         colors_per_shape: bool = False
-        """Assign a random color per shape (ignored when ``colors_per_world`` is True)."""
+        """.. deprecated:: Use ``SensorTiledCamera.utils.assign_random_colors_per_shape()`` instead."""
 
-        backface_culling: bool | None = None
-        """Deprecated: use ``render_config.enable_backface_culling`` instead."""
+        backface_culling: bool = True
+        """.. deprecated:: Use ``render_config.enable_backface_culling`` instead."""
 
-        enable_textures: bool | None = None
-        """Deprecated: use ``render_config.enable_textures`` instead."""
+        enable_textures: bool = False
+        """.. deprecated:: Use ``render_config.enable_textures`` instead."""
 
-        enable_particles: bool | None = None
-        """Deprecated: use ``render_config.enable_particles`` instead."""
+        enable_particles: bool = True
+        """.. deprecated:: Use ``render_config.enable_particles`` instead."""
 
-        render_config: SensorTiledCamera.RenderConfig = field(default_factory=RenderContext.Config)
-        """Low-level raytrace settings forwarded to the internal :class:`RenderContext`."""
-
-    def __init__(self, model: Model, *, config: Config | None = None):
+    def __init__(self, model: Model, *, config: Config | RenderConfig | None = None):
         self.model = model
 
-        if config is None:
-            config = SensorTiledCamera.Config()
+        render_config = config
 
-        if config.enable_ambient_lighting is not None:
+        if render_config is None:
+            render_config = SensorTiledCamera.RenderConfig()
+
+        elif isinstance(config, SensorTiledCamera.Config):
             warnings.warn(
-                "SensorTiledCamera.Config.enable_ambient_lighting is deprecated, use SensorTiledCamera.Config.render_config.enable_ambient_lighting instead.",
+                "SensorTiledCamera.Config is deprecated, use SensorTiledCamera.RenderConfig and SensorTiledCamera.utils.* functions instead.",
                 category=DeprecationWarning,
                 stacklevel=2,
             )
-            config.render_config.enable_ambient_lighting = config.enable_ambient_lighting
-        if config.backface_culling is not None:
-            warnings.warn(
-                "SensorTiledCamera.Config.backface_culling is deprecated, use SensorTiledCamera.Config.render_config.enable_backface_culling instead.",
-                category=DeprecationWarning,
-                stacklevel=2,
-            )
-            config.render_config.enable_backface_culling = config.backface_culling
-        if config.enable_textures is not None:
-            warnings.warn(
-                "SensorTiledCamera.Config.enable_textures is deprecated, use SensorTiledCamera.Config.render_config.enable_textures instead.",
-                category=DeprecationWarning,
-                stacklevel=2,
-            )
-            config.render_config.enable_textures = config.enable_textures
-        if config.enable_particles is not None:
-            warnings.warn(
-                "SensorTiledCamera.Config.enable_particles is deprecated, use SensorTiledCamera.Config.render_config.enable_particles instead.",
-                category=DeprecationWarning,
-                stacklevel=2,
-            )
-            config.render_config.enable_particles = config.enable_particles
+
+            render_config = SensorTiledCamera.RenderConfig()
+            render_config.enable_ambient_lighting = config.enable_ambient_lighting
+            render_config.enable_backface_culling = config.backface_culling
+            render_config.enable_textures = config.enable_textures
+            render_config.enable_particles = config.enable_particles
 
         self.__render_context = RenderContext(
             world_count=self.model.world_count,
-            config=config.render_config,
+            config=render_config,
             device=self.model.device,
         )
 
-        self.__render_context.init_from_model(self.model, not config.checkerboard_texture)
+        self.__render_context.init_from_model(self.model)
 
-        if config.checkerboard_texture:
-            self.assign_checkerboard_material_to_all_shapes()
-        if config.default_light:
-            self.create_default_light(config.default_light_shadows)
-        if config.colors_per_world:
-            self.assign_random_colors_per_world()
-        elif config.colors_per_shape:
-            self.assign_random_colors_per_shape()
+        self.utils = self.__render_context.utils
+
+        if isinstance(config, SensorTiledCamera.Config):
+            if config.checkerboard_texture:
+                self.utils.assign_checkerboard_material_to_all_shapes()
+            if config.default_light:
+                self.utils.create_default_light(config.default_light_shadows)
+            if config.colors_per_world:
+                self.utils.assign_random_colors_per_world()
+            elif config.colors_per_shape:
+                self.utils.assign_random_colors_per_shape()
 
     def sync_transforms(self, state: State):
         """Synchronize shape transforms from the simulation state.
@@ -221,6 +211,9 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
         Generates rays in camera space (origin at the camera center, direction normalized) for each pixel based on the
         vertical field of view.
 
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.compute_pinhole_camera_rays`` instead.
+
         Args:
             width: Image width [px].
             height: Image height [px].
@@ -229,13 +222,12 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
         Returns:
             camera_rays: Shape ``(camera_count, height, width, 2)``, dtype ``vec3f``.
         """
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.compute_pinhole_camera_rays is deprecated, use SensorTiledCamera.utils.compute_pinhole_camera_rays instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
 
-        if isinstance(camera_fovs, float):
-            camera_fovs = wp.array([camera_fovs], dtype=wp.float32, device=self.__render_context.device)
-        elif isinstance(camera_fovs, list):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.__render_context.device)
-        elif isinstance(camera_fovs, np.ndarray):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.__render_context.device)
         return self.__render_context.utils.compute_pinhole_camera_rays(width, height, camera_fovs)
 
     def flatten_color_image_to_rgba(
@@ -248,12 +240,20 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.flatten_color_image_to_rgba`` instead.
+
         Args:
             image: Color output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
-        return self.__render_context.utils.flatten_color_image_to_rgba(image, out_buffer, worlds_per_row)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.flatten_color_image_to_rgba is deprecated, use SensorTiledCamera.utils.flatten_color_image_to_rgba instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.flatten_color_image_to_rgba(image, out_buffer, worlds_per_row)
 
     def flatten_normal_image_to_rgba(
         self,
@@ -265,12 +265,20 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.flatten_normal_image_to_rgba`` instead.
+
         Args:
             image: Normal output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
-        return self.__render_context.utils.flatten_normal_image_to_rgba(image, out_buffer, worlds_per_row)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.flatten_normal_image_to_rgba is deprecated, use SensorTiledCamera.utils.flatten_normal_image_to_rgba instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.flatten_normal_image_to_rgba(image, out_buffer, worlds_per_row)
 
     def flatten_depth_image_to_rgba(
         self,
@@ -284,53 +292,97 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
         Encodes depth as grayscale: inverts values (closer = brighter) and normalizes to the ``[50, 255]``
         range. Background pixels (no hit) remain black.
 
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.flatten_depth_image_to_rgba`` instead.
+
         Args:
             image: Depth output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
             depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
         """
-        return self.__render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, worlds_per_row, depth_range)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.flatten_depth_image_to_rgba is deprecated, use SensorTiledCamera.utils.flatten_depth_image_to_rgba instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.flatten_depth_image_to_rgba(image, out_buffer, worlds_per_row, depth_range)
 
     def assign_random_colors_per_world(self, seed: int = 100):
         """Assign each world a random color, applied to all its shapes.
 
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.assign_random_colors_per_world`` instead.
+
         Args:
             seed: Random seed.
         """
-        self.__render_context.utils.assign_random_colors_per_world(seed)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.assign_random_colors_per_world is deprecated, use SensorTiledCamera.utils.assign_random_colors_per_world instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        self.utils.assign_random_colors_per_world(seed)
 
     def assign_random_colors_per_shape(self, seed: int = 100):
         """Assign a random color to each shape.
 
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.assign_random_colors_per_shape`` instead.
+
         Args:
             seed: Random seed.
         """
-        self.__render_context.utils.assign_random_colors_per_shape(seed)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.assign_random_colors_per_shape is deprecated, use SensorTiledCamera.utils.assign_random_colors_per_shape instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        self.utils.assign_random_colors_per_shape(seed)
 
     def create_default_light(self, enable_shadows: bool = True):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
 
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.create_default_light`` instead.
+
         Args:
             enable_shadows: Enable shadow casting for this light.
         """
-        self.__render_context.utils.create_default_light(enable_shadows)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.create_default_light is deprecated, use SensorTiledCamera.utils.create_default_light instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        self.utils.create_default_light(enable_shadows)
 
     def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
         """Assign a gray checkerboard texture material to all shapes.
+
         Creates a gray checkerboard pattern texture and applies it to all shapes
         in the scene.
+
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes`` instead.
 
         Args:
             resolution: Texture resolution in pixels (square texture).
             checker_size: Size of each checkerboard square in pixels.
         """
-        self.__render_context.utils.assign_checkerboard_material_to_all_shapes(resolution, checker_size)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.assign_checkerboard_material_to_all_shapes is deprecated, use SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        self.utils.assign_checkerboard_material_to_all_shapes(resolution, checker_size)
 
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
         """Create a color output array for :meth:`update`.
+
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.create_color_image_output`` instead.
 
         Args:
             width: Image width [px].
@@ -340,12 +392,20 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
         """
-        return self.__render_context.utils.create_color_image_output(width, height, camera_count)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.create_color_image_output is deprecated, use SensorTiledCamera.utils.create_color_image_output instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_color_image_output(width, height, camera_count)
 
     def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.float32, ndim=4
     ):
         """Create a depth output array for :meth:`update`.
+
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.create_depth_image_output`` instead.
 
         Args:
             width: Image width [px].
@@ -355,12 +415,20 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``float32``.
         """
-        return self.__render_context.utils.create_depth_image_output(width, height, camera_count)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.create_depth_image_output is deprecated, use SensorTiledCamera.utils.create_depth_image_output instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_depth_image_output(width, height, camera_count)
 
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
         """Create a shape-index output array for :meth:`update`.
+
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.create_shape_index_image_output`` instead.
 
         Args:
             width: Image width [px].
@@ -370,12 +438,20 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
         """
-        return self.__render_context.utils.create_shape_index_image_output(width, height, camera_count)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.create_shape_index_image_output is deprecated, use SensorTiledCamera.utils.create_shape_index_image_output instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_shape_index_image_output(width, height, camera_count)
 
     def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.vec3f, ndim=4
     ):
         """Create a normal output array for :meth:`update`.
+
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.create_normal_image_output`` instead.
 
         Args:
             width: Image width [px].
@@ -385,12 +461,20 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``vec3f``.
         """
-        return self.__render_context.utils.create_normal_image_output(width, height, camera_count)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.create_normal_image_output is deprecated, use SensorTiledCamera.utils.create_normal_image_output instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_normal_image_output(width, height, camera_count)
 
     def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
         """Create an albedo output array for :meth:`update`.
+
+        .. deprecated::
+            Use ``SensorTiledCamera.utils.create_albedo_image_output`` instead.
 
         Args:
             width: Image width [px].
@@ -400,14 +484,21 @@ class SensorTiledCamera(metaclass=DeprecatedFields):
         Returns:
             Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
         """
-        return self.__render_context.utils.create_albedo_image_output(width, height, camera_count)
+        warnings.warn(
+            "Deprecated: SensorTiledCamera.create_albedo_image_output is deprecated, use SensorTiledCamera.utils.create_albedo_image_output instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_albedo_image_output(width, height, camera_count)
 
     @property
     def render_context(self) -> RenderContext:
         """Internal Warp raytracing context used by :meth:`update` and buffer helpers.
 
-        Deprecated: direct access is deprecated and will be removed; prefer this class's
-        public methods, or `SensorTiledCamera.render_config` for `RenderConfig` access.
+        .. deprecated::
+            Direct access is deprecated and will be removed. Prefer this
+            class's public methods, or :attr:`render_config` for
+            :class:`RenderConfig` access.
 
         Returns:
             The shared :class:`RenderContext` instance.

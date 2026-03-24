@@ -192,31 +192,30 @@ class Example:
             self.sensor_render_height = int(display_height // self.worlds_per_col)
 
         # Setup Tiled Camera Sensor
-        self.tiled_camera_sensor = SensorTiledCamera(
-            model=self.model,
-            config=SensorTiledCamera.Config(default_light=True, default_light_shadows=True, checkerboard_texture=True),
-        )
+        self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
+        self.tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
         fov = 45.0
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
+        self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(
             self.sensor_render_width, self.sensor_render_height, math.radians(fov)
         )
-        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output(
+        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output(
+        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output(
+        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.utils.create_normal_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.create_shape_index_image_output(
+        self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.utils.create_shape_index_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.create_albedo_image_output(
+        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.utils.create_albedo_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
         self.depth_range = wp.array([1.0, 100.0], dtype=wp.float32)
@@ -325,26 +324,26 @@ class Example:
             ),
         )
         if self.image_output == 0:
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_color_image,
                 texture_buffer,
                 self.worlds_per_row,
             )
         elif self.image_output == 1:
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_albedo_image,
                 texture_buffer,
                 self.worlds_per_row,
             )
         elif self.image_output == 2:
-            self.tiled_camera_sensor.flatten_depth_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_depth_image_to_rgba(
                 self.tiled_camera_sensor_depth_image,
                 texture_buffer,
                 self.worlds_per_row,
                 self.depth_range,
             )
         elif self.image_output == 3:
-            self.tiled_camera_sensor.flatten_normal_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_normal_image_to_rgba(
                 self.tiled_camera_sensor_normal_image,
                 texture_buffer,
                 self.worlds_per_row,
@@ -356,7 +355,7 @@ class Example:
                 [self.tiled_camera_sensor_shape_index_image, self.semantic_colors],
                 [self.tiled_camera_sensor_shape_index_image],
             )
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_shape_index_image,
                 texture_buffer,
                 self.worlds_per_row,
@@ -368,7 +367,7 @@ class Example:
                 [self.tiled_camera_sensor_shape_index_image],
                 [self.tiled_camera_sensor_shape_index_image],
             )
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_shape_index_image,
                 texture_buffer,
                 self.worlds_per_row,
