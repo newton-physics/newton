@@ -505,6 +505,7 @@ class GlobalContactReducer:
         capacity: int,
         device: str | None = None,
         store_hydroelastic_data: bool = False,
+        store_moment_data: bool = False,
     ):
         """Initialize the global contact reducer.
 
@@ -512,6 +513,8 @@ class GlobalContactReducer:
             capacity: Maximum number of contacts to store
             device: Warp device (e.g., "cuda:0", "cpu")
             store_hydroelastic_data: If True, allocate arrays for contact_area and entry_k_eff
+            store_moment_data: If True, allocate moment accumulator arrays for friction
+                moment matching. Only needed when ``moment_matching=True``.
         """
         self.capacity = capacity
         self.device = device
@@ -567,9 +570,14 @@ class GlobalContactReducer:
             # Total depth-weighted normal of reduced contacts per normal bin
             self.total_normal_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             # Moment accumulators for moment matching (friction scale adjustment)
-            self.agg_moment_unreduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
-            self.agg_moment_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
-            self.agg_moment2_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+            if store_moment_data:
+                self.agg_moment_unreduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+                self.agg_moment_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+                self.agg_moment2_reduced = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+            else:
+                self.agg_moment_unreduced = wp.zeros(0, dtype=wp.float32, device=device)
+                self.agg_moment_reduced = wp.zeros(0, dtype=wp.float32, device=device)
+                self.agg_moment2_reduced = wp.zeros(0, dtype=wp.float32, device=device)
         else:
             self.agg_force = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(0, dtype=wp.vec3, device=device)

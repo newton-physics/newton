@@ -979,6 +979,7 @@ class HydroelasticContactReduction:
             capacity=capacity,
             device=device,
             store_hydroelastic_data=True,
+            store_moment_data=config.moment_matching,
         )
 
         # Create reduction kernel
