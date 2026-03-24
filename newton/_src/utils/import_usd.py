@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -177,12 +165,10 @@ def parse_usd(
         load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes: If True, collision shapes on bodies that already
-            have visual-only geometry are hidden. Collision shapes on bodies
-            without visual-only geometry remain visible as a rendering fallback.
-            Mesh colliders with authored PBR material data (texture,
-            roughness, or metallic) also remain visible so collision-only
-            render meshes are not lost.
-            Default is False.
+            have visual-only geometry are hidden unconditionally, regardless of
+            whether the collider has authored PBR material data. Collision
+            shapes on bodies without visual-only geometry remain visible as a
+            rendering fallback. Default is False.
         force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
@@ -2097,9 +2083,9 @@ def parse_usd(
                     and _has_visual_material_properties(_get_material_props_cached(prim))
                 )
 
-                hide_collider_for_body = (
-                    hide_collision_shapes and has_body_visual_shapes and not collider_has_visual_material
-                )
+                # Explicit hide_collision_shapes overrides material-based visibility:
+                # if the body already has visual shapes, hide its colliders unconditionally.
+                hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
                 show_collider_by_policy = should_show_collider(
                     force_show_colliders,
                     has_visual_shapes=has_body_visual_shapes,
@@ -2726,20 +2712,35 @@ def parse_usd(
         )
 
     # Parse Newton actuator prims from the USD stage.
-    from newton_actuators import parse_actuator_prim  # noqa: PLC0415
+    try:
+        from newton_actuators import parse_actuator_prim  # noqa: PLC0415
+    except ImportError:
+        parse_actuator_prim = None
 
     actuator_count = 0
-    path_to_dof = {
-        path: builder.joint_qd_start[idx] for path, idx in path_joint_map.items() if idx < len(builder.joint_qd_start)
-    }
-    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-        parsed = parse_actuator_prim(prim)
-        if parsed is None:
-            continue
-        dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
-        if dof_indices:
-            builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
-            actuator_count += 1
+    if parse_actuator_prim is not None:
+        path_to_dof = {
+            path: builder.joint_qd_start[idx]
+            for path, idx in path_joint_map.items()
+            if idx < len(builder.joint_qd_start)
+        }
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            parsed = parse_actuator_prim(prim)
+            if parsed is None:
+                continue
+            dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
+            if dof_indices:
+                builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
+                actuator_count += 1
+    else:
+        # TODO: Replace this string-based type name check with a proper schema query
+        # once the Newton actuator USD schema is merged
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            if prim.GetTypeName() == "Actuator":
+                raise ImportError(
+                    f"USD stage contains actuator prims (e.g. {prim.GetPath()}) but newton-actuators is not installed. "
+                    "Install with: pip install newton[sim]"
+                )
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 

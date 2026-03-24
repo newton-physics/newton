@@ -1,22 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import warp as wp
 
@@ -29,18 +17,6 @@ from .bvh import (
 from .render import create_kernel
 from .types import GaussianRenderMode, MeshData, RenderOrder, TextureData
 from .utils import Utils
-
-
-@dataclass
-class ClearData:
-    clear_color: int | wp.int32 | None = field(default_factory=lambda: wp.int32(0))
-    clear_depth: float | wp.float32 | None = field(default_factory=lambda: wp.float32(0.0))
-    clear_shape_index: int | wp.uint32 | None = field(default_factory=lambda: wp.uint32(0xFFFFFFFF))
-    clear_normal: wp.vec3f | None = field(default_factory=lambda: wp.vec3f(0.0))
-    clear_albedo: int | wp.int32 | None = field(default_factory=lambda: wp.int32(0))
-
-
-DEFAULT_CLEAR_DATA = ClearData()
 
 
 class RenderContext:
@@ -63,6 +39,21 @@ class RenderContext:
     @dataclass(unsafe_hash=True)
     class State:
         num_gaussians: int = 0
+        render_color: bool = False
+        render_depth: bool = False
+        render_shape_index: bool = False
+        render_normal: bool = False
+        render_albedo: bool = False
+
+    @dataclass(unsafe_hash=True)
+    class ClearData:
+        clear_color: int = 0
+        clear_depth: float = 0.0
+        clear_shape_index: int = 0xFFFFFFFF
+        clear_normal: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        clear_albedo: int = 0
+
+    DEFAULT_CLEAR_DATA = ClearData()
 
     def __init__(self, world_count: int = 1, config: Config | None = None, device: str | None = None):
         self.device = device
@@ -70,7 +61,7 @@ class RenderContext:
         self.config = config if config else RenderContext.Config()
         self.state = RenderContext.State()
 
-        self.kernel_cache: dict[tuple[RenderContext.Config, RenderContext.State], wp.kernel] = {}
+        self.kernel_cache: dict[int, wp.kernel] = {}
 
         self.world_count = world_count
 
@@ -165,14 +156,24 @@ class RenderContext:
         normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None = None,
         albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         refit_bvh: bool = True,
-        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
+        clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
     ):
         if self.has_shapes or self.has_particles or self.has_triangle_mesh or self.has_gaussians:
             if refit_bvh:
                 self.refit_bvh()
+
             width = camera_rays.shape[2]
             height = camera_rays.shape[1]
             camera_count = camera_rays.shape[0]
+
+            if clear_data is None:
+                clear_data = RenderContext.DEFAULT_CLEAR_DATA
+
+            self.state.render_color = color_image is not None
+            self.state.render_depth = depth_image is not None
+            self.state.render_shape_index = shape_index_image is not None
+            self.state.render_normal = normal_image is not None
+            self.state.render_albedo = albedo_image is not None
 
             assert camera_transforms.shape == (camera_count, self.world_count), (
                 f"camera_transforms size must match {camera_count} x {self.world_count}"
@@ -186,36 +187,26 @@ class RenderContext:
                 assert color_image.shape == (self.world_count, camera_count, height, width), (
                     f"color_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
-                if clear_data is not None and clear_data.clear_color is not None:
-                    color_image.fill_(wp.uint32(clear_data.clear_color))
 
             if depth_image is not None:
                 assert depth_image.shape == (self.world_count, camera_count, height, width), (
                     f"depth_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
-                if clear_data is not None and clear_data.clear_depth is not None:
-                    depth_image.fill_(wp.float32(clear_data.clear_depth))
 
             if shape_index_image is not None:
                 assert shape_index_image.shape == (self.world_count, camera_count, height, width), (
                     f"shape_index_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
-                if clear_data is not None and clear_data.clear_shape_index is not None:
-                    shape_index_image.fill_(wp.uint32(clear_data.clear_shape_index))
 
             if normal_image is not None:
                 assert normal_image.shape == (self.world_count, camera_count, height, width), (
                     f"normal_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
-                if clear_data is not None and clear_data.clear_normal is not None:
-                    normal_image.fill_(clear_data.clear_normal)
 
             if albedo_image is not None:
                 assert albedo_image.shape == (self.world_count, camera_count, height, width), (
                     f"albedo_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
-                if clear_data is not None and clear_data.clear_albedo is not None:
-                    albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
 
             if self.config.render_order == RenderOrder.TILED:
                 assert width % self.config.tile_width == 0, "render width must be a multiple of tile_width"
@@ -233,10 +224,10 @@ class RenderContext:
             if albedo_image is not None:
                 albedo_image = albedo_image.reshape(self.world_count * camera_count * width * height)
 
-            kernel_cache_key = (self.config, self.state)
+            kernel_cache_key = hash((self.config, self.state, clear_data))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
             if render_kernel is None:
-                render_kernel = create_kernel(self.config, self.state)
+                render_kernel = create_kernel(self.config, self.state, clear_data)
                 self.kernel_cache[kernel_cache_key] = render_kernel
 
             wp.launch(
@@ -287,11 +278,6 @@ class RenderContext:
                     self.lights_position,
                     self.lights_orientation,
                     # Outputs
-                    color_image is not None,
-                    depth_image is not None,
-                    shape_index_image is not None,
-                    normal_image is not None,
-                    albedo_image is not None,
                     color_image,
                     depth_image,
                     shape_index_image,

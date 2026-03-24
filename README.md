@@ -10,7 +10,7 @@ Newton is a GPU-accelerated physics simulation engine built upon [NVIDIA Warp](h
 Newton extends and generalizes Warp's ([deprecated](https://github.com/NVIDIA/warp/discussions/735)) `warp.sim` module, and integrates
 [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) as its primary backend. Newton emphasizes GPU-based computation, [OpenUSD](https://openusd.org/) support, differentiability, and user-defined extensibility, facilitating rapid iteration and scalable robotics simulation.
 
-Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. Code is licensed under [Apache-2.0](https://github.com/newton-physics/newton/blob/main/LICENSE.md). Documentation is licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
+Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. Code is licensed under [Apache-2.0](https://github.com/newton-physics/newton/blob/main/LICENSE.md). Documentation is licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Additional and third-party license texts are available in [`newton/licenses`](https://github.com/newton-physics/newton/tree/main/newton/licenses).
 
 Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/), and [NVIDIA](https://www.nvidia.com/).
 
@@ -473,6 +473,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_viscous.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_viscous.jpg" alt="MPM Viscous">
+      </a>
     </td>
   </tr>
   <tr>
@@ -481,6 +484,31 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples mpm_multi_material</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mpm_viscous</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_beam_twist.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_beam_twist.jpg" alt="MPM Beam Twist">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_snow_ball.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_snow_ball.jpg" alt="MPM Snow Ball">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mpm_beam_twist</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mpm_snow_ball</code>
     </td>
     <td align="center" width="33%">
     </td>

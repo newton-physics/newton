@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """MuJoCo Menagerie integration tests.
 
@@ -2038,6 +2026,13 @@ class TestMenagerieBase(unittest.TestCase):
         Override in subclasses where DOF ordering may differ.
         """
 
+    def _compare_tendon_jacobian_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse tendon Jacobian structure (ten_J_colind, ten_J_rowadr, ten_J_rownnz).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
+
     def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare compilation-dependent fields at relaxed tolerance.
 
@@ -2186,6 +2181,7 @@ class TestMenagerieBase(unittest.TestCase):
         self._compare_body_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_dof_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_mass_matrix_structure(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_tendon_jacobian_structure(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_actuator_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_compiled_fields(self._newton_solver.mjw_model, self._native_mjw_model)
 

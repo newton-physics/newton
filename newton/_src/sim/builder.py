@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """A module for building Newton models."""
 
@@ -2322,12 +2310,10 @@ class ModelBuilder:
             load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
-                have visual-only geometry are hidden. Collision shapes on bodies
-                without visual-only geometry remain visible as a rendering fallback.
-                Mesh colliders with authored PBR material data (texture,
-                roughness, or metallic) also remain visible so collision-only
-                render meshes are not lost.
-                Default is False.
+                have visual-only geometry are hidden unconditionally, regardless of
+                whether the collider has authored PBR material data. Collision
+                shapes on bodies without visual-only geometry remain visible as a
+                rendering fallback. Default is False.
             force_show_colliders: If True, collision shapes get the VISIBLE flag
                 regardless of whether visual shapes exist on the same body. Note that
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for

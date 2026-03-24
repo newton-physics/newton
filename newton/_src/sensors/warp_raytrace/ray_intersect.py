@@ -1,18 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 
 import warp as wp
 
@@ -309,7 +296,7 @@ def ray_intersect_mesh_no_transform(
 
 
 @wp.func
-def ray_intersect_mesh(
+def ray_intersect_mesh_with_normal(
     transform: wp.transformf,
     scale: wp.vec3f,
     ray_origin: wp.vec3f,
@@ -320,9 +307,7 @@ def ray_intersect_mesh(
     enable_backface_culling: wp.bool,
     max_t: wp.float32,
 ) -> tuple[GeomHit, wp.float32, wp.float32, wp.int32]:
-    """Returns intersection information at which a ray intersects with a mesh.
-
-    Requires wp.Mesh be constructed and their ids to be passed"""
+    """Returns intersection information at which a ray intersects with a mesh."""
 
     geom_hit = GeomHit()
     geom_hit.hit = False
@@ -356,20 +341,21 @@ def ray_intersect_mesh(
 
 
 @wp.func
-def ray_intersect_mesh_any(
+def ray_intersect_mesh(
     transform: wp.transformf,
     scale: wp.vec3f,
     ray_origin: wp.vec3f,
     ray_direction: wp.vec3f,
     mesh_id: wp.uint64,
+    enable_backface_culling: wp.bool,
     max_t: wp.float32,
-) -> float:
-    """Return the distance to the nearest mesh intersection, or ``-1.0`` if no hit."""
+) -> wp.float32:
+    """Returns intersection distance at which a ray intersects with a mesh."""
 
     ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
-
     query = wp.mesh_query_ray(mesh_id, ray_origin_local, ray_direction_local, max_t)
 
     if query.result:
-        return query.t
+        if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
+            return query.t
     return -1.0

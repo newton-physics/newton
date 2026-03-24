@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import ctypes
 
@@ -633,7 +621,9 @@ class ShaderShape(ShaderGL):
             if env_texture is not None:
                 self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, env_texture)
             else:
-                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, 0)
+                from .opengl import RendererGL  # noqa: PLC0415
+
+                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
             self._gl.glUniform1i(self.loc_env_map, 2)
             self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
 

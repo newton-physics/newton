@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -624,7 +612,7 @@ class ViewerBase(ABC):
             materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
             geo_thickness: Optional thickness used for hashing and solidification.
             geo_is_solid: If False, use shell-thickening for mesh-based geometry.
-            geo_src: Source geometry to use only when :paramref:`geo_type` is
+            geo_src: Source geometry to use only when ``geo_type`` is
                 :attr:`newton.GeoType.MESH`.
             hidden: If True, the shape will not be rendered
         """
@@ -709,7 +697,7 @@ class ViewerBase(ABC):
             geo_is_solid: Whether to render mesh geometry as a solid.
             geo_src: Source :class:`newton.Mesh` or
                 :class:`newton.Heightfield` data when required
-                by :paramref:`geo_type`.
+                by ``geo_type``.
             hidden: Whether the created mesh should be hidden.
         """
 
