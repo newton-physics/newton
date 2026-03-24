@@ -942,14 +942,11 @@ class Example:
         # Recompute forward kinematics to refresh derived state.
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.state_1.joint_q, self.state_1.joint_qd, self.state_1)
-        # Reset camera to initial state.
-        self._follow_cam_active = False
+        # Clear follow-camera smoothing so it snaps to the reset position.
         self._follow_cam_pos = None
         self._follow_cam_yaw = 0.0
         self._orbit_yaw_offset = 0.0
         self._orbit_pitch_offset = 0.0
-        self._max_cam_dist = self._FOLLOW_DIST
-        self._camera_set_in_render = False  # triggers set_camera on next render
 
     def step(self):
         # Read velocity commands from gamepad or keyboard
