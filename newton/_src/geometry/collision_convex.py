@@ -39,7 +39,7 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
         orientation_b: wp.quat,
         position_a: wp.vec3,
         position_b: wp.vec3,
-        sum_of_contact_offsets: float,
+        combined_margin: float,
         data_provider: Any,
         contact_threshold: float,
         skip_multi_contact: bool,
@@ -61,7 +61,7 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
             geom_b,
             relative_orientation_b,
             relative_position_b,
-            sum_of_contact_offsets + enlarge,
+            combined_margin + enlarge,
             data_provider,
         )
 
@@ -74,7 +74,7 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
                 geom_b,
                 relative_orientation_b,
                 relative_position_b,
-                sum_of_contact_offsets,
+                combined_margin,
                 data_provider,
             )
 
@@ -134,7 +134,7 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
         orientation_b: wp.quat,
         position_a: wp.vec3,
         position_b: wp.vec3,
-        sum_of_contact_offsets: float,
+        combined_margin: float,
         data_provider: Any,
         contact_threshold: float,
         writer_data: Any,
@@ -154,7 +154,7 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
             geom_b,
             relative_orientation_b,
             relative_position_b,
-            sum_of_contact_offsets + enlarge,
+            combined_margin + enlarge,
             data_provider,
         )
 
@@ -167,7 +167,7 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
                 geom_b,
                 relative_orientation_b,
                 relative_position_b,
-                sum_of_contact_offsets,
+                combined_margin,
                 data_provider,
             )
 

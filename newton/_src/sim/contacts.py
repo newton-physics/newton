@@ -95,19 +95,31 @@ class Contacts:
             self.rigid_contact_shape0 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
             self.rigid_contact_shape1 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
             self.rigid_contact_point0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            """Body-frame contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            """Body-frame contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Contact offset on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            """Body-frame friction anchor offset for shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`.
+
+            Equal to the contact normal scaled by ``effective_radius + margin`` and
+            expressed in shape 0's body frame. Combined with
+            ``rigid_contact_point0`` to form a shifted friction anchor that accounts
+            for rotational effects of finite contact thickness in tangential friction
+            calculations."""
             self.rigid_contact_offset1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Contact offset on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            """Body-frame friction anchor offset for shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`.
+
+            Equal to the contact normal scaled by ``effective_radius + margin`` and
+            expressed in shape 1's body frame. Combined with
+            ``rigid_contact_point1`` to form a shifted friction anchor that accounts
+            for rotational effects of finite contact thickness in tangential friction
+            calculations."""
             self.rigid_contact_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Contact normal pointing from shape 0 toward shape 1 (A-to-B) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_margin0 = wp.zeros(rigid_contact_max, dtype=wp.float32)
-            """Contact margin for shape 0 [m], shape (rigid_contact_max,), dtype float."""
+            """Surface thickness for shape 0: effective radius + margin [m], shape (rigid_contact_max,), dtype float."""
             self.rigid_contact_margin1 = wp.zeros(rigid_contact_max, dtype=wp.float32)
-            """Contact margin for shape 1 [m], shape (rigid_contact_max,), dtype float."""
+            """Surface thickness for shape 1: effective radius + margin [m], shape (rigid_contact_max,), dtype float."""
             self.rigid_contact_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
             # to be filled by the solver (currently unused)
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3)
