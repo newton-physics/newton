@@ -1,10 +1,11 @@
 name: Newton + Minimum Dependency Versions
 
 # This workflow runs weekly to test Newton with the lowest compatible versions
-# of all PyPI dependencies (as specified by version floors in pyproject.toml).
-# It uses `uv lock --resolution lowest` to resolve every dependency to its
-# minimum supported version, catching cases where the codebase has drifted to
-# depend on features only available in newer releases.
+# of direct PyPI dependencies (as specified by version floors in pyproject.toml).
+# It uses `uv lock --resolution lowest-direct` to resolve direct dependencies
+# to their minimum supported versions while letting transitive dependencies
+# resolve normally, catching cases where the codebase has drifted to depend on
+# features only available in newer releases of its direct dependencies.
 # Scheduled workflows automatically run on the default branch (main).
 
 env:
@@ -48,7 +49,7 @@ jobs:
 
       - name: Resolve minimum dependency versions
         run: |
-          uv lock --resolution lowest
+          uv lock --resolution lowest-direct
           echo "Resolved dependency versions:"
           uv tree --depth 1
 
