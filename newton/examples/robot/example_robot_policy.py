@@ -30,7 +30,7 @@
 #   Y button               — toggle follow cam
 #   B button               — snap camera behind robot
 #   A button               — snap camera to front of robot
-#   X button               — reset (also Select / Back)
+#   Select / Back          — reset
 #
 # Keyboard mapping (viewer window must have focus):
 # Press "p" to reset the robot.
@@ -574,12 +574,11 @@ class _GamepadInput:
     def check_reset(self) -> bool:
         """Return ``True`` on the rising edge of the reset input.
 
-        Gamepad: X button or Select / Back button.  Keyboard: ``p`` key.
+        Gamepad: Select / Back button.  Keyboard: ``p`` key.
         """
         pressed = False
         if self._mode == "joystick":
-            c = self._controller
-            pressed = bool(c.button_x.is_pressed) or bool(c.button_select.is_pressed)
+            pressed = bool(self._controller.button_select.is_pressed)
             # Also allow keyboard 'p' when a gamepad is connected
             if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
                 pressed = bool(self._viewer.is_key_down("p"))
@@ -1014,7 +1013,6 @@ class Example:
 
         dt = self.frame_dt
         dyaw, dpitch = self._gamepad.read_camera_orbit(dt)
-        dyaw = -dyaw  # free-cam: right stick right → turn right
         dolly, pan   = self._gamepad.read_camera_move(dt)
 
         if dyaw == 0.0 and dpitch == 0.0 and dolly == 0.0 and pan == 0.0:

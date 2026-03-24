@@ -316,12 +316,11 @@ class JoystickController:
     def check_reset(self) -> bool:
         """Return True on the rising edge of the reset input.
 
-        Gamepad: X button or Select/Back button.  Keyboard: ``p`` key.
+        Gamepad: Select/Back button.  Keyboard: ``p`` key.
         """
         pressed = False
         if self._mode == "joystick":
-            c = self._controller
-            pressed = bool(c.button_x.is_pressed) or bool(c.button_select.is_pressed)
+            pressed = bool(self._controller.button_select.is_pressed)
             # Also allow keyboard 'p' when a gamepad is connected
             if not pressed and self._viewer is not None and hasattr(self._viewer, "is_key_down"):
                 pressed = bool(self._viewer.is_key_down("p"))
