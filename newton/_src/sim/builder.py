@@ -9408,7 +9408,9 @@ class ModelBuilder:
             local_aabb_lower = []
             local_aabb_upper = []
             voxel_resolution = []
-            voxel_budget = 100  # Maximum voxels per shape for contact reduction
+            from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
+
+            voxel_budget = NUM_VOXEL_DEPTH_SLOTS
 
             # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
             # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
