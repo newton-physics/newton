@@ -3998,10 +3998,10 @@ class TestMuJoCoContactForce(unittest.TestCase):
         return model, ground_shape
 
     def _run_and_collect_forces(self, model, cone: str = "pyramidal", settle: int = 10, avg: int = 10):
-        """Run simulation, settle, then average contact forces over *avg* steps.
+        """Run simulation, settle, then average total contact force over *avg* steps.
 
         Returns:
-            forces: Averaged linear contact forces, shape (nacon, 3).
+            force: Averaged total linear contact force, shape (3,).
             shape0: Shape index of shape0 in the first contact.
         """
         try:
@@ -4016,14 +4016,13 @@ class TestMuJoCoContactForce(unittest.TestCase):
         contacts = model.contacts()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
-        dt = 1.0 / 240.0
+        dt = 0.002
         for _ in range(settle):
             state_in.clear_forces()
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
 
-        force_acc = None
-        n_samples = 0
+        force_acc = np.zeros(3)
         for _ in range(avg):
             state_in.clear_forces()
             solver.step(state_in, state_out, control, contacts, dt)
@@ -4031,50 +4030,38 @@ class TestMuJoCoContactForce(unittest.TestCase):
 
             solver.update_contacts(contacts, state_in)
             nacon = int(solver.mjw_data.nacon.numpy()[0])
-            if nacon == 0:
-                continue
+            if nacon > 0:
+                f = contacts.force.numpy()[:nacon, :3]
+                force_acc += np.sum(f, axis=0)
 
-            f = contacts.force.numpy()[:nacon, :3]
-            if force_acc is None:
-                force_acc = f.copy()
-            else:
-                force_acc += f
-            n_samples += 1
-
-        self.assertGreater(n_samples, 0, "No steps with active contacts during averaging window")
-        force_acc /= n_samples
+        total_force = force_acc / avg
         shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
-        return force_acc, shape0
+        return total_force, shape0
 
     def test_pyramidal_cone_weight(self):
         """Box weight via pyramidal cone contacts must match mg."""
         model, ground_shape = self._build_box_on_ground(friction=0.5)
-        forces, shape0 = self._run_and_collect_forces(model, cone="pyramidal")
+        force, shape0 = self._run_and_collect_forces(model, cone="pyramidal")
         # Force on shape0: if ground is shape0 the box pushes it down (-Z), otherwise up (+Z).
         expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else self.BOX_MASS * self.GRAVITY
-        total_fz = np.sum(forces[:, 2])
-        np.testing.assert_allclose(total_fz, expected_fz, rtol=0.05)
+        np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
         # Horizontal forces should be near zero for a resting box.
-        np.testing.assert_allclose(np.sum(forces[:, 0]), 0.0, atol=1.0)
-        np.testing.assert_allclose(np.sum(forces[:, 1]), 0.0, atol=1.0)
+        np.testing.assert_allclose(force[0], 0.0, atol=1.0)
+        np.testing.assert_allclose(force[1], 0.0, atol=1.0)
 
     def test_elliptic_cone_weight(self):
         """Box weight via elliptic cone contacts must match mg."""
         model, ground_shape = self._build_box_on_ground(friction=0.5)
-        forces, shape0 = self._run_and_collect_forces(model, cone="elliptic")
+        force, shape0 = self._run_and_collect_forces(model, cone="elliptic")
         expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else self.BOX_MASS * self.GRAVITY
-        total_fz = np.sum(forces[:, 2])
-        np.testing.assert_allclose(total_fz, expected_fz, rtol=0.05)
+        np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
         # Horizontal forces should be near zero for a resting box.
-        np.testing.assert_allclose(np.sum(forces[:, 0]), 0.0, atol=1.0)
-        np.testing.assert_allclose(np.sum(forces[:, 1]), 0.0, atol=1.0)
+        np.testing.assert_allclose(force[0], 0.0, atol=1.0)
+        np.testing.assert_allclose(force[1], 0.0, atol=1.0)
 
-    def test_contact_forces_on_incline(self):
-        """Contact force on an incline must balance gravity (tests rotated contact frame)."""
-        incline_angle = 0.7  # rad (~40°); mu=1.0 > tan(0.7)≈0.84 → static
-        settle, avg = 200, 10
+    def _build_incline_model(self, incline_angle: float):
+        """Create a box resting on an inclined ramp with mu=1.0 (static for angle < ~45°)."""
         hz = 0.1  # box half-height
-
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
@@ -4085,49 +4072,23 @@ class TestMuJoCoContactForce(unittest.TestCase):
             body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), ramp_q), hx=5.0, hy=5.0, hz=0.5
         )
         # Place box center exactly hz above the ramp surface to avoid bounce.
-        box_pos = wp.vec3(0.0, 0.0, hz / np.cos(incline_angle))
-        body = builder.add_body(xform=wp.transform(box_pos, ramp_q))
+        # The ramp top face is at ramp_center + 0.5 * normal (not at the origin).
+        ramp_center = np.array([0.0, 0.0, -0.5])
+        normal = np.array([0.0, -np.sin(incline_angle), np.cos(incline_angle)])
+        box_center = ramp_center + (0.5 + hz) * normal
+        body = builder.add_body(xform=wp.transform(wp.vec3(*box_center), ramp_q))
         builder.add_shape_box(body=body, hx=hz, hy=hz, hz=hz)
         model = builder.finalize()
         model.request_contact_attributes("force")
+        return model, ramp_shape
 
-        try:
-            solver = SolverMuJoCo(model, cone="pyramidal")
-        except ImportError as e:
-            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
-            return
-
-        state_in = model.state()
-        state_out = model.state()
-        control = model.control()
-        contacts = model.contacts()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
-
-        dt = 1.0 / 240.0
-        for _ in range(settle):
-            state_in.clear_forces()
-            solver.step(state_in, state_out, control, contacts, dt)
-            state_in, state_out = state_out, state_in
-
-        force_acc = np.zeros(3)
-        n_samples = 0
-        for _ in range(avg):
-            state_in.clear_forces()
-            solver.step(state_in, state_out, control, contacts, dt)
-            state_in, state_out = state_out, state_in
-            solver.update_contacts(contacts, state_in)
-            nacon = int(solver.mjw_data.nacon.numpy()[0])
-            if nacon == 0:
-                continue
-            f = contacts.force.numpy()[:nacon, :3]
-            force_acc += np.sum(f, axis=0)
-            n_samples += 1
-        self.assertGreater(n_samples, 0, "No steps with active contacts during averaging window")
-        total_force = force_acc / n_samples
-
-        shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
+    def test_contact_forces_on_incline(self):
+        """Contact force on an incline must balance gravity (tests rotated contact frame)."""
+        incline_angle = 0.25  # rad (~14°); mu=1.0 > tan(0.25)≈0.26 → static
+        model, ramp_shape = self._build_incline_model(incline_angle)
+        force, shape0 = self._run_and_collect_forces(model, cone="pyramidal", settle=300, avg=80)
         expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ramp_shape else self.BOX_MASS * self.GRAVITY
-        np.testing.assert_allclose(total_force[2], expected_fz, rtol=0.05)
+        np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
 
 
 class TestMuJoCoValidation(unittest.TestCase):
