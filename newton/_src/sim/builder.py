@@ -816,17 +816,20 @@ class ModelBuilder:
         ensuring physical validity (I1 + I2 >= I3 for principal moments). Default: True."""
 
         self.bound_mass: float | None = None
-        """Minimum allowed mass value for rigid bodies. If set, any body mass below this value will be
-        clamped to this minimum. Set to None to disable mass clamping. Default: None."""
+        """Minimum allowed mass value for rigid bodies [kg]. If set, any body mass below this
+        value will be clamped to this minimum. Set to None to disable mass clamping.
+        Default: None."""
 
         self.bound_inertia: float | None = None
-        """Minimum allowed eigenvalue for rigid body inertia tensors. If set, ensures all principal
-        moments of inertia are at least this value. Set to None to disable inertia eigenvalue
-        clamping. Default: None."""
+        """Minimum allowed eigenvalue for rigid body inertia tensors [kg*m^2]. If set, ensures
+        all principal moments of inertia are at least this value. Set to None to disable inertia
+        eigenvalue clamping. Default: None."""
 
         self.inertia_tolerance: float = 1e-6
         """Tolerance for inertia eigenvalue positivity checks and triangle inequality
-        validation [kg·m²]. Lower this for models with lightweight components (< ~50g).
+        validation [kg*m^2]. Lower this for models with lightweight components (< ~50g).
+        Values below ~1e-7 may not behave identically across the detailed (float64) and
+        fast (float32) validation paths due to float32 precision limits.
         Default: 1e-6."""
 
         self.validate_inertia_detailed: bool = False
@@ -9850,6 +9853,11 @@ class ModelBuilder:
             # This catches negative masses/inertias and other critical issues.
             # Neither path mutates the builder — corrected values only appear
             # on the returned Model so that finalize() is side-effect-free.
+            if not math.isfinite(self.inertia_tolerance) or self.inertia_tolerance < 0.0:
+                raise ValueError(
+                    f"inertia_tolerance must be a finite, non-negative value, got {self.inertia_tolerance!r}."
+                )
+
             if len(self.body_mass) > 0:
                 if self.validate_inertia_detailed:
                     # Use detailed Python validation with per-body warnings.

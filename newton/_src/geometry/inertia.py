@@ -701,7 +701,7 @@ def verify_and_correct_inertia(
         # Fallback: use diagonal elements
         trace = np.trace(corrected_inertia)
         if trace <= 0:
-            trace = 1e-6
+            trace = tolerance
         corrected_inertia = np.eye(3) * (trace / 3.0)
         has_violations = False
         principal_moments = [trace / 3.0, trace / 3.0, trace / 3.0]
@@ -753,9 +753,12 @@ def verify_and_correct_inertia(
         warnings.warn(
             f"Corrected inertia matrix{body_id} is not positive definite, this should not happen", stacklevel=2
         )
-        # As a last resort, make it positive definite by adding a small value to diagonal
-        min_eigenvalue = np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -1e-6
-        epsilon = abs(min_eigenvalue) + 1e-6
+        # As a last resort, make it positive definite by adding a small value to diagonal.
+        # abs() guarantees epsilon >= tolerance, so this is safe for any tolerance setting.
+        min_eigenvalue = (
+            np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -tolerance
+        )
+        epsilon = abs(min_eigenvalue) + tolerance
         corrected_inertia[0, 0] += epsilon
         corrected_inertia[1, 1] += epsilon
         corrected_inertia[2, 2] += epsilon
