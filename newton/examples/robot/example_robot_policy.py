@@ -30,7 +30,6 @@
 # to run the example with a PhysX-trained policy run with --physx
 ###########################################################################
 
-import argparse
 from dataclasses import dataclass
 from typing import Any
 
@@ -112,43 +111,6 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     else:
         c = q_vec * torch.einsum("...i,...i->...", q_vec, v).unsqueeze(-1) * 2.0
     return a - b + c
-
-
-def add_terrain(builder,
-                file_path: str | None = None,
-                root_prim: str | None = None,
-                usd_collide: bool = False,
-                add_ground_plane: bool = False
-):
-    """Add collision geometry from a USD file to a builder.
-
-    Args:
-        file_path: Path to USD file. If None, only create ground plane.
-        root_prim: The root USD prim path for the collision geometry. Shapes will be loaded
-            recursively from this path. If None, load shapes from the entire file.
-        add_ground_plane: Add a ground plane collider for a flat walking area.
-    """
-    if file_path is not None:
-        # check if we should load collisions
-        if usd_collide:
-            if root_prim is None:
-                root_prim = "/"
-
-            shape_start = builder.shape_count
-            builder.add_usd(file_path, root_path=root_prim, hide_collision_shapes=True, load_visual_shapes=False)
-
-            # clear ShapeFlags.VISIBLE to hide the collision shape
-            for idx in range(shape_start, builder.shape_count):
-                flags = builder.shape_flags[idx]
-                builder.shape_flags[idx] = flags & ~newton.ShapeFlags.VISIBLE
-
-        # add ground plane, but make it invisible
-        if add_ground_plane:
-            cfg = newton.ModelBuilder.ShapeConfig(is_visible=False)
-            builder.add_ground_plane(cfg=cfg)
-    else:
-        # add visible ground plane when no USD background is specified
-        builder.add_ground_plane()
 
 
 def compute_obs(
@@ -302,8 +264,6 @@ class Example:
         mjc_to_physx: list[int],
         physx_to_mjc: list[int],
         background_usd_path: str | None = None,
-        background_usd_root: str | None = None,
-        background_usd_collide: bool = False,
     ):
         # Setup simulation parameters first
         fps = 200
@@ -350,15 +310,16 @@ class Example:
             joint_ordering="dfs",
             hide_collision_shapes=True,
         )
-        # builder.approximate_meshes("convex_hull")
+        builder.approximate_meshes("convex_hull")
 
-        add_terrain(
-            builder,
-            file_path=background_usd_path,
-            root_prim=background_usd_root,
-            usd_collide=background_usd_collide,
-            add_ground_plane=True,
-        )
+        # Add ground plane - make it invisible only if background USD is provided
+        if background_usd_path:
+            ground_cfg = newton.ModelBuilder.ShapeConfig(is_visible=False)
+        else:
+            ground_cfg = newton.ModelBuilder.ShapeConfig()
+        builder.add_ground_plane(cfg=ground_cfg)
+        # builder's gravity isn't a vec3. use model.set_gravity()
+        # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
@@ -395,15 +356,9 @@ class Example:
                 joint_ordering="dfs",
                 hide_collision_shapes=True,
             )
-            # shadow_builder.approximate_meshes("convex_hull")
+            shadow_builder.approximate_meshes("convex_hull")
 
-            add_terrain(
-                builder,
-                file_path=background_usd_path,
-                root_prim=background_usd_root,
-                usd_collide=background_usd_collide,
-                add_ground_plane=True,
-            )
+            shadow_builder.add_ground_plane()
 
             shadow_builder.joint_q[:3] = [0.0, 0.0, 0.76]
             shadow_builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
@@ -514,14 +469,14 @@ class Example:
                             print(f"  {name}, {ca.name}, {ca.namespace}, {ca.assignment}")
                             setattr(target, ca.name, getattr(source, ca.name))
                     except Exception as e:
-                        print(f"*** Error copying custom attribute: {e}")
+                        print(f"*** Custom ttribute copy error: {e}")
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
-            nconmax=200,
-            njmax=1000,
+            nconmax=30,
+            njmax=100,
         )
 
         # Initialize state objects
@@ -573,7 +528,7 @@ class Example:
         # Load background USD file if provided
         if background_usd_path:
             try:
-                self.viewer.add_background_usd(background_usd_path, background_usd_root)
+                self.viewer.add_background_usd(background_usd_path)
             except FileNotFoundError:
                 print("File not found:", background_usd_path)
                 # Silently skip if file doesn't exist
@@ -751,17 +706,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--physx", action="store_true", help="Run physX policy instead of MJWarp.")
     parser.add_argument(
-        "--usd-background", type=str, default=None, help="Path to background USD file to load"
-    )
-    parser.add_argument(
-        "--usd-background-root",
-        help="Root path of the background geometry in the USD file",
-    )
-    parser.add_argument(
-        "--usd-background-collide",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable collisions with USD background",
+        "--usd-background", type=str, default=None, help="Path to background USD file to load in viewer"
     )
 
     # Parse arguments and initialize viewer
@@ -808,17 +753,7 @@ if __name__ == "__main__":
     else:
         policy_path = f"{asset_directory}/{robot_config.policy_path['mjw']}"
 
-    example = Example(
-        viewer,
-        robot_config,
-        config,
-        asset_directory,
-        mjc_to_physx,
-        physx_to_mjc,
-        background_usd_path=args.usd_background,
-        background_usd_root=args.usd_background_root,
-        background_usd_collide=args.usd_background_collide,
-    )
+    example = Example(viewer, robot_config, config, asset_directory, mjc_to_physx, physx_to_mjc, args.usd_background)
 
     # Use utility function to load policy and setup tensors
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
