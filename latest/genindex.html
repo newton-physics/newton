@@ -2101,6 +2101,14 @@ window.runMermaid = runMermaid;</script>
           <a href="api/_generated/newton.Mesh.html#newton.Mesh.compute_convex_hull">compute_convex_hull() (newton.Mesh method)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.ik.IKOptimizerLBFGS.html#newton.ik.IKOptimizerLBFGS.compute_costs">compute_costs() (newton.ik.IKOptimizerLBFGS method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.ik.IKOptimizerLM.html#newton.ik.IKOptimizerLM.compute_costs">(newton.ik.IKOptimizerLM method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
           <a href="api/_generated/newton.geometry.compute_inertia_shape.html#newton.geometry.compute_inertia_shape">compute_inertia_shape() (in module newton.geometry)</a>
         </dt>
         <dt>
@@ -2269,6 +2277,9 @@ window.runMermaid = runMermaid;</script>
         </dt>
         <dt>
           <a href="api/_generated/newton.Mesh.html#newton.Mesh.copy">copy() (newton.Mesh method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.ik.IKSolver.html#newton.ik.IKSolver.costs">costs (newton.ik.IKSolver property)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.Gaussian.html#newton.Gaussian.count">count (newton.Gaussian property)</a>
@@ -3458,10 +3469,11 @@ window.runMermaid = runMermaid;</script>
           <a href="api/_generated/newton.solvers.SolverNotifyFlags.html#newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES">JOINT_PROPERTIES (newton.solvers.SolverNotifyFlags attribute)</a>
         </dt>
         <dt>
-          <a href="api/_generated/newton.Model.html#newton.Model.joint_q">joint_q (newton.Model attribute)</a>
+          <a href="api/_generated/newton.ik.IKSolver.html#newton.ik.IKSolver.joint_q">joint_q (newton.ik.IKSolver property)</a>
         </dt>
         <dd>
           <dl>
+            <dt><a href="api/_generated/newton.Model.html#newton.Model.joint_q">(newton.Model attribute)</a></dt>
             <dt><a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.joint_q">(newton.ModelBuilder attribute)</a></dt>
             <dt><a href="api/_generated/newton.State.html#newton.State.joint_q">(newton.State attribute)</a></dt>
           </dl>
@@ -4483,8 +4495,15 @@ window.runMermaid = runMermaid;</script>
           </dl>
         </dd>
         <dt>
-          <a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.reset">reset() (newton.solvers.SolverKamino method)</a>
+          <a href="api/_generated/newton.ik.IKOptimizerLBFGS.html#newton.ik.IKOptimizerLBFGS.reset">reset() (newton.ik.IKOptimizerLBFGS method)</a>
         </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.ik.IKOptimizerLM.html#newton.ik.IKOptimizerLM.reset">(newton.ik.IKOptimizerLM method)</a></dt>
+            <dt><a href="api/_generated/newton.ik.IKSolver.html#newton.ik.IKSolver.reset">(newton.ik.IKSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino.reset">(newton.solvers.SolverKamino method)</a></dt>
+          </dl>
+        </dd>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
@@ -4742,6 +4761,18 @@ window.runMermaid = runMermaid;</script>
           <a href="api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView.set_root_velocities">set_root_velocities() (newton.selection.ArticulationView method)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.ik.IKObjectivePosition.html#newton.ik.IKObjectivePosition.set_target_position">set_target_position() (newton.ik.IKObjectivePosition method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.ik.IKObjectivePosition.html#newton.ik.IKObjectivePosition.set_target_positions">set_target_positions() (newton.ik.IKObjectivePosition method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.ik.IKObjectiveRotation.html#newton.ik.IKObjectiveRotation.set_target_rotation">set_target_rotation() (newton.ik.IKObjectiveRotation method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.ik.IKObjectiveRotation.html#newton.ik.IKObjectiveRotation.set_target_rotations">set_target_rotations() (newton.ik.IKObjectiveRotation method)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.viewer.ViewerBase.html#newton.viewer.ViewerBase.set_world_offsets">set_world_offsets() (newton.viewer.ViewerBase method)</a>
         </dt>
         <dd>
@@ -4902,6 +4933,10 @@ window.runMermaid = runMermaid;</script>
             <dt><a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.shape_material_kf">(newton.ModelBuilder attribute)</a></dt>
           </dl>
         </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.shape_material_kh">shape_material_kh (newton.Model attribute)</a>
         </dt>
@@ -4910,10 +4945,6 @@ window.runMermaid = runMermaid;</script>
             <dt><a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.shape_material_kh">(newton.ModelBuilder attribute)</a></dt>
           </dl>
         </dd>
-      </dl>
-    </td>
-    <td style="width: 33%; vertical-align: top;">
-      <dl>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.shape_material_mu">shape_material_mu (newton.Model attribute)</a>
         </dt>
@@ -5202,6 +5233,7 @@ window.runMermaid = runMermaid;</script>
         <dd>
           <dl>
             <dt><a href="api/_generated/newton.ik.IKOptimizerLM.html#newton.ik.IKOptimizerLM.step">(newton.ik.IKOptimizerLM method)</a></dt>
+            <dt><a href="api/_generated/newton.ik.IKSolver.html#newton.ik.IKSolver.step">(newton.ik.IKSolver method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.step">(newton.solvers.SolverBase method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone.step">(newton.solvers.SolverFeatherstone method)</a></dt>
             <dt><a href="api/_generated/newton.solvers.SolverImplicitMPM.html#newton.solvers.SolverImplicitMPM.step">(newton.solvers.SolverImplicitMPM method)</a></dt>

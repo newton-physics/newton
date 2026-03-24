@@ -4,6 +4,8 @@
 newton.ik
 =========
 
+Public inverse-kinematics API for defining objectives and solving IK problems.
+
 .. currentmodule:: newton.ik
 
 .. rubric:: Classes

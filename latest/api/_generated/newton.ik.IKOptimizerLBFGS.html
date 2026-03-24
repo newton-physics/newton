@@ -811,33 +811,30 @@
 <h1>newton.ik.IKOptimizerLBFGS<a class="headerlink" href="#newton-ik-ikoptimizerlbfgs" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.ik.IKOptimizerLBFGS">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.ik.</span></span><span class="sig-name descname"><span class="pre">IKOptimizerLBFGS</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_batch</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">objectives</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">a</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kw</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/ik/ik_lbfgs_optimizer.py#L102"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.ik.IKOptimizerLBFGS" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.ik.</span></span><span class="sig-name descname"><span class="pre">IKOptimizerLBFGS</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_batch</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">objectives</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">a</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kw</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/ik/ik_lbfgs_optimizer.py#L105"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.ik.IKOptimizerLBFGS" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>L-BFGS inverse-kinematics solver with a parallel Wolfe-conditions line search.</p>
-<p>This solver uses L-BFGS with a parallel line search that seeks to satisfy the
-strong Wolfe conditions for robust step selection. It supports the same three
-Jacobian back-ends as the LM solver:</p>
-<ul class="simple">
-<li><p><strong>AUTODIFF</strong>   — Warp’s reverse-mode autodiff for every objective</p></li>
-<li><p><strong>ANALYTIC</strong>   — objective-specific analytic Jacobians only</p></li>
-<li><p><strong>MIXED</strong>      — analytic where available, autodiff fallback elsewhere</p></li>
-</ul>
+<p>L-BFGS optimizer for batched inverse kinematics.</p>
+<p>The optimizer maintains a limited-memory quasi-Newton approximation and
+chooses step sizes with a parallel strong-Wolfe line search. It supports
+the same Jacobian backends as <a class="reference internal" href="newton.ik.IKOptimizerLM.html#newton.ik.IKOptimizerLM" title="newton.ik.IKOptimizerLM"><code class="xref py py-class docutils literal notranslate"><span class="pre">IKOptimizerLM</span></code></a>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>newton.Model</em></a>) – Singleton articulation shared by all problems.</p></li>
-<li><p><strong>n_batch</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of rows processed in parallel (e.g., <cite>n_problems * n_seeds</cite>).</p></li>
-<li><p><strong>objectives</strong> (<em>Sequence</em><em>[</em><a class="reference internal" href="newton.ik.IKObjective.html#newton.ik.IKObjective" title="newton.ik.IKObjective"><em>IKObjective</em></a><em>]</em>) – Ordered list of objectives shared by _all_ problems.</p></li>
-<li><p><strong>jacobian_mode</strong> (<a class="reference internal" href="newton.ik.IKJacobianType.html#newton.ik.IKJacobianType" title="newton.ik.IKJacobianType"><em>IKJacobianType</em></a><em>, </em><em>default IKJacobianType.AUTODIFF</em>) – Backend used in <cite>compute_jacobian</cite>.</p></li>
-<li><p><strong>history_len</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>default 10</em>) – L-BFGS memory length (number of {s,y} pairs to remember).</p></li>
-<li><p><strong>h0_scale</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><em>default 1.0</em>) – Initial Hessian approximation scale factor.</p></li>
-<li><p><strong>line_search_alphas</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>]</em><em>, </em><em>default</em><em> [</em><em>0.1</em><em>, </em><em>0.2</em><em>, </em><em>0.5</em><em>, </em><em>0.8</em><em>, </em><em>1.0</em><em>, </em><em>1.5</em><em>, </em><em>2.0</em><em>, </em><em>3.0</em><em>]</em>) – Parallel step sizes to try in line search.</p></li>
-<li><p><strong>wolfe_c1</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><em>default 1e-4</em>) – Wolfe condition parameter for sufficient decrease (Armijo condition).</p></li>
-<li><p><strong>wolfe_c2</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><em>default 0.9</em>) – Wolfe condition parameter for curvature condition (strong Wolfe).</p></li>
-<li><p><strong>structure</strong> (<em>Batch</em>)</p></li>
-<li><p><strong>---------------</strong></p></li>
-<li><p><strong>all</strong> (<em>Same as the LM solver - handles a batch</em><em> of </em><em>independent IK problems that</em>)</p></li>
-<li><p><strong>objectives.</strong> (<em>reference the same articulation and</em>)</p></li>
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>Model</em></a>) – Shared articulation model.</p></li>
+<li><p><strong>n_batch</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of evaluation rows solved in parallel. This is
+typically <code class="docutils literal notranslate"><span class="pre">n_problems</span> <span class="pre">*</span> <span class="pre">n_seeds</span></code> after any sampling expansion.</p></li>
+<li><p><strong>objectives</strong> (<em>Sequence</em><em>[</em><a class="reference internal" href="newton.ik.IKObjective.html#newton.ik.IKObjective" title="newton.ik.IKObjective"><em>IKObjective</em></a><em>]</em>) – Ordered IK objectives applied to every batch row.</p></li>
+<li><p><strong>jacobian_mode</strong> – Jacobian backend to use.</p></li>
+<li><p><strong>history_len</strong> – Number of <code class="docutils literal notranslate"><span class="pre">(s,</span> <span class="pre">y)</span></code> correction pairs retained in the
+L-BFGS history.</p></li>
+<li><p><strong>h0_scale</strong> – Scalar used for the initial inverse-Hessian
+approximation.</p></li>
+<li><p><strong>line_search_alphas</strong> – Candidate step sizes tested in parallel during
+the line search.</p></li>
+<li><p><strong>wolfe_c1</strong> – Armijo sufficient-decrease constant.</p></li>
+<li><p><strong>wolfe_c2</strong> – Strong-Wolfe curvature constant.</p></li>
+<li><p><strong>problem_idx</strong> – Optional mapping from batch rows to base problem indices
+for per-problem objective data.</p></li>
 </ul>
 </dd>
 </dl>
@@ -849,9 +846,45 @@ Jacobian back-ends as the LM solver:</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.ik.IKOptimizerLBFGS.compute_costs">
+<span class="sig-name descname"><span class="pre">compute_costs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKOptimizerLBFGS.compute_costs" title="Link to this definition">#</a></dt>
+<dd><p>Evaluate squared residual costs for a batch of joint configurations.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>joint_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Joint coordinates to evaluate, shape [n_batch, joint_coord_count].</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Costs for each batch row, shape [n_batch].</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>array(ndim=1, dtype=float32)</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.ik.IKOptimizerLBFGS.reset">
+<span class="sig-name descname"><span class="pre">reset</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKOptimizerLBFGS.reset" title="Link to this definition">#</a></dt>
+<dd><p>Clear L-BFGS history and cached line-search state.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKOptimizerLBFGS.step">
 <span class="sig-name descname"><span class="pre">step</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">joint_q_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">50</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKOptimizerLBFGS.step" title="Link to this definition">#</a></dt>
-<dd><p>Run L-BFGS iterations using the provided joint buffers.</p>
+<dd><p>Run several L-BFGS iterations on a batch of joint configurations.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>joint_q_in</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Input joint coordinates, shape [n_batch, joint_coord_count].</p></li>
+<li><p><strong>joint_q_out</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Output buffer for the optimized coordinates, shape
+[n_batch, joint_coord_count]. It may alias <code class="docutils literal notranslate"><span class="pre">joint_q_in</span></code> for
+in-place updates.</p></li>
+<li><p><strong>iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of L-BFGS iterations to execute.</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 </dd></dl>
@@ -883,6 +916,8 @@ Jacobian back-ends as the LM solver:</p>
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ik.IKOptimizerLBFGS"><code class="docutils literal notranslate"><span class="pre">IKOptimizerLBFGS</span></code></a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ik.IKOptimizerLBFGS.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ik.IKOptimizerLBFGS.compute_costs"><code class="docutils literal notranslate"><span class="pre">compute_costs()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ik.IKOptimizerLBFGS.reset"><code class="docutils literal notranslate"><span class="pre">reset()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ik.IKOptimizerLBFGS.step"><code class="docutils literal notranslate"><span class="pre">step()</span></code></a></li>
 </ul>
 </li>

@@ -811,61 +811,52 @@
 <h1>newton.ik.IKObjective<a class="headerlink" href="#newton-ik-ikobjective" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.ik.IKObjective">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.ik.</span></span><span class="sig-name descname"><span class="pre">IKObjective</span></span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/ik/ik_objectives.py#L12"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.ik.IKObjective" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.ik.</span></span><span class="sig-name descname"><span class="pre">IKObjective</span></span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/ik/ik_objectives.py#L15"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.ik.IKObjective" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>Abstract base class for inverse kinematics objectives.</p>
-<dl class="simple">
-<dt>Subclasses must implement the following methods:</dt><dd><ul class="simple">
-<li><p>residual_dim(): Returns the number of residuals (constraints) this objective contributes.</p></li>
-<li><p>compute_residuals(body_q, joint_q, model, residuals, start_idx): Computes the residuals for this objective.</p></li>
-<li><p>compute_jacobian_autodiff(tape, model, jacobian, start_idx, dq_dof): Computes the Jacobian using autodiff.</p></li>
-</ul>
-</dd>
-<dt>Optional methods for analytic Jacobian support:</dt><dd><ul class="simple">
-<li><p>supports_analytic(): Returns True if analytic Jacobian is supported, otherwise False.</p></li>
-<li><p>compute_jacobian_analytic(body_q, joint_q, model, jacobian, joint_S_s, start_idx): Computes the analytic Jacobian if supported.</p></li>
-</ul>
-</dd>
-<dt>Device and buffer management:</dt><dd><ul class="simple">
-<li><p>bind_device(device): Binds the objective to a specific device.</p></li>
-<li><p>init_buffers(model, jacobian_mode): Initializes any buffers required for Jacobian computation.</p></li>
-</ul>
-</dd>
+<p>Base class for inverse-kinematics objectives.</p>
+<p>Each objective contributes one or more residual rows to the global IK
+system and can optionally provide an analytic Jacobian. Objective
+instances are shared across a batch of problems, so per-problem data such
+as targets should live in device arrays and be indexed through the
+<code class="docutils literal notranslate"><span class="pre">problem_idx</span></code> mapping supplied at evaluation time.</p>
+<p>Subclasses should override <a class="reference internal" href="#newton.ik.IKObjective.residual_dim" title="newton.ik.IKObjective.residual_dim"><code class="xref py py-meth docutils literal notranslate"><span class="pre">residual_dim()</span></code></a>,
+<a class="reference internal" href="#newton.ik.IKObjective.compute_residuals" title="newton.ik.IKObjective.compute_residuals"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute_residuals()</span></code></a>, and <a class="reference internal" href="#newton.ik.IKObjective.compute_jacobian_autodiff" title="newton.ik.IKObjective.compute_jacobian_autodiff"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute_jacobian_autodiff()</span></code></a>. They can
+additionally override <a class="reference internal" href="#newton.ik.IKObjective.supports_analytic" title="newton.ik.IKObjective.supports_analytic"><code class="xref py py-meth docutils literal notranslate"><span class="pre">supports_analytic()</span></code></a> and
+<a class="reference internal" href="#newton.ik.IKObjective.compute_jacobian_analytic" title="newton.ik.IKObjective.compute_jacobian_analytic"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute_jacobian_analytic()</span></code></a> when an analytic Jacobian is available.</p>
+<dl class="field-list simple">
 </dl>
-<p class="rubric">Notes</p>
-<ul class="simple">
-<li><p>The interface is designed for batch processing of multiple IK problems in parallel.</p></li>
-<li><p>Each subclass may store per-problem data (e.g., targets) as device arrays.</p></li>
-</ul>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.__init__">
 <span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.__init__" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.bind_device">
 <span class="sig-name descname"><span class="pre">bind_device</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">device</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.bind_device" title="Link to this definition">#</a></dt>
-<dd><p>Binds the objective to a specific device (e.g., CUDA or CPU).</p>
+<dd><p>Bind this objective to the Warp device used by the solver.</p>
 <dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>device</strong> (<em>wp.Device</em>) – The device to bind to.</p>
-</dd>
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.compute_jacobian_analytic">
 <span class="sig-name descname"><span class="pre">compute_jacobian_analytic</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">jacobian</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_S_s</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">start_idx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.compute_jacobian_analytic" title="Link to this definition">#</a></dt>
-<dd><p>Computes the analytic Jacobian for this objective, if supported.</p>
+<dd><p>Fill this objective’s Jacobian block analytically, if supported.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>body_q</strong> (<em>wp.array2d</em><em>(</em><em>dtype=wp.transform</em><em>)</em>) – Array of body transforms for each problem.</p></li>
-<li><p><strong>joint_q</strong> (<em>wp.array2d</em><em>(</em><em>dtype=wp.float</em><em>)</em>) – Array of joint coordinates for each problem.</p></li>
-<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>newton.Model</em></a>) – The kinematic model.</p></li>
-<li><p><strong>jacobian</strong> (<em>wp.array3d</em><em>(</em><em>dtype=wp.float</em><em>)</em>) – Output array for the Jacobian.</p></li>
-<li><p><strong>joint_S_s</strong> (<em>wp.array2d</em><em>(</em><em>dtype=wp.spatial_vector</em><em>)</em>) – Motion subspace matrices.</p></li>
-<li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Starting index in the Jacobian for this objective.</p></li>
+<li><p><strong>body_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=transformf</em><em>)</em>) – Batched body transforms for the current evaluation rows,
+shape [n_batch, body_count].</p></li>
+<li><p><strong>joint_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Batched joint coordinates for the current evaluation rows,
+shape [n_batch, joint_coord_count].</p></li>
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – Shared articulation model.</p></li>
+<li><p><strong>jacobian</strong> (<em>array</em><em>(</em><em>ndim=3</em><em>, </em><em>dtype=float32</em><em>)</em>) – Global Jacobian buffer to update,
+shape [n_batch, total_residual_count, joint_dof_count].</p></li>
+<li><p><strong>joint_S_s</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=vector</em><em>(</em><em>length=6</em><em>, </em><em>dtype=float32</em><em>)</em><em>)</em>) – Batched motion-subspace columns,
+shape [n_batch, joint_dof_count].</p></li>
+<li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – First residual row reserved for this objective.</p></li>
 </ul>
 </dd>
 </dl>
@@ -874,15 +865,18 @@
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.compute_jacobian_autodiff">
 <span class="sig-name descname"><span class="pre">compute_jacobian_autodiff</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tape</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">jacobian</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">start_idx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dq_dof</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.compute_jacobian_autodiff" title="Link to this definition">#</a></dt>
-<dd><p>Computes the Jacobian for this objective using automatic differentiation.</p>
+<dd><p>Fill this objective’s Jacobian block with autodiff gradients.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>tape</strong> (<em>wp.Tape</em>) – Autodiff tape.</p></li>
-<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>newton.Model</em></a>) – The kinematic model.</p></li>
-<li><p><strong>jacobian</strong> (<em>wp.array3d</em><em>(</em><em>dtype=wp.float</em><em>)</em>) – Output array for the Jacobian.</p></li>
-<li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Starting index in the Jacobian for this objective.</p></li>
-<li><p><strong>dq_dof</strong> (<em>wp.array2d</em><em>(</em><em>dtype=wp.float</em><em>)</em>) – Derivative of q with respect to DoF.</p></li>
+<li><p><strong>tape</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.Tape.html#warp.Tape" title="(in Warp v1.12.0)"><em>Tape</em></a>) – Recorded Warp tape whose output is the global residual
+buffer.</p></li>
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – Shared articulation model.</p></li>
+<li><p><strong>jacobian</strong> (<em>array</em><em>(</em><em>ndim=3</em><em>, </em><em>dtype=float32</em><em>)</em>) – Global Jacobian buffer to update,
+shape [n_batch, total_residual_count, joint_dof_count].</p></li>
+<li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – First residual row reserved for this objective.</p></li>
+<li><p><strong>dq_dof</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Differentiable joint update variable for the current
+batch, shape [n_batch, joint_dof_count].</p></li>
 </ul>
 </dd>
 </dl>
@@ -891,20 +885,23 @@
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.compute_residuals">
 <span class="sig-name descname"><span class="pre">compute_residuals</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">residuals</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">start_idx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">problem_idx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.compute_residuals" title="Link to this definition">#</a></dt>
-<dd><p>Computes the residuals for this objective and writes them into the residuals array.</p>
+<dd><p>Write this objective’s residual block into a global buffer.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>body_q</strong> (<em>wp.array2d</em><em>(</em><em>dtype=wp.transform</em><em>)</em>) – Array of body transforms for each problem.</p></li>
-<li><p><strong>joint_q</strong> (<em>wp.array2d</em><em>(</em><em>dtype=wp.float</em><em>)</em>) – Array of joint coordinates for each problem.</p></li>
-<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>newton.Model</em></a>) – The kinematic model.</p></li>
-<li><p><strong>residuals</strong> (<em>wp.array2d</em><em>(</em><em>dtype=wp.float</em><em>)</em>) – Output array for residuals.</p></li>
-<li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Starting index in the residuals array for this objective.</p></li>
-<li><p><strong>problem_idx</strong> (<em>wp.array1d</em><em>(</em><em>dtype=int32</em><em>) </em><em>| </em><em>None</em>) – Maps each batched row to
-the originating problem index when rows have been duplicated (for example,
-when evaluating multiple candidates per problem). Typical usage inside a
-kernel looks like <cite>row_idx = wp.tid(); base = problem_idx[row_idx]; target = self.target_positions[base]</cite>.
-Defaults to None, which indicates rows already align with the solver batch.</p></li>
+<li><p><strong>body_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=transformf</em><em>)</em>) – Batched body transforms for the current evaluation rows,
+shape [n_batch, body_count].</p></li>
+<li><p><strong>joint_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Batched joint coordinates [m or rad] for the current
+evaluation rows, shape [n_batch, joint_coord_count].</p></li>
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – Shared articulation model.</p></li>
+<li><p><strong>residuals</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Global residual buffer that receives this objective’s
+residual rows, shape [n_batch, total_residual_count].</p></li>
+<li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – First residual row reserved for this objective inside
+the global residual buffer.</p></li>
+<li><p><strong>problem_idx</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=int32</em><em>)</em>) – Mapping from evaluation rows to base problem
+indices, shape [n_batch]. Use this when objective data is
+stored once per original problem but the solver expands rows
+for multiple seeds or line-search candidates.</p></li>
 </ul>
 </dd>
 </dl>
@@ -913,12 +910,13 @@ Defaults to None, which indicates rows already align with the solver batch.</p><
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.init_buffers">
 <span class="sig-name descname"><span class="pre">init_buffers</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">jacobian_mode</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.init_buffers" title="Link to this definition">#</a></dt>
-<dd><p>Initializes any buffers required for Jacobian computation.</p>
+<dd><p>Allocate any per-objective buffers needed by the chosen backend.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>newton.Model</em></a>) – The kinematic model.</p></li>
-<li><p><strong>jacobian_mode</strong> (<a class="reference internal" href="newton.ik.IKJacobianType.html#newton.ik.IKJacobianType" title="newton.ik.IKJacobianType"><em>IKJacobianType</em></a>) – The Jacobian computation mode (analytic or autodiff).</p></li>
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – Shared articulation model.</p></li>
+<li><p><strong>jacobian_mode</strong> (<a class="reference internal" href="newton.ik.IKJacobianType.html#newton.ik.IKJacobianType" title="newton._src.sim.ik.ik_common.IKJacobianType"><em>IKJacobianType</em></a>) – Jacobian backend that will evaluate this
+objective.</p></li>
 </ul>
 </dd>
 </dl>
@@ -927,40 +925,42 @@ Defaults to None, which indicates rows already align with the solver batch.</p><
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.residual_dim">
 <span class="sig-name descname"><span class="pre">residual_dim</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.residual_dim" title="Link to this definition">#</a></dt>
-<dd><p>Returns the number of residuals (constraints) this objective contributes.
-Must be implemented by subclasses.</p>
+<dd><p>Return the number of residual rows contributed by this objective.</p>
+<dl class="field-list simple">
+</dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.set_batch_layout">
 <span class="sig-name descname"><span class="pre">set_batch_layout</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">total_residuals</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">residual_offset</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_batch</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.set_batch_layout" title="Link to this definition">#</a></dt>
-<dd><p>Register the residual layout for this objective within the optimizer’s
-global system.</p>
+<dd><p>Register this objective’s rows inside the optimizer’s global system.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>total_residuals</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Total number of residual rows across all objectives (global height of J and r).</p></li>
-<li><p><strong>residual_offset</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Starting row index (into the global residual/Jacobian) reserved for this objective.</p></li>
-<li><p><strong>n_batch</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of rows that will be evaluated together by the optimizer
-(e.g., n_problems * n_seeds, or further expanded for candidates).</p></li>
+<li><p><strong>total_residuals</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Total number of residual rows across all
+objectives.</p></li>
+<li><p><strong>residual_offset</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – First row reserved for this objective inside the
+global residual vector and Jacobian.</p></li>
+<li><p><strong>n_batch</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of evaluation rows processed together. This is the
+expanded solver batch, not necessarily the number of base IK
+problems.</p></li>
 </ul>
 </dd>
 </dl>
-<p class="rubric">Notes</p>
-<ul class="simple">
-<li><p><cite>n_batch</cite> is the size of the <strong>evaluation batch</strong>, not the number of base problems.</p></li>
-<li><p>Per-problem buffers (e.g., targets) should be sized by the number of base problems
-and accessed via the <cite>problem_idx</cite> mapping provided at evaluation time, rather than
-assuming one target per batch row.</p></li>
-<li><p>This method is called by the optimizer before any residual/Jacobian computations.</p></li>
-</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Per-problem buffers such as targets should still be sized by the
+base problem count and accessed through the <code class="docutils literal notranslate"><span class="pre">problem_idx</span></code> mapping
+supplied during residual and Jacobian evaluation.</p>
+</div>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ik.IKObjective.supports_analytic">
 <span class="sig-name descname"><span class="pre">supports_analytic</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.ik.IKObjective.supports_analytic" title="Link to this definition">#</a></dt>
-<dd><p>Returns True if this objective supports analytic Jacobian computation.
-Subclasses should override if analytic Jacobian is available.</p>
+<dd><p>Return <code class="docutils literal notranslate"><span class="pre">True</span></code> when this objective implements an analytic Jacobian.</p>
+<dl class="field-list simple">
+</dl>
 </dd></dl>
 
 </dd></dl>
