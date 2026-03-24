@@ -4071,8 +4071,9 @@ class TestMuJoCoContactForce(unittest.TestCase):
 
     def test_contact_forces_on_incline(self):
         """Contact force on an incline must balance gravity (tests rotated contact frame)."""
-        incline_angle = 0.3  # rad (~17°); mu=1.0 > tan(0.3)≈0.31 → static
-        settle, avg = 40, 10
+        incline_angle = 0.7  # rad (~40°); mu=1.0 > tan(0.7)≈0.84 → static
+        settle, avg = 200, 10
+        hz = 0.1  # box half-height
 
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
@@ -4083,8 +4084,10 @@ class TestMuJoCoContactForce(unittest.TestCase):
         ramp_shape = builder.add_shape_box(
             body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), ramp_q), hx=5.0, hy=5.0, hz=0.5
         )
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, -0.1, 0.15), ramp_q))
-        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        # Place box center exactly hz above the ramp surface to avoid bounce.
+        box_pos = wp.vec3(0.0, 0.0, hz / np.cos(incline_angle))
+        body = builder.add_body(xform=wp.transform(box_pos, ramp_q))
+        builder.add_shape_box(body=body, hx=hz, hy=hz, hz=hz)
         model = builder.finalize()
         model.request_contact_attributes("force")
 

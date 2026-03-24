@@ -14,10 +14,10 @@ try:
 except ImportError:
     try:
         import mujoco_warp  # noqa: F401
-
-        raise  # Package exists but contact_force_fn missing
     except ImportError:
         pass
+    else:
+        raise  # Package exists but contact_force_fn missing
 
 from ...core.types import vec5
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
