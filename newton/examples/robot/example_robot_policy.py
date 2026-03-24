@@ -44,9 +44,6 @@ import newton.usd
 import newton.utils
 from newton import JointTargetMode, State
 
-# Use new asset for G1, but copy model attributes from the original asset.
-MODEL_HACK = True
-
 
 @dataclass
 class RobotConfig:
@@ -85,9 +82,6 @@ ROBOT_CONFIGS = {
         yaml_path="rl_policies/g1_23dof.yaml",
     ),
 }
-
-if MODEL_HACK:
-    ROBOT_CONFIGS["g1_29dof"].asset_path = "usd_structured/g1_29dof_with_hand_rev_1_0.usda"
 
 
 @torch.jit.script
@@ -333,143 +327,6 @@ class Example:
 
         self.model = builder.finalize()
         self.model.set_gravity((0.0, 0.0, -9.81))
-
-        if MODEL_HACK:
-            # construct a shadow model using the old G1 asset
-            shadow_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-            newton.solvers.SolverMuJoCo.register_custom_attributes(shadow_builder)
-            shadow_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-                armature=0.1,
-                limit_ke=1.0e2,
-                limit_kd=1.0e0,
-            )
-            shadow_builder.default_shape_cfg.ke = 5.0e4
-            shadow_builder.default_shape_cfg.kd = 5.0e2
-            shadow_builder.default_shape_cfg.kf = 1.0e3
-            shadow_builder.default_shape_cfg.mu = 0.75
-
-            shadow_builder.add_usd(
-                newton.examples.get_asset(asset_directory + "/usd/g1_isaac.usd"),
-                xform=wp.transform(wp.vec3(0, 0, 0.8)),
-                collapse_fixed_joints=False,
-                enable_self_collisions=False,
-                joint_ordering="dfs",
-                hide_collision_shapes=True,
-            )
-            shadow_builder.approximate_meshes("convex_hull")
-
-            shadow_builder.add_ground_plane()
-
-            shadow_builder.joint_q[:3] = [0.0, 0.0, 0.76]
-            shadow_builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
-            shadow_builder.joint_q[7:] = config["mjw_joint_pos"]
-
-            for i in range(len(config["mjw_joint_stiffness"])):
-                shadow_builder.joint_target_ke[i + 6] = config["mjw_joint_stiffness"][i]
-                shadow_builder.joint_target_kd[i + 6] = config["mjw_joint_damping"][i]
-                shadow_builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
-                shadow_builder.joint_target_mode[i + 6] = int(JointTargetMode.POSITION)
-
-            shadow_model = shadow_builder.finalize()
-
-            print(f"particle_count            {self.model.particle_count} {shadow_model.particle_count}")
-            print(f"body_count                {self.model.body_count} {shadow_model.body_count}")
-            print(f"shape_count               {self.model.shape_count} {shadow_model.shape_count}")
-            print(f"joint_count               {self.model.joint_count} {shadow_model.joint_count}")
-            print(f"tri_count                 {self.model.tri_count} {shadow_model.tri_count}")
-            print(f"tet_count                 {self.model.tet_count} {shadow_model.tet_count}")
-            print(f"edge_count                {self.model.edge_count} {shadow_model.edge_count}")
-            print(f"spring_count              {self.model.spring_count} {shadow_model.spring_count}")
-            print(f"muscle_count              {self.model.muscle_count} {shadow_model.muscle_count}")
-            print(f"articulation_count        {self.model.articulation_count} {shadow_model.articulation_count}")
-            print(f"joint_dof_count           {self.model.joint_dof_count} {shadow_model.joint_dof_count}")
-            print(f"joint_coord_count         {self.model.joint_coord_count} {shadow_model.joint_coord_count}")
-            print(f"joint_constraint_count    {self.model.joint_constraint_count} {shadow_model.joint_constraint_count}")
-            print(f"equality_constraint_count {self.model.equality_constraint_count} {shadow_model.equality_constraint_count}")
-            print(f"constraint_mimic_count    {self.model.constraint_mimic_count} {shadow_model.constraint_mimic_count}")
-
-            assert self.model.joint_count == shadow_model.joint_count
-            assert self.model.joint_dof_count == shadow_model.joint_dof_count
-            assert self.model.body_count == shadow_model.body_count
-
-            def get_name(label):
-                return label.split("/")[-1]
-
-            print("Joints:")
-            for i in range(builder.joint_count):
-                name = get_name(builder.joint_label[i])
-                shadow_name = get_name(shadow_builder.joint_label[i])
-                print(f"  {i}: {name} <- {shadow_name}")
-                # assert name == shadow_name
-                assert builder.joint_type[i] == shadow_builder.joint_type[i]
-
-            # attributes to copy from shadow model
-            attrib_names = [
-                "joint_q",
-                "joint_qd",
-                "joint_f",
-                "joint_target_pos",
-                "joint_target_vel",
-                "joint_act",
-                "joint_type",
-                "joint_articulation",
-                "joint_parent",
-                "joint_child",
-                "joint_ancestor",
-                "joint_X_p",
-                "joint_X_c",
-                "joint_axis",
-                "joint_armature",
-                "joint_target_mode",
-                "joint_target_ke",
-                "joint_target_kd",
-                "joint_effort_limit",
-                "joint_velocity_limit",
-                "joint_friction",
-                "joint_dof_dim",
-                "joint_enabled",
-                "joint_limit_lower",
-                "joint_limit_upper",
-                "joint_limit_ke",
-                "joint_limit_kd",
-                "joint_twist_lower",
-                "joint_twist_upper",
-                "joint_label",
-
-                "body_q",
-                "body_qd",
-                "body_com",
-                "body_inertia",
-                "body_inv_inertia",
-                "body_mass",
-                "body_inv_mass",
-                "body_flags",
-                "body_label",
-            ]
-
-            for attrib in attrib_names:
-                setattr(self.model, attrib, getattr(shadow_model, attrib))
-
-            print("Copying custom attributes...")
-            for name, ca in shadow_builder.custom_attributes.items():
-                # print(f"  {name}, {ca.name}, {ca.assignment}, {ca.namespace}")
-                if ca.assignment == newton.Model.AttributeAssignment.MODEL:
-                    if ca.name == "condim" or ca.name.startswith("geom_"):
-                        continue
-                    if ca.namespace:
-                        source = getattr(shadow_model, ca.namespace)
-                        if not hasattr(self.model, ca.namespace):
-                            setattr(self, ca.namespace, newton.Model.AttributeNamespace(ca.namespace))
-                        target = getattr(self.model, ca.namespace)
-                    else:
-                        source = shadow_model
-                        target = self.model
-                    try:
-                        if hasattr(source, ca.name):
-                            print(f"  {name}, {ca.name}, {ca.namespace}, {ca.assignment}")
-                            setattr(target, ca.name, getattr(source, ca.name))
-                    except Exception as e:
-                        print(f"*** Custom ttribute copy error: {e}")
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
