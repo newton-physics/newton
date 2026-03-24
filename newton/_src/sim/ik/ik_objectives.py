@@ -73,20 +73,18 @@ class IKObjective:
 
         Args:
             body_q: Batched body transforms for the current evaluation rows,
-                shape [n_batch, body_count], dtype :class:`transform`.
+                shape [n_batch, body_count].
             joint_q: Batched joint coordinates [m or rad] for the current
-                evaluation rows, shape [n_batch, joint_coord_count], dtype
-                float.
+                evaluation rows, shape [n_batch, joint_coord_count].
             model: Shared articulation model.
             residuals: Global residual buffer that receives this objective's
-                residual rows, shape [n_batch, total_residual_count], dtype
-                float.
+                residual rows, shape [n_batch, total_residual_count].
             start_idx: First residual row reserved for this objective inside
                 the global residual buffer.
             problem_idx: Mapping from evaluation rows to base problem
-                indices. Use this when objective data is stored once per
-                original problem but the solver expands rows for multiple
-                seeds or line-search candidates.
+                indices, shape [n_batch]. Use this when objective data is
+                stored once per original problem but the solver expands rows
+                for multiple seeds or line-search candidates.
         """
         raise NotImplementedError
 
@@ -104,11 +102,11 @@ class IKObjective:
             tape: Recorded Warp tape whose output is the global residual
                 buffer.
             model: Shared articulation model.
-            jacobian: Global Jacobian buffer to update, shape [n_batch,
-                total_residual_count, joint_dof_count], dtype float.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
             start_idx: First residual row reserved for this objective.
             dq_dof: Differentiable joint update variable for the current
-                batch, shape [n_batch, joint_dof_count], dtype float.
+                batch, shape [n_batch, joint_dof_count].
         """
         raise NotImplementedError
 
@@ -143,14 +141,14 @@ class IKObjective:
 
         Args:
             body_q: Batched body transforms for the current evaluation rows,
-                shape [n_batch, body_count], dtype :class:`transform`.
-            joint_q: Batched joint coordinates for the current evaluation
-                rows, shape [n_batch, joint_coord_count], dtype float.
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates for the current evaluation rows,
+                shape [n_batch, joint_coord_count].
             model: Shared articulation model.
-            jacobian: Global Jacobian buffer to update, shape [n_batch,
-                total_residual_count, joint_dof_count], dtype float.
-            joint_S_s: Batched motion-subspace columns, shape [n_batch,
-                joint_dof_count], dtype :class:`spatial_vector`.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            joint_S_s: Batched motion-subspace columns,
+                shape [n_batch, joint_dof_count].
             start_idx: First residual row reserved for this objective.
         """
         pass
@@ -260,8 +258,7 @@ class IKObjectivePosition(IKObjective):
     Args:
         link_index: Body index whose frame defines the constrained link.
         link_offset: Point in the link's local frame [m].
-        target_positions: Target positions [m], shape [problem_count], dtype
-            :class:`vec3`.
+        target_positions: Target positions [m], shape [problem_count].
         weight: Scalar multiplier applied to the residual and Jacobian rows.
     """
 
@@ -347,8 +344,7 @@ class IKObjectivePosition(IKObjective):
         """Replace the target positions for all base IK problems.
 
         Args:
-            new_positions: Target positions [m], shape [problem_count], dtype
-                :class:`vec3`.
+            new_positions: Target positions [m], shape [problem_count].
         """
         self._require_batch_layout()
         expected = self.target_positions.shape[0]
@@ -378,15 +374,18 @@ class IKObjectivePosition(IKObjective):
         """Write weighted position errors into the global residual buffer.
 
         Args:
-            body_q: Batched body transforms for the evaluation rows.
-            joint_q: Batched joint coordinates. Present for interface
-                compatibility and not used directly by this objective.
+            body_q: Batched body transforms for the evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates, shape [n_batch, joint_coord_count].
+                Present for interface compatibility and not used directly by
+                this objective.
             model: Shared articulation model. Present for interface
                 compatibility.
-            residuals: Global residual buffer to update.
+            residuals: Global residual buffer to update,
+                shape [n_batch, total_residual_count].
             start_idx: First residual row reserved for this objective.
             problem_idx: Mapping from evaluation rows to base problem
-                indices used to fetch `target_positions`.
+                indices, shape [n_batch], used to fetch `target_positions`.
         """
         count = body_q.shape[0]
         wp.launch(
@@ -419,10 +418,11 @@ class IKObjectivePosition(IKObjective):
             tape: Recorded Warp tape whose output is the global residual
                 buffer.
             model: Shared articulation model.
-            jacobian: Global Jacobian buffer to update.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
             start_idx: First residual row reserved for this objective.
             dq_dof: Differentiable joint update variable for the current
-                batch.
+                batch, shape [n_batch, joint_dof_count].
         """
         self._require_batch_layout()
         for component in range(3):
@@ -461,12 +461,16 @@ class IKObjectivePosition(IKObjective):
         """Fill the position Jacobian block from the analytic motion subspace.
 
         Args:
-            body_q: Batched body transforms for the evaluation rows.
-            joint_q: Batched joint coordinates. Present for interface
-                compatibility and not used directly by this objective.
+            body_q: Batched body transforms for the evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates, shape [n_batch, joint_coord_count].
+                Present for interface compatibility and not used directly by
+                this objective.
             model: Shared articulation model.
-            jacobian: Global Jacobian buffer to update.
-            joint_S_s: Batched motion-subspace columns for each DoF.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            joint_S_s: Batched motion-subspace columns,
+                shape [n_batch, joint_dof_count].
             start_idx: First residual row reserved for this objective.
         """
         n_dofs = model.joint_dof_count
@@ -575,9 +579,9 @@ class IKObjectiveJointLimit(IKObjective):
 
     Args:
         joint_limit_lower: Lower joint limits [m or rad], shape
-            [joint_dof_count], dtype float.
+            [joint_dof_count].
         joint_limit_upper: Upper joint limits [m or rad], shape
-            [joint_dof_count], dtype float.
+            [joint_dof_count].
         weight: Scalar multiplier applied to each limit-violation residual
             row.
     """
@@ -645,15 +649,19 @@ class IKObjectiveJointLimit(IKObjective):
         """Write weighted joint-limit violations into the global residual buffer.
 
         Args:
-            body_q: Batched body transforms. Present for interface
-                compatibility and not used directly by this objective.
-            joint_q: Batched joint coordinates for the evaluation rows.
+            body_q: Batched body transforms, shape [n_batch, body_count].
+                Present for interface compatibility and not used directly by
+                this objective.
+            joint_q: Batched joint coordinates for the evaluation rows, shape
+                [n_batch, joint_coord_count].
             model: Shared articulation model. Present for interface
                 compatibility.
-            residuals: Global residual buffer to update.
+            residuals: Global residual buffer to update,
+                shape [n_batch, total_residual_count].
             start_idx: First residual row reserved for this objective.
-            problem_idx: Mapping from evaluation rows to base problems.
-                Ignored because joint limits are shared across all problems.
+            problem_idx: Mapping from evaluation rows to base problems, shape
+                [n_batch]. Ignored because joint limits are shared across all
+                problems.
         """
         count = joint_q.shape[0]
         wp.launch(
@@ -686,10 +694,11 @@ class IKObjectiveJointLimit(IKObjective):
             tape: Recorded Warp tape whose output is the global residual
                 buffer.
             model: Shared articulation model.
-            jacobian: Global Jacobian buffer to update.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
             start_idx: First residual row reserved for this objective.
             dq_dof: Differentiable joint update variable for the current
-                batch.
+                batch, shape [n_batch, joint_dof_count].
         """
         self._require_batch_layout()
         tape.backward(grads={tape.outputs[0]: self.e_array})
@@ -720,13 +729,17 @@ class IKObjectiveJointLimit(IKObjective):
         """Fill the limit Jacobian block with the piecewise-linear derivative.
 
         Args:
-            body_q: Batched body transforms. Present for interface
-                compatibility and not used directly by this objective.
-            joint_q: Batched joint coordinates for the evaluation rows.
+            body_q: Batched body transforms, shape [n_batch, body_count].
+                Present for interface compatibility and not used directly by
+                this objective.
+            joint_q: Batched joint coordinates for the evaluation rows, shape
+                [n_batch, joint_coord_count].
             model: Shared articulation model.
-            jacobian: Global Jacobian buffer to update.
-            joint_S_s: Batched motion-subspace columns. Ignored because the
-                joint-limit derivative is diagonal in joint coordinates.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            joint_S_s: Batched motion-subspace columns, shape [n_batch, joint_dof_count].
+                Ignored because the joint-limit derivative is diagonal in
+                joint coordinates.
             start_idx: First residual row reserved for this objective.
         """
         count = joint_q.shape[0]
@@ -864,9 +877,8 @@ class IKObjectiveRotation(IKObjective):
         link_index: Body index whose frame defines the constrained link.
         link_offset_rotation: Local rotation from the body frame to the
             constrained frame, stored in ``(x, y, z, w)`` order.
-        target_rotations: Target orientations, shape [problem_count], dtype
-            :class:`vec4`. Each quaternion is stored in ``(x, y, z, w)``
-            order.
+        target_rotations: Target orientations, shape [problem_count]. Each
+            quaternion is stored in ``(x, y, z, w)`` order.
         canonicalize_quat_err: If ``True``, flip equivalent quaternions so the
             residual follows the short rotational arc.
         weight: Scalar multiplier applied to the residual and Jacobian rows.
@@ -956,8 +968,8 @@ class IKObjectiveRotation(IKObjective):
         """Replace the target orientations for all base IK problems.
 
         Args:
-            new_rotations: Target quaternions, shape [problem_count], dtype
-                :class:`vec4`, in ``(x, y, z, w)`` order.
+            new_rotations: Target quaternions, shape [problem_count], in
+                ``(x, y, z, w)`` order.
         """
         self._require_batch_layout()
         expected = self.target_rotations.shape[0]
@@ -987,15 +999,18 @@ class IKObjectiveRotation(IKObjective):
         """Write weighted orientation errors into the global residual buffer.
 
         Args:
-            body_q: Batched body transforms for the evaluation rows.
-            joint_q: Batched joint coordinates. Present for interface
-                compatibility and not used directly by this objective.
+            body_q: Batched body transforms for the evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates, shape [n_batch, joint_coord_count].
+                Present for interface compatibility and not used directly by
+                this objective.
             model: Shared articulation model. Present for interface
                 compatibility.
-            residuals: Global residual buffer to update.
+            residuals: Global residual buffer to update,
+                shape [n_batch, total_residual_count].
             start_idx: First residual row reserved for this objective.
             problem_idx: Mapping from evaluation rows to base problem
-                indices used to fetch `target_rotations`.
+                indices, shape [n_batch], used to fetch `target_rotations`.
         """
         count = body_q.shape[0]
         wp.launch(
@@ -1029,10 +1044,11 @@ class IKObjectiveRotation(IKObjective):
             tape: Recorded Warp tape whose output is the global residual
                 buffer.
             model: Shared articulation model.
-            jacobian: Global Jacobian buffer to update.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
             start_idx: First residual row reserved for this objective.
             dq_dof: Differentiable joint update variable for the current
-                batch.
+                batch, shape [n_batch, joint_dof_count].
         """
         self._require_batch_layout()
         for component in range(3):
@@ -1071,12 +1087,16 @@ class IKObjectiveRotation(IKObjective):
         """Fill the rotation Jacobian block from the analytic motion subspace.
 
         Args:
-            body_q: Batched body transforms for the evaluation rows.
-            joint_q: Batched joint coordinates. Present for interface
-                compatibility and not used directly by this objective.
+            body_q: Batched body transforms for the evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates, shape [n_batch, joint_coord_count].
+                Present for interface compatibility and not used directly by
+                this objective.
             model: Shared articulation model.
-            jacobian: Global Jacobian buffer to update.
-            joint_S_s: Batched motion-subspace columns for each DoF.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            joint_S_s: Batched motion-subspace columns,
+                shape [n_batch, joint_dof_count].
             start_idx: First residual row reserved for this objective.
         """
         n_dofs = model.joint_dof_count

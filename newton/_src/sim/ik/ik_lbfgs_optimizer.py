@@ -774,10 +774,10 @@ class IKOptimizerLBFGS:
         """Run several L-BFGS iterations on a batch of joint configurations.
 
         Args:
-            joint_q_in: Input joint coordinates, shape [n_batch,
-                joint_coord_count], dtype float.
-            joint_q_out: Output buffer for the optimized coordinates. It may
-                alias `joint_q_in` for in-place updates.
+            joint_q_in: Input joint coordinates, shape [n_batch, joint_coord_count].
+            joint_q_out: Output buffer for the optimized coordinates, shape
+                [n_batch, joint_coord_count]. It may alias `joint_q_in` for
+                in-place updates.
             iterations: Number of L-BFGS iterations to execute.
         """
         if joint_q_in.shape != (self.n_batch, self.n_coords):
@@ -814,11 +814,10 @@ class IKOptimizerLBFGS:
         """Evaluate squared residual costs for a batch of joint configurations.
 
         Args:
-            joint_q: Joint coordinates to evaluate, shape [n_batch,
-                joint_coord_count], dtype float.
+            joint_q: Joint coordinates to evaluate, shape [n_batch, joint_coord_count].
 
         Returns:
-            Costs for each batch row, shape [n_batch], dtype float.
+            Costs for each batch row, shape [n_batch].
         """
         self._compute_residuals(joint_q)
         wp.launch(

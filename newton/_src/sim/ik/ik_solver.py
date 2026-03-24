@@ -340,7 +340,8 @@ class IKSolver:
             joint_q_in: Input joint coordinates [m or rad] for the base
                 problems, shape [n_problems, joint_coord_count].
             joint_q_out: Output joint coordinates [m or rad] for the selected
-                solution of each base problem. It may alias `joint_q_in`.
+                solution of each base problem, shape [n_problems, joint_coord_count].
+                It may alias `joint_q_in`.
             iterations: Number of optimizer iterations to run for each sampled
                 seed.
             step_size: Unitless LM step scale. Ignored by the L-BFGS backend.

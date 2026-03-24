@@ -455,10 +455,10 @@ class IKOptimizerLM:
         """Run several LM iterations on a batch of joint configurations.
 
         Args:
-            joint_q_in: Input joint coordinates, shape [n_batch,
-                joint_coord_count], dtype float.
-            joint_q_out: Output buffer for the optimized coordinates. It may
-                alias `joint_q_in` for in-place updates.
+            joint_q_in: Input joint coordinates, shape [n_batch, joint_coord_count].
+            joint_q_out: Output buffer for the optimized coordinates, shape
+                [n_batch, joint_coord_count]. It may alias `joint_q_in` for
+                in-place updates.
             iterations: Number of LM iterations to execute.
             step_size: Scalar applied to each computed update before
                 integration.
@@ -644,11 +644,10 @@ class IKOptimizerLM:
         """Evaluate squared residual costs for a batch of joint configurations.
 
         Args:
-            joint_q: Joint coordinates to evaluate, shape [n_batch,
-                joint_coord_count], dtype float.
+            joint_q: Joint coordinates to evaluate, shape [n_batch, joint_coord_count].
 
         Returns:
-            Costs for each batch row, shape [n_batch], dtype float.
+            Costs for each batch row, shape [n_batch].
         """
         self._compute_residuals(joint_q)
         wp.launch(
