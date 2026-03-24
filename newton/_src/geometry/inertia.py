@@ -604,14 +604,14 @@ def verify_and_correct_inertia(
     4. Optionally balances inertia to satisfy the triangle inequality exactly
 
     Args:
-        mass: The mass of the body
-        inertia: The 3x3 inertia tensor
+        mass: The mass of the body [kg].
+        inertia: The 3x3 inertia tensor [kg*m^2].
         balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia)
-        bound_mass: If specified, clamp mass to be at least this value
-        bound_inertia: If specified, clamp inertia diagonal elements to be at least this value
-        body_label: Optional label/name of the body for more informative warnings
+        bound_mass: If specified, clamp mass to be at least this value [kg].
+        bound_inertia: If specified, clamp inertia diagonal elements to be at least this value [kg*m^2].
+        body_label: Optional label/name of the body for more informative warnings.
         tolerance: Tolerance for eigenvalue positivity checks and triangle inequality
-            validation [kg·m²]. Default: 1e-6.
+            validation [kg*m^2]. Default: 1e-6.
 
     Returns:
         A tuple of (corrected_mass, corrected_inertia, was_corrected) where was_corrected
