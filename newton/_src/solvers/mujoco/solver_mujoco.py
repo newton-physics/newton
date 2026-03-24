@@ -3552,15 +3552,16 @@ class SolverMuJoCo(SolverBase):
             dim=mj_data.naconmax,
             inputs=[
                 self.mjc_geom_to_newton_shape,
-                self.mjc_body_to_newton,
-                self.mjw_model.opt.cone == int(self._mujoco.mjtCone.mjCONE_PYRAMIDAL),
+                self.mjw_model.opt.cone,
                 mj_data.nacon,
                 mj_contact.frame,
+                mj_contact.friction,
                 mj_contact.dim,
                 mj_contact.geom,
                 mj_contact.efc_address,
                 mj_contact.worldid,
                 mj_data.efc.force,
+                mj_data.njmax,
             ],
             outputs=[
                 contacts.rigid_contact_count,

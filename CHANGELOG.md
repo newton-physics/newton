@@ -72,6 +72,7 @@
 - Fix inertia box wireframe rotation for isotropic and axisymmetric bodies in viewer
 - Implicit MPM solver now uses `mass=0` for kinematic particles instead of `ACTIVE` flag
 - Fix `get_tetmesh()` winding order for left-handed USD meshes
+- Fix contact force conversion in `SolverMuJoCo` to include friction (tangential) components
 
 ## [1.0.0] - 2026-03-10
 
