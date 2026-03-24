@@ -1,0 +1,59 @@
+Warp 1.12.0 initialized:
+   CUDA Toolkit 12.9, Driver 12.8
+   Devices:
+     "cpu"      : "x86_64"
+     "cuda:0"   : "NVIDIA L40" (47 GiB, sm_89, mempool enabled)
+   Kernel cache:
+     /home/horde/.cache/warp/1.12.0
+============================================================
+Newton Physics Engine Benchmark
+Version: 1.1.0.dev0
+Warp: 1.12.0
+============================================================
+
+Available devices: ['cpu', 'cuda:0']
+Using device: cuda:0
+
+=== Falling Box Test (cuda:0) ===
+Module validate_and_correct_inertia_kernel_0c7bfa66 0c7bfa6 load on device 'cuda:0' took 0.57 ms  (cached)
+Module newton._src.solvers.solver 16aecb3 load on device 'cuda:0' took 0.49 ms  (cached)
+  Simulating 300 steps (dt=0.00833s)...
+Module newton._src.sim.collide 452004c load on device 'cuda:0' took 0.66 ms  (cached)
+Module newton._src.geometry.broad_phase_nxn dcff895 load on device 'cuda:0' took 0.42 ms  (cached)
+Module create_narrow_phase_primitive_kernel__locals__narrow_phase_primitive_kernel_ac59d7a0 640833f load on device 'cuda:0' took 0.41 ms  (cached)
+Module create_narrow_phase_kernel_gjk_mpr__locals__narrow_phase_kernel_gjk_mpr_30529530 6ae75c6 load on device 'cuda:0' took 0.68 ms  (cached)
+Module newton._src.geometry.narrow_phase 931370b load on device 'cuda:0' took 5.27 ms  (cached)
+Module newton._src.solvers.xpbd.kernels cf0aa3d load on device 'cuda:0' took 2.03 ms  (cached)
+  Final position: (0.0000, 0.0000, 0.4999)
+  Time: 0.8128s for 300 steps
+  Throughput: 369.1 steps/sec
+  Box fell and settled near ground: True (z=0.500)
+
+=== Collision Detection Test (cuda:0) ===
+  10 boxes falling + colliding, 300 steps...
+  Final z-positions (min=0.391, max=7.536)
+  All bodies above floor: True
+  Time: 0.6226s for 300 steps
+  Throughput: 481.9 steps/sec
+
+=== Throughput Benchmark (cuda:0) ===
+    10 bodies:    727.1 steps/sec  (0.688s)
+    50 bodies:    704.8 steps/sec  (0.709s)
+   100 bodies:    717.9 steps/sec  (0.696s)
+   500 bodies:    751.0 steps/sec  (0.666s)
+
+============================================================
+SUMMARY
+============================================================
+Newton version:        1.1.0.dev0
+Device:                cuda:0
+GPU:                   NVIDIA L40 (47 GiB, sm_89)
+Falling box test:      PASS (z=0.500, expected ~0.5)
+Collision test:        PASS (481.9 steps/sec)
+Throughput (XPBD solver, GPU, after warmup):
+    10 bodies: 727.1 steps/sec
+    50 bodies: 704.8 steps/sec
+   100 bodies: 717.9 steps/sec
+   500 bodies: 751.0 steps/sec
+============================================================
+Newton import OK
