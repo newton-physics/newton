@@ -12,6 +12,13 @@ import warp as wp
 from ...core.types import vec5
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
 
+
+def _import_contact_force_fn():
+    from mujoco_warp._src.support import contact_force_fn
+
+    return contact_force_fn
+
+
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
 vec11 = wp.types.vector(length=11, dtype=wp.float32)
@@ -690,11 +697,11 @@ def sync_qpos0_kernel(
 def convert_mjw_contacts_to_newton_kernel(
     # inputs
     mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
-    mjc_body_to_newton: wp.array(dtype=wp.int32, ndim=2),
-    pyramidal_cone: bool,
+    mj_opt_cone: int,
     mj_nacon: wp.array(dtype=wp.int32),
     mj_contact_pos: wp.array(dtype=wp.vec3),
     mj_contact_frame: wp.array(dtype=wp.mat33f),
+    mj_contact_friction: wp.array(dtype=vec5),
     mj_contact_dist: wp.array(dtype=float),
     mj_contact_dim: wp.array(dtype=int),
     mj_contact_geom: wp.array(dtype=wp.vec2i),
@@ -704,6 +711,7 @@ def convert_mjw_contacts_to_newton_kernel(
     mj_geom_bodyid: wp.array(dtype=int),
     mj_xpos: wp.array2d(dtype=wp.vec3),
     mj_xquat: wp.array2d(dtype=wp.quatf),
+    njmax: int,
     # outputs
     rigid_contact_count: wp.array(dtype=wp.int32),
     rigid_contact_shape0: wp.array(dtype=wp.int32),
@@ -717,6 +725,7 @@ def convert_mjw_contacts_to_newton_kernel(
 
     Uses mjc_geom_to_newton_shape to convert MuJoCo geom indices to Newton shape indices.
     Contact positions are converted from MuJoCo world frame to Newton body-local frame.
+    Contact forces are computed via ``mujoco_warp`` ``contact_force_fn``.
     """
     contact_idx = wp.tid()
     n_contacts = mj_nacon[0]
@@ -758,19 +767,20 @@ def convert_mjw_contacts_to_newton_kernel(
     rigid_contact_point1[contact_idx] = wp.transform_point(wp.transform_inverse(X_wb_b), point1_world)
 
     if contact_force:
-        efc_address0 = mj_contact_efc_address[contact_idx, 0]
-        has_force = efc_address0 >= 0
-        normalforce = float(-1.0)
-        if has_force:
-            normalforce = mj_efc_force[world, efc_address0]
-
-            if pyramidal_cone:
-                dim = mj_contact_dim[contact_idx]
-                for i in range(1, 2 * (dim - 1)):
-                    normalforce += mj_efc_force[world, mj_contact_efc_address[contact_idx, i]]
-        force = wp.where(normalforce > 0.0, -normalforce * normal, wp.vec3(0.0))
-        # TODO: preserve force directions
-        contact_force[contact_idx] = wp.spatial_vector(force, wp.vec3(0.0))
+        # Negate: contact_force_fn returns force on geom2; Newton stores force on shape0 (geom1).
+        contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
+            mj_opt_cone,
+            mj_contact_frame,
+            mj_contact_friction,
+            mj_contact_dim,
+            mj_contact_efc_address,
+            mj_efc_force,
+            njmax,
+            mj_nacon,
+            world,
+            contact_idx,
+            True,
+        )
 
 
 # Import control source/type enums and create warp constants

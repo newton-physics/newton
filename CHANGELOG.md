@@ -81,6 +81,7 @@
 - Implicit MPM solver now uses `mass=0` for kinematic particles instead of `ACTIVE` flag
 - Fix `ModelBuilder.approximate_meshes()` to handle the duplication of per-shape custom attributes that results from convex decomposition
 - Fix `get_tetmesh()` winding order for left-handed USD meshes
+- Fix contact force conversion in `SolverMuJoCo` to include friction (tangential) components
 
 ## [1.0.0] - 2026-03-10
 

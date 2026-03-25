@@ -11,7 +11,7 @@ import warp as wp
 
 import newton
 
-from ..core.types import nparray, override
+from ..core.types import override
 
 try:
     from pxr import Gf, Sdf, Usd, UsdGeom, Vt
@@ -337,13 +337,13 @@ class ViewerUSD(ViewerBase):
         name: str,
         mesh: str,
         xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | nparray | None,
+        scales: wp.array(dtype=wp.vec3) | np.ndarray | None,
         colors: (
             wp.array(dtype=wp.vec3)
             | wp.array(dtype=wp.float32)
             | tuple[float, float, float]
             | list[float]
-            | nparray
+            | np.ndarray
             | None
         ),
         materials: wp.array(dtype=wp.vec4) | None,
@@ -585,7 +585,7 @@ class ViewerUSD(ViewerBase):
         return instancer.GetPath()
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """
         Log array data (not implemented for USD backend).
 

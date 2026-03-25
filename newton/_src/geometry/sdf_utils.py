@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ..core.types import MAXVAL, Axis, Devicelike, nparray
+from ..core.types import MAXVAL, Axis, Devicelike
 from .kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_ellipsoid, sdf_sphere
 from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
 from .types import GeoType, Mesh
@@ -168,7 +168,7 @@ class SDF:
         data: SDFData,
         sparse_volume: wp.Volume | None = None,
         coarse_volume: wp.Volume | None = None,
-        block_coords: nparray | Sequence[wp.vec3us] | None = None,
+        block_coords: np.ndarray | Sequence[wp.vec3us] | None = None,
         texture_block_coords: Sequence[wp.vec3us] | None = None,
         texture_data: "TextureSDFData | None" = None,
         _coarse_texture: wp.Texture3D | None = None,
@@ -223,8 +223,8 @@ class SDF:
 
     @staticmethod
     def create_from_points(
-        points: nparray | Sequence[Sequence[float]],
-        indices: nparray | Sequence[int],
+        points: np.ndarray | Sequence[Sequence[float]],
+        indices: np.ndarray | Sequence[int],
         *,
         device: Devicelike | None = None,
         narrow_band_range: tuple[float, float] = (-0.1, 0.1),
@@ -382,7 +382,7 @@ class SDF:
         *,
         sparse_volume: wp.Volume | None = None,
         coarse_volume: wp.Volume | None = None,
-        block_coords: nparray | Sequence[wp.vec3us] | None = None,
+        block_coords: np.ndarray | Sequence[wp.vec3us] | None = None,
         center: Sequence[float] | None = None,
         half_extents: Sequence[float] | None = None,
         background_value: float = MAXVAL,
