@@ -1759,21 +1759,8 @@ class ViewerBase(ABC):
 
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:
-        # Paul Tol - Bright 9
-        colors = [
-            [68, 119, 170],  # blue
-            [102, 204, 238],  # cyan
-            [34, 136, 51],  # green
-            [204, 187, 68],  # yellow
-            [238, 102, 119],  # red
-            [170, 51, 119],  # magenta
-            [187, 187, 187],  # grey
-            [238, 153, 51],  # orange
-            [0, 153, 136],  # teal
-        ]
-
-        num_colors = len(colors)
-        return [c / 255.0 for c in colors[i % num_colors]]
+        color = newton.ModelBuilder._SHAPE_COLOR_PALETTE[i % len(newton.ModelBuilder._SHAPE_COLOR_PALETTE)]
+        return [c / 255.0 for c in color]
 
     @staticmethod
     def _collision_color_map(i: int) -> list[float]:
