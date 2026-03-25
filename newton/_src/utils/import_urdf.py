@@ -217,6 +217,7 @@ def parse_urdf(
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
+    default_joint_limit_effort = builder.default_joint_cfg.effort_limit
     default_joint_damping = builder.default_joint_cfg.target_kd
 
     # load shape defaults
@@ -535,6 +536,7 @@ def parse_urdf(
             "axis": wp.vec3(1.0, 0.0, 0.0),
             "limit_lower": default_joint_limit_lower,
             "limit_upper": default_joint_limit_upper,
+            "limit_effort": default_joint_limit_effort,
             "custom_attributes": joint_custom_attributes,
         }
         el_axis = joint.find("axis")
@@ -549,6 +551,7 @@ def parse_urdf(
         if el_limit is not None:
             joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
             joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
+            joint_data["limit_effort"] = float(el_limit.get("effort", default_joint_limit_effort))
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
@@ -739,6 +742,7 @@ def parse_urdf(
 
         lower = joint.get("limit_lower", None)
         upper = joint.get("limit_upper", None)
+        effort_limit = joint.get("limit_effort", None)
         joint_damping = joint["damping"]
 
         parent_xform = joint["origin"]
@@ -765,6 +769,7 @@ def parse_urdf(
                 actuator_mode=actuator_mode,
                 limit_lower=lower,
                 limit_upper=upper,
+                effort_limit=effort_limit,
                 **joint_params,
             )
         elif joint["type"] == "prismatic":
@@ -774,6 +779,7 @@ def parse_urdf(
                 actuator_mode=actuator_mode,
                 limit_lower=lower * scale,
                 limit_upper=upper * scale,
+                effort_limit=effort_limit,
                 **joint_params,
             )
         elif joint["type"] == "fixed":
