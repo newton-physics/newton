@@ -46,7 +46,7 @@ from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino._src.utils.viewer import Color3, ViewerConfig
-from newton._src.viewer import ViewerGL, ViewerRTX
+from newton._src.viewer import ViewerGL
 
 
 class SimulatorFromNewton:
@@ -202,7 +202,6 @@ class RigidBodySim:
         max_contacts_per_pair: int | None = None,
         render_config: ViewerConfig | None = None,
         collapse_fixed_joints: bool = False,
-        viewer_type: str = "gl",
     ):
         # ----- Device setup -----
         self._device = wp.get_device(device)
@@ -293,16 +292,14 @@ class RigidBodySim:
         self._extract_metadata()
 
         # ----- Viewer -----
-        self.viewer: ViewerGL | ViewerRTX | None = None
+        self.viewer: ViewerGL | None = None
         self._newton_state: newton.State | None = None
         self._render_config = render_config or ViewerConfig()
         if not headless:
             msg.notif("Creating the 3D viewer ...")
-            if viewer_type == "rtx":
-                self.viewer = ViewerRTX(environment="studio")
-            else:
-                self.viewer = ViewerGL()
+            self.viewer = ViewerGL()
             self.viewer.set_model(self._newton_model)
+            # Newton state used only for rendering (body_q synced from Kamino each frame)
             self._newton_state = self._newton_model.state()
             self._apply_render_config(self._render_config)
 
@@ -322,9 +319,6 @@ class RigidBodySim:
 
     def _apply_render_config(self, cfg: ViewerConfig):
         """Apply render configuration to the viewer."""
-        if not isinstance(self.viewer, ViewerGL):
-            return
-
         viewer = self.viewer
         renderer = viewer.renderer
 
