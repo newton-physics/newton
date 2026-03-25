@@ -86,6 +86,11 @@ class SchemaResolverNewton(SchemaResolver):
             # Contact stiffness/damping
             "ke": SchemaAttribute("newton:contact_ke", None),
             "kd": SchemaAttribute("newton:contact_kd", None),
+            # SDF (Signed Distance Field) configuration
+            "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", None),
+            "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", None),
+            "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", None),
+            "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", None),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
@@ -178,6 +183,8 @@ class SchemaResolverPhysx(SchemaResolver):
                 usd_value_getter=_physx_gap_from_prim,
                 attribute_names=("physxCollision:contactOffset", "physxCollision:restOffset"),
             ),
+            # PhysX SDF resolution
+            "sdf_max_resolution": SchemaAttribute("physxSDFMeshCollision:sdfResolution", None),
         },
         PrimType.MATERIAL: {
             "stiffness": SchemaAttribute("physxMaterial:compliantContactStiffness", 0.0),

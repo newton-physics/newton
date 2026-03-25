@@ -12,7 +12,7 @@ import os
 import posixpath
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin
 
@@ -2540,6 +2540,33 @@ def parse_usd(
                     shape_kd = builder.default_shape_cfg.kd
 
                 shape_color = material_props.get("color")
+
+                # SDF parameters
+                sdf_max_resolution = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
+                )
+                if sdf_max_resolution is None:
+                    sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
+
+                sdf_target_voxel_size = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
+                )
+                if sdf_target_voxel_size is None:
+                    sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
+
+                sdf_narrow_band_inner = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
+                )
+                sdf_narrow_band_outer = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
+                )
+                default_nb = builder.default_shape_cfg.sdf_narrow_band_range
+                sdf_narrow_band_range = (
+                    sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
+                    sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
+                )
+
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -2561,6 +2588,9 @@ def parse_usd(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        sdf_max_resolution=sdf_max_resolution,
+                        sdf_narrow_band_range=sdf_narrow_band_range,
+                        sdf_target_voxel_size=sdf_target_voxel_size,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2637,10 +2667,32 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
+                    # Build SDF on mesh when USD attributes request it.
+                    # add_shape_mesh rejects ShapeConfig.sdf_* for meshes, so we must
+                    # call mesh.build_sdf() directly and strip SDF fields from the cfg.
+                    _has_sdf = sdf_max_resolution is not None or sdf_target_voxel_size is not None
+                    if _has_sdf:
+                        sdf_kwargs = {"narrow_band_range": sdf_narrow_band_range}
+                        if sdf_max_resolution is not None:
+                            sdf_kwargs["max_resolution"] = sdf_max_resolution
+                        if sdf_target_voxel_size is not None:
+                            sdf_kwargs["target_voxel_size"] = sdf_target_voxel_size
+                        if gap_val is not None and gap_val != float("-inf"):
+                            sdf_kwargs["margin"] = gap_val
+                        sdf_kwargs["scale"] = tuple(shape_spec.meshScale)
+                        mesh.build_sdf(**sdf_kwargs)
+                    # Mesh ShapeConfig must not have sdf_* fields
+                    mesh_shape_params = dict(shape_params)
+                    mesh_shape_params["cfg"] = replace(
+                        shape_params["cfg"],
+                        sdf_max_resolution=None,
+                        sdf_target_voxel_size=None,
+                        sdf_narrow_band_range=(-0.1, 0.1),
+                    )
                     shape_id = builder.add_shape_mesh(
                         scale=wp.vec3(*shape_spec.meshScale),
                         mesh=mesh,
-                        **shape_params,
+                        **mesh_shape_params,
                     )
                     if not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
