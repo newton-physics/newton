@@ -376,407 +376,9 @@ frequencies for variable-length entity types.  Call it on a
 :meth:`~newton.ModelBuilder.finalize`, the attributes are accessible as
 ``model.mujoco.<name>``.
 
-**Custom frequencies:**
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 75
-
-   * - Frequency
-     - Description
-   * - ``mujoco:pair``
-     - Explicit contact pairs (MJCF ``<contact><pair>``).
-   * - ``mujoco:actuator``
-     - General MuJoCo actuators (MJCF ``<actuator>`` / USD ``MjcActuator``).
-   * - ``mujoco:tendon``
-     - Fixed and spatial tendons (MJCF ``<tendon>`` / USD ``MjcTendon``).
-   * - ``mujoco:tendon_joint``
-     - Per-joint entries inside fixed tendons.
-   * - ``mujoco:tendon_wrap``
-     - Per-element entries inside spatial tendon wrap paths.
-
-**Geom / shape attributes** (frequency: ``SHAPE``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``condim``
-     - ``int32``
-     - Contact dimensionality (default 3).
-   * - ``geom_priority``
-     - ``int32``
-     - Contact-parameter mixing priority (default 0).
-   * - ``geom_solimp``
-     - ``vec5``
-     - Solver impedance parameters.
-   * - ``geom_solmix``
-     - ``float32``
-     - Solver mixing weight (default 1.0).
-
-**Joint / DOF attributes** (frequency: ``JOINT_DOF``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``limit_margin``
-     - ``float32``
-     - Joint-limit margin [m or rad].
-   * - ``solimplimit``
-     - ``vec5``
-     - Solver impedance for joint limits.
-   * - ``solreffriction``
-     - ``vec2``
-     - Solver reference for joint friction.
-   * - ``solimpfriction``
-     - ``vec5``
-     - Solver impedance for joint friction.
-   * - ``dof_passive_stiffness``
-     - ``float32``
-     - Passive spring stiffness.
-   * - ``dof_passive_damping``
-     - ``float32``
-     - Passive damping coefficient.
-   * - ``dof_springref``
-     - ``float32``
-     - Spring reference position [m or rad].
-   * - ``dof_ref``
-     - ``float32``
-     - Joint reference position [m or rad].
-   * - ``jnt_actgravcomp``
-     - ``bool``
-     - Per-DOF actuator gravity compensation flag.
-
-**Body attributes** (frequency: ``BODY``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``gravcomp``
-     - ``float32``
-     - Gravity compensation scaling factor.
-
-**Equality constraint attributes** (frequency: ``EQUALITY_CONSTRAINT``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``eq_solref``
-     - ``vec2``
-     - Solver reference for equality constraints.
-   * - ``eq_solimp``
-     - ``vec5``
-     - Solver impedance for equality constraints.
-
-**Solver options — per-world** (frequency: ``WORLD``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``impratio``
-     - ``float32``
-     - Impedance ratio (default 1.0).
-   * - ``tolerance``
-     - ``float32``
-     - Solver tolerance (default 1e-8).
-   * - ``ls_tolerance``
-     - ``float32``
-     - Line-search tolerance (default 0.01).
-   * - ``ccd_tolerance``
-     - ``float32``
-     - CCD tolerance (default 1e-6).
-   * - ``density``
-     - ``float32``
-     - Medium density for viscous forces.
-   * - ``viscosity``
-     - ``float32``
-     - Medium viscosity.
-   * - ``wind``
-     - ``vec3``
-     - Wind velocity.
-   * - ``magnetic``
-     - ``vec3``
-     - Magnetic flux.
-
-**Solver options — per-model** (frequency: ``ONCE``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``iterations``
-     - ``int32``
-     - Maximum solver iterations (default 100).
-   * - ``ls_iterations``
-     - ``int32``
-     - Maximum line-search iterations (default 50).
-   * - ``ccd_iterations``
-     - ``int32``
-     - Maximum CCD iterations (default 35).
-   * - ``sdf_iterations``
-     - ``int32``
-     - Maximum SDF iterations (default 10).
-   * - ``sdf_initpoints``
-     - ``int32``
-     - SDF initial sample points (default 40).
-   * - ``integrator``
-     - ``int32``
-     - Integration scheme (default 3 = ``implicitfast``).
-   * - ``solver``
-     - ``int32``
-     - Constraint solver (default 2 = ``newton``).
-   * - ``cone``
-     - ``int32``
-     - Friction cone type (default 0 = ``pyramidal``).
-   * - ``jacobian``
-     - ``int32``
-     - Jacobian type (default 2 = ``auto``).
-   * - ``autolimits``
-     - ``bool``
-     - Enable automatic limit inference (default ``True``).
-
-**Pair attributes** (frequency: ``mujoco:pair``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``pair_world``
-     - ``int32``
-     - World index for this pair.
-   * - ``pair_geom1``
-     - ``int32``
-     - First shape index.
-   * - ``pair_geom2``
-     - ``int32``
-     - Second shape index.
-   * - ``pair_condim``
-     - ``int32``
-     - Contact dimensionality (default 3).
-   * - ``pair_solref``
-     - ``vec2``
-     - Solver reference.
-   * - ``pair_solreffriction``
-     - ``vec2``
-     - Solver reference for friction.
-   * - ``pair_solimp``
-     - ``vec5``
-     - Solver impedance.
-   * - ``pair_margin``
-     - ``float32``
-     - Contact margin.
-   * - ``pair_gap``
-     - ``float32``
-     - Contact gap.
-   * - ``pair_friction``
-     - ``vec5``
-     - Five-element friction vector.
-
-**Actuator attributes** (frequency: ``mujoco:actuator``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``joint_dof_label``
-     - ``str``
-     - DOF label strings (frequency: ``JOINT_DOF``).
-   * - ``actuator_trnid``
-     - ``vec2i``
-     - Transmission target index pair.
-   * - ``actuator_target_label``
-     - ``str``
-     - Target path label resolved from USD.
-   * - ``actuator_trntype``
-     - ``int32``
-     - Transmission type (0 = joint).
-   * - ``actuator_dyntype``
-     - ``int32``
-     - Activation dynamics type (0 = none).
-   * - ``actuator_gaintype``
-     - ``int32``
-     - Gain type (0 = fixed).
-   * - ``actuator_biastype``
-     - ``int32``
-     - Bias type (0 = none).
-   * - ``actuator_world``
-     - ``int32``
-     - World index.
-   * - ``actuator_ctrllimited``
-     - ``int32``
-     - Control-range limiting tri-state (2 = auto).
-   * - ``actuator_forcelimited``
-     - ``int32``
-     - Force-range limiting tri-state (2 = auto).
-   * - ``actuator_ctrlrange``
-     - ``vec2``
-     - Control range.
-   * - ``actuator_has_ctrlrange``
-     - ``int32``
-     - Whether ``ctrlrange`` was explicitly authored.
-   * - ``actuator_forcerange``
-     - ``vec2``
-     - Force range.
-   * - ``actuator_has_forcerange``
-     - ``int32``
-     - Whether ``forcerange`` was explicitly authored.
-   * - ``actuator_gear``
-     - ``vec6``
-     - Gear ratio vector.
-   * - ``actuator_cranklength``
-     - ``float32``
-     - Crank length for slider-crank transmissions.
-   * - ``actuator_dynprm``
-     - ``vec10``
-     - Activation dynamics parameters.
-   * - ``actuator_gainprm``
-     - ``vec10``
-     - Gain parameters.
-   * - ``actuator_biasprm``
-     - ``vec10``
-     - Bias parameters.
-   * - ``actuator_actlimited``
-     - ``int32``
-     - Activation-range limiting tri-state (2 = auto).
-   * - ``actuator_actrange``
-     - ``vec2``
-     - Activation range.
-   * - ``actuator_has_actrange``
-     - ``int32``
-     - Whether ``actrange`` was explicitly authored.
-   * - ``actuator_actdim``
-     - ``int32``
-     - Activation state dimension (-1 = auto).
-   * - ``actuator_actearly``
-     - ``bool``
-     - Apply activation at start of step.
-   * - ``ctrl``
-     - ``float32``
-     - Control signal (assignment: ``CONTROL``).
-   * - ``ctrl_source``
-     - ``int32``
-     - Control source enum.
-
-**Tendon attributes** (frequency: ``mujoco:tendon``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 15 55
-
-   * - Attribute
-     - Type
-     - Description
-   * - ``tendon_world``
-     - ``int32``
-     - World index.
-   * - ``tendon_stiffness``
-     - ``float32``
-     - Spring stiffness.
-   * - ``tendon_damping``
-     - ``float32``
-     - Damping coefficient.
-   * - ``tendon_frictionloss``
-     - ``float32``
-     - Friction loss.
-   * - ``tendon_limited``
-     - ``int32``
-     - Length-limit tri-state (2 = auto).
-   * - ``tendon_range``
-     - ``vec2``
-     - Length range.
-   * - ``tendon_margin``
-     - ``float32``
-     - Length-limit margin.
-   * - ``tendon_solref_limit``
-     - ``vec2``
-     - Solver reference for length limits.
-   * - ``tendon_solimp_limit``
-     - ``vec5``
-     - Solver impedance for length limits.
-   * - ``tendon_solref_friction``
-     - ``vec2``
-     - Solver reference for friction.
-   * - ``tendon_solimp_friction``
-     - ``vec5``
-     - Solver impedance for friction.
-   * - ``tendon_armature``
-     - ``float32``
-     - Armature.
-   * - ``tendon_springlength``
-     - ``vec2``
-     - Spring rest length (-1 = use model length).
-   * - ``tendon_joint_adr``
-     - ``int32``
-     - Start address into joint arrays.
-   * - ``tendon_joint_num``
-     - ``int32``
-     - Number of joints in this tendon.
-   * - ``tendon_actuator_force_range``
-     - ``vec2``
-     - Actuator force range.
-   * - ``tendon_actuator_force_limited``
-     - ``int32``
-     - Actuator force limiting tri-state (2 = auto).
-   * - ``tendon_label``
-     - ``str``
-     - Tendon name string.
-   * - ``tendon_type``
-     - ``int32``
-     - Tendon type (0 = fixed, 1 = spatial).
-   * - ``tendon_wrap_adr``
-     - ``int32``
-     - Start address into wrap-path arrays.
-   * - ``tendon_wrap_num``
-     - ``int32``
-     - Number of wrap elements.
-   * - ``tendon_joint``
-     - ``int32``
-     - Joint index (frequency: ``mujoco:tendon_joint``).
-   * - ``tendon_coef``
-     - ``float32``
-     - Joint coefficient (frequency: ``mujoco:tendon_joint``).
-   * - ``tendon_wrap_type``
-     - ``int32``
-     - Wrap element type (frequency: ``mujoco:tendon_wrap``).
-   * - ``tendon_wrap_shape``
-     - ``int32``
-     - Shape index for geom wraps (frequency: ``mujoco:tendon_wrap``).
-   * - ``tendon_wrap_sidesite``
-     - ``int32``
-     - Side-site shape index (frequency: ``mujoco:tendon_wrap``).
-   * - ``tendon_wrap_prm``
-     - ``float32``
-     - Wrap parameter (frequency: ``mujoco:tendon_wrap``).
-
-See :doc:`/concepts/custom_attributes` for background on Newton's
+See the :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` API
+documentation for the full catalog of registered frequencies and attributes,
+and :doc:`/concepts/custom_attributes` for background on Newton's
 custom-attribute system.
 
 
@@ -786,13 +388,22 @@ Mjc USD Schemas
 ---------------
 
 When loading USD assets, Newton can parse MuJoCo-specific attributes via the
-``mjc:`` USD attribute prefix.  This is handled by the internal
-``SchemaResolverMjc`` resolver, which maps ``mjc:``-prefixed USD attributes to
-Newton model properties during :meth:`~newton.ModelBuilder.add_usd`.  The
-``mjc:`` convention means that MuJoCo attributes are named ``mjc:attr`` in USD
-files rather than ``newton:mujoco:attr``.
+``mjc:`` USD attribute prefix.  The ``mjc:`` naming comes from the
+`mjcPhysics USD schema <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/usd/mjcPhysics/generatedSchema.usda>`_
+developed by the MuJoCo team.  The schema is not yet published as a registered
+USD schema, so Newton reads ``mjc:``-prefixed attributes directly rather than
+relying on applied schemas.
 
-The following tables list supported ``mjc:`` attributes per USD prim type.
+This is handled by the internal ``SchemaResolverMjc`` resolver, which maps
+``mjc:``-prefixed USD attributes to Newton model properties during
+:meth:`~newton.ModelBuilder.add_usd`.  The ``mjc:`` convention means that
+MuJoCo attributes are named ``mjc:attr`` in USD files rather than
+``newton:mujoco:attr``.
+
+The following tables list the subset of ``mjc:`` attributes currently supported
+by Newton.  Attributes not listed here are ignored during USD import.  Default
+values shown are the mjcPhysics schema defaults, which may differ from Newton's
+own API defaults.
 
 **Scene** (``PhysicsScene``):
 
@@ -836,6 +447,13 @@ The ``mjc:solref`` attribute is mapped to per-axis limit stiffness and damping
 for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
 ``rotZ``, ``linear``, ``angular``).
 
+.. note::
+
+   The ``solref`` → ``ke``/``kd`` conversion currently produces mass-normalized
+   values rather than force-based values.  See
+   `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
+   for details.
+
 **Shape** (``PhysicsCollisionAPI``):
 
 .. list-table::
@@ -857,6 +475,13 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - ``mjc:solref``
      - ``ke`` / ``kd``
      - ``[0.02, 1.0]``
+
+.. note::
+
+   The ``solref`` → ``ke``/``kd`` conversion has the same
+   mass-normalization issue as the joint mapping.  See
+   `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
+   for details.
 
 **Material** (``PhysicsMaterialAPI``):
 
@@ -882,6 +507,13 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - ``mjc:solref``
      - ``stiffness`` / ``damping``
      - ``[0.02, 1.0]``
+
+.. note::
+
+   The ``solref`` → ``stiffness``/``damping`` conversion has the same
+   mass-normalization issue as the joint mapping.  See
+   `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
+   for details.
 
 **Body** (``PhysicsRigidBodyAPI``):
 
@@ -919,19 +551,19 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
      - 0.0
    * - ``mjc:gainPrm``
      - ``gainPrm``
-     - ``[1, 0, …, 0]``
+     - ``[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
    * - ``mjc:gainType``
      - ``gainType``
      - ``"fixed"``
    * - ``mjc:biasPrm``
      - ``biasPrm``
-     - ``[0, …, 0]``
+     - ``[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
    * - ``mjc:biasType``
      - ``biasType``
      - ``"none"``
    * - ``mjc:dynPrm``
      - ``dynPrm``
-     - ``[1, 0, …, 0]``
+     - ``[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
    * - ``mjc:dynType``
      - ``dynType``
      - ``"none"``

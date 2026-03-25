@@ -408,6 +408,10 @@ class SolverMuJoCo(SolverBase):
         loading MJCF, URDF, or USD assets that contain MuJoCo-specific
         data.
 
+        For detailed semantics of individual attributes, see the
+        `MuJoCo XML Reference <https://mujoco.readthedocs.io/en/latest/XMLreference.html>`_
+        and `mjModel documentation <https://mujoco.readthedocs.io/en/latest/APIreference.html#mjmodel>`_.
+
         Custom Frequencies:
             The following custom frequencies are registered.  Each one
             defines a variable-length entity type whose count is
@@ -458,9 +462,11 @@ class SolverMuJoCo(SolverBase):
             ``solimpfriction``
                 Solver impedance for joint friction, ``vec5``.
             ``dof_passive_stiffness``
-                Passive spring stiffness (default ``0.0``).
+                Passive spring stiffness [N/m or N·m/rad]
+                (default ``0.0``).
             ``dof_passive_damping``
-                Passive damping coefficient (default ``0.0``).
+                Passive damping coefficient [N·s/m or N·m·s/rad]
+                (default ``0.0``).
             ``dof_springref``
                 Spring reference position [m or rad] (default ``0.0``).
             ``dof_ref``
@@ -494,13 +500,15 @@ class SolverMuJoCo(SolverBase):
             ``ccd_tolerance``
                 CCD tolerance (default ``1e-6``).
             ``density``
-                Medium density for viscous forces (default ``0.0``).
+                Medium density [kg/m³] (default ``0.0``).
             ``viscosity``
-                Medium viscosity (default ``0.0``).
+                Medium viscosity [Pa·s] (default ``0.0``).
             ``wind``
-                Wind velocity ``vec3`` (default ``(0, 0, 0)``).
+                Wind velocity [m/s], ``vec3``
+                (default ``(0, 0, 0)``).
             ``magnetic``
-                Magnetic flux ``vec3`` (default ``(0, -0.5, 0)``).
+                Magnetic flux [T], ``vec3``
+                (default ``(0, -0.5, 0)``).
 
             **Solver options — per-model** (frequency: ``ONCE``):
 
@@ -550,9 +558,9 @@ class SolverMuJoCo(SolverBase):
             ``pair_solimp``
                 Solver impedance ``vec5``.
             ``pair_margin``
-                Contact margin (default ``0.0``).
+                Contact margin [m] (default ``0.0``).
             ``pair_gap``
-                Contact gap (default ``0.0``).
+                Contact gap [m] (default ``0.0``).
             ``pair_friction``
                 Five-element friction ``vec5``
                 (default ``(1, 1, 0.005, 0.0001, 0.0001)``).
@@ -599,7 +607,7 @@ class SolverMuJoCo(SolverBase):
                 Gear ratio vector, length 6 (default
                 ``(1, 0, 0, 0, 0, 0)``).
             ``actuator_cranklength``
-                Crank length for slider-crank transmissions
+                Crank length for slider-crank transmissions [m]
                 (default ``0.0``).
             ``actuator_dynprm``
                 Activation dynamics parameters ``vec10``.
@@ -632,17 +640,17 @@ class SolverMuJoCo(SolverBase):
             ``tendon_world``
                 World index.
             ``tendon_stiffness``
-                Spring stiffness (default ``0.0``).
+                Spring stiffness [N/m] (default ``0.0``).
             ``tendon_damping``
-                Damping coefficient (default ``0.0``).
+                Damping coefficient [N·s/m] (default ``0.0``).
             ``tendon_frictionloss``
-                Friction loss (default ``0.0``).
+                Friction loss [N] (default ``0.0``).
             ``tendon_limited``
                 Length-limit tri-state (default ``2`` = auto).
             ``tendon_range``
                 Length range ``vec2`` (default ``(0, 0)``).
             ``tendon_margin``
-                Length-limit margin (default ``0.0``).
+                Length-limit margin [m] (default ``0.0``).
             ``tendon_solref_limit``
                 Solver reference for length limits ``vec2``
                 (default ``(0.02, 1.0)``).
@@ -654,9 +662,9 @@ class SolverMuJoCo(SolverBase):
             ``tendon_solimp_friction``
                 Solver impedance for friction ``vec5``.
             ``tendon_armature``
-                Armature (default ``0.0``).
+                Armature [kg·m²] (default ``0.0``).
             ``tendon_springlength``
-                Spring rest length ``vec2``
+                Spring rest length [m], ``vec2``
                 (default ``(-1, -1)`` = use model length).
             ``tendon_joint_adr``
                 Start address into joint arrays.
