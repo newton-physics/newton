@@ -128,6 +128,20 @@ For each new RC (``rc2``, ``rc3``, …) bump the version in
 ``newton/_version.py`` and run ``docs/generate_api.py``, then tag and push.
 Iterate until CI is green and QA signs off.
 
+Testing criteria
+^^^^^^^^^^^^^^^^
+
+An RC is considered ready for GA when all of the following are met:
+
+- The full test suite passes on CI (``uv run --extra dev -m newton.tests``).
+- All examples run successfully with the viewer
+  (``uv run -m newton.examples <name>``).
+- Testing covers **Windows and Linux**, **all supported Python versions**,
+  and both **latest CUDA drivers** and **minimum-spec drivers**.
+- PyPI installation of the RC works in a clean environment
+  (``pip install newton==X.Y.ZrcN``).
+- No regressions compared to the previous release have been identified.
+
 .. rubric:: Checklist
 
 .. list-table::
@@ -139,7 +153,7 @@ Iterate until CI is green and QA signs off.
    * - ☐
      - CI passing on release branch.
    * - ☐
-     - QA sign-off obtained.
+     - Testing criteria above satisfied.
    * - ☐
      - No outstanding release-blocking issues.
 
@@ -148,6 +162,10 @@ Iterate until CI is green and QA signs off.
 
 Final release
 -------------
+
+Before proceeding, obtain explicit go/no-go approval from testing and
+stakeholders.  Do not start the final release steps until sign-off is
+confirmed.
 
 1. Finalize ``CHANGELOG.md``: rename ``[Unreleased]`` →
    ``[X.Y.Z] - YYYY-MM-DD``.
@@ -174,6 +192,8 @@ Final release
    :widths: 5 95
    :header-rows: 0
 
+   * - ☐
+     - Go/no-go approval obtained from testing and stakeholders.
    * - ☐
      - Changelog finalized with release date.
    * - ☐
