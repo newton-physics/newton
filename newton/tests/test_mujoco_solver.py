@@ -92,10 +92,8 @@ class TestMuJoCoSolver(unittest.TestCase):
             print("Debug: SolverMuJoCo initialized successfully for trajectory test.")
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping trajectory rendering: {e}")
-            return
         except Exception as e:
             self.skipTest(f"Error initializing SolverMuJoCo for trajectory test: {e}")
-            return
 
         if self.debug_stage_path:
             try:
@@ -105,13 +103,10 @@ class TestMuJoCoSolver(unittest.TestCase):
                 print("Debug: ViewerGL initialized successfully for trajectory test.")
             except ImportError as e:
                 self.skipTest(f"ViewerGL dependencies not met. Skipping trajectory rendering: {e}")
-                return
             except Exception as e:
                 self.skipTest(f"Error initializing ViewerGL for trajectory test: {e}")
-                return
         else:
             self.skipTest("No debug_stage_path set. Skipping trajectory rendering.")
-            return
 
         num_frames = 200
         sim_substeps = 2
@@ -3906,7 +3901,6 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
-            return
 
         sim_dt = 1.0 / 240.0
         num_steps = 120  # Simulate for 0.5 seconds to ensure it settles
@@ -4008,7 +4002,6 @@ class TestMuJoCoContactForce(unittest.TestCase):
             solver = SolverMuJoCo(model, cone=cone)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
-            return
 
         state_in = model.state()
         state_out = model.state()
@@ -4549,7 +4542,6 @@ class TestMuJoCoConversion(unittest.TestCase):
             solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
-            return
 
         # Run forward kinematics using mujoco_warp
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
@@ -4630,7 +4622,6 @@ class TestMuJoCoConversion(unittest.TestCase):
             solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         except ImportError as e:
             self.skipTest(f"MuJoCo not installed: {e}")
-            return
         mjc_body_id = 1  # body 0 = world
         self.assertEqual(
             int(solver.mj_model.body_simple[mjc_body_id]),
