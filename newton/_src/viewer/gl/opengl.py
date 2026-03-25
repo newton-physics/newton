@@ -956,6 +956,7 @@ class RendererGL:
                 resizable=True,
                 vsync=vsync,
                 visible=not headless,
+                file_drops=True,
                 config=config,
             )
             gl.glEnable(gl.GL_MULTISAMPLE)
@@ -970,6 +971,7 @@ class RendererGL:
                 resizable=True,
                 vsync=vsync,
                 visible=not headless,
+                file_drops=True,
             )
             self.msaa_samples = 0
 
