@@ -807,16 +807,12 @@ class BipedalObservation(ObservationBuilder, torch.nn.Module):
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Reset action history and phase for the given environments."""
         if env_ids is None:
-            normalized = (
-                self._body_sim.q_j[:, : self._num_joints] - self._joint_position_default
-            ) / self._joint_position_range
+            normalized = (self._body_sim.q_j - self._joint_position_default) / self._joint_position_range
             self._action_hist_0[:] = normalized
             self._action_hist_1[:] = normalized
             self._phase.zero_()
         else:
-            normalized = (
-                self._body_sim.q_j[env_ids, : self._num_joints] - self._joint_position_default
-            ) / self._joint_position_range
+            normalized = (self._body_sim.q_j[env_ids] - self._joint_position_default) / self._joint_position_range
             self._action_hist_0[env_ids] = normalized
             self._action_hist_1[env_ids] = normalized
             self._phase[env_ids] = 0.0
