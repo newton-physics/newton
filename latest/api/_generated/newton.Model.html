@@ -2173,6 +2173,12 @@ during contact margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_color">
+<span class="sig-name descname"><span class="pre">shape_color</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.vec3</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.shape_color" title="Link to this definition">#</a></dt>
+<dd><p>Shape display colors [0, 1], shape [shape_count], vec3.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_contact_pair_count">
 <span class="sig-name descname"><span class="pre">shape_contact_pair_count</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.Model.shape_contact_pair_count" title="Link to this definition">#</a></dt>
 <dd><p>Number of shape contact pairs.</p>
@@ -2292,7 +2298,7 @@ Contact stiffness is computed as <code class="docutils literal notranslate"><spa
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_scale">
 <span class="sig-name descname"><span class="pre">shape_scale</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.vec3</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.shape_scale" title="Link to this definition">#</a></dt>
-<dd><p>Shape 3D scale, shape [shape_count, 3], float.</p>
+<dd><p>Shape 3D scale, shape [shape_count], vec3.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2304,13 +2310,13 @@ Contact stiffness is computed as <code class="docutils literal notranslate"><spa
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_source">
 <span class="sig-name descname"><span class="pre">shape_source</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><span class="pre">object</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.Model.shape_source" title="Link to this definition">#</a></dt>
-<dd><p>List of source geometry objects (e.g., <a class="reference internal" href="newton.Mesh.html#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>) used for rendering and broadphase, shape [shape_count].</p>
+<dd><p>List of source geometry objects (e.g., <a class="reference internal" href="newton.Mesh.html#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>) used for broadphase collision detection and rendering, shape [shape_count].</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_source_ptr">
 <span class="sig-name descname"><span class="pre">shape_source_ptr</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.uint64</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.shape_source_ptr" title="Link to this definition">#</a></dt>
-<dd><p>Geometry source pointer to be used inside the Warp kernels which can be generated by finalizing the geometry objects, see for example <a class="reference internal" href="newton.Mesh.html#newton.Mesh.finalize" title="newton.Mesh.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.Mesh.finalize()</span></code></a>, shape [shape_count], uint64.</p>
+<dd><p>Geometry source pointers to be used inside the Warp kernels which are generated by finalizing the geometry objects, see for example <a class="reference internal" href="newton.Mesh.html#newton.Mesh.finalize" title="newton.Mesh.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.Mesh.finalize()</span></code></a>, shape [shape_count], uint64.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2743,6 +2749,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_filter_pairs"><code class="docutils literal notranslate"><span class="pre">shape_collision_filter_pairs</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_group"><code class="docutils literal notranslate"><span class="pre">shape_collision_group</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_radius"><code class="docutils literal notranslate"><span class="pre">shape_collision_radius</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_color"><code class="docutils literal notranslate"><span class="pre">shape_color</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_contact_pair_count"><code class="docutils literal notranslate"><span class="pre">shape_contact_pair_count</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_contact_pairs"><code class="docutils literal notranslate"><span class="pre">shape_contact_pairs</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_count"><code class="docutils literal notranslate"><span class="pre">shape_count</span></code></a></li>
