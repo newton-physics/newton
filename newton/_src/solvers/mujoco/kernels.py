@@ -14,10 +14,8 @@ from ...sim import BodyFlags, EqType, JointTargetMode, JointType
 
 
 def _import_contact_force_fn():
-    try:
-        from mujoco_warp._src.support import contact_force_fn
-    except ImportError:
-        raise ImportError("Failed to import contact_force_fn from mujoco_warp._src.support") from None
+    from mujoco_warp._src.support import contact_force_fn
+
     return contact_force_fn
 
 
