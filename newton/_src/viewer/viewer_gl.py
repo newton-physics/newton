@@ -238,6 +238,10 @@ class ViewerGL(ViewerBase):
         self.renderer.register_mouse_drag(self.on_mouse_drag)
         self.renderer.register_mouse_scroll(self.on_mouse_scroll)
         self.renderer.register_resize(self.on_resize)
+        self.renderer.register_file_drop(self._on_file_drop)
+
+        # Standalone viewer callbacks
+        self.on_file_drop: Callable[[str], None] | None = None
 
         # Camera movement settings
         self._camera_speed = 0.04
@@ -1594,6 +1598,11 @@ class ViewerGL(ViewerBase):
             modifiers: Active modifier bitmask for this event.
         """
         pass
+
+    def _on_file_drop(self, x: int, y: int, paths: list[str]):
+        """Handle file drop events from pyglet."""
+        if self.on_file_drop is not None and paths:
+            self.on_file_drop(paths[0])
 
     def _frame_camera_on_model(self):
         """

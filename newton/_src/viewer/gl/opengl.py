@@ -990,6 +990,7 @@ class RendererGL:
         self._last_x, self._last_y = self._screen_width // 2, self._screen_height // 2
         self._key_callbacks = []
         self._key_release_callbacks = []
+        self._file_drop_callbacks = []
 
         self._env_texture = None
         self._env_intensity = 1.0
@@ -1289,6 +1290,8 @@ class RendererGL:
         self.window.on_mouse_drag = self._on_mouse_drag
         self.window.on_mouse_motion = self._on_mouse_motion
 
+        self.window.push_handlers(on_file_drop=self._on_file_drop)
+
     def register_key_press(self, callback):
         """Register a callback for key press events.
 
@@ -1356,6 +1359,19 @@ class RendererGL:
     def register_update(self, callback):
         """Register a per-frame update callback receiving dt (seconds)."""
         self._update_callbacks.append(callback)
+
+    def register_file_drop(self, callback):
+        """Register a callback for file drop events.
+
+        Args:
+            callback: Function that takes (x, y, paths) parameters,
+                      where paths is a list of file path strings.
+        """
+        self._file_drop_callbacks.append(callback)
+
+    def _on_file_drop(self, x, y, paths):
+        for callback in self._file_drop_callbacks:
+            callback(x, y, paths)
 
     def _on_key_press(self, symbol, modifiers):
         # update key state
