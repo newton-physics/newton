@@ -606,7 +606,7 @@ def verify_and_correct_inertia(
     Args:
         mass: The mass of the body [kg].
         inertia: The 3x3 inertia tensor [kg*m^2].
-        balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia)
+        balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia).
         bound_mass: If specified, clamp mass to be at least this value [kg].
         bound_inertia: If specified, clamp inertia diagonal elements to be at least this value [kg*m^2].
         body_label: Optional label/name of the body for more informative warnings.
