@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
@@ -15,8 +16,8 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.types import MAXVAL, Axis, nparray
-from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
+from ..core.types import MAXVAL, Axis
+from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents, repack_shape_colors
 
 
 class ViewerBase(ABC):
@@ -120,7 +121,9 @@ class ViewerBase(ABC):
 
         # Per-shape color buffer and indexing
         self.model_shape_color: wp.array(dtype=wp.vec3) = None
-        self._shape_to_slot: nparray | None = None
+        self._shape_to_slot: np.ndarray | None = None
+        self._slot_to_shape: np.ndarray | None = None
+        self._slot_to_shape_wp: wp.array | None = None
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
 
         # Isomesh cache for SDF collision visualization
@@ -131,7 +134,7 @@ class ViewerBase(ABC):
         self._gaussian_instances: list[tuple[str, newton.Gaussian, int, wp.transform, int, int, bool]] = []
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         self._sdf_isomesh_populated: bool = False
-        self._shape_sdf_index_host: nparray | None = None
+        self._shape_sdf_index_host: np.ndarray | None = None
 
     def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
         """
@@ -343,6 +346,8 @@ class ViewerBase(ABC):
         if self.model is None:
             return
 
+        self._sync_shape_colors_from_model()
+
         # compute shape transforms and render
         for shapes in self._shape_instances.values():
             visible = self._should_show_shape(shapes.flags, shapes.static)
@@ -382,6 +387,32 @@ class ViewerBase(ABC):
         self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
         self.model_changed = False
+
+    def _sync_shape_colors_from_model(self):
+        """Propagate model-owned shape colors into viewer batches.
+
+        Always launches a GPU kernel to repack colors from model order into
+        viewer batch order.  This is cheaper than a D2H transfer + host-side
+        comparison every frame.
+        """
+        if (
+            self.model is None
+            or self.model.shape_color is None
+            or self.model_shape_color is None
+            or self._slot_to_shape_wp is None
+        ):
+            return
+
+        wp.launch(
+            kernel=repack_shape_colors,
+            dim=len(self.model_shape_color),
+            inputs=[self.model.shape_color, self._slot_to_shape_wp],
+            outputs=[self.model_shape_color],
+            device=self.device,
+            record_tape=False,
+        )
+        for batch_ref in self._shape_instances.values():
+            batch_ref.colors_changed = True
 
     def _log_gaussian_shapes(self, state: newton.State):
         """Render Gaussian shapes as point clouds with current body transforms."""
@@ -485,7 +516,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
-                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
                     0.1,  # line length scale factor
                 ],
@@ -586,7 +617,7 @@ class ViewerBase(ABC):
         self,
         name: str,
         geo_type: int,
-        geo_scale: float | tuple[float, ...] | list[float] | nparray,
+        geo_scale: float | tuple[float, ...] | list[float] | np.ndarray,
         xforms: wp.array(dtype=wp.transform),
         colors: wp.array(dtype=wp.vec3) | None = None,
         materials: wp.array(dtype=wp.vec4) | None = None,
@@ -997,7 +1028,7 @@ class ViewerBase(ABC):
         return
 
     @abstractmethod
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """
         Log a numeric array for backend-specific visualization utilities.
 
@@ -1248,6 +1279,7 @@ class ViewerBase(ABC):
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
+        shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
@@ -1337,7 +1369,9 @@ class ViewerBase(ABC):
             xform = wp.transform_expand(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
 
-            if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
+            if shape_display_color is not None:
+                color = wp.vec3(shape_display_color[s])
+            elif (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
                 color = wp.vec3(0.5, 0.5, 0.5)
             else:
                 # Use shape index for color to ensure each collision shape has a different color
@@ -1348,7 +1382,7 @@ class ViewerBase(ABC):
             if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
-                if geo_src.color is not None:
+                if shape_display_color is None and geo_src.color is not None:
                     color = wp.vec3(geo_src.color[0:3])
                 if getattr(geo_src, "roughness", None) is not None:
                     material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
@@ -1359,9 +1393,11 @@ class ViewerBase(ABC):
                     if has_texture:
                         material = wp.vec4(material.x, material.y, material.z, 1.0)
 
-            # plane appearance: checkerboard + gray
+            # Planes keep their checkerboard material even when model.shape_color
+            # is populated with resolved default colors.
             if geo_type == newton.GeoType.PLANE:
-                color = wp.vec3(0.125, 0.125, 0.15)
+                if shape_display_color is None:
+                    color = wp.vec3(0.125, 0.125, 0.15)
                 material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
             # add render instance
@@ -1398,9 +1434,17 @@ class ViewerBase(ABC):
             for local_idx, s_idx in enumerate(batch.model_shapes):
                 shape_to_slot[s_idx] = start + local_idx
         self._shape_to_slot = shape_to_slot
+        slot_to_shape = np.empty(total_instances, dtype=np.int32)
+        for s_idx, slot in enumerate(shape_to_slot):
+            if slot >= 0:
+                slot_to_shape[slot] = s_idx
+        self._slot_to_shape = slot_to_shape
+        self._slot_to_shape_wp = (
+            wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
+        )
 
         # Build shape -> batch reference mapping for change signalling
-        shape_to_batch = [None] * shape_count
+        shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
         for batch in batches:
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
@@ -1517,16 +1561,27 @@ class ViewerBase(ABC):
         Args:
             shape_colors: mapping from shape index -> color
         """
-        if self.model_shape_color is None or self._shape_to_slot is None or self._shape_to_batch is None:
+        warnings.warn(
+            "Viewer.update_shape_colors() is deprecated. Write to model.shape_color instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+
+        if self._shape_to_slot is None or self._shape_to_batch is None:
             return
 
         for s_idx, col in shape_colors.items():
             if s_idx < 0 or s_idx >= len(self._shape_to_slot):
                 raise ValueError(f"Shape index {s_idx} out of bounds")
+
+            if self.model is not None and self.model.shape_color is not None:
+                self.model.shape_color[s_idx : s_idx + 1].fill_(wp.vec3(col))
+
             slot = int(self._shape_to_slot[s_idx])
             if slot < 0:
                 continue
-            self.model_shape_color[slot : slot + 1].fill_(wp.vec3(col))
+            if self.model_shape_color is not None:
+                self.model_shape_color[slot : slot + 1].fill_(wp.vec3(col))
             batch_ref = self._shape_to_batch[s_idx]
             if batch_ref is not None:
                 batch_ref.colors_changed = True
@@ -1686,21 +1741,8 @@ class ViewerBase(ABC):
 
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:
-        # Paul Tol - Bright 9
-        colors = [
-            [68, 119, 170],  # blue
-            [102, 204, 238],  # cyan
-            [34, 136, 51],  # green
-            [204, 187, 68],  # yellow
-            [238, 102, 119],  # red
-            [170, 51, 119],  # magenta
-            [187, 187, 187],  # grey
-            [238, 153, 51],  # orange
-            [0, 153, 136],  # teal
-        ]
-
-        num_colors = len(colors)
-        return [c / 255.0 for c in colors[i % num_colors]]
+        color = newton.ModelBuilder._SHAPE_COLOR_PALETTE[i % len(newton.ModelBuilder._SHAPE_COLOR_PALETTE)]
+        return [c / 255.0 for c in color]
 
     @staticmethod
     def _collision_color_map(i: int) -> list[float]:

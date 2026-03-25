@@ -3,6 +3,8 @@
 
 """Common enums and utility kernels shared across IK components."""
 
+from __future__ import annotations
+
 from enum import Enum
 
 import warp as wp

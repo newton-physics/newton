@@ -167,6 +167,17 @@ def update_shape_xforms(
 
 
 @wp.kernel
+def repack_shape_colors(
+    shape_colors: wp.array(dtype=wp.vec3),
+    slot_to_shape: wp.array(dtype=wp.int32),
+    packed_shape_colors: wp.array(dtype=wp.vec3),
+):
+    """Repack model-order shape colors into viewer batch order."""
+    tid = wp.tid()
+    packed_shape_colors[tid] = shape_colors[slot_to_shape[tid]]
+
+
+@wp.kernel
 def estimate_world_extents(
     shape_transform: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
@@ -234,7 +245,7 @@ def compute_contact_lines(
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
+    contact_offset0: wp.array(dtype=wp.vec3),
     contact_normal: wp.array(dtype=wp.vec3),
     line_scale: float,
     # outputs
@@ -257,19 +268,14 @@ def compute_contact_lines(
 
     # Get world transforms for both shapes
     body_a = shape_body[shape_a]
-    body_b = shape_body[shape_b]
     X_wb_a = wp.transform_identity()
-    X_wb_b = wp.transform_identity()
     if body_a >= 0:
         X_wb_a = body_q[body_a]
-    if body_b >= 0:
-        X_wb_b = body_q[body_b]
 
     # Compute world space contact positions
-    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid])
-    world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
-    # Use the midpoint of the contact as the line start
-    contact_center = (world_pos0 + world_pos1) * 0.5
+    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid] + contact_offset0[tid])
+    # Anchor the debug normal at shape 0's contact point.
+    contact_center = world_pos0
 
     # Apply world offset
     world_a, world_b = shape_world[shape_a], shape_world[shape_b]
