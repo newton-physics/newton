@@ -1635,7 +1635,7 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.R:
             if self.on_reset is not None:
                 self.on_reset()
-        elif symbol == pyglet.window.key.PERIOD:
+        elif symbol in (pyglet.window.key.PERIOD, pyglet.window.key.RIGHT):
             self.step_once()
 
     def on_key_release(self, symbol: int, modifiers: int):
