@@ -168,7 +168,15 @@ stakeholders.  Do not start the final release steps until sign-off is
 confirmed.
 
 1. Finalize ``CHANGELOG.md``: rename ``[Unreleased]`` →
-   ``[X.Y.Z] - YYYY-MM-DD``.
+   ``[X.Y.Z] - YYYY-MM-DD``.  Review the entries for:
+
+   - **Missing entries** — cross-check merged PRs since the last release to
+     catch changes that were not recorded in the changelog.
+   - **Redundant entries** — consolidate or remove duplicates for changes
+     within the same release period (e.g. a bug fix for a feature added in
+     the same cycle should not appear as both an "Added" and a "Fixed"
+     entry).
+
 2. Update documentation links to point to versioned URLs where appropriate.
 3. Verify all dependency pins in ``pyproject.toml`` use stable
    (non-pre-release) versions.
