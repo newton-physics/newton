@@ -22,7 +22,6 @@
 - Add MPM beam twist, snow ball, and viscous coiling examples
 - Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
 - Add `enable_ambient_lighting` and `enable_particles` options to `SensorTiledCamera.Config`
-- Add `ModelBuilder.inertia_tolerance` to configure the eigenvalue positivity and triangle inequality threshold used during inertia correction in `finalize()`
 
 ### Changed
 
@@ -55,6 +54,7 @@
 
 ### Fixed
 
+- Fix inertia validation spuriously inflating small but physically valid eigenvalues for lightweight components (< ~50 g) by using a relative threshold instead of an absolute 1e-6 cutoff
 - Restore keyboard camera movement while hovering gizmos so keyboard controls remain active when the pointer is over gizmos
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
 - Unify CPU and GPU inertia validation to produce identical results for zero-mass bodies with `bound_mass`, singular inertia, non-symmetric tensors, and triangle-inequality boundary cases
