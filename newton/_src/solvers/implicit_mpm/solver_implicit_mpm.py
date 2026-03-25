@@ -617,7 +617,7 @@ class SolverImplicitMPM(SolverBase):
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
         solver: str = "gauss-seidel"
-        """Solver to use for the rheology solver. May be one of gauss-seidel, gauss-seidel-reordered, jacobi, cg."""
+        """Solver to use for the rheology solver. May be one of gauss-seidel, gauss-seidel-reordered, gauss-seidel-hybrid, jacobi, cg."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver."""
         collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
