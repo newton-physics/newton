@@ -5212,13 +5212,11 @@ class ModelBuilder:
                 ~ShapeFlags.HYDROELASTIC
             )  # Falling back to mesh/primitive collisions for plane and hfield shapes
 
-        if GeoType(type) in (GeoType.MESH, GeoType.CONVEX_MESH) and src is not None:
-            color = getattr(src, "color", None)
-
-        if color is None:
+        resolved_color = color
+        if resolved_color is None and src is not None:
+            resolved_color = getattr(src, "color", None)
+        if resolved_color is None:
             resolved_color = ModelBuilder._shape_palette_color(shape)
-        else:
-            resolved_color = color
 
         self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
