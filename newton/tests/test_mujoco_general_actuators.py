@@ -610,5 +610,133 @@ class TestMuJoCoActuators(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjw_model.actuator_trntype.numpy(), [0])
 
 
+MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_site_actuator">
+    <option gravity="0 0 -9.81"/>
+    <worldbody>
+        <body name="base" pos="0 0 1">
+            <freejoint name="root"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+            <site name="sensor_site" pos="0.1 0 0"/>
+            <body name="arm" pos="0.2 0 0">
+                <joint name="elbow" axis="0 1 0" type="hinge"/>
+                <geom type="box" size="0.05 0.05 0.2" mass="0.5"/>
+                <site name="ee_site" pos="0 0 0.2"/>
+            </body>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="site_motor" site="ee_site" gainprm="25 0 0" biasprm="0 -25 -2"/>
+        <motor name="elbow_motor" joint="elbow"/>
+    </actuator>
+</mujoco>
+"""
+
+
+class TestMuJoCoSiteActuators(unittest.TestCase):
+    """Tests for site-targeted actuator support in SolverMuJoCo."""
+
+    def test_site_actuator_parsed_from_mjcf(self):
+        """Site actuator is correctly parsed with trntype=SITE from MJCF."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SITE_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        trntype = model.mujoco.actuator_trntype.numpy()
+
+        # Find the site actuator among all parsed actuators
+        site_trntype = int(SolverMuJoCo.TrnType.SITE)
+        site_indices = [i for i in range(len(trntype)) if trntype[i] == site_trntype]
+        self.assertEqual(len(site_indices), 1, "Expected exactly one SITE actuator")
+
+        gainprm = model.mujoco.actuator_gainprm.numpy()
+        np.testing.assert_allclose(gainprm[site_indices[0], :3], [25.0, 0.0, 0.0], atol=1e-5)
+
+    def test_site_actuator_exported_to_mujoco(self):
+        """Site actuator is exported to MuJoCo model with correct trntype and target."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SITE_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        mj_model = solver.mj_model
+
+        # At least 2 actuators: site_motor and elbow_motor
+        self.assertGreaterEqual(mj_model.nu, 2)
+
+        # Find the actuator with site transmission type (mjTRN_SITE = 4 in native MuJoCo)
+        import mujoco
+
+        mj_site_trntype = mujoco.mjtTrn.mjTRN_SITE
+        site_acts = [i for i in range(mj_model.nu) if mj_model.actuator_trntype[i] == mj_site_trntype]
+        self.assertEqual(len(site_acts), 1, "Expected exactly one site actuator in MuJoCo model")
+
+        mj_idx = site_acts[0]
+        np.testing.assert_allclose(mj_model.actuator_gainprm[mj_idx, :3], [25.0, 0.0, 0.0], atol=1e-5)
+        np.testing.assert_allclose(mj_model.actuator_biasprm[mj_idx, :3], [0.0, -25.0, -2.0], atol=1e-5)
+
+        # The trnid should point to a valid site index
+        site_id = mj_model.actuator_trnid[mj_idx, 0]
+        self.assertGreaterEqual(site_id, 0)
+        self.assertLess(site_id, mj_model.nsite)
+
+    def test_site_actuator_matches_native_mujoco(self):
+        """Site actuator properties match native MuJoCo loading."""
+        native_model = SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(MJCF_SITE_ACTUATOR)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SITE_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        newton_mj = solver.mj_model
+
+        self.assertEqual(native_model.nu, newton_mj.nu)
+
+        for i in range(native_model.nu):
+            self.assertEqual(
+                native_model.actuator_trntype[i],
+                newton_mj.actuator_trntype[i],
+                f"Actuator {i} trntype mismatch",
+            )
+            np.testing.assert_array_equal(
+                native_model.actuator_trnid[i],
+                newton_mj.actuator_trnid[i],
+                err_msg=f"Actuator {i} trnid mismatch",
+            )
+            np.testing.assert_allclose(
+                native_model.actuator_gainprm[i, :3],
+                newton_mj.actuator_gainprm[i, :3],
+                atol=1e-5,
+            )
+            np.testing.assert_allclose(
+                native_model.actuator_biasprm[i, :3],
+                newton_mj.actuator_biasprm[i, :3],
+                atol=1e-5,
+            )
+
+    def test_site_actuator_with_include_sites_false(self):
+        """Site actuator is resolved even when include_sites=False."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SITE_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, include_sites=False)
+        mj_model = solver.mj_model
+
+        import mujoco
+
+        mj_site_trntype = mujoco.mjtTrn.mjTRN_SITE
+        site_acts = [i for i in range(mj_model.nu) if mj_model.actuator_trntype[i] == mj_site_trntype]
+        self.assertEqual(len(site_acts), 1, "Site actuator should be exported even with include_sites=False")
+
+        mj_idx = site_acts[0]
+        np.testing.assert_allclose(mj_model.actuator_gainprm[mj_idx, :3], [25.0, 0.0, 0.0], atol=1e-5)
+
+        site_id = mj_model.actuator_trnid[mj_idx, 0]
+        self.assertGreaterEqual(site_id, 0)
+        self.assertLess(site_id, mj_model.nsite)
+
+
 if __name__ == "__main__":
     unittest.main()

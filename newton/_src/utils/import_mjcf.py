@@ -2473,6 +2473,7 @@ def parse_mjcf(
             joint_name = merged_attrib.get("joint")
             body_name = merged_attrib.get("body")
             tendon_name = merged_attrib.get("tendon")
+            site_name = merged_attrib.get("site")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
@@ -2481,6 +2482,8 @@ def parse_mjcf(
                 body_name = sanitize_name(body_name)
             if tendon_name:
                 tendon_name = sanitize_name(tendon_name)
+            if site_name:
+                site_name = sanitize_name(site_name)
 
             # Determine transmission type and target
             trntype = 0  # Default: joint
@@ -2530,9 +2533,19 @@ def parse_mjcf(
                 target_idx = tendon_idx
                 target_name_for_log = tendon_name
                 trntype = 2  # TrnType.TENDON
+            elif site_name:
+                # Site transmission (trntype=3)
+                site_idx = site_name_to_idx.get(site_name)
+                if site_idx is None:
+                    if verbose:
+                        print(f"Warning: {actuator_type} actuator references unknown site '{site_name}'")
+                    continue
+                target_idx = site_idx
+                target_name_for_log = site_name
+                trntype = 3  # TrnType.SITE
             else:
                 if verbose:
-                    print(f"Warning: {actuator_type} actuator has no joint, body, or tendon target, skipping")
+                    print(f"Warning: {actuator_type} actuator has no joint, body, site, or tendon target, skipping")
                 continue
 
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
