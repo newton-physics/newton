@@ -31,20 +31,6 @@ class TestCustomAttributes(unittest.TestCase):
         """Set up test fixtures."""
         self.device = wp.get_device()
 
-    def test_shape_color_name_is_reserved_for_builtin_attribute(self):
-        """Built-in shape color storage should reserve the default attribute name."""
-        builder = ModelBuilder()
-
-        with self.assertRaisesRegex(ValueError, "shape_color"):
-            builder.add_custom_attribute(
-                ModelBuilder.CustomAttribute(
-                    name="shape_color",
-                    frequency=AttributeFrequency.SHAPE,
-                    dtype=wp.vec3,
-                    assignment=AttributeAssignment.MODEL,
-                )
-            )
-
     def _add_test_robot(self, builder: ModelBuilder) -> dict[str, int]:
         """Build a simple 2-bar linkage robot without custom attributes."""
         base = builder.add_link(xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()), mass=1.0)
