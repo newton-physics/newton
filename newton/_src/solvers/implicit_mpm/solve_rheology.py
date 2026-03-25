@@ -1544,12 +1544,12 @@ def solve_rheology(
 
     Args:
         solver: Solver type string. ``"gauss-seidel"``,
-            ``"gauss-seidel-reordered"``, ``"gauss-seidel-hybrid"``,
+            ``"gauss-seidel-soa"``, ``"gauss-seidel-batched"``,
             ``"jacobi"``, ``"cg"``, or ``"cg+<solver>"`` (CG as initial
             guess then ``<solver>`` for the main solve).
-            ``"gauss-seidel-reordered"`` uses an entry-major SoA strain
+            ``"gauss-seidel-soa"`` uses an entry-major SoA strain
             matrix layout for improved memory coalescing.
-            ``"gauss-seidel-hybrid"`` additionally merges colors into
+            ``"gauss-seidel-batched"`` additionally merges colors into
             super-colors with Jacobi-style mass splitting within each
             super-color, giving 3–4× wall-clock speedup on higher-order
             bases at moderate tolerances.
@@ -1600,6 +1600,14 @@ def solve_rheology(
         # use only as initial guess for the next solver
         solver = solver[3:]
 
+    # Normalize short aliases
+    _SOLVER_ALIASES = {
+        "gs": "gauss-seidel",
+        "gs-soa": "gauss-seidel-soa",
+        "gs-batched": "gauss-seidel-batched",
+    }
+    solver = _SOLVER_ALIASES.get(solver, solver)
+
     if "gauss-seidel" in solver and jacobi_warmstart_smoother_iterations > 0:
         # jacobi warmstart  smoother
         old_v = wp.clone(momentum.velocity)
@@ -1612,9 +1620,9 @@ def solve_rheology(
 
     if solver == "gauss-seidel":
         rheology_solver = _GaussSeidelSolver(delassus_operator, temporary_store)
-    elif solver == "gauss-seidel-reordered":
+    elif solver == "gauss-seidel-soa":
         rheology_solver = _ReorderedGaussSeidelSolver(delassus_operator, temporary_store)
-    elif solver == "gauss-seidel-hybrid":
+    elif solver == "gauss-seidel-batched":
         rheology_solver = _HybridGaussSeidelSolver(delassus_operator, temporary_store)
     elif solver == "jacobi":
         rheology_solver = _JacobiSolver(delassus_operator, temporary_store)
