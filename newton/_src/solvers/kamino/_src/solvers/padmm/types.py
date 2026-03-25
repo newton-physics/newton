@@ -1128,7 +1128,7 @@ class PADMMInfo:
             max_iters (int): The maximum number of iterations for which to allocate convergence data.
 
         Raises:
-            ValueError: If either ``size.num_worlds`` or `max_iters`` are not a positive integers.
+            ValueError: If either ``size.num_worlds`` or ``max_iters`` are not positive integers.
         """
 
         # Ensure num_worlds is valid
@@ -1250,7 +1250,7 @@ class PADMMData:
             device (wp.DeviceLike): The target Warp device on which all data will be allocated.
 
         Raises:
-            ValueError: If either ``size.num_worlds`` or `max_iters`` are not a positive integers.
+            ValueError: If either ``size.num_worlds`` or ``max_iters`` are not positive integers.
         """
 
         self.config: wp.array | None = None
@@ -1317,7 +1317,7 @@ class PADMMData:
             device (wp.DeviceLike): The target Warp device on which all data will be allocated.
 
         Raises:
-            ValueError: If either ``size.num_worlds`` or `max_iters`` are not a positive integers.
+            ValueError: If either ``size.num_worlds`` or ``max_iters`` are not positive integers.
         """
         with wp.ScopedDevice(device):
             self.config = wp.zeros(shape=(size.num_worlds,), dtype=PADMMConfigStruct)
