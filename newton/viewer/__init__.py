@@ -3,6 +3,7 @@
 
 # Import all viewer classes (they handle missing dependencies at instantiation time)
 from .._src.viewer import ViewerBase, ViewerFile, ViewerGL, ViewerNull, ViewerRerun, ViewerUSD, ViewerViser
+from ._standalone import main
 
 __all__ = [
     "ViewerBase",
@@ -12,4 +13,5 @@ __all__ = [
     "ViewerRerun",
     "ViewerUSD",
     "ViewerViser",
+    "main",
 ]
