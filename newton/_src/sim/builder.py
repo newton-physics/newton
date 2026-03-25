@@ -5739,6 +5739,7 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
         label: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a convex hull collision shape to a body.
 
@@ -5750,6 +5751,7 @@ class ModelBuilder:
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`Mesh.color` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
+            custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
             The index of the newly added shape.
@@ -5766,6 +5768,7 @@ class ModelBuilder:
             src=mesh,
             label=label,
             color=color,
+            custom_attributes=custom_attributes,
         )
 
     def add_shape_heightfield(
@@ -6008,6 +6011,16 @@ class ModelBuilder:
                 f"Unsupported remeshing method: {method}. Supported methods are: {', '.join(remeshing_methods)}."
             )
 
+        def get_shape_custom_attributes(shape: int) -> dict[str, Any] | None:
+            custom_attributes = {
+                full_key: custom_attr.values[shape]
+                for full_key, custom_attr in self.custom_attributes.items()
+                if custom_attr.frequency == Model.AttributeFrequency.SHAPE
+                and isinstance(custom_attr.values, dict)
+                and shape in custom_attr.values
+            }
+            return custom_attributes or None
+
         if shape_indices is None:
             shape_indices = [
                 i
@@ -6026,6 +6039,8 @@ class ModelBuilder:
 
                 body = self.shape_body[shape]
                 xform = self.shape_transform[shape]
+                color = self.shape_color[shape]
+                custom_attributes = get_shape_custom_attributes(shape)
                 cfg = ModelBuilder.ShapeConfig(
                     density=0.0,  # do not add extra mass / inertia
                     margin=self.shape_margin[shape],
@@ -6039,8 +6054,10 @@ class ModelBuilder:
                     xform=xform,
                     cfg=cfg,
                     mesh=self.shape_source[shape],
+                    color=color,
                     label=f"{self.shape_label[shape]}_visual",
                     scale=self.shape_scale[shape],
+                    custom_attributes=custom_attributes,
                 )
 
                 # disable visibility of the original shape
@@ -6099,6 +6116,8 @@ class ModelBuilder:
                     if len(decomposition) > 1:
                         body = self.shape_body[shape]
                         xform = self.shape_transform[shape]
+                        color = self.shape_color[shape]
+                        custom_attributes = get_shape_custom_attributes(shape)
                         cfg = ModelBuilder.ShapeConfig(
                             density=0.0,  # do not add extra mass / inertia
                             ke=self.shape_material_ke[shape],
@@ -6124,7 +6143,9 @@ class ModelBuilder:
                                 mesh=Mesh(decomposition[i][0], decomposition[i][1]),
                                 scale=scale,
                                 cfg=cfg,
+                                color=color,
                                 label=f"{self.shape_label[shape]}_convex_{i}",
+                                custom_attributes=custom_attributes,
                             )
                     remeshed_shapes.add(shape)
             except Exception as e:

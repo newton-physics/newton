@@ -1586,9 +1586,6 @@ class ViewerBase(ABC):
             if batch_ref is not None:
                 batch_ref.colors_changed = True
 
-            if self._model_shape_color_host is not None:
-                self._model_shape_color_host[s_idx] = np.asarray(col, dtype=np.float32)
-
     def _log_inertia_boxes(self, state: newton.State):
         """Render inertia boxes as wireframe lines."""
         if not self.show_inertia_boxes:
