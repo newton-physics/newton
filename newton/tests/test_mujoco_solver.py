@@ -8274,5 +8274,71 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
             os.unlink(xml_path)
 
 
+class TestUpdateContactsPointPositions(unittest.TestCase):
+    """Test that update_contacts populates rigid_contact_point0/point1."""
+
+    def test_contact_points_populated(self):
+        """Drop a box onto a ground plane with use_mujoco_contacts and verify contact points are nonzero."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        builder.add_ground_plane()
+        body = builder.add_body(
+            xform=wp.transform(p=wp.vec3(0.0, 0.0, 1.0), q=wp.quat_identity()),
+        )
+        builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(
+            model,
+            solver="newton",
+            integrator="implicitfast",
+            iterations=10,
+            ls_iterations=20,
+            use_mujoco_contacts=True,
+        )
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        contacts = newton.Contacts(
+            rigid_contact_max=solver.mjw_data.naconmax,
+            soft_contact_max=0,
+            device=model.device,
+        )
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        dt = 1.0 / 200.0
+        found_contacts = False
+        for _ in range(200):
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, contacts, dt)
+            solver.update_contacts(contacts, state_0)
+            state_0, state_1 = state_1, state_0
+
+            n = contacts.rigid_contact_count.numpy()[0]
+            if n > 0:
+                found_contacts = True
+                point0 = contacts.rigid_contact_point0.numpy()[:n]
+                point1 = contacts.rigid_contact_point1.numpy()[:n]
+
+                hx, hy, hz = 0.25, 0.25, 0.25
+                for i in range(n):
+                    # point0 is on the ground plane (body-local = world for static body).
+                    # z should be near 0 (ground surface), x/y within box footprint.
+                    self.assertAlmostEqual(point0[i][2], 0.0, delta=0.02)
+                    self.assertLessEqual(abs(float(point0[i][0])), hx + 0.01)
+                    self.assertLessEqual(abs(float(point0[i][1])), hy + 0.01)
+
+                    # point1 is in box body frame.
+                    # z should be near -hz (bottom face), x/y within box half-extents.
+                    self.assertAlmostEqual(point1[i][2], -hz, delta=0.02)
+                    self.assertLessEqual(abs(float(point1[i][0])), hx + 0.01)
+                    self.assertLessEqual(abs(float(point1[i][1])), hy + 0.01)
+                break
+
+        self.assertTrue(found_contacts, "No contacts detected after 200 steps")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
