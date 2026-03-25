@@ -23,6 +23,7 @@
 - Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
 - Add `enable_ambient_lighting` and `enable_particles` options to `SensorTiledCamera.Config`
 - Add `ModelBuilder.inertia_tolerance` to configure the eigenvalue positivity and triangle inequality threshold used during inertia correction in `finalize()`
+- Add `total_friction_force` and `friction_force_matrix` to `SensorContact` for tangential (friction) force decomposition
 
 ### Changed
 
