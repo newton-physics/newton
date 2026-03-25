@@ -56,6 +56,20 @@ class SchemaResolverNewton(SchemaResolver):
             "collision_rigid_contact_max": SchemaAttribute("newton:collision:rigidContactMax", None),
             "collision_max_triangle_pairs": SchemaAttribute("newton:collision:maxTrianglePairs", None),
             "collision_broad_phase": SchemaAttribute("newton:collision:broadPhase", None),
+            # Hydroelastic pipeline configuration
+            "hydro_reduce_contacts": SchemaAttribute("newton:hydro:reduceContacts", None),
+            "hydro_pre_prune_contacts": SchemaAttribute("newton:hydro:prePruneContacts", None),
+            "hydro_output_contact_surface": SchemaAttribute("newton:hydro:outputContactSurface", None),
+            "hydro_normal_matching": SchemaAttribute("newton:hydro:normalMatching", None),
+            "hydro_anchor_contact": SchemaAttribute("newton:hydro:anchorContact", None),
+            "hydro_moment_matching": SchemaAttribute("newton:hydro:momentMatching", None),
+            "hydro_margin_contact_area": SchemaAttribute("newton:hydro:marginContactArea", None),
+            "hydro_buffer_fraction": SchemaAttribute("newton:hydro:bufferFraction", None),
+            "hydro_buffer_mult_broad": SchemaAttribute("newton:hydro:bufferMultBroad", None),
+            "hydro_buffer_mult_iso": SchemaAttribute("newton:hydro:bufferMultIso", None),
+            "hydro_buffer_mult_contact": SchemaAttribute("newton:hydro:bufferMultContact", None),
+            "hydro_contact_buffer_fraction": SchemaAttribute("newton:hydro:contactBufferFraction", None),
+            "hydro_grid_size": SchemaAttribute("newton:hydro:gridSize", None),
         },
         PrimType.JOINT: {
             # warning: there is no NewtonJointAPI, none of these are schema attributes

@@ -1590,6 +1590,26 @@ def parse_usd(
             if _cp_val is not None:
                 collision_pipeline_config[_cp_key] = _cp_val
 
+        # Hydroelastic pipeline config (stored on result for downstream use)
+        for _hp_key in (
+            "hydro_reduce_contacts",
+            "hydro_pre_prune_contacts",
+            "hydro_output_contact_surface",
+            "hydro_normal_matching",
+            "hydro_anchor_contact",
+            "hydro_moment_matching",
+            "hydro_margin_contact_area",
+            "hydro_buffer_fraction",
+            "hydro_buffer_mult_broad",
+            "hydro_buffer_mult_iso",
+            "hydro_buffer_mult_contact",
+            "hydro_contact_buffer_fraction",
+            "hydro_grid_size",
+        ):
+            _hp_val = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key=_hp_key, verbose=verbose)
+            if _hp_val is not None:
+                hydro_pipeline_config[_hp_key] = _hp_val
+
     stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
 
     if apply_up_axis_from_stage:
@@ -1631,6 +1651,7 @@ def parse_usd(
     )
 
     collision_pipeline_config = {}
+    hydro_pipeline_config = {}
     if physics_scene_prim is not None:
         # Collect schema-defined attributes from the scene prim for inspection (e.g., mjc:* attributes)
         if collect_schema_attrs:
@@ -3338,6 +3359,7 @@ def parse_usd(
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
         "collision_pipeline_config": collision_pipeline_config,
+        "hydro_pipeline_config": hydro_pipeline_config,
         "actuator_count": actuator_count,
     }
 
