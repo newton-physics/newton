@@ -48,6 +48,7 @@
 
 - Add repeatable `--warp-config KEY=VALUE` CLI option for overriding `warp.config` attributes when running examples
 - Add `gauss-seidel-reordered` rheology solver variant with entry-major SoA strain matrix layout for improved memory coalescing
+- Add `gauss-seidel-hybrid` rheology solver variant combining GS super-color ordering with Jacobi-style mass-split parallelism for faster wall-clock convergence on higher-order bases
 - Add 3D texture-based SDF, replacing NanoVDB volumes in the mesh-mesh collision pipeline for improved performance and CPU compatibility.
 - Parse URDF joint `limit effort="..."` values and propagate them to imported revolute and prismatic joint `effort_limit` settings
 - Add `--benchmark [SECONDS]` flag to examples for headless FPS measurement with warmup

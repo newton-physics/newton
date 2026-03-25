@@ -132,8 +132,35 @@ def _symmetric_part_transposed_op(b: wp.vec3, sig: vec6):
 
 
 @wp.kernel
+def _compute_vel_node_multiplicity(
+    transposed_strain_mat_offsets: wp.array(dtype=int),
+    transposed_strain_mat_columns: wp.array(dtype=int),
+    strain_super_color: wp.array(dtype=int),
+    n_super: int,
+    multiplicity: wp.array2d(dtype=float),
+):
+    """Compute per-velocity-node per-super-color multiplicity.
+
+    For each velocity node ``u_i``, walks the transposed strain matrix to
+    count how many strain nodes in each super-color are connected.  Output
+    ``multiplicity[sc, u_i]`` is the mass-splitting factor for super-color
+    ``sc`` at velocity node ``u_i``.
+
+    For Jacobi (``n_super=1``), all strain nodes map to super-color 0 and
+    the result is the total per-node multiplicity.
+    """
+    u_i = wp.tid()
+    beg = transposed_strain_mat_offsets[u_i]
+    end = transposed_strain_mat_offsets[u_i + 1]
+    for b in range(beg, end):
+        tau_i = transposed_strain_mat_columns[b]
+        sc = strain_super_color[tau_i]
+        if sc >= 0 and sc < n_super:
+            multiplicity[sc, u_i] += 1.0
+
+
+@wp.kernel
 def compute_delassus_diagonal(
-    split_mass: wp.bool,
     strain_mat_offsets: wp.array[int],
     strain_mat_columns: wp.array[int],
     strain_mat_values: wp.array[mat13],
@@ -141,26 +168,27 @@ def compute_delassus_diagonal(
     compliance_mat_offsets: wp.array[int],
     compliance_mat_columns: wp.array[int],
     compliance_mat_values: wp.array[mat66],
-    transposed_strain_mat_offsets: wp.array[int],
+    strain_super_color: wp.array[int],
+    mass_multiplicity: wp.array2d[float],
     delassus_rotation: wp.array[mat55],
     delassus_diagonal: wp.array[vec6],
 ):
-    """Computes the diagonal blocks of the Delassus operator and performs
-    an eigendecomposition to decouple stress components.
+    """Compute the diagonal blocks of the Delassus operator with eigendecomposition.
 
-    For each constraint (tau_i) this kernel:
+    For each strain node:
 
-    1. Assembles the diagonal block of the Delassus operator by summing
-       contributions from connected velocity nodes.
-    2. If mass splitting is enabled, scales contributions by the number
-       of constraints each velocity node participates in.
-    3. Zeros the shear-divergence coupling so the normal and deviatoric
-       components are decoupled.
-    4. Performs an eigendecomposition (``symmetric_eigenvalues_qr``) of
-       the deviatoric sub-block, falling back to the diagonal when the
-       decomposition is numerically unreliable.
-    5. Stores the eigenvalues (``delassus_diagonal``) and the transpose
-       of the deviatoric eigenvectors (``delassus_rotation``).
+    1. Assembles the 6×6 diagonal block by summing velocity-node contributions,
+       each scaled by ``inv_volume[u_i] * mass_multiplicity[sc, u_i]`` where
+       ``sc = strain_super_color[tau_i]``.
+    2. Zeros the shear-divergence coupling.
+    3. Performs an eigendecomposition of the deviatoric sub-block.
+    4. Stores eigenvalues in ``delassus_diagonal`` and the transpose of the
+       deviatoric eigenvectors in ``delassus_rotation``.
+
+    If ``mass_multiplicity`` is empty (shape ``(0, 0)``), a multiplicity of 1
+    is used for all velocity nodes (Gauss-Seidel mode).  Otherwise, the
+    per-super-color multiplicity is looked up from ``mass_multiplicity``
+    (Jacobi or hybrid mass-splitting mode).
     """
     tau_i = wp.tid()
     block_beg = strain_mat_offsets[tau_i]
@@ -172,12 +200,17 @@ def compute_delassus_diagonal(
     else:
         diag_block = compliance_mat_values[compliance_diag_index]
 
-    mass_ratio = float(1.0)
+    has_multiplicity = mass_multiplicity.shape[0] > 0
+    sc = int(0)
+    if has_multiplicity:
+        sc = strain_super_color[tau_i]
+
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
 
-        if split_mass:
-            mass_ratio = float(transposed_strain_mat_offsets[u_i + 1] - transposed_strain_mat_offsets[u_i])
+        mass_ratio = float(1.0)
+        if has_multiplicity:
+            mass_ratio = mass_multiplicity[sc, u_i]
 
         b_val = strain_mat_values[b]
         inv_frac = inv_volume[u_i] * mass_ratio
@@ -191,16 +224,12 @@ def compute_delassus_diagonal(
 
     diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
 
-    # Remove shear-divergence coupling
-    # (current implementation of solve_coulomb_aniso normal and tangential responses are independent)
-    # Ensures that only the tangential part is rotated
     for k in range(1, 6):
         diag_block[0, k] = 0.0
         diag_block[k, 0] = 0.0
 
     diag, ev = symmetric_eigenvalues_qr(diag_block, _DELASSUS_PROXIMAL_REG * 0.1)
 
-    # symmetric_eigenvalues_qr may return nans for small coefficients
     if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(diag) < 1.0e16):
         diag = wp.get_diag(diag_block)
         ev = wp.identity(n=6, dtype=float)
@@ -1173,6 +1202,161 @@ def make_reordered_gs_solve_kernel(
                 velocities[col] += inv_mass_matrix[col] * _symmetric_part_transposed_op(val, ds)
 
     return reordered_gs_solve_kernel_impl
+
+
+# ── Hybrid GS-Jacobi solver ─────────────────────────────────────────────────
+#
+# Merges original colors into fewer super-colors.  Within each super-color,
+# constraints are solved in parallel (Jacobi-like, 2-phase solve + scatter)
+# with a mass-split Delassus diagonal.  Between super-colors, GS ordering.
+
+
+@wp.kernel
+def _build_strain_to_supercolor(
+    flat_color_offsets: wp.array(dtype=int),
+    flat_constraint_ids: wp.array(dtype=int),
+    colors_per_super: int,
+    n_super: int,
+    strain_super_color: wp.array(dtype=int),
+):
+    """Assign each strain node to its super-color based on the flat ordering."""
+    fi = wp.tid()
+    # Binary search: find which super-color fi belongs to
+    for sc in range(n_super):
+        sc_beg = flat_color_offsets[sc * colors_per_super]
+        sc_end_idx = wp.min((sc + 1) * colors_per_super, flat_color_offsets.shape[0] - 1)
+        sc_end = flat_color_offsets[sc_end_idx]
+        if fi >= sc_beg and fi < sc_end:
+            strain_super_color[flat_constraint_ids[fi]] = sc
+            return
+
+
+@wp.kernel
+def _compute_sc_sharing_counts(
+    transposed_strain_mat_offsets: wp.array(dtype=int),
+    transposed_strain_mat_columns: wp.array(dtype=int),
+    strain_super_color: wp.array(dtype=int),
+    n_super: int,
+    sc_sharing: wp.array2d(dtype=float),
+):
+    """For each velocity node, count how many same-super-color strain nodes connect to it."""
+    u_i = wp.tid()
+    beg = transposed_strain_mat_offsets[u_i]
+    end = transposed_strain_mat_offsets[u_i + 1]
+    for b in range(beg, end):
+        tau_i = transposed_strain_mat_columns[b]
+        sc = strain_super_color[tau_i]
+        if sc >= 0 and sc < n_super:
+            sc_sharing[sc, u_i] += 1.0
+
+
+def make_hybrid_solve_kernel(
+    has_viscosity: bool,
+    has_dilatancy: bool,
+    has_compliance_mat: bool,
+    max_entries: int,
+    strain_velocity_node_count: int = -1,
+    has_rotation: bool = not _ISOTROPIC_LOCAL_LHS,
+):
+    """Return the Phase-1 kernel for the hybrid solver (solve only, no scatter).
+
+    Processes one super-color per launch.  Reads stale velocities, computes
+    delta_stress via SoA gather + local solve, and updates stress inline.
+    The velocity scatter is done by a separate Phase-2 kernel.
+    """
+    key = ("hybrid_solve", has_viscosity, has_dilatancy, has_compliance_mat, has_rotation, max_entries)
+
+    @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
+    def hybrid_solve_impl(
+        super_color: int,
+        flat_color_offsets: wp.array(dtype=int),
+        colors_per_super: int,
+        flat_constraint_ids: wp.array(dtype=int),
+        reordered_n_entries: wp.array(dtype=int),
+        reordered_cols: wp.array2d(dtype=int),
+        reordered_vals_x: wp.array2d(dtype=float),
+        reordered_vals_y: wp.array2d(dtype=float),
+        reordered_vals_z: wp.array2d(dtype=float),
+        yield_params: wp.array(dtype=YieldParamVec),
+        strain_node_volume: wp.array(dtype=float),
+        compliance_mat_offsets: wp.array(dtype=int),
+        compliance_mat_columns: wp.array(dtype=int),
+        compliance_mat_values: wp.array(dtype=mat66),
+        delassus_diagonal: wp.array(dtype=vec6),
+        delassus_rotation: wp.array(dtype=mat55),
+        local_strain_rhs: wp.array(dtype=vec6),
+        velocities: wp.array(dtype=wp.vec3),
+        local_stress: wp.array(dtype=vec6),
+        delta_correction: wp.array(dtype=vec6),
+    ):
+        i = wp.tid()
+        sc_beg = flat_color_offsets[super_color * colors_per_super]
+        sc_end = flat_color_offsets[wp.min(
+            (super_color + 1) * colors_per_super,
+            flat_color_offsets.shape[0] - 1,
+        )]
+        launch_dim = sc_end - sc_beg
+
+        for fi in range(sc_beg + i, sc_end, launch_dim):
+            tau_i = flat_constraint_ids[fi]
+
+            # Gather (statically unrolled)
+            tau = local_strain_rhs[tau_i]
+            for k in range(wp.static(max_entries)):
+                col = reordered_cols[k, fi]
+                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
+                tau += _symmetric_part_op(val, velocities[col])
+
+            if wp.static(has_compliance_mat):
+                for b in range(compliance_mat_offsets[tau_i], compliance_mat_offsets[tau_i + 1]):
+                    tau += compliance_mat_values[b] @ local_stress[compliance_mat_columns[b]]
+
+            ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
+                tau_i, tau, yield_params, strain_node_volume,
+                delassus_diagonal, delassus_rotation, local_stress,
+            )
+            local_stress[tau_i] += ds
+            delta_correction[tau_i] = ds
+
+    return hybrid_solve_impl
+
+
+@wp.kernel
+def hybrid_scatter(
+    super_color: int,
+    flat_color_offsets: wp.array(dtype=int),
+    colors_per_super: int,
+    flat_constraint_ids: wp.array(dtype=int),
+    reordered_n_entries: wp.array(dtype=int),
+    reordered_cols: wp.array2d(dtype=int),
+    reordered_vals_x: wp.array2d(dtype=float),
+    reordered_vals_y: wp.array2d(dtype=float),
+    reordered_vals_z: wp.array2d(dtype=float),
+    inv_mass_matrix: wp.array(dtype=float),
+    delta_stress: wp.array(dtype=vec6),
+    velocities: wp.array(dtype=wp.vec3),
+):
+    """Phase 2: Apply B^T @ delta_stress to velocities for one super-color.
+
+    Uses atomic adds since multiple strain nodes in the same super-color
+    may share velocity nodes.
+    """
+    i = wp.tid()
+    sc_beg = flat_color_offsets[super_color * colors_per_super]
+    sc_end = flat_color_offsets[wp.min(
+        (super_color + 1) * colors_per_super,
+        flat_color_offsets.shape[0] - 1,
+    )]
+    launch_dim = sc_end - sc_beg
+
+    for fi in range(sc_beg + i, sc_end, launch_dim):
+        tau_i = flat_constraint_ids[fi]
+        ds = delta_stress[tau_i]
+        n = reordered_n_entries[fi]
+        for k in range(n):
+            col = reordered_cols[k, fi]
+            val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
+            wp.atomic_add(velocities, col, inv_mass_matrix[col] * _symmetric_part_transposed_op(val, ds))
 
 
 @wp.kernel
