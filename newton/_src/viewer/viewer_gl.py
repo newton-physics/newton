@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -249,7 +250,7 @@ class ViewerGL(ViewerBase):
         self._solver_idx: int = 0
         self._ground_enabled: bool = False
         self._file_info: dict | None = None
-        self._step_requested = False
+        self._step_requested: bool = False
         self._error_message: str | None = None
         self._error_popup_pending = False
         self._status_message: str | None = None
@@ -488,7 +489,12 @@ class ViewerGL(ViewerBase):
                 wp.load_module(module=_raycast_module, device=model.device)
                 wp.load_module(module="newton._src.viewer.kernels", device=model.device)
             except Exception:
-                pass
+                import warnings  # noqa: PLC0415
+
+                warnings.warn(
+                    "Failed to precompile picking kernels; picking may be slow or unavailable",
+                    stacklevel=1,
+                )
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
@@ -1227,19 +1233,11 @@ class ViewerGL(ViewerBase):
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
 
-        if self.ui and self.ui.is_available and self.show_ui:
+        has_overlay = self._error_message is not None or self._status_message is not None
+        if self.ui and self.ui.is_available and (self.show_ui or has_overlay):
             self.ui.begin_frame()
-
-            # Render the UI
-            self._render_ui()
-            self._render_error_popup()
-            self._render_status_overlay()
-
-            self.ui.end_frame()
-            self.ui.render()
-        elif self.ui and self.ui.is_available and (self._error_message is not None or self._status_message is not None):
-            # Render overlays even when the rest of the UI is hidden
-            self.ui.begin_frame()
+            if self.show_ui:
+                self._render_ui()
             self._render_error_popup()
             self._render_status_overlay()
             self.ui.end_frame()
@@ -2052,8 +2050,6 @@ class ViewerGL(ViewerBase):
                     # File info
                     if self._file_info is not None:
                         imgui.separator()
-                        import os  # noqa: PLC0415
-
                         imgui.text(f"File: {os.path.basename(self._file_info['path'])}")
                         imgui.text(f"Bodies: {self._file_info['body_count']}")
                         imgui.text(f"Joints: {self._file_info['joint_count']}")

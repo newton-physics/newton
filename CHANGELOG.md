@@ -12,6 +12,7 @@
 - Add brick stacking example
 - Add box pyramid example and ASV benchmark for dense convex-on-convex contacts
 - Add plotting example showing how to access and visualize per-step simulation diagnostics
+- Add standalone viewer entry point (`newton-viewer` / `python -m newton.viewer`) for loading and simulating USD, URDF, and MJCF files with drag-and-drop, solver selection, and ground plane toggle
 - Add `exposure` property to GL renderer
 - Add `snap_to` argument to `ViewerGL.log_gizmo()` to snap gizmos to a target world transform when the user releases them
 - Expose `gizmo_is_using` attribute to detect whether a gizmo is actively being dragged

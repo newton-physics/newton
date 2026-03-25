@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import traceback
 from dataclasses import dataclass
 
 import warp as wp
@@ -129,29 +130,24 @@ def load_file(
     return sim
 
 
-def _simulate(sim: SimState):
+def _simulate(sim: SimState, viewer=None):
     """Run one frame of simulation (sim_substeps steps).
 
     Used both for direct execution (CPU) and inside wp.ScopedCapture()
     for CUDA graph recording.  During graph capture, Python executes
     normally (including attribute swaps on sim) while CUDA records kernel
-    launches — so the swapped attribute references correctly resolve to
+    launches -- so the swapped attribute references correctly resolve to
     alternating GPU buffers in the captured graph.
 
-    This is the same pattern used by all existing Newton examples.
+    Args:
+        sim: Simulation state to advance.
+        viewer: Optional viewer for applying interactive forces (picking,
+            wind).  Ignored during CUDA graph capture.
     """
     for _ in range(sim.sim_substeps):
         sim.state_0.clear_forces()
-        sim.model.collide(sim.state_0, sim.contacts)
-        sim.solver.step(sim.state_0, sim.state_1, sim.control, sim.contacts, sim.sim_dt)
-        sim.state_0, sim.state_1 = sim.state_1, sim.state_0
-
-
-def _simulate_with_forces(sim: SimState, viewer):
-    """CPU-only simulation path that includes viewer interactive forces."""
-    for _ in range(sim.sim_substeps):
-        sim.state_0.clear_forces()
-        viewer.apply_forces(sim.state_0)
+        if viewer is not None:
+            viewer.apply_forces(sim.state_0)
         sim.model.collide(sim.state_0, sim.contacts)
         sim.solver.step(sim.state_0, sim.state_1, sim.control, sim.contacts, sim.sim_dt)
         sim.state_0, sim.state_1 = sim.state_1, sim.state_0
@@ -238,38 +234,40 @@ def main():
         viewer._ground_enabled = ground
         sim = new_sim
 
+    def _reload_current():
+        """Reload the current file, showing errors in the viewer."""
+        if sim is not None:
+            try:
+                load_and_setup(sim.path)
+            except Exception as e:
+                traceback.print_exc()
+                viewer.clear_status()
+                viewer.show_error(str(e))
+
     def on_drop(path: str):
-        nonlocal sim
         try:
             load_and_setup(path)
         except Exception as e:
+            traceback.print_exc()
+            viewer.clear_status()
             viewer.show_error(str(e))
 
     def on_reset():
         if sim is not None:
             sim.state_0.assign(sim.initial_state)
             sim.sim_time = 0.0
-            # Re-capture graph after state reset
             if sim.model.device.is_cuda:
                 sim.graph = _capture_graph(sim)
 
     def on_solver_change(new_solver: str):
         nonlocal solver_name
         solver_name = new_solver
-        if sim is not None:
-            try:
-                load_and_setup(sim.path)
-            except Exception as e:
-                viewer.show_error(str(e))
+        _reload_current()
 
     def on_ground_toggle(enabled: bool):
         nonlocal ground
         ground = enabled
-        if sim is not None:
-            try:
-                load_and_setup(sim.path)
-            except Exception as e:
-                viewer.show_error(str(e))
+        _reload_current()
 
     viewer.on_file_drop = on_drop
     viewer.on_reset = on_reset
@@ -281,6 +279,8 @@ def main():
         try:
             load_and_setup(args.file)
         except Exception as e:
+            traceback.print_exc()
+            viewer.clear_status()
             viewer.show_error(str(e))
 
     # Main loop
@@ -288,16 +288,21 @@ def main():
         should_step = sim is not None and (not viewer.is_paused() or viewer.consume_step_request())
 
         if should_step:
-            # Fall back to direct simulation when interactive forces are
-            # active (picking, wind) since those can't be baked into a graph.
-            use_graph = sim.graph and not (
-                viewer.picking_enabled and viewer.picking is not None and viewer.picking.is_picking()
-            )
-            if use_graph:
-                wp.capture_launch(sim.graph)
-            else:
-                _simulate_with_forces(sim, viewer)
-            sim.sim_time += sim.dt
+            try:
+                # Fall back to direct simulation when interactive forces are
+                # active (picking, wind) since those can't be baked into a graph.
+                use_graph = sim.graph and not (
+                    viewer.picking_enabled and viewer.picking is not None and viewer.picking.is_picking()
+                )
+                if use_graph:
+                    wp.capture_launch(sim.graph)
+                else:
+                    _simulate(sim, viewer)
+                sim.sim_time += sim.dt
+            except Exception as e:
+                traceback.print_exc()
+                viewer.show_error(f"Simulation error: {e}")
+                viewer._paused = True
 
         viewer.begin_frame(sim.sim_time if sim else 0.0)
         if sim:
