@@ -58,7 +58,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             # each step
             sensor.update(state, camera_transforms, rays, color_image=color)
 
-    See :class:`Config` for optional rendering settings and :attr:`ClearData` / :attr:`DEFAULT_CLEAR_DATA` /
+    See :class:`RenderConfig` for optional rendering settings and :attr:`ClearData` / :attr:`DEFAULT_CLEAR_DATA` /
     :attr:`GRAY_CLEAR_DATA` for image-clear presets.
     """
 
