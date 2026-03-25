@@ -2330,12 +2330,10 @@ class ModelBuilder:
             load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
-                have visual-only geometry are hidden. Collision shapes on bodies
-                without visual-only geometry remain visible as a rendering fallback.
-                Mesh colliders with authored PBR material data (texture,
-                roughness, or metallic) also remain visible so collision-only
-                render meshes are not lost.
-                Default is False.
+                have visual-only geometry are hidden unconditionally, regardless of
+                whether the collider has authored PBR material data. Collision
+                shapes on bodies without visual-only geometry remain visible as a
+                rendering fallback. Default is False.
             force_show_colliders: If True, collision shapes get the VISIBLE flag
                 regardless of whether visual shapes exist on the same body. Note that
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
@@ -9500,7 +9498,9 @@ class ModelBuilder:
             local_aabb_lower = []
             local_aabb_upper = []
             voxel_resolution = []
-            voxel_budget = 100  # Maximum voxels per shape for contact reduction
+            from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
+
+            voxel_budget = NUM_VOXEL_DEPTH_SLOTS
 
             # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
             # for instanced shapes (e.g., 256 robots sharing the same shape parameters)

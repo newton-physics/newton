@@ -121,7 +121,7 @@ def create_support_map_function(support_func: Any):
             direction: Support direction
             orientation_b: Orientation of shape B
             position_b: Position of shape B
-            extend: Contact offset extension
+            extend: Combined margin extension [m]
             data_provider: Support mapping data provider
 
         Returns:
@@ -420,7 +420,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         orientation_b: wp.quat,
         position_a: wp.vec3,
         position_b: wp.vec3,
-        sum_of_contact_offsets: float,
+        combined_margin: float,
         data_provider: Any,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-5,
@@ -435,10 +435,10 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             orientation_b: Orientation of shape B
             position_a: Position of shape A
             position_b: Position of shape B
-            sum_of_contact_offsets: Sum of contact offsets for both shapes
+            combined_margin: Sum of margin extensions for both shapes [m]
             data_provider: Support mapping data provider
             MAX_ITER: Maximum number of iterations for MPR algorithm
-            NUMERIC_EPSILON: Small number for numerical comparisons
+            COLLIDE_EPSILON: Small number for numerical comparisons
 
         Returns:
             Tuple of:
@@ -457,7 +457,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             geom_b,
             relative_orientation_b,
             relative_position_b,
-            sum_of_contact_offsets,
+            combined_margin,
             data_provider,
             MAX_ITER,
             COLLIDE_EPSILON,

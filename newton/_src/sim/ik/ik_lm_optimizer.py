@@ -5,33 +5,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import warp as wp
 
+from ..model import Model
 from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
+from .ik_objectives import IKObjective
 
 
 @dataclass(slots=True)
 class BatchCtx:
-    joint_q: wp.array2d
-    residuals: wp.array2d
-    fk_body_q: wp.array2d
-    problem_idx: wp.array1d
+    joint_q: wp.array2d(dtype=wp.float32)
+    residuals: wp.array2d(dtype=wp.float32)
+    fk_body_q: wp.array2d(dtype=wp.transform)
+    problem_idx: wp.array(dtype=wp.int32)
 
     # AUTODIFF and MIXED
-    fk_body_qd: wp.array2d | None = None
-    dq_dof: wp.array2d | None = None
-    joint_q_proposed: wp.array2d | None = None
-    joint_qd: wp.array2d | None = None
+    fk_body_qd: wp.array2d(dtype=wp.spatial_vector) | None = None
+    dq_dof: wp.array2d(dtype=wp.float32) | None = None
+    joint_q_proposed: wp.array2d(dtype=wp.float32) | None = None
+    joint_qd: wp.array2d(dtype=wp.float32) | None = None
 
     # ANALYTIC and MIXED
-    jacobian_out: wp.array3d | None = None
-    motion_subspace: wp.array2d | None = None
-    fk_qd_zero: wp.array2d | None = None
-    fk_X_local: wp.array2d | None = None
+    jacobian_out: wp.array3d(dtype=wp.float32) | None = None
+    motion_subspace: wp.array2d(dtype=wp.spatial_vector) | None = None
+    fk_qd_zero: wp.array2d(dtype=wp.float32) | None = None
+    fk_X_local: wp.array2d(dtype=wp.transform) | None = None
 
 
 @wp.kernel
@@ -78,37 +81,42 @@ def _update_lm_state(
 
 
 class IKOptimizerLM:
-    """
-    Modular inverse-kinematics solver.
+    """Levenberg-Marquardt optimizer for batched inverse kinematics.
 
-    The solver uses an adaptive Levenberg-Marquardt loop and supports
-    three Jacobian back-ends:
-
-        * **AUTODIFF**: Warp's reverse-mode autodiff for every objective.
-        * **ANALYTIC**: Objective-specific analytic Jacobians only.
-        * **MIXED**: Analytic where available, autodiff fallback elsewhere.
+    The optimizer solves a batch of independent IK problems that share a
+    single articulation model and objective list. Jacobians can be evaluated
+    with ``IKJacobianType.AUTODIFF``, ``IKJacobianType.ANALYTIC``, or
+    ``IKJacobianType.MIXED``.
 
     Args:
-        model (newton.Model): Singleton articulation shared by all problems.
-        n_batch (int): Number of rows processed in parallel (e.g., `n_problems * n_seeds`).
-        objectives (Sequence[IKObjective]): Ordered list of objectives shared by all problems. Each `IKObjective` instance can carry arrays of per-problem parameters (sized by the true problem count) and should dereference them via `problem_idx`.
-        jacobian_mode (IKJacobianType, optional): Backend used in `compute_jacobian`. Defaults to IKJacobianType.AUTODIFF.
-        lambda_initial (float, optional): Initial LM damping per problem. Defaults to 0.1.
-        lambda_factor (float, optional): Multiplicative update factor for λ. Defaults to 2.0.
-        lambda_min (float, optional): Lower clamp for λ. Defaults to 1e-5.
-        lambda_max (float, optional): Upper clamp for λ. Defaults to 1e10.
-        rho_min (float, optional): Acceptance threshold on predicted vs. actual reduction. Defaults to 1e-3.
-
-    Batch Structure:
-        The solver handles a batch of independent IK problem instances (possibly expanded by sampling) that all reference the same articulation (`model`) and objective list.
-        Per-problem parameters (targets, weights, ...) live in problem space and are accessed through the `problem_idx` indirection supplied by `IKSolver`.
+        model: Shared articulation model.
+        n_batch: Number of evaluation rows solved in parallel. This is
+            typically ``n_problems * n_seeds`` after any sampling expansion.
+        objectives: Ordered IK objectives applied to every batch row.
+        lambda_initial: Initial LM damping factor for each batch row.
+        jacobian_mode: Jacobian backend to use.
+        lambda_factor: Factor used to increase or decrease the damping term
+            after each trial step.
+        lambda_min: Minimum allowed damping value.
+        lambda_max: Maximum allowed damping value.
+        rho_min: Minimum ratio of actual to predicted decrease required to
+            accept a step.
+        problem_idx: Optional mapping from batch rows to base problem indices
+            for per-problem objective data.
     """
 
     TILE_N_DOFS = None
     TILE_N_RESIDUALS = None
-    _cache: ClassVar[dict[tuple[int, int], type]] = {}
+    _cache: ClassVar[dict[tuple[int, int, str], type]] = {}
 
-    def __new__(cls, model, n_batch, objectives, *a, **kw):
+    def __new__(
+        cls,
+        model: Model,
+        n_batch: int,
+        objectives: Sequence[IKObjective],
+        *a: Any,
+        **kw: Any,
+    ) -> IKOptimizerLM:
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         arch = model.device.arch
@@ -123,24 +131,18 @@ class IKOptimizerLM:
 
     def __init__(
         self,
-        model,
-        n_batch,
-        objectives,
-        lambda_initial=0.1,
-        jacobian_mode=IKJacobianType.AUTODIFF,
-        lambda_factor=2.0,
-        lambda_min=1e-5,
-        lambda_max=1e10,
-        rho_min=1e-3,
+        model: Model,
+        n_batch: int,
+        objectives: Sequence[IKObjective],
+        lambda_initial: float = 0.1,
+        jacobian_mode: IKJacobianType = IKJacobianType.AUTODIFF,
+        lambda_factor: float = 2.0,
+        lambda_min: float = 1e-5,
+        lambda_max: float = 1e10,
+        rho_min: float = 1e-3,
         *,
-        problem_idx: wp.array | None = None,
-    ):
-        """
-        Construct a batch IK solver.
-
-        See class doc-string for parameter semantics.
-        """
-
+        problem_idx: wp.array(dtype=wp.int32) | None = None,
+    ) -> None:
         self.model = model
         self.device = model.device
         self.n_batch = n_batch
@@ -175,8 +177,8 @@ class IKOptimizerLM:
         self._init_objectives()
         self._init_cuda_streams()
 
-    def _init_objectives(self):
-        """Allocate any per-objective buffers that must live on `self.device`."""
+    def _init_objectives(self) -> None:
+        """Allocate any per-objective buffers that must live on ``self.device``."""
         for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
             obj.set_batch_layout(self.n_residuals, offset, self.n_batch)
             obj.bind_device(self.device)
@@ -186,7 +188,7 @@ class IKOptimizerLM:
                 mode = self.jacobian_mode
             obj.init_buffers(model=self.model, jacobian_mode=mode)
 
-    def _init_cuda_streams(self):
+    def _init_cuda_streams(self) -> None:
         """Allocate per-objective Warp streams and sync events."""
         self.objective_streams = []
         self.sync_events = []
@@ -201,7 +203,7 @@ class IKOptimizerLM:
             self.objective_streams = [None] * len(self.objectives)
             self.sync_events = [None] * len(self.objectives)
 
-    def _parallel_for_objectives(self, fn, *extra):
+    def _parallel_for_objectives(self, fn: Callable[..., None], *extra: Any) -> None:
         """Run <fn(obj, offset, *extra)> across objectives on parallel CUDA streams."""
         if self.device.is_cuda:
             main = wp.get_stream(self.device)
@@ -265,7 +267,13 @@ class IKOptimizerLM:
             offset += obj.residual_dim()
         self.residual_offsets = offsets
 
-    def _ctx_solver(self, joint_q, *, residuals=None, jacobian=None) -> BatchCtx:
+    def _ctx_solver(
+        self,
+        joint_q: wp.array2d(dtype=wp.float32),
+        *,
+        residuals: wp.array2d(dtype=wp.float32) | None = None,
+        jacobian: wp.array3d(dtype=wp.float32) | None = None,
+    ) -> BatchCtx:
         ctx = BatchCtx(
             joint_q=joint_q,
             residuals=residuals if residuals is not None else self.residuals,
@@ -353,7 +361,7 @@ class IKOptimizerLM:
         ctx.residuals.zero_()
         self._for_objectives_residuals(ctx)
 
-    def _jacobian_at(self, ctx: BatchCtx) -> wp.array3d:
+    def _jacobian_at(self, ctx: BatchCtx) -> wp.array3d(dtype=wp.float32):
         mode = self.jacobian_mode
 
         if mode == IKJacobianType.AUTODIFF:
@@ -437,8 +445,24 @@ class IKOptimizerLM:
             ctx.motion_subspace,
         )
 
-    def step(self, joint_q_in, joint_q_out, iterations=10, step_size=1.0):
-        """Run LM iterations using the provided joint buffers."""
+    def step(
+        self,
+        joint_q_in: wp.array2d(dtype=wp.float32),
+        joint_q_out: wp.array2d(dtype=wp.float32),
+        iterations: int = 10,
+        step_size: float = 1.0,
+    ) -> None:
+        """Run several LM iterations on a batch of joint configurations.
+
+        Args:
+            joint_q_in: Input joint coordinates, shape [n_batch, joint_coord_count].
+            joint_q_out: Output buffer for the optimized coordinates, shape
+                [n_batch, joint_coord_count]. It may alias ``joint_q_in`` for
+                in-place updates.
+            iterations: Number of LM iterations to execute.
+            step_size: Scalar applied to each computed update before
+                integration.
+        """
         if joint_q_in.shape != (self.n_batch, self.n_coords):
             raise ValueError("joint_q_in has incompatible shape")
         if joint_q_out.shape != (self.n_batch, self.n_coords):
@@ -453,7 +477,11 @@ class IKOptimizerLM:
         for i in range(iterations):
             self._step(joint_q, step_size=step_size, iteration=i)
 
-    def _compute_residuals(self, joint_q, output_residuals=None):
+    def _compute_residuals(
+        self,
+        joint_q: wp.array2d(dtype=wp.float32),
+        output_residuals: wp.array2d(dtype=wp.float32) | None = None,
+    ) -> wp.array2d(dtype=wp.float32):
         buffer = output_residuals or self.residuals
         ctx = self._ctx_solver(joint_q, residuals=buffer)
 
@@ -464,7 +492,13 @@ class IKOptimizerLM:
 
         return ctx.residuals
 
-    def _compute_motion_subspace(self, *, body_q, joint_S_s_out, joint_qd_in):
+    def _compute_motion_subspace(
+        self,
+        *,
+        body_q: wp.array2d(dtype=wp.transform),
+        joint_S_s_out: wp.array2d(dtype=wp.spatial_vector),
+        joint_qd_in: wp.array2d(dtype=wp.float32),
+    ) -> None:
         n_joints = self.model.joint_count
         batch = body_q.shape[0]
         wp.launch(
@@ -488,13 +522,13 @@ class IKOptimizerLM:
 
     def _integrate_dq(
         self,
-        joint_q,
+        joint_q: wp.array2d(dtype=wp.float32),
         *,
-        dq_in,
-        joint_q_out,
-        joint_qd_out,
-        step_size=1.0,
-    ):
+        dq_in: wp.array2d(dtype=wp.float32),
+        joint_q_out: wp.array2d(dtype=wp.float32),
+        joint_qd_out: wp.array2d(dtype=wp.float32),
+        step_size: float = 1.0,
+    ) -> None:
         batch = joint_q.shape[0]
 
         wp.launch(
@@ -518,7 +552,12 @@ class IKOptimizerLM:
         )
         joint_qd_out.zero_()
 
-    def _step(self, joint_q, step_size=1.0, iteration=0):
+    def _step(
+        self,
+        joint_q: wp.array2d(dtype=wp.float32),
+        step_size: float = 1.0,
+        iteration: int = 0,
+    ) -> None:
         """Execute one Levenberg-Marquardt iteration with adaptive damping."""
 
         ctx_curr = self._ctx_solver(joint_q)
@@ -596,11 +635,20 @@ class IKOptimizerLM:
             device=self.device,
         )
 
-    def reset(self):
+    def reset(self) -> None:
+        """Clear LM damping and accept/reject state before a new solve."""
         self.lambda_values.zero_()
         self.accept_flags.zero_()
 
-    def compute_costs(self, joint_q):
+    def compute_costs(self, joint_q: wp.array2d(dtype=wp.float32)) -> wp.array(dtype=wp.float32):
+        """Evaluate squared residual costs for a batch of joint configurations.
+
+        Args:
+            joint_q: Joint coordinates to evaluate, shape [n_batch, joint_coord_count].
+
+        Returns:
+            Costs for each batch row, shape [n_batch].
+        """
         self._compute_residuals(joint_q)
         wp.launch(
             compute_costs,
@@ -611,11 +659,18 @@ class IKOptimizerLM:
         )
         return self.costs
 
-    def _solve_tiled(self, jacobian, residuals, lambda_values, dq_dof, pred_reduction):
+    def _solve_tiled(
+        self,
+        jacobian: wp.array3d(dtype=wp.float32),
+        residuals: wp.array3d(dtype=wp.float32),
+        lambda_values: wp.array(dtype=wp.float32),
+        dq_dof: wp.array2d(dtype=wp.float32),
+        pred_reduction: wp.array(dtype=wp.float32),
+    ) -> None:
         raise NotImplementedError("This method should be overridden by specialized solver")
 
     @classmethod
-    def _build_specialized(cls, key):
+    def _build_specialized(cls, key: tuple[int, int, str]) -> type[IKOptimizerLM]:
         """Build a specialized IKOptimizerLM subclass with tiled solver for given dimensions."""
         C, R, _ = key
 
@@ -683,21 +738,21 @@ class IKOptimizerLM:
             # per-row
             joint_q_curr: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
             joint_qd_curr: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  (typically all-zero)
-            dq_dof: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  ← LM update (q̇)
-            dt: float,  # LM step (usually 1.0)
+            dq_dof: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  ← update direction (q̇)
+            dt: float,  # step scale (usually 1.0)
             # outputs
             joint_q_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
             joint_qd_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
         ):
             """
-            Integrate the candidate update `dq_dof` (interpreted as a joint-space
-            velocity times `dt`) into a new configuration.
+            Integrate the candidate update ``dq_dof`` (interpreted as a
+            joint-space velocity times ``dt``) into a new configuration.
 
             q_out  = integrate(q_curr, dq_dof)
 
-            One thread handles one joint of one batch row. All joint types supported by
-            `jcalc_integrate` (revolute, prismatic, ball, free, D6, ...) work out of the
-            box.
+            One thread handles one joint of one batch row. All joint types
+            supported by ``jcalc_integrate`` (revolute, prismatic, ball,
+            free, D6, ...) work out of the box.
             """
             row, joint_idx = wp.tid()
 
@@ -855,7 +910,14 @@ class IKOptimizerLM:
             TILE_N_RESIDUALS = wp.constant(R)
             TILE_THREADS = wp.constant(32)
 
-            def _solve_tiled(self, jac, res, lam, dq, pred):
+            def _solve_tiled(
+                self,
+                jac: wp.array3d(dtype=wp.float32),
+                res: wp.array3d(dtype=wp.float32),
+                lam: wp.array(dtype=wp.float32),
+                dq: wp.array2d(dtype=wp.float32),
+                pred: wp.array(dtype=wp.float32),
+            ) -> None:
                 wp.launch_tiled(
                     _lm_solve_tiled,
                     dim=[self.n_batch],

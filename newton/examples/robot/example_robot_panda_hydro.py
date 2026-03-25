@@ -13,6 +13,7 @@
 ###########################################################################
 
 import copy
+from dataclasses import replace
 from enum import Enum
 
 import numpy as np
@@ -64,30 +65,28 @@ class Example:
         self.world_count = args.world_count
         self.viewer = viewer
 
+        sdf_max_resolution = 64
+        sdf_narrow_band_range = (-0.01, 0.01)
+
         shape_cfg = newton.ModelBuilder.ShapeConfig(
             kh=1e11,
-            sdf_max_resolution=64,
-            is_hydroelastic=True,
-            sdf_narrow_band_range=(-0.01, 0.01),
             gap=0.01,
             mu_torsional=0.0,
             mu_rolling=0.0,
         )
-        mesh_shape_cfg = copy.deepcopy(shape_cfg)
-        mesh_shape_cfg.sdf_max_resolution = None
-        mesh_shape_cfg.sdf_target_voxel_size = None
-        mesh_shape_cfg.sdf_narrow_band_range = (-0.1, 0.1)
-        hydro_mesh_sdf_max_resolution = 64
+        # meshes need explicit call to build_sdf with sdf parameters, while primitive sdf are configured directly via shape config flags
+        shape_cfg_meshes = replace(shape_cfg, is_hydroelastic=True)
+        shape_cfg_primitives = replace(
+            shape_cfg,
+            is_hydroelastic=True,
+            sdf_max_resolution=sdf_max_resolution,
+            sdf_narrow_band_range=sdf_narrow_band_range,
+        )
 
         builder = newton.ModelBuilder()
         # URDF mesh colliders are imported as plain meshes; keep hydroelastic disabled
         # for import-time shapes unless they provide explicit mesh.sdf payloads.
-        urdf_shape_cfg = copy.deepcopy(shape_cfg)
-        urdf_shape_cfg.is_hydroelastic = False
-        urdf_shape_cfg.sdf_max_resolution = None
-        urdf_shape_cfg.sdf_target_voxel_size = None
-        urdf_shape_cfg.sdf_narrow_band_range = (-0.1, 0.1)
-        builder.default_shape_cfg = urdf_shape_cfg
+        builder.default_shape_cfg = shape_cfg
 
         builder.add_urdf(
             newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
@@ -95,12 +94,11 @@ class Example:
             enable_self_collisions=False,
             parse_visuals_as_colliders=True,
         )
-        builder.default_shape_cfg = shape_cfg
 
         def find_body(name):
             return next(i for i, lbl in enumerate(builder.body_label) if lbl.endswith(f"/{name}"))
 
-        # Disable SDF collisions on all panda links except the fingers and hand
+        # Set SDF collisions on panda hand and fingers for hydroelastic contact
         finger_body_indices = {
             find_body("fr3_leftfinger"),
             find_body("fr3_rightfinger"),
@@ -118,13 +116,12 @@ class Example:
                         builder.shape_source[shape_idx] = mesh
                         builder.shape_scale[shape_idx] = (1.0, 1.0, 1.0)
                     mesh.build_sdf(
-                        max_resolution=hydro_mesh_sdf_max_resolution,
-                        narrow_band_range=shape_cfg.sdf_narrow_band_range,
-                        margin=shape_cfg.gap if shape_cfg.gap is not None else 0.05,
+                        max_resolution=sdf_max_resolution,
+                        narrow_band_range=sdf_narrow_band_range,
+                        margin=shape_cfg.gap,
                     )
                 builder.shape_flags[shape_idx] |= newton.ShapeFlags.HYDROELASTIC
             elif body_idx not in finger_body_indices:
-                builder.shape_flags[shape_idx] &= ~newton.ShapeFlags.HYDROELASTIC
                 non_finger_shape_indices.append(shape_idx)
 
         # Convert non-finger shapes to convex hulls
@@ -152,32 +149,31 @@ class Example:
         builder.joint_armature[7:9] = [0.5] * 2
 
         # Add gripper pads
-        if self.scene in [SceneType.PEN, SceneType.CUBE]:
-            left_finger_idx = find_body("fr3_leftfinger")
-            right_finger_idx = find_body("fr3_rightfinger")
+        left_finger_idx = find_body("fr3_leftfinger")
+        right_finger_idx = find_body("fr3_rightfinger")
 
-            pad_asset_path = newton.utils.download_asset("manipulation_objects/pad")
-            pad_stage = Usd.Stage.Open(str(pad_asset_path / "model.usda"))
-            pad_mesh = newton.usd.get_mesh(
-                pad_stage.GetPrimAtPath("/root/Model/Model"),
-                load_normals=True,
-                face_varying_normal_conversion="vertex_splitting",
-            )
-            pad_scale = np.asarray(newton.usd.get_scale(pad_stage.GetPrimAtPath("/root/Model")), dtype=np.float32)
-            if not np.allclose(pad_scale, 1.0):
-                # Hydroelastic mesh SDFs must be scale-baked for non-unit shape scale.
-                pad_mesh = pad_mesh.copy(vertices=pad_mesh.vertices * pad_scale, recompute_inertia=True)
-            pad_mesh.build_sdf(
-                max_resolution=hydro_mesh_sdf_max_resolution,
-                narrow_band_range=shape_cfg.sdf_narrow_band_range,
-                margin=shape_cfg.gap if shape_cfg.gap is not None else 0.05,
-            )
-            pad_xform = wp.transform(
-                wp.vec3(0.0, 0.005, 0.045),
-                wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -np.pi),
-            )
-            builder.add_shape_mesh(body=left_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=mesh_shape_cfg)
-            builder.add_shape_mesh(body=right_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=mesh_shape_cfg)
+        pad_asset_path = newton.utils.download_asset("manipulation_objects/pad")
+        pad_stage = Usd.Stage.Open(str(pad_asset_path / "model.usda"))
+        pad_mesh = newton.usd.get_mesh(
+            pad_stage.GetPrimAtPath("/root/Model/Model"),
+            load_normals=True,
+            face_varying_normal_conversion="vertex_splitting",
+        )
+        pad_scale = np.asarray(newton.usd.get_scale(pad_stage.GetPrimAtPath("/root/Model")), dtype=np.float32)
+        if not np.allclose(pad_scale, 1.0):
+            # Hydroelastic mesh SDFs must be scale-baked for non-unit shape scale.
+            pad_mesh = pad_mesh.copy(vertices=pad_mesh.vertices * pad_scale, recompute_inertia=True)
+        pad_mesh.build_sdf(
+            max_resolution=sdf_max_resolution,
+            narrow_band_range=sdf_narrow_band_range,
+            margin=shape_cfg.gap,
+        )
+        pad_xform = wp.transform(
+            wp.vec3(0.0, 0.005, 0.045),
+            wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -np.pi),
+        )
+        builder.add_shape_mesh(body=left_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=shape_cfg_meshes)
+        builder.add_shape_mesh(body=right_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=shape_cfg_meshes)
 
         # Table
         box_size = 0.05
@@ -192,15 +188,15 @@ class Example:
             compute_inertia=True,
         )
         table_mesh.build_sdf(
-            max_resolution=hydro_mesh_sdf_max_resolution,
-            narrow_band_range=shape_cfg.sdf_narrow_band_range,
-            margin=shape_cfg.gap if shape_cfg.gap is not None else 0.05,
+            max_resolution=sdf_max_resolution,
+            narrow_band_range=sdf_narrow_band_range,
+            margin=shape_cfg.gap,
         )
         builder.add_shape_mesh(
             body=-1,
             mesh=table_mesh,
             xform=wp.transform(wp.vec3(0.08, -0.5, box_size), wp.quat_identity()),
-            cfg=mesh_shape_cfg,
+            cfg=shape_cfg_meshes,
         )
 
         # Object to manipulate
@@ -214,10 +210,10 @@ class Example:
                 wp.vec3(self.object_pos),
                 wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2),
             )
-            pen_cfg = copy.deepcopy(shape_cfg)
-            pen_cfg.sdf_max_resolution = hydro_mesh_sdf_max_resolution
             self.object_body_local = builder.add_body(xform=object_xform, label="object")
-            builder.add_shape_capsule(body=self.object_body_local, radius=radius, half_height=length / 2, cfg=pen_cfg)
+            builder.add_shape_capsule(
+                body=self.object_body_local, radius=radius, half_height=length / 2, cfg=shape_cfg_primitives
+            )
             self.grasping_offset = [-0.03, 0.0, 0.13]
             self.place_offset = -0.02
 
@@ -226,7 +222,9 @@ class Example:
             self.object_pos = [0.0, -0.5, 2 * box_size + 0.5 * size]
             object_xform = wp.transform(wp.vec3(self.object_pos), wp.quat_identity())
             self.object_body_local = builder.add_body(xform=object_xform, label="object")
-            builder.add_shape_box(body=self.object_body_local, hx=size / 2, hy=size / 2, hz=size / 2)
+            builder.add_shape_box(
+                body=self.object_body_local, hx=size / 2, hy=size / 2, hz=size / 2, cfg=shape_cfg_primitives
+            )
             self.grasping_offset = [0.03, 0.0, 0.14]
             self.place_offset = 0.0
 
@@ -242,16 +240,16 @@ class Example:
                 # Hydroelastic mesh SDFs must be scale-baked for non-unit shape scale.
                 cup_mesh = cup_mesh.copy(vertices=cup_mesh.vertices * cup_scale, recompute_inertia=True)
             cup_mesh.build_sdf(
-                max_resolution=hydro_mesh_sdf_max_resolution,
-                narrow_band_range=shape_cfg.sdf_narrow_band_range,
-                margin=shape_cfg.gap if shape_cfg.gap is not None else 0.05,
+                max_resolution=sdf_max_resolution,
+                narrow_band_range=sdf_narrow_band_range,
+                margin=shape_cfg.gap,
             )
             cup_xform = wp.transform(
                 wp.vec3(self.cup_pos),
                 wp.quat_identity(),
             )
             cup_body = builder.add_body(label="cup", xform=cup_xform)
-            builder.add_shape_mesh(body=cup_body, mesh=cup_mesh, cfg=mesh_shape_cfg)
+            builder.add_shape_mesh(body=cup_body, mesh=cup_mesh, cfg=shape_cfg_meshes)
 
         # build model for IK
         self.model_single = copy.deepcopy(builder).finalize()
@@ -261,7 +259,7 @@ class Example:
 
         scene = newton.ModelBuilder()
         scene.replicate(builder, self.world_count)
-        scene.add_ground_plane()
+        scene.add_ground_plane(cfg=shape_cfg)
 
         self.model = scene.finalize()
 
