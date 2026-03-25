@@ -478,7 +478,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
-    "body_ipos",
     "body_iquat",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
@@ -536,7 +535,7 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
     # Meshes: Newton / trimesh deduplicates vertices on load and may create different
-    # polygon counts per mesh. Content is visually equivalent.
+    # vertex/face/polygon counts. Skip geometry data fields but NOT mesh_pos/mesh_quat/mesh_scale.
     "nmesh",
     "nmeshvert",
     "nmeshnormal",
@@ -544,7 +543,15 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "nmeshface",
     "nmaxmeshdeg",
     "nmaxpolygon",
-    "mesh_",
+    "mesh_vert",
+    "mesh_face",
+    "mesh_normal",
+    "mesh_texcoord",
+    "mesh_graph",
+    "mesh_poly",
+    "mesh_bvh",
+    "mesh_oct",
+    "mesh_path",
 }
 
 
