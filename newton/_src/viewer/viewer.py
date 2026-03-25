@@ -125,7 +125,6 @@ class ViewerBase(ABC):
         self._slot_to_shape: nparray | None = None
         self._slot_to_shape_wp: wp.array | None = None
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
-        self._model_shape_color_host: nparray | None = None
 
         # Isomesh cache for SDF collision visualization
         self._isomesh_cache: dict[int, newton.Mesh | None] = {}
@@ -390,22 +389,20 @@ class ViewerBase(ABC):
         self.model_changed = False
 
     def _sync_shape_colors_from_model(self):
-        """Propagate model-owned shape colors into viewer batches."""
+        """Propagate model-owned shape colors into viewer batches.
+
+        Always launches a GPU kernel to repack colors from model order into
+        viewer batch order.  This is cheaper than a D2H transfer + host-side
+        comparison every frame.
+        """
         if (
             self.model is None
             or self.model.shape_color is None
             or self.model_shape_color is None
             or self._slot_to_shape_wp is None
-            or self._shape_to_batch is None
         ):
             return
 
-        model_colors = self.model.shape_color.numpy()
-        previous_colors = self._model_shape_color_host
-        if previous_colors is not None and np.array_equal(model_colors, previous_colors):
-            return
-
-        self._model_shape_color_host = np.array(model_colors, copy=True)
         wp.launch(
             kernel=repack_shape_colors,
             dim=len(self.model_shape_color),
@@ -414,17 +411,8 @@ class ViewerBase(ABC):
             device=self.device,
             record_tape=False,
         )
-
-        if previous_colors is None:
-            for batch_ref in self._shape_instances.values():
-                batch_ref.colors_changed = True
-            return
-
-        changed_shape_indices = np.flatnonzero(np.any(model_colors != previous_colors, axis=1))
-        for s_idx in changed_shape_indices:
-            batch_ref = self._shape_to_batch[s_idx]
-            if batch_ref is not None:
-                batch_ref.colors_changed = True
+        for batch_ref in self._shape_instances.values():
+            batch_ref.colors_changed = True
 
     def _log_gaussian_shapes(self, state: newton.State):
         """Render Gaussian shapes as point clouds with current body transforms."""
@@ -1461,9 +1449,6 @@ class ViewerBase(ABC):
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
-        self._model_shape_color_host = (
-            np.array(shape_display_color, copy=True) if shape_display_color is not None else None
-        )
 
         # Note: SDF isomesh instances are populated lazily when show_collision is True
         # to avoid GPU memory allocation until actually needed for visualization
