@@ -13,7 +13,7 @@ import numpy as np
 import warp as wp
 from warp._src import types as warp_types
 
-from ..core.types import nparray, override
+from ..core.types import override
 from ..geometry import Mesh
 from ..sim import Model, State
 from .viewer import ViewerBase
@@ -1328,7 +1328,7 @@ class ViewerFile(ViewerBase):
         pass
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """File viewer does not visualize generic arrays.
 
         Args:
