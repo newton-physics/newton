@@ -3183,7 +3183,7 @@ requires-dist = [
     { name = "pyglet", marker = "extra == 'dev'", specifier = ">=2.1.6,<3" },
     { name = "pyglet", marker = "extra == 'examples'", specifier = ">=2.1.6,<3" },
     { name = "pyglet", marker = "extra == 'notebook'", specifier = ">=2.1.6,<3" },
-    { name = "pyglet", marker = "extra == 'rtx'", specifier = ">=2.1.6" },
+    { name = "pyglet", marker = "extra == 'rtx'", specifier = ">=2.1.6,<3" },
     { name = "pyglet", marker = "extra == 'torch-cu12'", specifier = ">=2.1.6,<3" },
     { name = "pyglet", marker = "extra == 'torch-cu13'", specifier = ">=2.1.6,<3" },
     { name = "pypandoc", marker = "extra == 'docs'", specifier = ">=1.11" },

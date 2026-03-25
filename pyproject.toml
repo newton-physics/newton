@@ -86,7 +86,7 @@ examples = [
 # OVRTX real-time ray tracing viewer
 rtx = [
     "newton[importers]",    # include import dependencies (USD)
-    "pyglet>=2.1.6",        # for the viewer window/presentation
+    "pyglet>=2.1.6,<3",     # for the viewer window/presentation
     "ovrtx>=0.2",           # NVIDIA OVRTX renderer
 ]
 
