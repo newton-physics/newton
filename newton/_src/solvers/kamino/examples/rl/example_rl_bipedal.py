@@ -332,5 +332,3 @@ if __name__ == "__main__":
         pass
     finally:
         example.joystick.close()
-        if example.viewer is not None:
-            example.viewer.close()
