@@ -390,7 +390,7 @@ class Example:
             "-s",
             type=str,
             default="cg+gauss-seidel",
-            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            choices=["gauss-seidel", "gauss-seidel-reordered", "gauss-seidel-hybrid", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
         )
 
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")

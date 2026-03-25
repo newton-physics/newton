@@ -1322,41 +1322,135 @@ def make_hybrid_solve_kernel(
 
 
 @wp.kernel
+def _build_sc_transpose_offsets(
+    transposed_strain_mat_offsets: wp.array(dtype=int),
+    transposed_strain_mat_columns: wp.array(dtype=int),
+    strain_super_color: wp.array(dtype=int),
+    n_super: int,
+    sc_transpose_offsets: wp.array2d(dtype=int),
+):
+    """Count per-velocity-node per-super-color entries for the filtered transpose.
+
+    ``sc_transpose_offsets[sc, u_i]`` = number of strain nodes in super-color
+    ``sc`` connected to velocity node ``u_i``.  After a prefix-sum pass, these
+    become the CSR offsets for the per-super-color transposed matrices.
+    """
+    u_i = wp.tid()
+    beg = transposed_strain_mat_offsets[u_i]
+    end = transposed_strain_mat_offsets[u_i + 1]
+    for b in range(beg, end):
+        tau_i = transposed_strain_mat_columns[b]
+        sc = strain_super_color[tau_i]
+        if sc >= 0 and sc < n_super:
+            sc_transpose_offsets[sc, u_i] += 1
+
+
+@wp.kernel
+def _compute_sc_base_offsets(
+    sc_counts: wp.array2d(dtype=int),
+    sc_local_offsets: wp.array2d(dtype=int),
+    sc_bases: wp.array(dtype=int),
+):
+    """Compute per-SC totals and base offsets (single-threaded).
+
+    After per-row exclusive prefix scans have been computed in
+    ``sc_local_offsets[sc, 0..n_vel-1]``, this kernel computes:
+
+    - ``sc_bases[sc]`` = exclusive prefix sum of per-SC totals
+    - Total for SC ``sc`` = ``sc_local_offsets[sc, n_vel-1] + sc_counts[sc, n_vel-1]``
+
+    Must be launched with ``dim=1``.
+    """
+    n_super = sc_counts.shape[0]
+    n_vel = sc_counts.shape[1]
+    cumsum = int(0)
+    for sc in range(n_super):
+        sc_bases[sc] = cumsum
+        cumsum += sc_local_offsets[sc, n_vel - 1] + sc_counts[sc, n_vel - 1]
+
+
+@wp.kernel
+def _globalize_sc_offsets(
+    sc_counts: wp.array2d(dtype=int),
+    sc_local_offsets: wp.array2d(dtype=int),
+    sc_bases: wp.array(dtype=int),
+    sc_global_offsets: wp.array2d(dtype=int),
+):
+    """Convert local per-SC prefix sums to global offsets into a flat array.
+
+    ``sc_global_offsets[sc, u_i] = sc_local_offsets[sc, u_i] + sc_bases[sc]``
+    ``sc_global_offsets[sc, n_vel] = sc_bases[sc] + total_sc``  (end sentinel)
+
+    ``sc_global_offsets`` has shape ``(n_super, n_vel + 1)``.
+    """
+    u_i = wp.tid()
+    n_super = sc_counts.shape[0]
+    n_vel = sc_counts.shape[1]
+    for sc in range(n_super):
+        base = sc_bases[sc]
+        sc_global_offsets[sc, u_i] = sc_local_offsets[sc, u_i] + base
+        if u_i == n_vel - 1:
+            sc_global_offsets[sc, n_vel] = sc_local_offsets[sc, n_vel - 1] + sc_counts[sc, n_vel - 1] + base
+
+
+@wp.kernel
+def _fill_sc_transpose(
+    transposed_strain_mat_offsets: wp.array(dtype=int),
+    transposed_strain_mat_columns: wp.array(dtype=int),
+    transposed_strain_mat_values: wp.array(dtype=mat13),
+    strain_super_color: wp.array(dtype=int),
+    sc_global_offsets: wp.array2d(dtype=int),
+    sc_write_cursors: wp.array2d(dtype=int),
+    sc_columns: wp.array(dtype=int),
+    sc_values: wp.array(dtype=mat13),
+):
+    """Fill all per-super-color transposed matrices in a single pass.
+
+    For each velocity node, walks its connected strain nodes and writes
+    each entry into the flat ``sc_columns``/``sc_values`` arrays.  Uses
+    ``sc_write_cursors[sc, u_i]`` (initialized as a copy of the global
+    offsets) as per-SC per-node write positions, incrementing after each write.
+    """
+    u_i = wp.tid()
+    beg = transposed_strain_mat_offsets[u_i]
+    end = transposed_strain_mat_offsets[u_i + 1]
+
+    for b in range(beg, end):
+        tau_i = transposed_strain_mat_columns[b]
+        sc = strain_super_color[tau_i]
+        out = sc_write_cursors[sc, u_i]
+        sc_columns[out] = tau_i
+        sc_values[out] = transposed_strain_mat_values[b]
+        sc_write_cursors[sc, u_i] = out + 1
+
+
+@wp.kernel
 def hybrid_scatter(
-    super_color: int,
-    flat_color_offsets: wp.array(dtype=int),
-    colors_per_super: int,
-    flat_constraint_ids: wp.array(dtype=int),
-    reordered_n_entries: wp.array(dtype=int),
-    reordered_cols: wp.array2d(dtype=int),
-    reordered_vals_x: wp.array2d(dtype=float),
-    reordered_vals_y: wp.array2d(dtype=float),
-    reordered_vals_z: wp.array2d(dtype=float),
+    sc_offsets: wp.array(dtype=int),
+    sc_columns: wp.array(dtype=int),
+    sc_values: wp.array(dtype=mat13),
     inv_mass_matrix: wp.array(dtype=float),
     delta_stress: wp.array(dtype=vec6),
     velocities: wp.array(dtype=wp.vec3),
 ):
     """Phase 2: Apply B^T @ delta_stress to velocities for one super-color.
 
-    Uses atomic adds since multiple strain nodes in the same super-color
-    may share velocity nodes.
+    Uses a precomputed per-super-color transposed matrix (filtered at init
+    time) so every entry is relevant — no wasted reads, no atomics.
     """
-    i = wp.tid()
-    sc_beg = flat_color_offsets[super_color * colors_per_super]
-    sc_end = flat_color_offsets[wp.min(
-        (super_color + 1) * colors_per_super,
-        flat_color_offsets.shape[0] - 1,
-    )]
-    launch_dim = sc_end - sc_beg
+    u_i = wp.tid()
 
-    for fi in range(sc_beg + i, sc_end, launch_dim):
-        tau_i = flat_constraint_ids[fi]
-        ds = delta_stress[tau_i]
-        n = reordered_n_entries[fi]
-        for k in range(n):
-            col = reordered_cols[k, fi]
-            val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
-            wp.atomic_add(velocities, col, inv_mass_matrix[col] * _symmetric_part_transposed_op(val, ds))
+    inv_mass = inv_mass_matrix[u_i]
+
+    block_beg = sc_offsets[u_i]
+    block_end = sc_offsets[u_i + 1]
+
+    delta_u = wp.vec3(0.0)
+    for b in range(block_beg, block_end):
+        tau_i = sc_columns[b]
+        delta_u += _symmetric_part_transposed_op(sc_values[b], delta_stress[tau_i])
+
+    velocities[u_i] += inv_mass * delta_u
 
 
 @wp.kernel

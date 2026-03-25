@@ -9,6 +9,7 @@ from typing import Any
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
+from warp.fem.linalg import array_axpy
 from warp.optim.linear import LinearOperator, cg
 
 from .contact_solver_kernels import (
@@ -24,10 +25,14 @@ from .rheology_solver_kernels import (
     YieldParamVec,
     _build_flat_color_offsets,
     _build_flat_offsets,
+    _build_sc_transpose_offsets,
     _build_strain_to_supercolor,
+    _compute_sc_base_offsets,
+    _globalize_sc_offsets,
     _compute_sc_sharing_counts,
     _compute_vel_node_multiplicity,
     _expand_flat_ids,
+    _fill_sc_transpose,
     _reorder_strain_mat,
     apply_stress_delta_jacobi,
     apply_stress_gs,
@@ -940,26 +945,7 @@ class _HybridGaussSeidelSolver(_RheologySolver):
         color_block_dim = 64
         color_launch_dim = color_block_count * color_block_dim
 
-        # Initial guess uses the existing AoS apply_stress_gs kernel
-        self.apply_stress_launch = wp.launch(
-            kernel=apply_stress_gs,
-            dim=color_launch_dim,
-            inputs=[
-                0,
-                color_launch_dim,
-                self.rheology.color_offsets,
-                self.rheology.color_blocks,
-                self.rheology.strain_mat.offsets,
-                self.rheology.strain_mat.columns,
-                self.rheology.strain_mat.values.view(dtype=mat13),
-                self.momentum.inv_volume,
-                self.rheology.stress,
-            ],
-            outputs=[self.momentum.velocity],
-            block_dim=color_block_dim,
-            max_blocks=color_block_count,
-            record_cmd=True,
-        )
+        # (apply_stress_launch is set up after the per-SC transposed matrices)
 
         # Phase 1: solve kernel
         solve_kernel = make_hybrid_solve_kernel(
@@ -1000,28 +986,90 @@ class _HybridGaussSeidelSolver(_RheologySolver):
             record_cmd=True,
         )
 
-        # Phase 2: scatter kernel
-        self._scatter_launch = wp.launch(
-            kernel=hybrid_scatter,
-            dim=color_launch_dim,
-            inputs=[
-                0,
-                self._flat_color_offsets,
-                self.colors_per_super,
-                self._flat_constraint_ids,
-                self._reordered_n_entries,
-                self._reordered_cols,
-                self._reordered_vals_x,
-                self._reordered_vals_y,
-                self._reordered_vals_z,
-                self.momentum.inv_volume,
-                self.delta_stress,
-            ],
-            outputs=[self.momentum.velocity],
-            block_dim=color_block_dim,
-            max_blocks=color_block_count,
-            record_cmd=True,
+        # ── Precompute per-super-color transposed matrices (all on device) ─
+
+        n_vel = self.momentum.velocity.shape[0]
+        t_mat = self.rheology.transposed_strain_mat
+        total_nnz = t_mat.nnz  # total entries across all super-colors
+
+        # Step 1: count entries per (super-color, velocity-node)
+        sc_counts = wp.zeros(shape=(self.n_super, n_vel), dtype=int, device=self.device)
+        wp.launch(
+            kernel=_build_sc_transpose_offsets,
+            dim=n_vel,
+            inputs=[t_mat.offsets, t_mat.columns, self._strain_super_color, self.n_super],
+            outputs=[sc_counts],
+            device=self.device,
         )
+
+        # Step 2: per-row exclusive prefix scan (local offsets per SC)
+        sc_local_offsets = wp.zeros(shape=(self.n_super, n_vel), dtype=int, device=self.device)
+        for sc in range(self.n_super):
+            wp.utils.array_scan(sc_counts[sc], sc_local_offsets[sc], inclusive=False)
+
+        # Step 3: compute per-SC base offsets (single-threaded kernel)
+        sc_bases = wp.zeros(shape=(self.n_super,), dtype=int, device=self.device)
+        wp.launch(
+            kernel=_compute_sc_base_offsets,
+            dim=1,
+            inputs=[sc_counts, sc_local_offsets],
+            outputs=[sc_bases],
+            device=self.device,
+        )
+
+        # Step 4: globalize local offsets → sc_global_offsets[n_super, n_vel+1]
+        self._sc_global_offsets = wp.zeros(shape=(self.n_super, n_vel + 1), dtype=int, device=self.device)
+        wp.launch(
+            kernel=_globalize_sc_offsets,
+            dim=n_vel,
+            inputs=[sc_counts, sc_local_offsets, sc_bases],
+            outputs=[self._sc_global_offsets],
+            device=self.device,
+        )
+
+        # Step 5: allocate flat arrays and fill all SCs in one pass
+        self._sc_columns = wp.zeros(shape=(total_nnz,), dtype=int, device=self.device)
+        self._sc_values = wp.zeros(shape=(total_nnz,), dtype=mat13, device=self.device)
+        # Write cursors: copy of global offsets, incremented during fill
+        sc_write_cursors = wp.clone(self._sc_global_offsets)
+        wp.launch(
+            kernel=_fill_sc_transpose,
+            dim=n_vel,
+            inputs=[
+                t_mat.offsets, t_mat.columns, t_mat.values.view(dtype=mat13),
+                self._strain_super_color, self._sc_global_offsets, sc_write_cursors,
+            ],
+            outputs=[self._sc_columns, self._sc_values],
+            device=self.device,
+        )
+
+        # Phase 2: scatter launches (one recorded launch per super-color)
+        # Each SC uses its row of sc_global_offsets as CSR offsets into the
+        # shared flat columns/values arrays.
+        self._scatter_launches = []
+        self._initial_guess_launches = []
+        for sc in range(self.n_super):
+            scatter_inputs = [
+                self._sc_global_offsets[sc],
+                self._sc_columns,
+                self._sc_values,
+                self.momentum.inv_volume,
+            ]
+            self._scatter_launches.append(wp.launch(
+                kernel=hybrid_scatter,
+                dim=n_vel,
+                inputs=[*scatter_inputs, self.delta_stress],
+                outputs=[self.momentum.velocity],
+                record_cmd=True,
+            ))
+            # Initial guess: same scatter but reads stress instead of delta_stress
+            self._initial_guess_launches.append(wp.launch(
+                kernel=hybrid_scatter,
+                dim=n_vel,
+                inputs=[*scatter_inputs, self.rheology.stress],
+                outputs=[self.momentum.velocity],
+                record_cmd=True,
+            ))
 
     @property
     def name(self):
@@ -1032,16 +1080,14 @@ class _HybridGaussSeidelSolver(_RheologySolver):
         return 25
 
     def apply_initial_guess(self):
-        for color in range(self.color_count):
-            self.apply_stress_launch.set_param_at_index(0, color)
-            self.apply_stress_launch.launch()
+        for sc in range(self.n_super):
+            self._initial_guess_launches[sc].launch()
 
     def solve(self):
         for sc in range(self.n_super):
             self._solve_launch.set_param_at_index(0, sc)
             self._solve_launch.launch()
-            self._scatter_launch.set_param_at_index(0, sc)
-            self._scatter_launch.launch()
+            self._scatter_launches[sc].launch()
 
 
 class _JacobiSolver(_RheologySolver):
@@ -1106,7 +1152,7 @@ class _JacobiSolver(_RheologySolver):
         self.solve_local_launch.launch()
         # Add jacobi delta
         self.apply_stress_launch.launch()
-        fem.linalg.array_axpy(x=self.delta_stress, y=self.rheology.stress, alpha=1.0, beta=1.0)
+        array_axpy(x=self.delta_stress, y=self.rheology.stress, alpha=1.0, beta=1.0)
 
 
 class _CGSolver:
