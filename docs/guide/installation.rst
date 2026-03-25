@@ -7,6 +7,8 @@ Installation
 This guide covers the recommended way to install Newton from PyPI. For
 installing from source or using ``uv``, see the :doc:`development` guide.
 
+.. _system-requirements:
+
 System Requirements
 -------------------
 

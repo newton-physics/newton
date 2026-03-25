@@ -30,10 +30,12 @@ Dependency versioning strategy
 (e.g. ``warp-lang>=1.12.0``).  ``uv.lock`` pins the **latest known-good**
 versions for reproducible installs.
 
-Exception: on the **release branch**, ``mujoco`` and ``mujoco-warp`` are
-pinned to **exact** versions (e.g. ``mujoco==3.5.0``) because Newton is
-tightly coupled to the MuJoCo API surface.  ``main`` uses a version floor
-like other dependencies.
+Exception: on the **release branch**, ``mujoco`` and ``mujoco-warp`` use
+**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow patch
+updates while locking the minor version.  MuJoCo follows
+`semantic versioning from 3.5.0 onward <https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning>`__,
+so patch releases are safe to pick up automatically.  ``main`` uses a
+version floor like other dependencies.
 
 
 Pre-release planning
@@ -107,17 +109,23 @@ cause CI failures before tagging.
 Testing criteria
 ^^^^^^^^^^^^^^^^
 
-An RC is considered ready for GA when all of the following are met:
+The release engineer and maintainers decide which issues must be fixed
+before GA and which can ship as known issues documented in the release
+notes.  Features explicitly marked **experimental** have a lower bar —
+regressions in experimental APIs do not necessarily block a release.
+
+As a guideline, an RC is typically ready for GA when:
 
 - All examples run without crashes, excessive warnings, or visual
   artifacts (``uv run -m newton.examples <name>``).
 - Testing covers **Windows and Linux**, **all supported Python versions**,
   and both **latest and minimum-spec CUDA drivers** (see
-  :ref:`system requirements <versioning>` in the installation guide).
+  :ref:`system requirements <system-requirements>` in the installation guide).
 - PyPI installation of the RC works in a clean environment: ``pip install``
   succeeds, ``import newton`` works, and examples and tests can be run from
   the installed wheel (``pip install newton==X.Y.ZrcN``).
-- No regressions compared to the previous release have been identified.
+- No unexpected regressions compared to the previous release have been
+  identified.
 
 .. list-table::
    :widths: 5 95
@@ -136,16 +144,19 @@ An RC is considered ready for GA when all of the following are met:
 Final GA release
 ----------------
 
-Before proceeding, obtain explicit go/no-go approval from testing and
-stakeholders.  Do not start the final release steps until sign-off is
+Before proceeding, obtain explicit go/no-go approval from the
+maintainers.  Do not start the final release steps until sign-off is
 confirmed.
+
+All steps below are performed on the **release-X.Y** branch unless noted
+otherwise.
 
 .. list-table::
    :widths: 5 95
    :header-rows: 0
 
    * - ☐
-     - Go/no-go approval obtained from testing and stakeholders.
+     - Go/no-go approval obtained from maintainers.
    * - ☐
      - Finalize ``CHANGELOG.md``: rename ``[Unreleased]`` →
        ``[X.Y.Z] - YYYY-MM-DD``.  Review the entries for:
