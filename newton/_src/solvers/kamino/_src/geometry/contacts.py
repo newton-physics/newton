@@ -840,17 +840,7 @@ def _convert_contacts_newton_to_kamino(
     # Reconstruct Newton signed contact distance d from exported fields:
     # d = dot((p1 - p0), n_a_to_b) - (offset0 + offset1),
     # with n_newton = -n_a_to_b and offset* stored in rigid_contact_thickness*.
-    thickness0 = newton_thickness0[tid]
-    thickness1 = newton_thickness1[tid]
-    d_newton = -wp.dot(p1_world - p0_world, n_newton) - (thickness0 + thickness1)
-
-    # Newton stores point0/point1 offset from the geometry surface by
-    # radius_eff (e.g. sphere radius) along the normal.  The thickness
-    # field equals radius_eff + shape_margin.  Shift the points toward
-    # the geometry surface so Kamino's Jacobian computes correct lever
-    # arms (critical for friction-induced rolling of spheres).
-    p0_surface = p0_world - n_newton * thickness0
-    p1_surface = p1_world + n_newton * thickness1
+    d_newton = -wp.dot(p1_world - p0_world, n_newton) - (newton_thickness0[tid] + newton_thickness1[tid])
 
     if b1 < 0:
         # shape1 is world-static → make it A, shape0 becomes B.
@@ -859,8 +849,8 @@ def _convert_contacts_newton_to_kamino(
         gid_B = s0
         bid_A = b1
         bid_B = b0
-        pos_A = p1_surface
-        pos_B = p0_surface
+        pos_A = p1_world
+        pos_B = p0_world
         normal = vec3f(n_newton[0], n_newton[1], n_newton[2])
     else:
         # Both dynamic or shape0 is static → keep A=shape0, B=shape1.
@@ -869,8 +859,8 @@ def _convert_contacts_newton_to_kamino(
         gid_B = s1
         bid_A = b0
         bid_B = b1
-        pos_A = p0_surface
-        pos_B = p1_surface
+        pos_A = p0_world
+        pos_B = p1_world
         normal = vec3f(-n_newton[0], -n_newton[1], -n_newton[2])
 
     distance = d_newton
