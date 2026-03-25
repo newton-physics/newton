@@ -276,7 +276,12 @@ def main():
         should_step = sim is not None and (not viewer.is_paused() or viewer.consume_step_request())
 
         if should_step:
-            if sim.graph:
+            # Fall back to direct simulation when interactive forces are
+            # active (picking, wind) since those can't be baked into a graph.
+            use_graph = sim.graph and not (
+                viewer.picking_enabled and viewer.picking is not None and viewer.picking.is_picking()
+            )
+            if use_graph:
                 wp.capture_launch(sim.graph)
             else:
                 _simulate_with_forces(sim, viewer)
