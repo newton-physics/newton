@@ -651,12 +651,10 @@ void main() {
         fill.GetRadiusAttr().Set(0.5)
 
     def _apply_ground_material(self):
-        """Bind a dark, shiny UsdPreviewSurface material to ground-plane and heightfield meshes."""
+        """Bind a dark, shiny UsdPreviewSurface material to ground-plane meshes."""
         from pxr import Sdf, UsdShade
 
-        plane_prims = [
-            prim for name, prim in self._meshes.items() if "plane" in name.lower() or "heightfield" in name.lower()
-        ]
+        plane_prims = [prim for name, prim in self._meshes.items() if "plane" in name.lower()]
         if not plane_prims:
             return
 

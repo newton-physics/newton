@@ -34,9 +34,6 @@ import numpy as np
 import torch  # noqa: TID253
 import warp as wp
 
-# Newton
-import newton
-
 # Kamino
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.viewer import ViewerConfig
@@ -93,89 +90,6 @@ def _build_normalization(joint_names: list[str]):
     return offsets, scales
 
 
-def _make_terrain_fn(
-    nrow: int = 40,
-    ncol: int = 40,
-    hx: float = 10.0,
-    hy: float = 10.0,
-    amplitude: float = 0.35,
-    seed: int = 42,
-):
-    """Return a callback that adds a smooth heightfield terrain to a builder.
-
-    The elevation is a sum of low-frequency sine waves — gentle enough for
-    a bipedal robot to walk on yet clearly non-flat.
-
-    Args:
-        nrow: Grid rows.
-        ncol: Grid columns.
-        hx: Half-extent in X [m].
-        hy: Half-extent in Y [m].
-        amplitude: Peak-to-peak height variation [m].
-        seed: RNG seed for random phase offsets.
-    """
-    rng = np.random.default_rng(seed)
-    x = np.linspace(-hx, hx, ncol)
-    y = np.linspace(-hy, hy, nrow)
-    xx, yy = np.meshgrid(x, y)
-
-    elevation = np.zeros_like(xx)
-    for freq in (0.4, 0.7, 1.1):
-        px, py = rng.uniform(0, 2 * np.pi, size=2)
-        elevation += np.sin(freq * xx + px) * np.cos(freq * yy + py)
-    elevation *= amplitude / np.ptp(elevation)
-    center_r, center_c = nrow // 2, ncol // 2
-    elevation -= elevation[center_r, center_c]  # surface at origin == z=0 (robot feet)
-
-    hfield = newton.Heightfield(
-        data=elevation.astype(np.float32),
-        nrow=nrow,
-        ncol=ncol,
-        hx=hx,
-        hy=hy,
-    )
-
-    def _add_terrain(builder):
-        cfg = newton.ModelBuilder.ShapeConfig()
-        cfg.margin = 0.01
-        cfg.gap = 0.02
-        builder.add_shape_heightfield(heightfield=hfield, cfg=cfg)
-
-    return _add_terrain
-
-
-###########################################################################
-# Scene callback - adds pushable balls
-###########################################################################
-
-BALL_RADIUS = 0.2
-BALL_POSITIONS = [
-    wp.vec3(0.5, 0.0, BALL_RADIUS + 0.01),
-    wp.vec3(-0.6, 0.4, BALL_RADIUS + 0.01),
-    wp.vec3(0.3, -0.5, BALL_RADIUS + 0.01),
-    wp.vec3(-0.4, -0.3, BALL_RADIUS + 0.01),
-    wp.vec3(0.7, 0.6, BALL_RADIUS + 0.01),
-]
-
-
-def _make_balls_fn(num_balls: int = 1):
-    """Return a callback that adds *num_balls* pushable spheres."""
-    positions = BALL_POSITIONS[:num_balls]
-
-    def _add_balls(robot_builder):
-        ball_cfg = newton.ModelBuilder.ShapeConfig()
-        ball_cfg.density = 50.0
-        ball_cfg.mu = 0.5
-        for i, pos in enumerate(positions):
-            ball_body = robot_builder.add_body(
-                xform=wp.transform(p=pos, q=wp.quat_identity()),
-                label=f"ball_{i}",
-            )
-            robot_builder.add_shape_sphere(ball_body, radius=BALL_RADIUS, cfg=ball_cfg)
-
-    return _add_balls
-
-
 ###########################################################################
 # Example class
 ###########################################################################
@@ -188,7 +102,6 @@ class Example:
         policy=None,
         headless: bool = False,
         viewer_type: str = "gl",
-        num_balls: int = 1,
     ):
         # Timing
         self.sim_dt = 0.02
@@ -199,7 +112,7 @@ class Example:
         # USD model path
         USD_MODEL_PATH = os.path.join(_ASSETS_DIR, "bdx_merged.usda")
 
-        # Create generic articulated body simulator with rolling terrain
+        # Create generic articulated body simulator
         self.sim_wrapper = RigidBodySim(
             usd_model_path=USD_MODEL_PATH,
             num_worlds=1,
@@ -214,8 +127,6 @@ class Example:
                 shadow_radius=10.0,
             ),
             viewer_type=viewer_type,
-            terrain_fn=_make_terrain_fn(),
-            scene_callback=_make_balls_fn(num_balls),
         )
 
         # Override PD gains
@@ -224,12 +135,10 @@ class Example:
         self.sim_wrapper.sim.model.joints.a_j.fill_(0.004)
         self.sim_wrapper.sim.model.joints.b_j.fill_(0.0)
 
-        # Build normalization from actuated joints only (excludes passive free joints
-        # such as the ball, which should not feed into the RL policy).
-        joint_pos_offset, joint_pos_scale = _build_normalization(self.sim_wrapper.actuated_joint_names)
+        # Build normalization from simulator joint order
+        joint_pos_offset, joint_pos_scale = _build_normalization(self.sim_wrapper.joint_names)
         self.joint_pos_offset = torch.tensor(joint_pos_offset, device=self.torch_device)
         self.joint_pos_scale = torch.tensor(joint_pos_scale, device=self.torch_device)
-        self._act_idx = self.sim_wrapper.actuated_dof_indices_tensor
 
         # Observation builder
         self.obs = BipedalObservation(
@@ -257,8 +166,8 @@ class Example:
         root_yaw = quat_to_projected_yaw(self.sim_wrapper.q_i[:, 0, 3:])
         self.joystick.reset(root_pos_2d=root_pos_2d, root_yaw=root_yaw)
 
-        # Action buffer (actuated joints only)
-        self.actions = self.sim_wrapper.q_j[:, self._act_idx].clone()
+        # Action buffer
+        self.actions = self.sim_wrapper.q_j.clone()
 
         # Pre-allocated command buffers (eliminates per-step torch.tensor())
         self._cmd_vel_buf = torch.zeros(1, 2, device=self.torch_device)
@@ -283,7 +192,7 @@ class Example:
         root_pos_2d = self.sim_wrapper.q_i[:, 0, :2]
         root_yaw = quat_to_projected_yaw(self.sim_wrapper.q_i[:, 0, 3:])
         self.joystick.reset(root_pos_2d=root_pos_2d, root_yaw=root_yaw)
-        self.actions[:] = self.sim_wrapper.q_j[:, self._act_idx]
+        self.actions[:] = self.sim_wrapper.q_j
 
     def step_once(self):
         """Single physics step (used by run_headless warm-up)."""
@@ -324,8 +233,8 @@ class Example:
             torch.mul(raw, self.joint_pos_scale, out=self.actions)
             self.actions.add_(self.joint_pos_offset)
 
-        # Write action targets to actuated joints only
-        self.sim_wrapper.q_j_ref[:, self._act_idx] = self.actions
+        # Write action targets to implicit PD controller
+        self.sim_wrapper.q_j_ref[:] = self.actions
 
         # Step physics
         for _ in range(self.control_decimation):
@@ -371,12 +280,6 @@ if __name__ == "__main__":
         help="Sim loop mode: sync (default) or async",
     )
     parser.add_argument(
-        "--num-balls",
-        type=int,
-        default=1,
-        help="Number of balls to add to the scene (max 5, default: 1)",
-    )
-    parser.add_argument(
         "--render-fps",
         type=float,
         default=30.0,
@@ -409,7 +312,6 @@ if __name__ == "__main__":
         policy=policy,
         headless=args.headless,
         viewer_type=args.viewer,
-        num_balls=args.num_balls,
     )
 
     try:
