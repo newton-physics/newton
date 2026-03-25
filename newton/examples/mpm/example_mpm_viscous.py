@@ -64,7 +64,9 @@ class Example:
         mpm_options.tolerance = options.tolerance
         mpm_options.max_iterations = options.max_iterations
         mpm_options.strain_basis = options.strain_basis
+        mpm_options.velocity_basis = options.velocity_basis
         mpm_options.collider_basis = options.collider_basis
+        mpm_options.solver = options.solver
 
         self.solver = SolverImplicitMPM(self.model, mpm_options)
 
@@ -133,6 +135,7 @@ class Example:
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.005)
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
+        parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
         parser.add_argument("--collider-basis", "-cb", type=str, default="S2")
 
         return parser
