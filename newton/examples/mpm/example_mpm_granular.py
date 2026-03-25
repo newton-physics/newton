@@ -260,8 +260,8 @@ class Example:
             "--solver",
             "-s",
             type=str,
-            default="gauss-seidel",
-            choices=["gauss-seidel", "gauss-seidel-reordered", "gauss-seidel-hybrid", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            default="auto",
+            choices=["auto", "gauss-seidel", "gauss-seidel-reordered", "gauss-seidel-hybrid", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
         )
         parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
         parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
