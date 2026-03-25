@@ -18,7 +18,14 @@ import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
 from ..core.types import MAXVAL, Axis
-from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents, repack_shape_colors
+from .kernels import (
+    build_active_particle_mask,
+    compact_float,
+    compact_vec3,
+    compute_hydro_contact_surface_lines,
+    estimate_world_extents,
+    repack_shape_colors,
+)
 
 
 class ViewerBase(ABC):
@@ -1991,17 +1998,29 @@ class ViewerBase(ABC):
             radii = self.model.particle_radius
 
             # Filter out inactive particles so emitters/culled particles are not rendered.
+            # Uses Warp stream compaction to stay on device and avoid GPU→CPU→GPU roundtrips.
             if self.model.particle_flags is not None:
-                flags = self.model.particle_flags.numpy()
-                active_mask = (flags & int(newton.ParticleFlags.ACTIVE)) != 0
-                if not active_mask.any():
+                n = self.model.particle_count
+                mask = wp.zeros(n, dtype=wp.int32, device=self.device)
+                wp.launch(
+                    build_active_particle_mask, dim=n, inputs=[self.model.particle_flags, mask], device=self.device
+                )
+                offsets = wp.empty(n, dtype=wp.int32, device=self.device)
+                wp.utils.array_scan(mask, offsets, inclusive=False)
+
+                # Read back total active count (last offset + last mask element).
+                active_count = int(offsets.numpy()[-1]) + int(mask.numpy()[-1])
+                if active_count == 0:
                     self.log_points(name="/model/particles", points=None, hidden=True)
                     return
-                if not active_mask.all():
-                    points = wp.array(points.numpy()[active_mask], dtype=wp.vec3, device=self.device)
-                    radii_np = radii.numpy() if isinstance(radii, wp.array) else None
-                    if radii_np is not None:
-                        radii = wp.array(radii_np[active_mask], dtype=wp.float32, device=self.device)
+                if active_count < n:
+                    points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)
+                    wp.launch(compact_vec3, dim=n, inputs=[points, mask, offsets, points_out], device=self.device)
+                    points = points_out
+                    if isinstance(radii, wp.array):
+                        radii_out = wp.empty(active_count, dtype=wp.float32, device=self.device)
+                        wp.launch(compact_float, dim=n, inputs=[radii, mask, offsets, radii_out], device=self.device)
+                        radii = radii_out
 
             if self.model_changed:
                 colors = wp.full(shape=len(points), value=wp.vec3(0.7, 0.6, 0.4), device=self.device)

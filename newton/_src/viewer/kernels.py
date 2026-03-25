@@ -708,3 +708,42 @@ def compute_hydro_contact_surface_lines(
     line_starts[tid * 3 + 2] = v2
     line_ends[tid * 3 + 2] = v0
     line_colors[tid * 3 + 2] = color
+
+
+PARTICLE_ACTIVE = wp.constant(wp.int32(newton.ParticleFlags.ACTIVE))
+
+
+@wp.kernel
+def build_active_particle_mask(
+    flags: wp.array(dtype=wp.int32),
+    mask: wp.array(dtype=wp.int32),
+):
+    i = wp.tid()
+    if (flags[i] & PARTICLE_ACTIVE) != wp.int32(0):
+        mask[i] = wp.int32(1)
+    else:
+        mask[i] = wp.int32(0)
+
+
+@wp.kernel
+def compact_vec3(
+    src: wp.array(dtype=wp.vec3),
+    mask: wp.array(dtype=wp.int32),
+    offsets: wp.array(dtype=wp.int32),
+    dst: wp.array(dtype=wp.vec3),
+):
+    i = wp.tid()
+    if mask[i] == wp.int32(1):
+        dst[offsets[i]] = src[i]
+
+
+@wp.kernel
+def compact_float(
+    src: wp.array(dtype=wp.float32),
+    mask: wp.array(dtype=wp.int32),
+    offsets: wp.array(dtype=wp.int32),
+    dst: wp.array(dtype=wp.float32),
+):
+    i = wp.tid()
+    if mask[i] == wp.int32(1):
+        dst[offsets[i]] = src[i]
