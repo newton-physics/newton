@@ -15,7 +15,7 @@ from .._src.utils import logger as msg
 
 
 def get_examples_output_path() -> str:
-    path = os.path.dirname(os.path.realpath(__file__)) + "/output"
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")
     if not os.path.exists(path):
         os.makedirs(path)
     return path

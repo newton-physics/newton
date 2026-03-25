@@ -921,7 +921,7 @@ def test_uint16_vs_nanovdb_distance(test, device):
     )
 
     mesh_copy = _create_box_mesh()
-    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05, device=device)
     nanovdb_data = mesh_copy.sdf.to_kernel_data()
 
     query_np = _generate_query_points(mesh, num_points=2000)
@@ -955,7 +955,7 @@ def test_uint16_vs_nanovdb_gradient(test, device):
     )
 
     mesh_copy = _create_box_mesh()
-    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05, device=device)
     nanovdb_data = mesh_copy.sdf.to_kernel_data()
 
     query_np = _generate_query_points(mesh, num_points=2000)

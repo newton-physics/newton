@@ -621,7 +621,9 @@ class ShaderShape(ShaderGL):
             if env_texture is not None:
                 self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, env_texture)
             else:
-                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, 0)
+                from .opengl import RendererGL  # noqa: PLC0415
+
+                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
             self._gl.glUniform1i(self.loc_env_map, 2)
             self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
 

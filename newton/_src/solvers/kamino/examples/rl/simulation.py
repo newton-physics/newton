@@ -309,17 +309,21 @@ class RigidBodySim:
         """Apply render configuration to the viewer."""
         viewer = self.viewer
         renderer = viewer.renderer
+        model = self._newton_model
+
+        def apply_shape_colors(shape_colors: dict[int, Color3]):
+            for shape_idx, color in shape_colors.items():
+                model.shape_color[shape_idx : shape_idx + 1].fill_(wp.vec3(color))
 
         # Shape colors (robot only)
         if cfg.robot_color is not None:
-            model = self._newton_model
             shape_body = model.shape_body.numpy()
             color_overrides: dict[int, Color3] = {}
             for s in range(model.shape_count):
                 if int(shape_body[s]) >= 0:
                     color_overrides[s] = cfg.robot_color
             if color_overrides:
-                viewer.update_shape_colors(color_overrides)
+                apply_shape_colors(color_overrides)
 
         # Lighting settings
         if cfg.diffuse_scale is not None:
@@ -346,15 +350,15 @@ class RigidBodySim:
             s = cfg.background_brightness_scale
             renderer.sky_lower = tuple(min(c * s, 1.0) for c in renderer.sky_lower)
             # Also brighten ground plane shape colors
-            model = self._newton_model
             shape_body = model.shape_body.numpy()
+            shape_colors = model.shape_color.numpy()
             ground_colors: dict[int, Color3] = {}
             for s_idx in range(model.shape_count):
                 if int(shape_body[s_idx]) < 0:
-                    cur = viewer.model_shape_color.numpy()[int(viewer._shape_to_slot[s_idx])]
+                    cur = shape_colors[s_idx]
                     ground_colors[s_idx] = tuple(min(float(c) * s, 1.0) for c in cur)
             if ground_colors:
-                viewer.update_shape_colors(ground_colors)
+                apply_shape_colors(ground_colors)
 
     # ------------------------------------------------------------------
     # RL interface wiring

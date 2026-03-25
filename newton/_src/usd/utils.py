@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 import numpy as np
 import warp as wp
 
-from ..core.types import Axis, AxisType, nparray
+from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 
@@ -217,14 +217,14 @@ def get_quat(prim: Usd.Prim, name: str, default: wp.quat | None = None) -> wp.qu
 
 
 @overload
-def get_vector(prim: Usd.Prim, name: str, default: nparray) -> nparray: ...
+def get_vector(prim: Usd.Prim, name: str, default: np.ndarray) -> np.ndarray: ...
 
 
 @overload
-def get_vector(prim: Usd.Prim, name: str, default: None = None) -> nparray | None: ...
+def get_vector(prim: Usd.Prim, name: str, default: None = None) -> np.ndarray | None: ...
 
 
-def get_vector(prim: Usd.Prim, name: str, default: nparray | None = None) -> nparray | None:
+def get_vector(prim: Usd.Prim, name: str, default: np.ndarray | None = None) -> np.ndarray | None:
     """
     Get a vector attribute value from a USD prim, validating that all components are finite.
 
@@ -679,7 +679,7 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
-def fan_triangulate_faces(counts: nparray, indices: nparray) -> nparray:
+def fan_triangulate_faces(counts: np.ndarray, indices: np.ndarray) -> np.ndarray:
     """
     Perform fan triangulation on polygonal faces.
 
@@ -1193,6 +1193,13 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
 
     vertices = np.array(points_attr, dtype=np.float32)
     tet_indices = np.array(tet_indices_attr, dtype=np.int32).flatten()
+
+    # Flip winding order for left-handed meshes (e.g. Houdini exports)
+    handedness = tet_mesh.GetOrientationAttr().Get()
+    if handedness and handedness.lower() == "lefthanded" and tet_indices.size % 4 == 0:
+        tet_indices = tet_indices.reshape(-1, 4)
+        tet_indices[:, [1, 2]] = tet_indices[:, [2, 1]]
+        tet_indices = tet_indices.reshape(-1)
 
     # Try to read physics material properties if bound
     k_mu = None

@@ -11,7 +11,6 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ......core.types import nparray
 from ......geometry.flags import ShapeFlags
 from ......usd import utils as usd_utils
 from ......utils.topology import topological_sort_undirected
@@ -290,7 +289,7 @@ class USDImporter:
         return wp.quat_from_matrix(R_g)
 
     @staticmethod
-    def _make_faces_from_counts(indices: nparray, counts: Iterable[int], prim_path: str) -> nparray:
+    def _make_faces_from_counts(indices: np.ndarray, counts: Iterable[int], prim_path: str) -> np.ndarray:
         faces = []
         face_id = 0
         for count in counts:
@@ -384,7 +383,7 @@ class USDImporter:
     def _from_gfquat(gfquat) -> wp.quatf:
         return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
 
-    def _parse_quat(self, prim, name, default=None) -> nparray | None:
+    def _parse_quat(self, prim, name, default=None) -> np.ndarray | None:
         attr = self._get_attribute(prim, name)
         if not attr or not attr.HasAuthoredValue():
             return default
@@ -398,7 +397,7 @@ class USDImporter:
             return quat
         return default
 
-    def _parse_vec(self, prim, name, default=None) -> nparray | None:
+    def _parse_vec(self, prim, name, default=None) -> np.ndarray | None:
         attr = self._get_attribute(prim, name)
         if not attr or not attr.HasAuthoredValue():
             return default

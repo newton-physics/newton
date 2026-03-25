@@ -9,6 +9,23 @@ import newton.examples
 from newton.solvers import SolverImplicitMPM
 
 
+@wp.kernel
+def _compute_compression_colors(
+    Jp: wp.array(dtype=float),
+    colors: wp.array(dtype=wp.vec3),
+    Jp_min: float,
+    Jp_inv_range: float,
+):
+    i = wp.tid()
+    v = wp.clamp((Jp[i] - Jp_min) * Jp_inv_range, 0.0, 1.0)
+    if v < 0.5:
+        t = v / 0.5
+        colors[i] = wp.vec3(0.0, t, 1.0 - t)
+    else:
+        t = (v - 0.5) / 0.5
+        colors[i] = wp.vec3(t, 1.0 - t, 0.0)
+
+
 class Example:
     """Snow ball rolling down a heightfield slope with per-particle snow rheology."""
 
@@ -88,6 +105,10 @@ class Example:
         self.solver = SolverImplicitMPM(self.model, mpm_options)
 
         self.viewer.set_model(self.model)
+
+        # Position camera for an elevated side view showing the slope and rolling ball
+        if hasattr(self.viewer, "set_camera"):
+            self.viewer.set_camera(pos=wp.vec3(12.0, -8.0, 14.0), pitch=-30.0, yaw=145.0)
 
         if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
@@ -300,31 +321,14 @@ class Example:
 
         # Color based on Jp
         if self.show_compression:
-            Jp = self.state_0.mpm.particle_Jp.numpy()
             Jp_min = 0.5
             Jp_max = 2.0
-            Jp_range = Jp_max - Jp_min if Jp_max > Jp_min else 1.0
-            Jp_norm = np.clip((Jp - Jp_min) / Jp_range, 0.0, 1.0)
-
-            # Vectorized colormap: blue (min) -> green (mid) -> red (max)
-            v = Jp_norm
-            colors_np = np.zeros((v.shape[0], 3), dtype=np.float32)
-            mask_low = v < 0.5
-            mask_high = ~mask_low
-
-            # blue to green for v < 0.5
-            t_low = v[mask_low] / 0.5
-            colors_np[mask_low, 0] = 0.0  # R stays 0
-            colors_np[mask_low, 1] = t_low  # G: 0->1
-            colors_np[mask_low, 2] = 1.0 - t_low  # B: 1->0
-
-            # green to red for v >= 0.5
-            t_high = (v[mask_high] - 0.5) / 0.5
-            colors_np[mask_high, 0] = t_high  # R: 0->1
-            colors_np[mask_high, 1] = 1.0 - t_high  # G: 1->0
-            colors_np[mask_high, 2] = 0.0  # B stays 0
-
-            self.particle_colors.assign(wp.array(colors_np, dtype=wp.vec3))
+            wp.launch(
+                _compute_compression_colors,
+                dim=self.model.particle_count,
+                inputs=[self.state_0.mpm.particle_Jp, self.particle_colors, Jp_min, 1.0 / (Jp_max - Jp_min)],
+                device=self.model.device,
+            )
         else:
             self.particle_colors.fill_(wp.vec3(0.8, 0.8, 0.9))
 
