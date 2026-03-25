@@ -5346,8 +5346,8 @@ class ModelBuilder:
         Args:
             height: The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. Defaults to the ground plane color ``(0.125, 0.125, 0.15)``. Pass ``None`` to use the per-shape palette color instead.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
-            color: Optional display RGB color with values in [0, 1]. Uses the default ground plane display color.
 
         Returns:
             The index of the newly added shape.
