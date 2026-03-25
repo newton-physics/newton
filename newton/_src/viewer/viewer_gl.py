@@ -242,6 +242,9 @@ class ViewerGL(ViewerBase):
 
         # Standalone viewer callbacks
         self.on_file_drop: Callable[[str], None] | None = None
+        self.on_reset: Callable[[], None] | None = None
+        self.on_solver_change: Callable[[str], None] | None = None
+        self._step_requested = False
 
         # Camera movement settings
         self._camera_speed = 0.04
@@ -1332,6 +1335,24 @@ class ViewerGL(ViewerBase):
         """
         return self._paused
 
+    def step_once(self) -> bool:
+        """Request a single simulation step.
+
+        If the viewer is paused, sets a flag that the caller's simulation
+        loop can check via ``consume_step_request()``.
+        """
+        if self._paused:
+            self._step_requested = True
+            return True
+        return False
+
+    def consume_step_request(self) -> bool:
+        """Return True and clear if a single-step was requested."""
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
     @override
     def close(self):
         """
@@ -1588,6 +1609,11 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.ESCAPE:
             # Exit with Escape key
             self.renderer.close()
+        elif symbol == pyglet.window.key.R:
+            if self.on_reset is not None:
+                self.on_reset()
+        elif symbol == pyglet.window.key.PERIOD:
+            self.step_once()
 
     def on_key_release(self, symbol: int, modifiers: int):
         """
