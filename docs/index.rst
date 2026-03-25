@@ -19,7 +19,6 @@ Newton Physics
    guide/visualization
    guide/tutorials
    Development <guide/development>
-   Release Process <guide/release>
 
 .. toctree::
    :maxdepth: 1

@@ -10,25 +10,8 @@ release.  It is intended for release engineers and maintainers.
 Overview
 --------
 
-Newton uses `PEP 440 <https://peps.python.org/pep-0440/>`__ versioning
-(``Major.Minor.Micro``), consistent with warp-lang:
-
-.. list-table::
-   :widths: 25 30 45
-   :header-rows: 1
-
-   * - Kind
-     - Example
-     - When
-   * - Stable
-     - ``1.0.0``
-     - Tagged GA releases published to PyPI
-   * - Release candidate
-     - ``1.0.0rc1``
-     - Pre-release builds for QA validation
-   * - Development
-     - ``1.1.0.dev0``
-     - ``main`` between releases
+Newton follows PEP 440 versioning as described in the
+:ref:`versioning <versioning>` section of the installation guide.
 
 Releases are published to `PyPI <https://pypi.org/p/newton>`__ and
 documentation is deployed to
@@ -56,8 +39,6 @@ like other dependencies.
 Pre-release planning
 --------------------
 
-.. rubric:: Checklist
-
 .. list-table::
    :widths: 5 95
    :header-rows: 0
@@ -79,39 +60,31 @@ Pre-release planning
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``docs/generate_api.py``).
    * - ☐
-     - Communicate the timeline to contributors.
+     - Communicate the timeline to the community.
 
 
 Code freeze and release branch creation
 ---------------------------------------
-
-1. Create the ``release-X.Y`` branch from ``main``.
-2. On **main**: bump ``newton/_version.py`` to ``X.(Y+1).0.dev0`` and run
-   ``docs/generate_api.py``.
-3. On **release-X.Y**: bump ``newton/_version.py`` to ``X.Y.ZrcN`` and run
-   ``docs/generate_api.py``.
-4. On **release-X.Y**: update dependencies in ``pyproject.toml`` from dev
-   to RC versions where applicable, then regenerate ``uv.lock``
-   (``uv lock``) and commit it.
-5. Push tag ``vX.Y.ZrcN``.  This triggers the ``release.yml`` workflow
-   (build wheel → PyPI publish with manual approval).
-
-.. rubric:: Checklist
 
 .. list-table::
    :widths: 5 95
    :header-rows: 0
 
    * - ☐
-     - ``release-X.Y`` branch created and pushed.
+     - Create ``release-X.Y`` branch from ``main`` and push it.
    * - ☐
-     - ``main`` bumped to next dev version; ``generate_api.py`` run.
+     - On **main**: bump ``newton/_version.py`` to ``X.(Y+1).0.dev0`` and run
+       ``docs/generate_api.py``.
    * - ☐
-     - RC1 version set on release branch; ``generate_api.py`` run.
+     - On **release-X.Y**: bump ``newton/_version.py`` to ``X.Y.ZrcN`` and
+       run ``docs/generate_api.py``.
    * - ☐
-     - Dependencies updated from dev to RC versions; ``uv.lock`` regenerated.
+     - On **release-X.Y**: update dependencies in ``pyproject.toml`` from dev
+       to RC versions where applicable, then regenerate ``uv.lock``
+       (``uv lock``) and commit it.
    * - ☐
-     - Tag ``vX.Y.Zrc1`` pushed.
+     - Push tag ``vX.Y.Zrc1``.  This triggers the ``release.yml`` workflow
+       (build wheel → PyPI publish with manual approval).
    * - ☐
      - RC1 published to PyPI (approve in GitHub environment).
 
@@ -126,23 +99,25 @@ directly to the release branch.
 
 For each new RC (``rc2``, ``rc3``, …) bump the version in
 ``newton/_version.py`` and run ``docs/generate_api.py``, then tag and push.
-Iterate until CI is green and QA signs off.
+Resolve any cherry-pick conflicts or missing dependent cherry-picks that
+cause CI failures before tagging.
+
+.. _testing-criteria:
 
 Testing criteria
 ^^^^^^^^^^^^^^^^
 
 An RC is considered ready for GA when all of the following are met:
 
-- The full test suite passes on CI (``uv run --extra dev -m newton.tests``).
-- All examples run successfully with the viewer
-  (``uv run -m newton.examples <name>``).
+- All examples run without crashes, excessive warnings, or visual
+  artifacts (``uv run -m newton.examples <name>``).
 - Testing covers **Windows and Linux**, **all supported Python versions**,
-  and both **latest CUDA drivers** and **minimum-spec drivers**.
-- PyPI installation of the RC works in a clean environment
-  (``pip install newton==X.Y.ZrcN``).
+  and both **latest and minimum-spec CUDA drivers** (see
+  :ref:`system requirements <versioning>` in the installation guide).
+- PyPI installation of the RC works in a clean environment: ``pip install``
+  succeeds, ``import newton`` works, and examples and tests can be run from
+  the installed wheel (``pip install newton==X.Y.ZrcN``).
 - No regressions compared to the previous release have been identified.
-
-.. rubric:: Checklist
 
 .. list-table::
    :widths: 5 95
@@ -151,50 +126,19 @@ An RC is considered ready for GA when all of the following are met:
    * - ☐
      - All release-targeted fixes cherry-picked from ``main``.
    * - ☐
-     - CI passing on release branch.
-   * - ☐
-     - Testing criteria above satisfied.
+     - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
      - No outstanding release-blocking issues.
 
 
 .. _final-release:
 
-Final release
--------------
+Final GA release
+----------------
 
 Before proceeding, obtain explicit go/no-go approval from testing and
 stakeholders.  Do not start the final release steps until sign-off is
 confirmed.
-
-1. Finalize ``CHANGELOG.md``: rename ``[Unreleased]`` →
-   ``[X.Y.Z] - YYYY-MM-DD``.  Review the entries for:
-
-   - **Missing entries** — cross-check merged PRs since the last release to
-     catch changes that were not recorded in the changelog.
-   - **Redundant entries** — consolidate or remove duplicates for changes
-     within the same release period (e.g. a bug fix for a feature added in
-     the same cycle should not appear as both an "Added" and a "Fixed"
-     entry).
-
-2. Update documentation links to point to versioned URLs where appropriate.
-3. Verify all dependency pins in ``pyproject.toml`` use stable
-   (non-pre-release) versions.
-4. Regenerate ``uv.lock`` (``uv lock``) and verify that no pre-release
-   dependencies remain in the lock file.
-5. Bump ``newton/_version.py`` to ``X.Y.Z`` (remove the RC suffix) and run
-   ``docs/generate_api.py``.
-6. Commit and push tag ``vX.Y.Z``.
-7. Automated workflows trigger:
-
-   - ``release.yml``: builds wheel, publishes to PyPI (requires manual
-     approval), creates a draft GitHub Release.
-   - ``docs-release.yml``: deploys docs to ``/X.Y.Z/`` and ``/stable/``
-     on gh-pages, updates ``switcher.json``.
-
-8. Review and publish (un-draft) the GitHub Release.
-
-.. rubric:: Checklist
 
 .. list-table::
    :widths: 5 95
@@ -203,16 +147,34 @@ confirmed.
    * - ☐
      - Go/no-go approval obtained from testing and stakeholders.
    * - ☐
-     - Changelog finalized with release date.
+     - Finalize ``CHANGELOG.md``: rename ``[Unreleased]`` →
+       ``[X.Y.Z] - YYYY-MM-DD``.  Review the entries for:
+
+       - **Missing entries** — cross-check merged PRs since the last release
+         to catch changes that were not recorded in the changelog.
+       - **Redundant entries** — consolidate or remove duplicates for changes
+         within the same release period (e.g. a bug fix for a feature added
+         in the same cycle should not appear as both an "Added" and a "Fixed"
+         entry).
    * - ☐
-     - All dependency pins in ``pyproject.toml`` use stable (non-pre-release)
-       versions.
+     - Update ``README.md`` documentation links to point to versioned URLs
+       (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).
    * - ☐
-     - ``uv.lock`` regenerated and verified free of pre-release dependencies.
+     - Verify all dependency pins in ``pyproject.toml`` use stable
+       (non-pre-release) versions.
    * - ☐
-     - Version bumped to ``X.Y.Z``; ``generate_api.py`` run.
+     - Regenerate ``uv.lock`` (``uv lock``) and verify that no pre-release
+       dependencies remain in the lock file.
    * - ☐
-     - Tag ``vX.Y.Z`` pushed.
+     - Bump ``newton/_version.py`` to ``X.Y.Z`` (remove the RC suffix) and
+       run ``docs/generate_api.py``.
+   * - ☐
+     - Commit and push tag ``vX.Y.Z``.  Automated workflows trigger:
+
+       - ``release.yml``: builds wheel, publishes to PyPI (requires manual
+         approval), creates a draft GitHub Release.
+       - ``docs-release.yml``: deploys docs to ``/X.Y.Z/`` and ``/stable/``
+         on gh-pages, updates ``switcher.json``.
    * - ☐
      - PyPI publish approved and verified: ``pip install newton==X.Y.Z``.
    * - ☐
@@ -220,40 +182,32 @@ confirmed.
    * - ☐
      - Docs live at ``/X.Y.Z/`` and ``/stable/``: verify links and version
        switcher.
+   * - ☐
+     - Release announcement posted.
 
 
 Post-release
 ------------
-
-1. Compare ``CHANGELOG.md`` between ``release-X.Y`` and ``main``.  The
-   release branch has the finalized ``[X.Y.Z]`` section, while ``main``
-   still has those entries under ``[Unreleased]``.
-2. On **main**: merge back the changelog from the release branch so that
-   all entries included in the release are moved from ``[Unreleased]`` to
-   the ``[X.Y.Z]`` section.  (The ``[Unreleased]`` header already exists
-   on ``main`` from the post-branch-creation bump.)
-3. Verify PyPI installation works in a clean environment.
-4. Verify published docs render correctly.
-
-.. rubric:: Checklist
 
 .. list-table::
    :widths: 5 95
    :header-rows: 0
 
    * - ☐
-     - ``CHANGELOG.md`` on ``main`` updated: released entries moved from
-       ``[Unreleased]`` to ``[X.Y.Z]`` section.
+     - Merge back the changelog from ``release-X.Y`` to ``main``: move
+       entries included in the release from ``[Unreleased]`` to a new
+       ``[X.Y.Z]`` section.  (The ``[Unreleased]`` header already exists
+       on ``main`` from the post-branch-creation bump.)
    * - ☐
-     - PyPI install verified.
+     - Verify PyPI installation works in a clean environment.
    * - ☐
-     - Published docs verified.
+     - Verify published docs render correctly.
 
 
 Patch releases
 --------------
 
-Patch releases (``X.Y.Z+1``) continue cherry-picking fixes to the existing
-``release-X.Y`` branch.  Follow the same :ref:`final-release` flow — bump
-version, update changelog, tag, and push.  There is no need to create a new
-branch or bump ``main``.
+Patch releases continue cherry-picking fixes to the existing
+``release-X.Y`` branch.  For example, ``1.0.1`` follows ``1.0.0``.
+Follow the same :ref:`final-release` flow — bump version, update changelog,
+tag, and push.  There is no need to create a new branch or bump ``main``.
