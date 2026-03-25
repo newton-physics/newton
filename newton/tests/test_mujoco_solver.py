@@ -8274,5 +8274,46 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
             os.unlink(xml_path)
 
 
+class TestRegisterCustomAttributesDocstringCoverage(unittest.TestCase):
+    """Verify the register_custom_attributes docstring mentions every registration."""
+
+    def test_register_custom_attributes_docstring_coverage(self):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        docstring = SolverMuJoCo.register_custom_attributes.__doc__
+        self.assertIsNotNone(docstring, "register_custom_attributes must have a docstring")
+
+        # Collect all mujoco-namespace attribute names
+        missing_attrs = []
+        for _key, attr in builder.custom_attributes.items():
+            if attr.namespace != "mujoco":
+                continue
+            if attr.name not in docstring:
+                missing_attrs.append(attr.name)
+
+        self.assertEqual(
+            missing_attrs,
+            [],
+            f"The following custom attributes are registered but not mentioned "
+            f"in the register_custom_attributes docstring: {missing_attrs}",
+        )
+
+        # Collect all mujoco-namespace frequency names
+        missing_freqs = []
+        for key, _freq in builder.custom_frequencies.items():
+            if not key.startswith("mujoco:"):
+                continue
+            if key not in docstring:
+                missing_freqs.append(key)
+
+        self.assertEqual(
+            missing_freqs,
+            [],
+            f"The following custom frequencies are registered but not mentioned "
+            f"in the register_custom_attributes docstring: {missing_freqs}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
