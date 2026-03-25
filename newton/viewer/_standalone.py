@@ -213,17 +213,21 @@ def main():
     solver_name = args.solver
     ground = not args.no_ground
 
-    def _flush_frame():
-        """Render one frame so the status overlay appears on screen."""
-        viewer.begin_frame(sim.sim_time if sim else 0.0)
-        viewer.end_frame()
+    def _flush_status():
+        """Render two frames so the status overlay is visible (double-buffered)."""
+        for _ in range(2):
+            viewer.begin_frame(sim.sim_time if sim else 0.0)
+            viewer.end_frame()
 
     def load_and_setup(path: str):
         nonlocal sim
-        viewer.show_status(f"Loading {os.path.basename(path)}...")
-        _flush_frame()
+        basename = os.path.basename(path)
+        viewer.show_status(f"Loading {basename}...")
+        viewer.renderer.set_title(f"Newton Viewer — Loading {basename}...")
+        _flush_status()
         new_sim = load_file(path, solver_name=solver_name, device=args.device, ground=ground)
         viewer.clear_status()
+        viewer.renderer.set_title(f"Newton Viewer — {basename}")
         viewer.set_model(new_sim.model)
         viewer._file_info = {
             "path": path,
