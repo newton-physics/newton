@@ -17,7 +17,7 @@ import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
 from ..core.types import MAXVAL, Axis, nparray
-from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
+from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents, repack_shape_colors
 
 
 class ViewerBase(ABC):
@@ -122,6 +122,8 @@ class ViewerBase(ABC):
         # Per-shape color buffer and indexing
         self.model_shape_color: wp.array(dtype=wp.vec3) = None
         self._shape_to_slot: nparray | None = None
+        self._slot_to_shape: nparray | None = None
+        self._slot_to_shape_wp: wp.array | None = None
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
         self._model_shape_color_host: nparray | None = None
 
@@ -393,21 +395,33 @@ class ViewerBase(ABC):
             self.model is None
             or self.model.shape_color is None
             or self.model_shape_color is None
-            or self._shape_to_slot is None
+            or self._slot_to_shape_wp is None
             or self._shape_to_batch is None
         ):
             return
 
         model_colors = self.model.shape_color.numpy()
-        if self._model_shape_color_host is not None and np.array_equal(model_colors, self._model_shape_color_host):
+        previous_colors = self._model_shape_color_host
+        if previous_colors is not None and np.array_equal(model_colors, previous_colors):
             return
 
         self._model_shape_color_host = np.array(model_colors, copy=True)
-        for s_idx, color in enumerate(model_colors):
-            slot = int(self._shape_to_slot[s_idx])
-            if slot < 0:
-                continue
-            self.model_shape_color[slot : slot + 1].fill_(wp.vec3(color))
+        wp.launch(
+            kernel=repack_shape_colors,
+            dim=len(self.model_shape_color),
+            inputs=[self.model.shape_color, self._slot_to_shape_wp],
+            outputs=[self.model_shape_color],
+            device=self.device,
+            record_tape=False,
+        )
+
+        if previous_colors is None:
+            for batch_ref in self._shape_instances.values():
+                batch_ref.colors_changed = True
+            return
+
+        changed_shape_indices = np.flatnonzero(np.any(model_colors != previous_colors, axis=1))
+        for s_idx in changed_shape_indices:
             batch_ref = self._shape_to_batch[s_idx]
             if batch_ref is not None:
                 batch_ref.colors_changed = True
@@ -1432,9 +1446,17 @@ class ViewerBase(ABC):
             for local_idx, s_idx in enumerate(batch.model_shapes):
                 shape_to_slot[s_idx] = start + local_idx
         self._shape_to_slot = shape_to_slot
+        slot_to_shape = np.empty(total_instances, dtype=np.int32)
+        for s_idx, slot in enumerate(shape_to_slot):
+            if slot >= 0:
+                slot_to_shape[slot] = s_idx
+        self._slot_to_shape = slot_to_shape
+        self._slot_to_shape_wp = (
+            wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
+        )
 
         # Build shape -> batch reference mapping for change signalling
-        shape_to_batch = [None] * shape_count
+        shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
         for batch in batches:
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch

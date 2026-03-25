@@ -122,6 +122,33 @@ class TestShapeColors(unittest.TestCase):
         self.assertIsNotNone(viewer.last_colors)
         np.testing.assert_allclose(viewer.last_colors[0], [0.8, 0.2, 0.1], atol=1e-6, rtol=1e-6)
 
+    def test_viewer_builds_inverse_shape_color_slot_mapping(self):
+        """Verify packed color slots can be mapped back to model shape indices."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_body(mass=1.0)
+        body1 = builder.add_body(mass=1.0)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.2, hz=0.3)
+        builder.add_shape_box(body=body1, hx=0.2, hy=0.1, hz=0.3)
+        builder.add_shape_sphere(body=body1, radius=0.15)
+
+        model = builder.finalize(device=self.device)
+        viewer = ViewerNull()
+        viewer.set_model(model)
+
+        packed_shape_colors = viewer.model_shape_color
+        shape_to_slot = viewer._shape_to_slot
+        slot_to_shape = viewer._slot_to_shape
+
+        self.assertIsNotNone(packed_shape_colors)
+        self.assertIsNotNone(shape_to_slot)
+        self.assertIsNotNone(slot_to_shape)
+        self.assertEqual(len(slot_to_shape), len(packed_shape_colors))
+
+        rendered_shapes = np.flatnonzero(shape_to_slot >= 0)
+        for shape_idx in rendered_shapes:
+            slot = int(shape_to_slot[shape_idx])
+            self.assertEqual(int(slot_to_shape[slot]), int(shape_idx))
+
     def test_update_shape_colors_warns_and_writes_model_shape_color(self):
         """Verify deprecated viewer color updates warn and write through to the model."""
         builder = newton.ModelBuilder()
