@@ -617,7 +617,7 @@ class SolverImplicitMPM(SolverBase):
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
         solver: str = "gauss-seidel"
-        """Solver to use for the rheology solver. May be one of gauss-seidel, gauss-seidel-reordered, gauss-seidel-hybrid, jacobi, cg."""
+        """Solver to use for the rheology solver. May be one of auto, gauss-seidel, gauss-seidel-reordered, gauss-seidel-hybrid, jacobi, cg. ``"auto"`` selects ``"gauss-seidel"`` for Q1 velocity basis and ``"gauss-seidel-hybrid"`` for higher-order bases (B2, B3)."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver."""
         collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
@@ -888,6 +888,11 @@ class SolverImplicitMPM(SolverBase):
         self.grid_padding = config.grid_padding
         self.grid_type = config.grid_type
         self.solver = config.solver
+        if self.solver == "auto":
+            if self.velocity_basis in ("B2", "B3"):
+                self.solver = "gauss-seidel-hybrid"
+            else:
+                self.solver = "gauss-seidel"
         self.coloring = "gauss-seidel" in self.solver
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"

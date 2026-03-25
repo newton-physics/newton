@@ -128,8 +128,8 @@ class Example:
 
         # Solver parameters
         parser.add_argument(
-            "--solver", "-s", type=str, default="gauss-seidel",
-            choices=["gauss-seidel", "gauss-seidel-reordered", "gauss-seidel-hybrid", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            "--solver", "-s", type=str, default="auto",
+            choices=["auto", "gauss-seidel", "gauss-seidel-reordered", "gauss-seidel-hybrid", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
         )
         parser.add_argument("--max-iterations", "-it", type=int, default=250)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
