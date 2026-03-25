@@ -252,6 +252,7 @@ class ViewerGL(ViewerBase):
         self._step_requested = False
         self._error_message: str | None = None
         self._error_popup_pending = False
+        self._status_message: str | None = None
 
         # Camera movement settings
         self._camera_speed = 0.04
@@ -1232,13 +1233,15 @@ class ViewerGL(ViewerBase):
             # Render the UI
             self._render_ui()
             self._render_error_popup()
+            self._render_status_overlay()
 
             self.ui.end_frame()
             self.ui.render()
-        elif self.ui and self.ui.is_available and self._error_message is not None:
-            # Render error popup even when the rest of the UI is hidden
+        elif self.ui and self.ui.is_available and (self._error_message is not None or self._status_message is not None):
+            # Render overlays even when the rest of the UI is hidden
             self.ui.begin_frame()
             self._render_error_popup()
+            self._render_status_overlay()
             self.ui.end_frame()
             self.ui.render()
 
@@ -1375,6 +1378,18 @@ class ViewerGL(ViewerBase):
         """
         self._error_message = message
         self._error_popup_pending = True
+
+    def show_status(self, message: str):
+        """Show a centered status overlay (e.g. "Loading...").
+
+        Call :meth:`clear_status` to remove it.  Rendering a frame while
+        the status is set will display the message as a centered overlay.
+        """
+        self._status_message = message
+
+    def clear_status(self):
+        """Remove the status overlay set by :meth:`show_status`."""
+        self._status_message = None
 
     @override
     def close(self):
@@ -1925,6 +1940,28 @@ class ViewerGL(ViewerBase):
             imgui.end_popup()
         else:
             self._error_message = None  # closed via X
+
+    def _render_status_overlay(self):
+        """Render a centered status message overlay."""
+        if self._status_message is None or not self.ui:
+            return
+        imgui = self.ui.imgui
+        viewport = imgui.get_main_viewport()
+        text_size = imgui.calc_text_size(self._status_message)
+        pos_x = viewport.pos.x + (viewport.size.x - text_size.x) * 0.5
+        pos_y = viewport.pos.y + (viewport.size.y - text_size.y) * 0.5
+        imgui.set_next_window_pos(imgui.ImVec2(pos_x, pos_y))
+        imgui.set_next_window_bg_alpha(0.7)
+        flags = (
+            imgui.WindowFlags_.no_decoration
+            | imgui.WindowFlags_.always_auto_resize
+            | imgui.WindowFlags_.no_saved_settings
+            | imgui.WindowFlags_.no_focus_on_appearing
+            | imgui.WindowFlags_.no_nav
+        )
+        if imgui.begin("##status_overlay", None, flags)[0]:
+            imgui.text(self._status_message)
+        imgui.end()
 
     def _render_ui(self):
         """

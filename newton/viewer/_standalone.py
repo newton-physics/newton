@@ -213,9 +213,17 @@ def main():
     solver_name = args.solver
     ground = not args.no_ground
 
+    def _flush_frame():
+        """Render one frame so the status overlay appears on screen."""
+        viewer.begin_frame(sim.sim_time if sim else 0.0)
+        viewer.end_frame()
+
     def load_and_setup(path: str):
         nonlocal sim
+        viewer.show_status(f"Loading {os.path.basename(path)}...")
+        _flush_frame()
         new_sim = load_file(path, solver_name=solver_name, device=args.device, ground=ground)
+        viewer.clear_status()
         viewer.set_model(new_sim.model)
         viewer._file_info = {
             "path": path,
