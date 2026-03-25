@@ -1,20 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
+import time as _time
 from typing import Any
 
 import numpy as np
@@ -22,7 +11,7 @@ import warp as wp
 
 import newton
 
-from ..core.types import nparray, override
+from ..core.types import override
 from .viewer import ViewerBase
 
 
@@ -36,17 +25,36 @@ class ViewerNull(ViewerBase):
     stub implementations for all logging and frame management methods.
     """
 
-    def __init__(self, num_frames: int = 1000):
+    def __init__(
+        self,
+        num_frames: int = 1000,
+        benchmark: bool = False,
+        benchmark_timeout: float | None = None,
+        benchmark_start_frame: int = 3,
+    ):
         """
         Initialize a no-op Viewer that runs for a fixed number of frames.
 
         Args:
             num_frames: The number of frames to run before stopping.
+            benchmark: Enable benchmark timing (FPS measurement after warmup).
+            benchmark_timeout: If set, stop after this many seconds of
+                steady-state simulation (measured after warmup). Implicitly
+                enables *benchmark*.
+            benchmark_start_frame: Number of warmup frames before benchmark
+                timing starts.
         """
         super().__init__()
 
         self.num_frames = num_frames
         self.frame_count = 0
+
+        self.benchmark = benchmark or benchmark_timeout is not None
+        self.benchmark_timeout = benchmark_timeout
+        self.benchmark_start_frame = benchmark_start_frame
+        self._bench_start_time: float | None = None
+        self._bench_frames = 0
+        self._bench_elapsed = 0.0
 
     @override
     def log_mesh(
@@ -117,15 +125,50 @@ class ViewerNull(ViewerBase):
         """
         self.frame_count += 1
 
+        if self.benchmark:
+            if self.frame_count == self.benchmark_start_frame:
+                wp.synchronize()
+                self._bench_start_time = _time.perf_counter()
+            elif self._bench_start_time is not None:
+                wp.synchronize()
+                self._bench_frames = self.frame_count - self.benchmark_start_frame
+                self._bench_elapsed = _time.perf_counter() - self._bench_start_time
+
     @override
     def is_running(self) -> bool:
         """
         Check if the viewer should continue running.
 
         Returns:
-            bool: True if the frame count is less than the maximum number of frames.
+            bool: True if the frame count is less than the maximum number of frames
+            and the benchmark timeout (if any) has not been reached.
         """
-        return self.frame_count < self.num_frames
+        if self.frame_count >= self.num_frames:
+            return False
+        if (
+            self.benchmark_timeout is not None
+            and self._bench_start_time is not None
+            and self._bench_elapsed >= self.benchmark_timeout
+        ):
+            return False
+        return True
+
+    def benchmark_result(self) -> dict[str, float | int] | None:
+        """Return benchmark results, or ``None`` if benchmarking was not enabled.
+
+        Returns:
+            Dictionary with ``fps``, ``frames``, and ``elapsed`` keys,
+            or ``None`` if benchmarking is not enabled.
+        """
+        if not self.benchmark:
+            return None
+        if self._bench_frames == 0 or self._bench_elapsed == 0.0:
+            return {"fps": 0.0, "frames": 0, "elapsed": 0.0}
+        return {
+            "fps": self._bench_frames / self._bench_elapsed,
+            "frames": self._bench_frames,
+            "elapsed": self._bench_elapsed,
+        }
 
     @override
     def close(self):
@@ -183,7 +226,7 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """
         No-op implementation for logging a generic array.
 

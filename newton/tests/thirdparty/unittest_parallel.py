@@ -3,18 +3,6 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 unittest-parallel command-line script main module
@@ -52,26 +40,6 @@ except ImportError:
 
 # The following variables are NVIDIA Modifications
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
-
-
-def _parallel_download(items, download_fn, description, max_jobs):
-    """Download *items* in parallel via a thread pool, re-raising on first failure."""
-
-    max_workers = max(1, min(max_jobs, len(items)))
-    futures = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for item in items:
-            futures[executor.submit(download_fn, item)] = item
-
-        for future in concurrent.futures.as_completed(futures):
-            item = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                print(f"{description} download failed: {item}: {e}", file=sys.stderr)
-                raise
-
-    print(f"Downloaded {description}")
 
 
 def main(argv=None):
@@ -211,62 +179,6 @@ def main(argv=None):
         wp.clear_lto_cache()
         wp.clear_kernel_cache()
         print("Cleared Warp kernel cache")
-
-    # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
-    # For now this avoids races and conflicting downloads in parallel test runs.
-    import newton.utils  # noqa: PLC0415
-
-    assets_to_download = [
-        "anybotics_anymal_c",
-        "anybotics_anymal_d",
-        "apptronik_apollo",
-        "booster_t1",
-        "franka_emika_panda",
-        "manipulation_objects/cup",  # Used in robot.example_robot_panda_hydro
-        "manipulation_objects/pad",  # Used in robot.example_robot_panda_hydro
-        "robotiq_2f85_v4",
-        "shadow_hand",
-        "unitree_go2",
-        "unitree_g1",
-        "unitree_h1",
-        "style3d",
-        "universal_robots_ur5e",
-        "universal_robots_ur10",
-        "wonik_allegro",
-    ]
-    # Passing args.maxjobs to respect CLI cap for parallelism.
-    _parallel_download(
-        assets_to_download,
-        newton.utils.download_asset,
-        "assets",
-        args.maxjobs,
-    )
-
-    # Pre-download only the menagerie folders exercised by non-skipped
-    # menagerie tests and test_robot_composer. Placeholder USD stub classes
-    # without usd_asset_folder now skip before any menagerie download occurs.
-    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
-
-    menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
-    menagerie_folders = [
-        "apptronik_apollo",
-        "booster_t1",
-        "leap_hand",
-        "robotiq_2f85",
-        "robotiq_2f85_v4",
-        "shadow_hand",
-        "unitree_g1",
-        "unitree_h1",
-        "universal_robots_ur5e",
-        "wonik_allegro",
-    ]
-    # Passing args.maxjobs to respect CLI cap for parallelism.
-    _parallel_download(
-        menagerie_folders,
-        lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),
-        "mujoco_menagerie folders",
-        args.maxjobs,
-    )
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -661,7 +573,7 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
         import warp as wp  # noqa: PLC0415
 
         if args.no_shared_cache:
-            from warp.thirdparty import appdirs  # noqa: PLC0415
+            from warp._src.thirdparty import appdirs  # noqa: PLC0415
 
             if "WARP_CACHE_ROOT" in os.environ:
                 cache_root_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), f"{wp.config.version}-{worker_index:03d}")
@@ -671,6 +583,7 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
                 )
 
             wp.config.kernel_cache_dir = cache_root_dir
+            os.makedirs(cache_root_dir, exist_ok=True)
 
             if not args.no_cache_clear:
                 wp.clear_lto_cache()

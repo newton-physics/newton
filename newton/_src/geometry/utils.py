@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import contextlib
 import os
@@ -22,7 +10,7 @@ from typing import Any, Literal
 import numpy as np
 import warp as wp
 
-from ..core.types import Vec3, nparray
+from ..core.types import Vec3
 from .inertia import compute_inertia_mesh
 from .types import (
     GeoType,
@@ -127,14 +115,82 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         return 10.0
 
 
-def compute_aabb(vertices: nparray) -> tuple[Vec3, Vec3]:
+def compute_aabb(vertices: np.ndarray) -> tuple[Vec3, Vec3]:
     """Compute the axis-aligned bounding box of a set of vertices."""
     min_coords = np.min(vertices, axis=0)
     max_coords = np.max(vertices, axis=0)
     return min_coords, max_coords
 
 
-def compute_pca_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
+def compute_inertia_box_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    is_solid: bool = True,
+) -> tuple[wp.vec3, wp.vec3, wp.quat]:
+    """Compute the equivalent inertia box of a triangular mesh.
+
+    The equivalent inertia box is the box whose inertia tensor matches that of
+    the mesh.  Unlike a bounding box it does **not** necessarily enclose the
+    geometry — it characterises the mass distribution.
+
+    The half-sizes are derived from the principal inertia eigenvalues
+    (*I₀*, *I₁*, *I₂*) and volume *V* of the mesh:
+
+    .. math::
+
+        h_i = \\tfrac{1}{2}\\sqrt{\\frac{6\\,(I_j + I_k - I_i)}{V}}
+
+    where *(i, j, k)* is a cyclic permutation of *(0, 1, 2)*.
+
+    Args:
+        vertices: Vertex positions, shape ``(N, 3)``.
+        indices: Triangle indices (flattened or ``(M, 3)``).
+        is_solid: If ``True`` treat the mesh as solid; otherwise as a thin
+            shell (see :func:`compute_inertia_mesh`).
+
+    Returns:
+        Tuple of ``(center, half_extents, rotation)`` where *center* is the
+        center of mass, *half_extents* are the box half-sizes along the
+        principal axes (not necessarily sorted), and *rotation* is the
+        quaternion rotating from the principal-axis frame to the mesh frame.
+    """
+    _mass, com, inertia_tensor, volume = compute_inertia_mesh(
+        density=1.0,
+        vertices=vertices.tolist() if isinstance(vertices, np.ndarray) else vertices,
+        indices=np.asarray(indices).flatten().tolist(),
+        is_solid=is_solid,
+    )
+
+    if volume < 1e-12:
+        return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()
+
+    inertia = np.array(inertia_tensor).reshape(3, 3)
+    eigvals, eigvecs = np.linalg.eigh(inertia)
+
+    # Sort eigenvalues (and eigenvectors) in ascending order.
+    order = np.argsort(eigvals)
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+
+    # Ensure right-handed frame.
+    if np.linalg.det(eigvecs) < 0:
+        eigvecs[:, 0] = -eigvecs[:, 0]
+
+    # Derive equivalent box half-sizes from principal inertia eigenvalues.
+    half_extents = np.zeros(3)
+    for i in range(3):
+        j, k = (i + 1) % 3, (i + 2) % 3
+        arg = 6.0 * (eigvals[j] + eigvals[k] - eigvals[i]) / volume
+        half_extents[i] = 0.5 * np.sqrt(max(arg, 0.0))
+
+    # Convert the eigenvector matrix (columns = principal axes in mesh frame)
+    # to a quaternion.
+    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.T.flatten().tolist()))
+
+    return wp.vec3(*np.array(com)), wp.vec3(*half_extents), rotation
+
+
+def compute_pca_obb(vertices: np.ndarray) -> tuple[wp.transform, wp.vec3]:
     """Compute the oriented bounding box of a set of vertices.
 
     Args:
@@ -205,7 +261,7 @@ def compute_pca_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
 
 
 def compute_inertia_obb(
-    vertices: nparray,
+    vertices: np.ndarray,
     num_angle_steps: int = 360,
 ) -> tuple[wp.transform, wp.vec3]:
     """
@@ -608,7 +664,7 @@ def remesh(
     method: RemeshingMethod = "quadratic",
     visualize: bool = False,
     **remeshing_kwargs: Any,
-) -> tuple[nparray, nparray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Remeshes a 3D triangular surface mesh using the specified method.
 
@@ -687,7 +743,7 @@ def remesh_mesh(
     return mesh
 
 
-def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | None = None) -> nparray:
+def transform_points(points: np.ndarray, transform: wp.transform, scale: Vec3 | None = None) -> np.ndarray:
     if scale is not None:
         points = points * np.array(scale, dtype=np.float32)
     return points @ np.array(wp.quat_to_matrix(transform.q)).reshape(3, 3) + transform.p

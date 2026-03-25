@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This code is based on the GJK/simplex solver implementation from Jitter Physics 2
 # Original: https://github.com/notgiven688/jitterphysics2
@@ -53,7 +41,7 @@ EPSILON = 1e-8
 Mat83f = wp.types.matrix(shape=(8, 3), dtype=wp.float32)
 
 
-def create_solve_closest_distance(support_func: Any):
+def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None):
     """
     Factory function to create GJK distance solver with specific support and center functions.
 
@@ -69,13 +57,22 @@ def create_solve_closest_distance(support_func: Any):
     - Reduced function call overhead compared to wrapping field access in functions
 
     Args:
-        support_func: Support mapping function for shapes
+        support_func: Support mapping function for shapes.
+        _support_funcs: Pre-built support functions tuple from
+            :func:`create_support_map_function`. When provided, these are reused
+            instead of creating new ones, allowing multiple solvers to share
+            compiled support code.
 
     Returns:
-        GJK distance solver function
+        ``solve_closest_distance`` wrapper function.  The core function is
+        available as ``solve_closest_distance.core`` for callers that want to
+        handle the relative-frame transform themselves.
     """
 
-    _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
+    if _support_funcs is not None:
+        _support_map_b, minkowski_support, geometric_center = _support_funcs
+    else:
+        _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
 
     @wp.func
     def simplex_get_vertex(v: Mat83f, i: int) -> Vert:
@@ -372,6 +369,28 @@ def create_solve_closest_distance(support_func: Any):
 
         last_search_dir = wp.vec3(1.0, 0.0, 0.0)
 
+        # Nesterov acceleration state (Coal: "Collision Detection Accelerated",
+        # HAL-03662157).  GJK is a Frank-Wolfe algorithm; applying Nesterov
+        # momentum to the search direction can reduce iteration count up to
+        # 5x on non-strictly-convex shapes (boxes, convex meshes).
+        # Uses the normalized variant from Coal which is robust for shapes
+        # with flat faces.
+        #
+        # Momentum starts at iteration >= 3: with fewer vertices the two
+        # length() calls per Nesterov iteration cost more than they save
+        # (simplex projection on 1-2 vertices is trivial).  When the
+        # Nesterov duality gap is small, momentum is deactivated, but
+        # the Frank-Wolfe convergence check right after fires in the
+        # same iteration and breaks immediately (delta_dist is half of
+        # duality_gap, so it is always below the same threshold).  This
+        # is intentional: the gap is already within COLLIDE_EPSILON
+        # tolerance, so an extra vanilla iteration would not improve
+        # the result.
+        nesterov_dir = v
+        w_prev = v
+        use_nesterov = bool(True)
+        iteration = int(0)
+
         while iter_count > 0:
             iter_count -= 1
 
@@ -382,11 +401,24 @@ def create_solve_closest_distance(support_func: Any):
                 point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
                 return False, point_a, point_b, normal, distance
 
-            # Determine search direction with fallback for near-zero cases
+            # Determine search direction with Nesterov acceleration.
+            # Uses the normalized variant which is robust for non-strictly-convex
+            # shapes (flat faces on boxes and convex meshes).
             used_fallback = bool(False)
-            search_dir = -v
-            if dist_sq < 1.0e-12:
-                # Near-zero direction: use fallback to avoid numerical issues
+            if use_nesterov and iteration >= 3:
+                momentum = float(iteration + 2) / float(iteration + 3)
+                y = momentum * v + (1.0 - momentum) * w_prev
+                y_len = wp.length(y)
+                ndir_len = wp.length(nesterov_dir)
+                if y_len > EPSILON and ndir_len > EPSILON:
+                    nesterov_dir = momentum * (nesterov_dir / ndir_len) + (1.0 - momentum) * (y / y_len)
+                    search_dir = -nesterov_dir
+                else:
+                    search_dir = -v
+            else:
+                nesterov_dir = v
+                search_dir = -v
+            if wp.length_sq(search_dir) < 1.0e-12:
                 search_dir = wp.vec3(1.0, 0.0, 0.0)
                 used_fallback = bool(True)
             # Track last search direction for robust normal fallback
@@ -395,10 +427,17 @@ def create_solve_closest_distance(support_func: Any):
             # Get support point in search direction
             w = minkowski_support(geom_a, geom_b, search_dir, orientation_b, position_b, extend, data_provider)
 
-            # Check for convergence using Frank-Wolfe duality gap
-            # Skip check when using fallback direction to avoid premature exit
             # Use BtoA directly (Minkowski difference)
             w_v = w.BtoA
+
+            # Nesterov deactivation: when the duality gap is small, stop
+            # momentum to let vanilla GJK converge precisely.
+            if use_nesterov and iteration >= 3:
+                duality_gap = 2.0 * wp.dot(v, v - w_v)
+                if duality_gap <= COLLIDE_EPSILON * wp.sqrt(dist_sq):
+                    use_nesterov = bool(False)
+
+            # Check for convergence using Frank-Wolfe duality gap
             if not used_fallback:
                 delta_dist = wp.dot(v, v - w_v)
                 if delta_dist < COLLIDE_EPSILON * wp.sqrt(dist_sq):
@@ -408,7 +447,6 @@ def create_solve_closest_distance(support_func: Any):
             is_duplicate = bool(False)
             for i in range(4):
                 if (simplex_usage_mask & (wp.uint32(1) << wp.uint32(i))) != wp.uint32(0):
-                    # Compare BtoA vectors directly
                     if wp.length_sq(simplex_v[2 * i + 1] - w_v) < COLLIDE_EPSILON * COLLIDE_EPSILON:
                         is_duplicate = bool(True)
                         break
@@ -478,6 +516,8 @@ def create_solve_closest_distance(support_func: Any):
 
             v = new_v
             dist_sq = wp.length_sq(v)
+            w_prev = w_v
+            iteration += 1
 
         distance = wp.sqrt(dist_sq)
         # Compute closest points first
@@ -509,7 +549,7 @@ def create_solve_closest_distance(support_func: Any):
         orientation_b: wp.quat,
         position_a: wp.vec3,
         position_b: wp.vec3,
-        sum_of_contact_offsets: float,
+        combined_margin: float,
         data_provider: Any,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-4,
@@ -524,7 +564,7 @@ def create_solve_closest_distance(support_func: Any):
             orientation_b: Orientation of shape B
             position_a: Position of shape A
             position_b: Position of shape B
-            sum_of_contact_offsets: Sum of contact offsets for both shapes
+            combined_margin: Sum of margin extensions for both shapes [m]
             data_provider: Support mapping data provider
             MAX_ITER: Maximum number of iterations for GJK algorithm
             COLLIDE_EPSILON: Small number for numerical comparisons
@@ -541,7 +581,7 @@ def create_solve_closest_distance(support_func: Any):
             geom_b,
             relative_orientation_b,
             relative_position_b,
-            sum_of_contact_offsets,
+            combined_margin,
             data_provider,
             MAX_ITER,
             COLLIDE_EPSILON,
@@ -560,4 +600,5 @@ def create_solve_closest_distance(support_func: Any):
 
         return collision, distance, point, normal
 
+    solve_closest_distance.core = solve_closest_distance_core
     return solve_closest_distance

@@ -1,26 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Tests for contact reduction functionality.
 
-This test suite validates:
-1. Icosahedron face normals are unit vectors
-2. get_slot returns correct face indices for different normals
-3. Contact reduction utility functions work correctly
-
-Note: Tests that use shared memory (ContactReductionFunctions) require CUDA.
+All tests are written against the *configured* polyhedron (set via
+``NORMAL_BINNING_POLYHEDRON`` in ``contact_reduction.py``) so they pass
+regardless of which polyhedron or slot counts are selected.
 """
 
 import unittest
@@ -29,16 +14,17 @@ import numpy as np
 import warp as wp
 
 from newton._src.geometry.contact_reduction import (
-    ICOSAHEDRON_FACE_NORMALS,
+    _POLYHEDRON_BINS,
+    FACE_NORMALS,
+    MAX_CONTACTS_PER_PAIR,
+    NORMAL_BINNING_POLYHEDRON,
     NUM_NORMAL_BINS,
     NUM_SPATIAL_DIRECTIONS,
-    ContactReductionFunctions,
-    ContactStruct,
+    NUM_VOXEL_DEPTH_SLOTS,
     compute_num_reduction_slots,
     get_slot,
-    synchronize,
 )
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 @wp.kernel
@@ -58,38 +44,22 @@ class TestContactReduction(unittest.TestCase):
 
 
 # =============================================================================
-# Tests for icosahedron geometry (no device needed, pure Python/NumPy)
+# Face-normal geometry tests
 # =============================================================================
 
 
 def test_face_normals_are_unit_vectors(test, device):
-    """Verify all 20 icosahedron face normals are unit vectors."""
+    """Verify all face normals of the configured polyhedron are unit vectors."""
     for i in range(NUM_NORMAL_BINS):
-        normal = np.array(
-            [
-                ICOSAHEDRON_FACE_NORMALS[i, 0],
-                ICOSAHEDRON_FACE_NORMALS[i, 1],
-                ICOSAHEDRON_FACE_NORMALS[i, 2],
-            ]
-        )
+        normal = np.array([FACE_NORMALS[i, 0], FACE_NORMALS[i, 1], FACE_NORMALS[i, 2]])
         length = np.linalg.norm(normal)
         test.assertAlmostEqual(length, 1.0, places=5, msg=f"Face normal {i} is not a unit vector")
 
 
 def test_face_normals_cover_sphere(test, device):
     """Test that face normals roughly cover the sphere (no hemisphere is empty)."""
-    normals = []
-    for i in range(NUM_NORMAL_BINS):
-        normals.append(
-            [
-                ICOSAHEDRON_FACE_NORMALS[i, 0],
-                ICOSAHEDRON_FACE_NORMALS[i, 1],
-                ICOSAHEDRON_FACE_NORMALS[i, 2],
-            ]
-        )
-    normals = np.array(normals)
+    normals = np.array([[FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
 
-    # Check there are normals with positive and negative components in each axis
     test.assertTrue(np.any(normals[:, 0] > 0.3), "No face normals point in +X direction")
     test.assertTrue(np.any(normals[:, 0] < -0.3), "No face normals point in -X direction")
     test.assertTrue(np.any(normals[:, 1] > 0.3), "No face normals point in +Y direction")
@@ -99,16 +69,19 @@ def test_face_normals_cover_sphere(test, device):
 
 
 def test_constants(test, device):
-    """Test NUM_NORMAL_BINS and NUM_SPATIAL_DIRECTIONS constants."""
-    test.assertEqual(NUM_NORMAL_BINS, 20)  # icosahedron faces
-    test.assertEqual(NUM_SPATIAL_DIRECTIONS, 6)  # 3 edges + 3 negated
+    """Verify invariants that must hold for any valid configuration."""
+    test.assertEqual(NUM_NORMAL_BINS, _POLYHEDRON_BINS[NORMAL_BINNING_POLYHEDRON])
+    test.assertGreaterEqual(NUM_NORMAL_BINS, 6)
+    test.assertGreaterEqual(NUM_SPATIAL_DIRECTIONS, 3)
+    test.assertGreaterEqual(NUM_VOXEL_DEPTH_SLOTS, 1)
+    test.assertLessEqual(compute_num_reduction_slots(), MAX_CONTACTS_PER_PAIR)
 
 
 def test_compute_num_reduction_slots(test, device):
-    """Test compute_num_reduction_slots calculation."""
-    # Formula: 20 bins * (6 directions + 1 max-depth) + 100 voxel slots
-    # 20 * 7 + 100 = 140 + 100 = 240
-    test.assertEqual(compute_num_reduction_slots(), 240)
+    """Test compute_num_reduction_slots formula and MAX_CONTACTS_PER_PAIR ceiling."""
+    expected = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS + 1) + NUM_VOXEL_DEPTH_SLOTS
+    test.assertEqual(compute_num_reduction_slots(), expected)
+    test.assertLessEqual(compute_num_reduction_slots(), MAX_CONTACTS_PER_PAIR)
 
 
 # =============================================================================
@@ -134,7 +107,6 @@ def test_get_slot_axis_aligned_normals(test, device):
 
     slots_np = slots.numpy()
 
-    # All slots should be valid (0-19)
     for i, slot in enumerate(slots_np):
         test.assertGreaterEqual(slot, 0, f"Slot {i} is negative")
         test.assertLess(slot, NUM_NORMAL_BINS, f"Slot {i} exceeds max ({NUM_NORMAL_BINS})")
@@ -142,10 +114,8 @@ def test_get_slot_axis_aligned_normals(test, device):
 
 def test_get_slot_matches_best_face_normal(test, device):
     """Test that get_slot returns the face with highest dot product."""
-    # Use a random set of normals and verify result matches CPU reference
     rng = np.random.default_rng(42)
     test_normals_np = rng.standard_normal((50, 3)).astype(np.float32)
-    # Normalize
     test_normals_np /= np.linalg.norm(test_normals_np, axis=1, keepdims=True)
 
     test_normals = [wp.vec3(n[0], n[1], n[2]) for n in test_normals_np]
@@ -156,15 +126,12 @@ def test_get_slot_matches_best_face_normal(test, device):
 
     slots_np = slots.numpy()
 
-    # Build face normals array for CPU reference
-    face_normals = np.array([[ICOSAHEDRON_FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
+    face_normals = np.array([[FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
 
-    # Verify each slot
     for i in range(len(test_normals_np)):
         normal = test_normals_np[i]
         result_slot = slots_np[i]
 
-        # Compute dot products with all face normals
         dots = face_normals @ normal
         cpu_best_slot = np.argmax(dots)
 
@@ -174,170 +141,12 @@ def test_get_slot_matches_best_face_normal(test, device):
 
 
 # =============================================================================
-# Tests for ContactReductionFunctions (requires CUDA for shared memory)
-# =============================================================================
-
-
-@wp.func
-def _generate_test_contact(t: int) -> ContactStruct:
-    """Generate deterministic test contact data."""
-    c = ContactStruct()
-    ft = float(t)
-    c.position = wp.vec3(wp.sin(ft * 0.1) * ft * 0.01, 0.0, wp.cos(ft * 0.1) * ft * 0.01)
-    c.normal = wp.vec3(0.0, 1.0, 0.0)
-    c.depth = 0.1
-    c.feature = t % 10  # Assign features 0-9 cyclically
-    c.projection = 0.0
-    return c
-
-
-def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
-    """Create a test kernel for contact reduction with shared memory."""
-    num_slots = reduction_funcs.reduction_slot_count
-    store_reduced_contact = reduction_funcs.store_reduced_contact
-    filter_unique_contacts = reduction_funcs.filter_unique_contacts
-
-    @wp.kernel(enable_backward=False)
-    def reduction_test_kernel(
-        out_contacts: wp.array(dtype=ContactStruct),
-        out_count: wp.array(dtype=int),
-    ):
-        _block_id, t = wp.tid()
-        empty_marker = -1000000000.0
-
-        # Initialize shared memory buffer
-        buffer = wp.array(
-            ptr=reduction_funcs.get_smem_slots_contacts(),
-            shape=(wp.static(num_slots),),
-            dtype=ContactStruct,
-        )
-        active_ids = wp.array(
-            ptr=reduction_funcs.get_smem_slots_plus_1(),
-            shape=(wp.static(num_slots + 1),),
-            dtype=wp.int32,
-        )
-
-        # Initialize buffer
-        for i in range(t, wp.static(num_slots), wp.block_dim()):
-            buffer[i].projection = empty_marker
-        if t == 0:
-            active_ids[wp.static(num_slots)] = 0
-        synchronize()
-
-        # Generate and store contacts (every other thread has a contact)
-        has_contact = t % 2 == 0
-        c = _generate_test_contact(t)
-
-        # Use thread_id as voxel_index for testing (mod NUM_VOXEL_DEPTH_SLOTS)
-        voxel_idx = t % 100
-        store_reduced_contact(t, has_contact, c, buffer, active_ids, empty_marker, voxel_idx)
-
-        # Filter duplicates
-        filter_unique_contacts(t, buffer, active_ids, empty_marker)
-
-        # Write output
-        num_contacts = active_ids[wp.static(num_slots)]
-        if t == 0:
-            out_count[0] = num_contacts
-
-        for i in range(t, num_contacts, wp.block_dim()):
-            contact_id = active_ids[i]
-            out_contacts[i] = buffer[contact_id]
-
-    return reduction_test_kernel
-
-
-def test_reduction_functions_initialization(test, device):
-    """Test that ContactReductionFunctions initializes correctly."""
-    funcs = ContactReductionFunctions()
-
-    # 20 bins * (6 directions + 1 max-depth) + 100 voxel slots = 140 + 100 = 240
-    test.assertEqual(funcs.reduction_slot_count, 240)
-
-
-def test_reduction_functions_slot_count(test, device):
-    """Test ContactReductionFunctions slot count calculation."""
-    funcs = ContactReductionFunctions()
-
-    # 20 bins * (6 directions + 1 max-depth) + 100 voxel slots = 140 + 100 = 240
-    test.assertEqual(funcs.reduction_slot_count, 240)
-
-
-def test_contact_reduction_produces_valid_output(test, device):
-    """Test that contact reduction kernel produces valid output."""
-    reduction_funcs = ContactReductionFunctions()
-    num_slots = reduction_funcs.reduction_slot_count
-
-    # Create test kernel
-    kernel = _create_reduction_test_kernel(reduction_funcs)
-
-    # Allocate arrays on GPU
-    out_contacts = wp.zeros(num_slots, dtype=ContactStruct, device=device)
-    out_count = wp.zeros(1, dtype=int, device=device)
-
-    # Launch kernel with tiled launch (for shared memory)
-    wp.launch_tiled(
-        kernel=kernel,
-        dim=1,
-        inputs=[out_contacts, out_count],
-        block_dim=128,
-        device=device,
-    )
-    wp.synchronize_device(device)
-
-    # Verify output
-    count = out_count.numpy()[0]
-    test.assertGreater(count, 0, "No contacts were reduced")
-    test.assertLessEqual(count, num_slots, "Too many contacts")
-
-    # Verify contact data is valid
-    contacts = out_contacts.numpy()
-    for i in range(count):
-        c = contacts[i]
-        # Projection should be set (not the empty marker)
-        test.assertGreater(c["projection"], -1e9, f"Contact {i} has invalid projection")
-        # Normal should be unit-ish (we set it to (0,1,0))
-        normal = c["normal"]
-        test.assertAlmostEqual(normal[1], 1.0, places=5)
-
-
-def test_contact_reduction_reduces_count(test, device):
-    """Test that contact reduction reduces the number of contacts."""
-    reduction_funcs = ContactReductionFunctions()
-    num_slots = reduction_funcs.reduction_slot_count
-
-    kernel = _create_reduction_test_kernel(reduction_funcs)
-
-    out_contacts = wp.zeros(num_slots, dtype=ContactStruct, device=device)
-    out_count = wp.zeros(1, dtype=int, device=device)
-
-    wp.launch_tiled(
-        kernel=kernel,
-        dim=1,
-        inputs=[out_contacts, out_count],
-        block_dim=128,
-        device=device,
-    )
-    wp.synchronize_device(device)
-
-    count = out_count.numpy()[0]
-
-    # With 64 active contacts (128 threads, every other one active),
-    # reduction should produce fewer contacts due to keeping only best contact per (bin, direction) slot
-    test.assertGreater(count, 0, "Should have at least one contact")
-    test.assertLess(count, 64, "Reduction should reduce contact count")
-
-
-# =============================================================================
 # Test registration
 # =============================================================================
 
 devices = get_test_devices()
-cuda_devices = get_cuda_test_devices()
 
-# Register tests that work on all devices (CPU and CUDA)
 for device in devices:
-    # Icosahedron geometry tests (pure NumPy, but registered per device for consistency)
     add_function_test(
         TestContactReduction, "test_face_normals_are_unit_vectors", test_face_normals_are_unit_vectors, devices=[device]
     )
@@ -348,8 +157,6 @@ for device in devices:
     add_function_test(
         TestContactReduction, "test_compute_num_reduction_slots", test_compute_num_reduction_slots, devices=[device]
     )
-
-    # get_slot tests
     add_function_test(
         TestContactReduction, "test_get_slot_axis_aligned_normals", test_get_slot_axis_aligned_normals, devices=[device]
     )
@@ -357,33 +164,6 @@ for device in devices:
         TestContactReduction,
         "test_get_slot_matches_best_face_normal",
         test_get_slot_matches_best_face_normal,
-        devices=[device],
-    )
-
-# ContactReductionFunctions tests (CUDA only - uses shared memory)
-for device in cuda_devices:
-    add_function_test(
-        TestContactReduction,
-        "test_reduction_functions_initialization",
-        test_reduction_functions_initialization,
-        devices=[device],
-    )
-    add_function_test(
-        TestContactReduction,
-        "test_reduction_functions_slot_count",
-        test_reduction_functions_slot_count,
-        devices=[device],
-    )
-    add_function_test(
-        TestContactReduction,
-        "test_contact_reduction_produces_valid_output",
-        test_contact_reduction_produces_valid_output,
-        devices=[device],
-    )
-    add_function_test(
-        TestContactReduction,
-        "test_contact_reduction_reduces_count",
-        test_contact_reduction_reduces_count,
         devices=[device],
     )
 

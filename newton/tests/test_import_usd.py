@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import math
 import os
@@ -6545,8 +6533,8 @@ def Xform "BodyWithoutVisuals" (
         self.assertAlmostEqual(mesh.mass, physics_mesh.mass, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_visualized_collision_mesh_remains_visible_when_body_has_visual_shapes(self):
-        """Mesh colliders with visual material data stay visible even when body visuals exist."""
+    def test_hide_collision_shapes_overrides_visual_material(self):
+        """hide_collision_shapes=True hides colliders even when they have visual material data."""
         stage = self._create_stage_with_pbr_collision_mesh(
             color=(0.9, 0.1, 0.2), roughness=0.55, metallic=0.25, add_visual_sphere=True
         )
@@ -6562,13 +6550,22 @@ def Xform "BodyWithoutVisuals" (
         collision_shape = path_shape_map["/Body/CollisionMesh"]
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags & ShapeFlags.VISIBLE)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
 
-        mesh = builder.shape_source[collision_shape]
-        self.assertIsNotNone(mesh)
-        np.testing.assert_allclose(np.array(mesh.color), np.array([0.9, 0.1, 0.2]), atol=1e-6, rtol=1e-6)
-        self.assertAlmostEqual(mesh.roughness, 0.55, places=6)
-        self.assertAlmostEqual(mesh.metallic, 0.25, places=6)
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_hide_collision_shapes_fallback_with_material(self):
+        """Colliders with material stay visible when the body has no other visual shapes."""
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75, add_visual_sphere=False
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
 
 
 class TestImportUsdMimicJoint(unittest.TestCase):
@@ -7557,6 +7554,29 @@ class TestTetMesh(unittest.TestCase):
         assert_np_equal(tm.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_left_handed(self):
+        """Test that left-handed TetMesh orientation flips winding order."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def TetMesh "LeftHandedTet" ()
+{
+    uniform token orientation = "leftHanded"
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)]
+    int4[] tetVertexIndices = [(0, 1, 2, 3), (1, 2, 3, 4)]
+}
+"""
+        )
+        prim = stage.GetPrimAtPath("/LeftHandedTet")
+        tm = usd.get_tetmesh(prim)
+
+        # Indices 1 and 2 of each tet should be swapped compared to the original
+        assert_np_equal(tm.tet_indices[:4], np.array([0, 2, 1, 3], dtype=np.int32))
+        assert_np_equal(tm.tet_indices[4:], np.array([1, 3, 2, 4], dtype=np.int32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_tetmesh_create_from_usd(self):
         """Test TetMesh.create_from_usd() static factory method."""
         from pxr import Usd
@@ -8088,6 +8108,174 @@ def Mesh "JustAMesh" ()
         self.assertEqual(len(builder.particle_q), 10)
         self.assertEqual(len(builder.tet_indices), 4)
         self.assertEqual(len(builder.tri_indices), 12)
+
+
+class TestResolveUsdFromUrl(unittest.TestCase):
+    """Tests for recursive USD reference resolution in :func:`resolve_usd_from_url`."""
+
+    def _run_resolve(self, url_to_layer, base_url="https://example.com/assets/scene.usd"):
+        """Run resolve_usd_from_url with mocked network and USD stage I/O.
+
+        Args:
+            url_to_layer: mapping from URL to USDA layer string content.
+            base_url: the top-level URL passed to resolve_usd_from_url.
+
+        Returns:
+            Tuple of (result_path, target_dir, downloaded_urls).
+        """
+        downloaded_urls = []
+
+        def fake_get(url, **_kwargs):
+            downloaded_urls.append(url)
+            resp = mock.MagicMock()
+            layer = url_to_layer.get(url)
+            if layer is None:
+                resp.status_code = 404
+                return resp
+            resp.status_code = 200
+            resp.content = layer.encode("utf-8")
+            return resp
+
+        # Map cache-relative path -> layer string so the mock stage can return it.
+        file_to_layer = {}
+        tmpdir = tempfile.mkdtemp()
+
+        # Precompute exact local-key -> layer mapping from URLs.
+        base_url_dir = base_url.rsplit("/", 1)[0]
+        local_key_to_layer = {}
+        for url, layer in url_to_layer.items():
+            if url.startswith(base_url_dir + "/"):
+                local_key_to_layer[url[len(base_url_dir) + 1 :]] = layer
+
+        def _local_key(path):
+            return os.path.relpath(path, tmpdir).replace(os.sep, "/")
+
+        def fake_stage_open(path, _load_policy):
+            layer_str = file_to_layer.get(_local_key(path), "")
+            stage = mock.MagicMock()
+            stage.GetRootLayer().ExportToString.return_value = layer_str
+            return stage
+
+        # Track writes so we can populate file_to_layer when the function
+        # writes a downloaded file to disk.
+        real_open = open
+
+        def tracking_open(path, mode="r", **kwargs):
+            fh = real_open(path, mode, **kwargs)
+            if "w" in mode or "b" in mode:
+                key = _local_key(path)
+                if key in local_key_to_layer:
+                    file_to_layer[key] = local_key_to_layer[key]
+            return fh
+
+        mock_requests = mock.MagicMock()
+        mock_requests.get = fake_get
+
+        mock_usd = mock.MagicMock()
+        mock_usd.Stage.Open = fake_stage_open
+        mock_usd.Stage.LoadNone = None
+
+        mock_pxr = mock.MagicMock()
+        mock_pxr.Usd = mock_usd
+
+        from newton._src.utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
+
+        with (
+            mock.patch.dict(
+                "sys.modules",
+                {"requests": mock_requests, "pxr": mock_pxr, "pxr.Usd": mock_usd},
+            ),
+            mock.patch("builtins.open", tracking_open),
+        ):
+            result = resolve_usd_from_url(base_url, target_folder_name=tmpdir)
+
+        return result, tmpdir, downloaded_urls
+
+    def test_single_level_references(self):
+        """References in the root stage are downloaded."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./child_a.usd@\nreferences = @./child_b.usd@",
+            "https://example.com/assets/child_a.usd": "",
+            "https://example.com/assets/child_b.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/child_a.usd", downloaded_urls)
+        self.assertIn("https://example.com/assets/child_b.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "child_a.usd")))
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "child_b.usd")))
+
+    def test_recursive_references(self):
+        """References in child stages are resolved recursively."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./robot.usd@",
+            "https://example.com/assets/robot.usd": "references = @./collisions.usd@",
+            "https://example.com/assets/collisions.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/robot.usd", downloaded_urls)
+        self.assertIn("https://example.com/assets/collisions.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
+
+    def test_deep_recursive_references(self):
+        """Three levels of nesting are resolved."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./level1.usd@",
+            "https://example.com/assets/level1.usd": "references = @./level2.usd@",
+            "https://example.com/assets/level2.usd": "references = @./level3.usd@",
+            "https://example.com/assets/level3.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/level3.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "level3.usd")))
+
+    def test_no_duplicate_downloads(self):
+        """The same reference appearing in multiple stages is downloaded only once."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./a.usd@\nreferences = @./b.usd@",
+            "https://example.com/assets/a.usd": "references = @./shared.usd@",
+            "https://example.com/assets/b.usd": "references = @./shared.usd@",
+            "https://example.com/assets/shared.usd": "",
+        }
+        _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        shared_downloads = [u for u in downloaded_urls if u.endswith("shared.usd")]
+        self.assertEqual(len(shared_downloads), 1)
+
+    def test_cyclic_references(self):
+        """Cyclic references (including back to root) do not cause infinite recursion."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @./a.usd@",
+            "https://example.com/assets/a.usd": "references = @./b.usd@",
+            "https://example.com/assets/b.usd": "references = @./scene.usd@",
+        }
+        _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        # Root URL is fetched once at the top level; recursive refs back to it must not re-download.
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/scene.usd"), 1)
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/a.usd"), 1)
+        self.assertEqual(downloaded_urls.count("https://example.com/assets/b.usd"), 1)
+
+    def test_nested_subdirectory_references(self):
+        """References in subdirectories preserve correct local paths."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+            "https://example.com/assets/robots/robot.usd": "references = @./collisions.usd@",
+            "https://example.com/assets/robots/collisions.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/robots/collisions.usd", downloaded_urls)
+        # collisions.usd must be inside robots/, not at cache root
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "robots", "collisions.usd")))
+        self.assertFalse(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
+
+    def test_path_traversal_rejected(self):
+        """References with .. that escape the target folder are skipped."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @../secret.usd@",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        # Escaped reference must not be fetched or written.
+        escaped_urls = [u for u in downloaded_urls if "secret.usd" in u]
+        self.assertEqual(len(escaped_urls), 0)
+        self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
 
 
 if __name__ == "__main__":

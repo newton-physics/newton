@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Solvers are used to integrate the dynamics of a Newton model.
@@ -165,14 +153,14 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
      - |yes|
    * - REVOLUTE
      - |yes|
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
      - |yes|
    * - BALL
      - |yes|
@@ -207,7 +195,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
      - |no|
    * - CABLE
      - |no|
@@ -238,7 +226,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes|
      - |yes|
      - |no|
-     - |no|
+     - |yes|
      - |no|
    * - :attr:`~newton.Model.joint_armature`
      - |yes|
@@ -259,14 +247,14 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes| :sup:`2`
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
      - |yes|
    * - :attr:`~newton.Model.joint_limit_ke` / :attr:`~newton.Model.joint_limit_kd`
      - |yes|
      - |yes| :sup:`2`
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`4`
      - |no|
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
@@ -304,7 +292,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes| :sup:`2`
      - |yes|
      - |yes|
-     - 🟨 :sup:`4`
+     - |yes| :sup:`4`
      - |yes|
    * - :attr:`~newton.Model.joint_target_mode`
      - |no|
@@ -318,7 +306,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes|
      - |yes|
 
 **Constraints**
@@ -351,7 +339,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |no|
 
 | :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
-| :sup:`4` Used for CABLE joints only (as stretch/bend stiffness and damping).
+| :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as dimensionless Rayleigh damping coefficients (``D = kd * ke``), not absolute units.
 
 
 

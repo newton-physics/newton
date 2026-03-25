@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """KAMINO: Shape Types & Containers"""
 
@@ -21,9 +9,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from enum import IntEnum
 
+import numpy as np
 import warp as wp
 
-from .....core.types import Vec2, Vec3, nparray
+from .....core.types import Vec2, Vec3
 from .....geometry.types import GeoType, Heightfield, Mesh
 from .types import Descriptor, override, vec3f, vec4f
 
@@ -753,10 +742,10 @@ class MeshShape(ShapeDescriptor):
     that provides the necessary interfacing to be used with the Kamino solver.
 
     Attributes:
-        vertices (nparray): The vertices of the mesh.
-        indices (nparray): The triangle indices of the mesh.
-        normals (nparray | None): The vertex normals of the mesh.
-        uvs (nparray | None): The texture coordinates of the mesh.
+        vertices (np.ndarray): The vertices of the mesh.
+        indices (np.ndarray): The triangle indices of the mesh.
+        normals (np.ndarray | None): The vertex normals of the mesh.
+        uvs (np.ndarray | None): The texture coordinates of the mesh.
         color (Vec3 | None): The color of the mesh.
         is_solid (bool): Whether the mesh is solid.
         is_convex (bool): Whether the mesh is convex.
@@ -767,10 +756,10 @@ class MeshShape(ShapeDescriptor):
 
     def __init__(
         self,
-        vertices: Sequence[Vec3] | nparray,
-        indices: Sequence[int] | nparray,
-        normals: Sequence[Vec3] | nparray | None = None,
-        uvs: Sequence[Vec2] | nparray | None = None,
+        vertices: Sequence[Vec3] | np.ndarray,
+        indices: Sequence[int] | np.ndarray,
+        normals: Sequence[Vec3] | np.ndarray | None = None,
+        uvs: Sequence[Vec2] | np.ndarray | None = None,
         color: Vec3 | None = None,
         maxhullvert: int | None = None,
         compute_inertia: bool = True,
@@ -783,10 +772,10 @@ class MeshShape(ShapeDescriptor):
         Initialize the mesh shape descriptor.
 
         Args:
-            vertices (Sequence[Vec3] | nparray): The vertices of the mesh.
-            indices (Sequence[int] | nparray): The triangle indices of the mesh.
-            normals (Sequence[Vec3] | nparray | None): The vertex normals of the mesh.
-            uvs (Sequence[Vec2] | nparray | None): The texture coordinates of the mesh.
+            vertices (Sequence[Vec3] | np.ndarray): The vertices of the mesh.
+            indices (Sequence[int] | np.ndarray): The triangle indices of the mesh.
+            normals (Sequence[Vec3] | np.ndarray | None): The vertex normals of the mesh.
+            uvs (Sequence[Vec2] | np.ndarray | None): The texture coordinates of the mesh.
             color (Vec3 | None): The color of the mesh.
             maxhullvert (int): The maximum number of hull vertices for convex shapes.
             compute_inertia (bool): Whether to compute inertia for the mesh.
@@ -854,22 +843,22 @@ class MeshShape(ShapeDescriptor):
         return self._data
 
     @property
-    def vertices(self) -> nparray:
+    def vertices(self) -> np.ndarray:
         """Returns the vertices of the mesh."""
         return self._data.vertices
 
     @property
-    def indices(self) -> nparray:
+    def indices(self) -> np.ndarray:
         """Returns the indices of the mesh."""
         return self._data.indices
 
     @property
-    def normals(self) -> nparray | None:
+    def normals(self) -> np.ndarray | None:
         """Returns the normals of the mesh."""
         return self._data._normals
 
     @property
-    def uvs(self) -> nparray | None:
+    def uvs(self) -> np.ndarray | None:
         """Returns the UVs of the mesh."""
         return self._data._uvs
 

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -23,8 +11,8 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 import numpy as np
 import warp as wp
 
-from ..core.types import Axis, AxisType, nparray
-from ..geometry import Mesh
+from ..core.types import Axis, AxisType
+from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 
 AttributeAssignment = Model.AttributeAssignment
@@ -229,14 +217,14 @@ def get_quat(prim: Usd.Prim, name: str, default: wp.quat | None = None) -> wp.qu
 
 
 @overload
-def get_vector(prim: Usd.Prim, name: str, default: nparray) -> nparray: ...
+def get_vector(prim: Usd.Prim, name: str, default: np.ndarray) -> np.ndarray: ...
 
 
 @overload
-def get_vector(prim: Usd.Prim, name: str, default: None = None) -> nparray | None: ...
+def get_vector(prim: Usd.Prim, name: str, default: None = None) -> np.ndarray | None: ...
 
 
-def get_vector(prim: Usd.Prim, name: str, default: nparray | None = None) -> nparray | None:
+def get_vector(prim: Usd.Prim, name: str, default: np.ndarray | None = None) -> np.ndarray | None:
     """
     Get a vector attribute value from a USD prim, validating that all components are finite.
 
@@ -691,7 +679,7 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
-def fan_triangulate_faces(counts: nparray, indices: nparray) -> nparray:
+def fan_triangulate_faces(counts: np.ndarray, indices: np.ndarray) -> np.ndarray:
     """
     Perform fan triangulation on polygonal faces.
 
@@ -1205,6 +1193,13 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
 
     vertices = np.array(points_attr, dtype=np.float32)
     tet_indices = np.array(tet_indices_attr, dtype=np.int32).flatten()
+
+    # Flip winding order for left-handed meshes (e.g. Houdini exports)
+    handedness = tet_mesh.GetOrientationAttr().Get()
+    if handedness and handedness.lower() == "lefthanded" and tet_indices.size % 4 == 0:
+        tet_indices = tet_indices.reshape(-1, 4)
+        tet_indices[:, [1, 2]] = tet_indices[:, [2, 1]]
+        tet_indices = tet_indices.reshape(-1)
 
     # Try to read physics material properties if bound
     k_mu = None
@@ -1841,3 +1836,42 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
                 return fallback_props
 
     return _empty_material_properties()
+
+
+def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
+    """Load Gaussian splat data from a USD prim.
+
+    Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+
+    Args:
+        prim: A USD prim containing Gaussian splat data.
+        min_response: Min response (default = 0.1).
+
+    Returns:
+        A new :class:`Gaussian` instance.
+    """
+
+    def _get_float_array_attr(name):
+        attr = prim.GetAttribute(name)
+        if attr and attr.HasValue():
+            return np.array(attr.Get(), dtype=np.float32)
+
+        attr = prim.GetAttribute(f"{name}h")
+        if attr and attr.HasValue():
+            return np.array(attr.Get(), dtype=np.float32)
+
+        return None
+
+    positions = _get_float_array_attr("positions")
+    if positions is None:
+        raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
+
+    return Gaussian(
+        positions=positions,
+        rotations=_get_float_array_attr("orientations"),
+        scales=_get_float_array_attr("scales"),
+        opacities=_get_float_array_attr("opacities"),
+        sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
+        sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
+        min_response=min_response,
+    )
