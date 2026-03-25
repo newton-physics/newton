@@ -193,6 +193,7 @@ def main():
         wp.set_device(args.device)
 
     viewer = ViewerGL()
+    viewer.solver_names = list(SOLVER_MAP.keys())
     sim = None
     solver_name = args.solver
     ground = not args.no_ground
@@ -201,6 +202,13 @@ def main():
         nonlocal sim
         new_sim = load_file(path, solver_name=solver_name, device=args.device, ground=ground)
         viewer.set_model(new_sim.model)
+        viewer._file_info = {
+            "path": path,
+            "body_count": new_sim.model.body_count,
+            "joint_count": new_sim.model.joint_count,
+            "shape_count": new_sim.model.shape_count,
+        }
+        viewer._ground_enabled = ground
         sim = new_sim
 
     def on_drop(path: str):
@@ -227,9 +235,19 @@ def main():
             except Exception as e:
                 viewer.show_error(str(e))
 
+    def on_ground_toggle(enabled: bool):
+        nonlocal ground
+        ground = enabled
+        if sim is not None:
+            try:
+                load_and_setup(sim.path)
+            except Exception as e:
+                viewer.show_error(str(e))
+
     viewer.on_file_drop = on_drop
     viewer.on_reset = on_reset
     viewer.on_solver_change = on_solver_change
+    viewer.on_ground_toggle = on_ground_toggle
 
     # Load initial file if provided
     if args.file:

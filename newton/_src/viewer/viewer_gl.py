@@ -244,6 +244,11 @@ class ViewerGL(ViewerBase):
         self.on_file_drop: Callable[[str], None] | None = None
         self.on_reset: Callable[[], None] | None = None
         self.on_solver_change: Callable[[str], None] | None = None
+        self.on_ground_toggle: Callable[[bool], None] | None = None
+        self.solver_names: list[str] = []
+        self._solver_idx: int = 0
+        self._ground_enabled: bool = False
+        self._file_info: dict | None = None
         self._step_requested = False
         self._error_message: str | None = None
         self._error_popup_pending = False
@@ -1981,6 +1986,41 @@ class ViewerGL(ViewerBase):
 
                     # Pause simulation checkbox
                     changed, self._paused = imgui.checkbox("Pause", self._paused)
+
+                    # Simulation time
+                    imgui.text(f"Time: {self.time:.2f}s")
+
+                    # Solver dropdown
+                    if self.on_solver_change is not None and self.solver_names:
+                        changed, self._solver_idx = imgui.combo("Solver", self._solver_idx, self.solver_names)
+                        if changed:
+                            self.on_solver_change(self.solver_names[self._solver_idx])
+
+                    # Single-step and reset buttons
+                    if self._paused:
+                        if imgui.button("Step"):
+                            self.step_once()
+                    if self.on_reset is not None:
+                        if self._paused:
+                            imgui.same_line()
+                        if imgui.button("Reset"):
+                            self.on_reset()
+
+                    # Ground plane toggle
+                    if self.on_ground_toggle is not None:
+                        changed, self._ground_enabled = imgui.checkbox("Ground Plane", self._ground_enabled)
+                        if changed:
+                            self.on_ground_toggle(self._ground_enabled)
+
+                    # File info
+                    if self._file_info is not None:
+                        imgui.separator()
+                        import os  # noqa: PLC0415
+
+                        imgui.text(f"File: {os.path.basename(self._file_info['path'])}")
+                        imgui.text(f"Bodies: {self._file_info['body_count']}")
+                        imgui.text(f"Joints: {self._file_info['joint_count']}")
+                        imgui.text(f"Shapes: {self._file_info['shape_count']}")
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
