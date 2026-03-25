@@ -5,8 +5,7 @@ import os
 import unittest
 
 import newton
-from newton.viewer import SOLVER_MAP, SimState, load_file
-from newton.viewer._standalone import _create_parser
+from newton.viewer._standalone import SOLVER_MAP, SimState, _create_parser, load_file
 
 _ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "examples", "assets")
 
