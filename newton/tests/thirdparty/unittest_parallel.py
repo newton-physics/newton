@@ -231,13 +231,15 @@ def main(argv=None):
                         results = pool.map(test_manager.run_tests, test_suites)
                 else:
                     # NVIDIA Modification added concurrent.futures
-                    with concurrent.futures.ProcessPoolExecutor(
+                    executor_kwargs = dict(
                         max_workers=process_count,
-                        max_tasks_per_child=1,
                         mp_context=multiprocessing.get_context(method="spawn"),
                         initializer=initialize_test_process,
                         initargs=(manager.Lock(), shared_index, args, temp_dir),
-                    ) as executor:
+                    )
+                    if sys.version_info >= (3, 11):
+                        executor_kwargs["max_tasks_per_child"] = 1
+                    with concurrent.futures.ProcessPoolExecutor(**executor_kwargs) as executor:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
                         results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
         else:
