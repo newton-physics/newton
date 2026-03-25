@@ -592,6 +592,7 @@ def verify_and_correct_inertia(
     bound_mass: float | None = None,
     bound_inertia: float | None = None,
     body_label: str | None = None,
+    tolerance: float = 1e-6,
 ) -> tuple[float, wp.mat33, bool]:
     """Verify and correct inertia values similar to MuJoCo's balanceinertia compiler setting.
 
@@ -603,12 +604,14 @@ def verify_and_correct_inertia(
     4. Optionally balances inertia to satisfy the triangle inequality exactly
 
     Args:
-        mass: The mass of the body
-        inertia: The 3x3 inertia tensor
-        balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia)
-        bound_mass: If specified, clamp mass to be at least this value
-        bound_inertia: If specified, clamp inertia diagonal elements to be at least this value
-        body_label: Optional label/name of the body for more informative warnings
+        mass: The mass of the body [kg].
+        inertia: The 3x3 inertia tensor [kg*m^2].
+        balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia).
+        bound_mass: If specified, clamp mass to be at least this value [kg].
+        bound_inertia: If specified, clamp inertia diagonal elements to be at least this value [kg*m^2].
+        body_label: Optional label/name of the body for more informative warnings.
+        tolerance: Tolerance for eigenvalue positivity checks and triangle inequality
+            validation [kg*m^2]. Default: 1e-6.
 
     Returns:
         A tuple of (corrected_mass, corrected_inertia, was_corrected) where was_corrected
@@ -660,14 +663,14 @@ def verify_and_correct_inertia(
         eigenvalues = np.linalg.eigvals(corrected_inertia)
 
         # Check for negative or near-zero eigenvalues (ensure positive-definite)
-        if np.any(eigenvalues < 1e-6):
+        if np.any(eigenvalues < tolerance):
             warnings.warn(
-                f"Non-positive eigenvalues detected{body_id}: {eigenvalues}, making positive definite",
+                f"Eigenvalues below tolerance {tolerance:g} detected{body_id}: {eigenvalues}, making positive definite",
                 stacklevel=2,
             )
             # Make positive definite by adjusting eigenvalues
             min_eig = np.min(eigenvalues)
-            adjustment = -min_eig + 1e-6
+            adjustment = -min_eig + tolerance
             corrected_inertia += np.eye(3) * adjustment
             eigenvalues += adjustment
             was_corrected = True
@@ -690,8 +693,7 @@ def verify_and_correct_inertia(
 
         # Check triangle inequality on principal moments
         # For a physically valid inertia tensor: I1 + I2 >= I3 (with tolerance)
-        # Use 1e-6 tolerance to match float32 precision used by the Warp kernel path
-        has_violations = I1 + I2 < I3 - 1e-6
+        has_violations = I1 + I2 < I3 - tolerance
 
     except np.linalg.LinAlgError:
         warnings.warn(f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal", stacklevel=2)
@@ -699,7 +701,7 @@ def verify_and_correct_inertia(
         # Fallback: use diagonal elements
         trace = np.trace(corrected_inertia)
         if trace <= 0:
-            trace = 1e-6
+            trace = tolerance
         corrected_inertia = np.eye(3) * (trace / 3.0)
         has_violations = False
         principal_moments = [trace / 3.0, trace / 3.0, trace / 3.0]
@@ -720,7 +722,7 @@ def verify_and_correct_inertia(
                 # We need: (I1 + a) + (I2 + a) >= I3 + a
                 # Which simplifies to: I1 + I2 + a >= I3
                 # So: a >= I3 - I1 - I2 = deficit
-                adjustment = deficit + 1e-6
+                adjustment = deficit + tolerance
 
                 # Add scalar*I to shift all eigenvalues equally
                 corrected_inertia = corrected_inertia + np.eye(3) * adjustment
@@ -751,9 +753,12 @@ def verify_and_correct_inertia(
         warnings.warn(
             f"Corrected inertia matrix{body_id} is not positive definite, this should not happen", stacklevel=2
         )
-        # As a last resort, make it positive definite by adding a small value to diagonal
-        min_eigenvalue = np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -1e-6
-        epsilon = abs(min_eigenvalue) + 1e-6
+        # As a last resort, make it positive definite by adding a small value to diagonal.
+        # abs() guarantees epsilon >= tolerance, so this is safe for any tolerance setting.
+        min_eigenvalue = (
+            np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -tolerance
+        )
+        epsilon = abs(min_eigenvalue) + tolerance
         corrected_inertia[0, 0] += epsilon
         corrected_inertia[1, 1] += epsilon
         corrected_inertia[2, 2] += epsilon
@@ -771,6 +776,7 @@ def validate_and_correct_inertia_kernel(
     balance_inertia: wp.bool,
     bound_mass: wp.float32,
     bound_inertia: wp.float32,
+    tolerance: wp.float32,
     correction_count: wp.array(dtype=wp.int32),  # Output: atomic counter of corrected bodies
 ):
     """Warp kernel for parallel inertia validation and correction.
@@ -846,8 +852,8 @@ def validate_and_correct_inertia_kernel(
                 I1, I2 = I2, I1
 
         # Check for negative or near-zero eigenvalues (ensure positive-definite)
-        if I1 < 1.0e-6:
-            adjustment = -I1 + 1.0e-6
+        if I1 < tolerance:
+            adjustment = -I1 + tolerance
             # Add scalar to all eigenvalues
             I1 += adjustment
             I2 += adjustment
@@ -865,9 +871,9 @@ def validate_and_correct_inertia_kernel(
             was_corrected = True
 
         # Check triangle inequality: I1 + I2 >= I3 (with tolerance)
-        if balance_inertia and (I1 + I2 < I3 - 1.0e-6):
+        if balance_inertia and (I1 + I2 < I3 - tolerance):
             deficit = I3 - I1 - I2
-            adjustment = deficit + 1.0e-6
+            adjustment = deficit + tolerance
             # Add scalar*I to fix triangle inequality
             inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
             was_corrected = True
