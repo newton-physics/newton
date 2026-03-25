@@ -77,14 +77,22 @@ def load_file(
         raise ValueError(f"Unsupported file format: '{ext}'. Expected .usd, .usda, .usdc, .urdf, .xml, or .mjcf")
 
     if ground:
-        # Place ground plane at the lowest body position in the asset
-        min_z = 0.0
-        for q in builder.body_q:
-            z = float(q[2])  # transform layout: [px, py, pz, qx, qy, qz, qw]
-            if z < min_z:
-                min_z = z
+        # Place ground plane below the lowest shape in the asset.
+        # For each shape, estimate its world-space lower Z bound from
+        # the body position, shape offset, and the shape's largest scale
+        # dimension (conservative bounding sphere radius).
+        ground_z = 0.0
+        for i in range(len(builder.shape_transform)):
+            body = builder.shape_body[i]
+            body_z = float(builder.body_q[body][2]) if body >= 0 else 0.0
+            shape_z = float(builder.shape_transform[i][2])
+            scale = builder.shape_scale[i]
+            radius = max(abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
+            lower_z = body_z + shape_z - radius
+            if lower_z < ground_z:
+                ground_z = lower_z
         # plane equation (0,0,1,-h) defines z = h
-        builder.add_shape_plane(plane=(0.0, 0.0, 1.0, -min_z))
+        builder.add_shape_plane(plane=(0.0, 0.0, 1.0, -ground_z))
 
     model = builder.finalize(device=device)
     solver = _create_solver(solver_name, model)
