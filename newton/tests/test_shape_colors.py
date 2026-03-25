@@ -69,8 +69,8 @@ class TestShapeColors(unittest.TestCase):
 
         np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.2, 0.4, 0.6], atol=1e-6, rtol=1e-6)
 
-    def test_mesh_shape_color_prefers_mesh_color_over_explicit_color(self):
-        """Verify mesh shapes prefer ``Mesh.color`` over an explicit shape color."""
+    def test_explicit_shape_color_overrides_mesh_color(self):
+        """Verify explicit shape colors override colors embedded in meshes."""
         mesh = self._make_tetra_mesh(color=(0.2, 0.4, 0.6))
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0)
@@ -82,7 +82,7 @@ class TestShapeColors(unittest.TestCase):
 
         model = builder.finalize(device=self.device)
 
-        np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.2, 0.4, 0.6], atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.9, 0.1, 0.3], atol=1e-6, rtol=1e-6)
 
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""
@@ -162,7 +162,8 @@ class TestShapeColors(unittest.TestCase):
         body2 = builder.add_body(mass=1.0)
         shape0 = builder.add_shape_box(body=body0, hx=0.1, hy=0.2, hz=0.3)
         shape1 = builder.add_shape_sphere(body=body1, radius=0.15)
-        shape2 = builder.add_shape_box(body=body2, hx=0.2, hy=0.1, hz=0.3)
+        # Reuse the same box geometry so shapes 0 and 2 share a render batch.
+        shape2 = builder.add_shape_box(body=body2, hx=0.1, hy=0.2, hz=0.3)
 
         model = builder.finalize(device=self.device)
         viewer = ViewerNull()
