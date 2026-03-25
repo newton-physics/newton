@@ -51,6 +51,11 @@ class SchemaResolverNewton(SchemaResolver):
             "max_solver_iterations": SchemaAttribute("newton:maxSolverIterations", -1),
             "time_steps_per_second": SchemaAttribute("newton:timeStepsPerSecond", 1000),
             "gravity_enabled": SchemaAttribute("newton:gravityEnabled", True),
+            # Collision pipeline configuration
+            "collision_reduce_contacts": SchemaAttribute("newton:collision:reduceContacts", None),
+            "collision_rigid_contact_max": SchemaAttribute("newton:collision:rigidContactMax", None),
+            "collision_max_triangle_pairs": SchemaAttribute("newton:collision:maxTrianglePairs", None),
+            "collision_broad_phase": SchemaAttribute("newton:collision:broadPhase", None),
         },
         PrimType.JOINT: {
             # warning: there is no NewtonJointAPI, none of these are schema attributes
