@@ -366,9 +366,7 @@ void main() {
                 self._window.close()
             elif symbol == pyglet.window.key.SPACE:
                 self._paused = not self._paused
-            # FIXME: temporarily rebind gui toggle to V instead of H so it doesn't interfere with robot controls
-            # elif symbol == pyglet.window.key.H:
-            if symbol == pyglet.window.key.V:
+            elif symbol == pyglet.window.key.H:
                 if self.gui:
                     self.gui.show_ui = not self.gui.show_ui
             elif symbol == pyglet.window.key.F:
