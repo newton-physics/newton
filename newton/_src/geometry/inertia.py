@@ -10,7 +10,6 @@ import warnings
 import numpy as np
 import warp as wp
 
-from ..core.types import nparray
 from .types import (
     GeoType,
     Heightfield,
@@ -322,8 +321,8 @@ def compute_hollow_mesh_inertia(
 
 def compute_inertia_mesh(
     density: float,
-    vertices: list[Vec3] | nparray,
-    indices: list[int] | nparray,
+    vertices: list[Vec3] | np.ndarray,
+    indices: list[int] | np.ndarray,
     is_solid: bool = True,
     thickness: list[float] | float = 0.001,
 ) -> tuple[float, wp.vec3, wp.mat33, float]:

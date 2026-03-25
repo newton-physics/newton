@@ -10,7 +10,7 @@ from typing import Any, Literal
 import numpy as np
 import warp as wp
 
-from ..core.types import Vec3, nparray
+from ..core.types import Vec3
 from .inertia import compute_inertia_mesh
 from .types import (
     GeoType,
@@ -115,7 +115,7 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         return 10.0
 
 
-def compute_aabb(vertices: nparray) -> tuple[Vec3, Vec3]:
+def compute_aabb(vertices: np.ndarray) -> tuple[Vec3, Vec3]:
     """Compute the axis-aligned bounding box of a set of vertices."""
     min_coords = np.min(vertices, axis=0)
     max_coords = np.max(vertices, axis=0)
@@ -123,8 +123,8 @@ def compute_aabb(vertices: nparray) -> tuple[Vec3, Vec3]:
 
 
 def compute_inertia_box_mesh(
-    vertices: nparray,
-    indices: nparray,
+    vertices: np.ndarray,
+    indices: np.ndarray,
     is_solid: bool = True,
 ) -> tuple[wp.vec3, wp.vec3, wp.quat]:
     """Compute the equivalent inertia box of a triangular mesh.
@@ -190,7 +190,7 @@ def compute_inertia_box_mesh(
     return wp.vec3(*np.array(com)), wp.vec3(*half_extents), rotation
 
 
-def compute_pca_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
+def compute_pca_obb(vertices: np.ndarray) -> tuple[wp.transform, wp.vec3]:
     """Compute the oriented bounding box of a set of vertices.
 
     Args:
@@ -261,7 +261,7 @@ def compute_pca_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
 
 
 def compute_inertia_obb(
-    vertices: nparray,
+    vertices: np.ndarray,
     num_angle_steps: int = 360,
 ) -> tuple[wp.transform, wp.vec3]:
     """
@@ -664,7 +664,7 @@ def remesh(
     method: RemeshingMethod = "quadratic",
     visualize: bool = False,
     **remeshing_kwargs: Any,
-) -> tuple[nparray, nparray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Remeshes a 3D triangular surface mesh using the specified method.
 
@@ -743,7 +743,7 @@ def remesh_mesh(
     return mesh
 
 
-def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | None = None) -> nparray:
+def transform_points(points: np.ndarray, transform: wp.transform, scale: Vec3 | None = None) -> np.ndarray:
     if scale is not None:
         points = points * np.array(scale, dtype=np.float32)
     return points @ np.array(wp.quat_to_matrix(transform.q)).reshape(3, 3) + transform.p

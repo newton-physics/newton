@@ -15,7 +15,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.types import MAXVAL, Axis, nparray
+from ..core.types import MAXVAL, Axis
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -120,7 +120,7 @@ class ViewerBase(ABC):
 
         # Per-shape color buffer and indexing
         self.model_shape_color: wp.array(dtype=wp.vec3) = None
-        self._shape_to_slot: nparray | None = None
+        self._shape_to_slot: np.ndarray | None = None
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
 
         # Isomesh cache for SDF collision visualization
@@ -131,7 +131,7 @@ class ViewerBase(ABC):
         self._gaussian_instances: list[tuple[str, newton.Gaussian, int, wp.transform, int, int, bool]] = []
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         self._sdf_isomesh_populated: bool = False
-        self._shape_sdf_index_host: nparray | None = None
+        self._shape_sdf_index_host: np.ndarray | None = None
 
     def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
         """
@@ -586,7 +586,7 @@ class ViewerBase(ABC):
         self,
         name: str,
         geo_type: int,
-        geo_scale: float | tuple[float, ...] | list[float] | nparray,
+        geo_scale: float | tuple[float, ...] | list[float] | np.ndarray,
         xforms: wp.array(dtype=wp.transform),
         colors: wp.array(dtype=wp.vec3) | None = None,
         materials: wp.array(dtype=wp.vec4) | None = None,
@@ -997,7 +997,7 @@ class ViewerBase(ABC):
         return
 
     @abstractmethod
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """
         Log a numeric array for backend-specific visualization utilities.
 

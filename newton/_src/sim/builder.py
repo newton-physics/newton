@@ -31,7 +31,6 @@ from ..core.types import (
     Vec6,
     axis_to_vec3,
     flag_to_int,
-    nparray,
 )
 from ..geometry import (
     Gaussian,
@@ -6952,9 +6951,9 @@ class ModelBuilder:
 
     def add_triangles(
         self,
-        i: list[int] | nparray,
-        j: list[int] | nparray,
-        k: list[int] | nparray,
+        i: list[int] | np.ndarray,
+        j: list[int] | np.ndarray,
+        k: list[int] | np.ndarray,
         tri_ke: list[float] | None = None,
         tri_ka: list[float] | None = None,
         tri_kd: list[float] | None = None,
@@ -7826,9 +7825,9 @@ class ModelBuilder:
         vertices: list[Vec3] | None = None,
         indices: list[int] | None = None,
         density: float | None = None,
-        k_mu: float | nparray | None = None,
-        k_lambda: float | nparray | None = None,
-        k_damp: float | nparray | None = None,
+        k_mu: float | np.ndarray | None = None,
+        k_lambda: float | np.ndarray | None = None,
+        k_damp: float | np.ndarray | None = None,
         tri_ke: float = 0.0,
         tri_ka: float = 0.0,
         tri_kd: float = 0.0,
