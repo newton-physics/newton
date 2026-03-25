@@ -3,10 +3,9 @@
 
 """Tests for contact reduction functionality.
 
-This test suite validates:
-1. Icosahedron face normals are unit vectors
-2. get_slot returns correct face indices for different normals
-3. Contact reduction utility functions work correctly
+All tests are written against the *configured* polyhedron (set via
+``NORMAL_BINNING_POLYHEDRON`` in ``contact_reduction.py``) so they pass
+regardless of which polyhedron or slot counts are selected.
 """
 
 import unittest
@@ -15,9 +14,13 @@ import numpy as np
 import warp as wp
 
 from newton._src.geometry.contact_reduction import (
-    ICOSAHEDRON_FACE_NORMALS,
+    _POLYHEDRON_BINS,
+    FACE_NORMALS,
+    MAX_CONTACTS_PER_PAIR,
+    NORMAL_BINNING_POLYHEDRON,
     NUM_NORMAL_BINS,
     NUM_SPATIAL_DIRECTIONS,
+    NUM_VOXEL_DEPTH_SLOTS,
     compute_num_reduction_slots,
     get_slot,
 )
@@ -41,38 +44,22 @@ class TestContactReduction(unittest.TestCase):
 
 
 # =============================================================================
-# Tests for icosahedron geometry (no device needed, pure Python/NumPy)
+# Face-normal geometry tests
 # =============================================================================
 
 
 def test_face_normals_are_unit_vectors(test, device):
-    """Verify all 20 icosahedron face normals are unit vectors."""
+    """Verify all face normals of the configured polyhedron are unit vectors."""
     for i in range(NUM_NORMAL_BINS):
-        normal = np.array(
-            [
-                ICOSAHEDRON_FACE_NORMALS[i, 0],
-                ICOSAHEDRON_FACE_NORMALS[i, 1],
-                ICOSAHEDRON_FACE_NORMALS[i, 2],
-            ]
-        )
+        normal = np.array([FACE_NORMALS[i, 0], FACE_NORMALS[i, 1], FACE_NORMALS[i, 2]])
         length = np.linalg.norm(normal)
         test.assertAlmostEqual(length, 1.0, places=5, msg=f"Face normal {i} is not a unit vector")
 
 
 def test_face_normals_cover_sphere(test, device):
     """Test that face normals roughly cover the sphere (no hemisphere is empty)."""
-    normals = []
-    for i in range(NUM_NORMAL_BINS):
-        normals.append(
-            [
-                ICOSAHEDRON_FACE_NORMALS[i, 0],
-                ICOSAHEDRON_FACE_NORMALS[i, 1],
-                ICOSAHEDRON_FACE_NORMALS[i, 2],
-            ]
-        )
-    normals = np.array(normals)
+    normals = np.array([[FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
 
-    # Check there are normals with positive and negative components in each axis
     test.assertTrue(np.any(normals[:, 0] > 0.3), "No face normals point in +X direction")
     test.assertTrue(np.any(normals[:, 0] < -0.3), "No face normals point in -X direction")
     test.assertTrue(np.any(normals[:, 1] > 0.3), "No face normals point in +Y direction")
@@ -82,16 +69,19 @@ def test_face_normals_cover_sphere(test, device):
 
 
 def test_constants(test, device):
-    """Test NUM_NORMAL_BINS and NUM_SPATIAL_DIRECTIONS constants."""
-    test.assertEqual(NUM_NORMAL_BINS, 20)  # icosahedron faces
-    test.assertEqual(NUM_SPATIAL_DIRECTIONS, 6)  # 3 edges + 3 negated
+    """Verify invariants that must hold for any valid configuration."""
+    test.assertEqual(NUM_NORMAL_BINS, _POLYHEDRON_BINS[NORMAL_BINNING_POLYHEDRON])
+    test.assertGreaterEqual(NUM_NORMAL_BINS, 6)
+    test.assertGreaterEqual(NUM_SPATIAL_DIRECTIONS, 3)
+    test.assertGreaterEqual(NUM_VOXEL_DEPTH_SLOTS, 1)
+    test.assertLessEqual(compute_num_reduction_slots(), MAX_CONTACTS_PER_PAIR)
 
 
 def test_compute_num_reduction_slots(test, device):
-    """Test compute_num_reduction_slots calculation."""
-    # Formula: 20 bins * (6 directions + 1 max-depth) + 100 voxel slots
-    # 20 * 7 + 100 = 140 + 100 = 240
-    test.assertEqual(compute_num_reduction_slots(), 240)
+    """Test compute_num_reduction_slots formula and MAX_CONTACTS_PER_PAIR ceiling."""
+    expected = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS + 1) + NUM_VOXEL_DEPTH_SLOTS
+    test.assertEqual(compute_num_reduction_slots(), expected)
+    test.assertLessEqual(compute_num_reduction_slots(), MAX_CONTACTS_PER_PAIR)
 
 
 # =============================================================================
@@ -117,7 +107,6 @@ def test_get_slot_axis_aligned_normals(test, device):
 
     slots_np = slots.numpy()
 
-    # All slots should be valid (0-19)
     for i, slot in enumerate(slots_np):
         test.assertGreaterEqual(slot, 0, f"Slot {i} is negative")
         test.assertLess(slot, NUM_NORMAL_BINS, f"Slot {i} exceeds max ({NUM_NORMAL_BINS})")
@@ -125,10 +114,8 @@ def test_get_slot_axis_aligned_normals(test, device):
 
 def test_get_slot_matches_best_face_normal(test, device):
     """Test that get_slot returns the face with highest dot product."""
-    # Use a random set of normals and verify result matches CPU reference
     rng = np.random.default_rng(42)
     test_normals_np = rng.standard_normal((50, 3)).astype(np.float32)
-    # Normalize
     test_normals_np /= np.linalg.norm(test_normals_np, axis=1, keepdims=True)
 
     test_normals = [wp.vec3(n[0], n[1], n[2]) for n in test_normals_np]
@@ -139,15 +126,12 @@ def test_get_slot_matches_best_face_normal(test, device):
 
     slots_np = slots.numpy()
 
-    # Build face normals array for CPU reference
-    face_normals = np.array([[ICOSAHEDRON_FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
+    face_normals = np.array([[FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
 
-    # Verify each slot
     for i in range(len(test_normals_np)):
         normal = test_normals_np[i]
         result_slot = slots_np[i]
 
-        # Compute dot products with all face normals
         dots = face_normals @ normal
         cpu_best_slot = np.argmax(dots)
 
@@ -162,9 +146,7 @@ def test_get_slot_matches_best_face_normal(test, device):
 
 devices = get_test_devices()
 
-# Register tests that work on all devices (CPU and CUDA)
 for device in devices:
-    # Icosahedron geometry tests (pure NumPy, but registered per device for consistency)
     add_function_test(
         TestContactReduction, "test_face_normals_are_unit_vectors", test_face_normals_are_unit_vectors, devices=[device]
     )
@@ -175,8 +157,6 @@ for device in devices:
     add_function_test(
         TestContactReduction, "test_compute_num_reduction_slots", test_compute_num_reduction_slots, devices=[device]
     )
-
-    # get_slot tests
     add_function_test(
         TestContactReduction, "test_get_slot_axis_aligned_normals", test_get_slot_axis_aligned_normals, devices=[device]
     )

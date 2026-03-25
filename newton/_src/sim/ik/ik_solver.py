@@ -3,12 +3,16 @@
 
 """Frontend wrapper for inverse-kinematics optimizers with sampling/selection."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 from enum import Enum
+from typing import Any
 
 import numpy as np
 import warp as wp
 
+from ..model import Model
 from .ik_common import IKJacobianType
 from .ik_lbfgs_optimizer import IKOptimizerLBFGS
 from .ik_lm_optimizer import IKOptimizerLM
@@ -16,7 +20,7 @@ from .ik_objectives import IKObjective
 
 
 class IKOptimizer(str, Enum):
-    """Optimization backend selection for :class:`IKSolver`."""
+    """Optimizer backends supported by :class:`~newton.ik.IKSolver`."""
 
     LM = "lm"
     """Use a Levenberg-Marquardt optimizer."""
@@ -26,7 +30,7 @@ class IKOptimizer(str, Enum):
 
 
 class IKSampler(str, Enum):
-    """Initial-seed sampling strategy."""
+    """Sampling strategies used by :class:`~newton.ik.IKSolver` before optimization."""
 
     NONE = "none"
     """Disable sampling and use the input seed as-is."""
@@ -190,11 +194,39 @@ def _set_seed(
 
 
 class IKSolver:
-    """Flat IK front-end that handles sampling, optimization, and selection."""
+    """High-level inverse-kinematics front end with optional multi-seed sampling.
+
+    ``IKSolver`` expands each base problem into one or more candidate seeds,
+    delegates optimization to :class:`~newton.ik.IKOptimizerLM` or
+    :class:`~newton.ik.IKOptimizerLBFGS`, and keeps the lowest-cost candidate for each
+    base problem.
+
+    Args:
+        model: Shared articulation model.
+        n_problems: Number of base IK problems solved together.
+        objectives: Ordered IK objectives shared by all problems.
+        optimizer: Optimizer backend to use.
+        jacobian_mode: Jacobian backend to use inside the optimizer.
+        sampler: Initial-seed sampling strategy.
+        n_seeds: Number of candidate seeds generated per base problem.
+        noise_std: Standard deviation used by
+            :attr:`~newton.ik.IKSampler.GAUSS` [m or rad].
+        rng_seed: Seed for stochastic samplers.
+        lambda_initial: Initial LM damping factor.
+        lambda_factor: LM damping update factor.
+        lambda_min: Minimum LM damping value.
+        lambda_max: Maximum LM damping value.
+        rho_min: Minimum LM acceptance ratio.
+        history_len: Number of correction pairs retained by L-BFGS.
+        h0_scale: Initial inverse-Hessian scale for L-BFGS.
+        line_search_alphas: Candidate line-search step sizes for L-BFGS.
+        wolfe_c1: Armijo constant for the L-BFGS line search.
+        wolfe_c2: Curvature constant for the L-BFGS line search.
+    """
 
     def __init__(
         self,
-        model,
+        model: Model,
         n_problems: int,
         objectives: Sequence[IKObjective],
         *,
@@ -213,10 +245,10 @@ class IKSolver:
         # L-BFGS parameters
         history_len: int = 10,
         h0_scale: float = 1.0,
-        line_search_alphas=None,
+        line_search_alphas: Sequence[float] | None = None,
         wolfe_c1: float = 1e-4,
         wolfe_c2: float = 0.9,
-    ):
+    ) -> None:
         if isinstance(optimizer, str):
             optimizer = IKOptimizer(optimizer)
         if isinstance(jacobian_mode, str):
@@ -297,7 +329,25 @@ class IKSolver:
 
         self.costs_expanded = self._impl.costs
 
-    def step(self, joint_q_in: wp.array2d, joint_q_out: wp.array2d, iterations=50, step_size=1.0):
+    def step(
+        self,
+        joint_q_in: wp.array2d(dtype=wp.float32),
+        joint_q_out: wp.array2d(dtype=wp.float32),
+        iterations: int = 50,
+        step_size: float = 1.0,
+    ) -> None:
+        """Solve all base problems and write the best result for each one.
+
+        Args:
+            joint_q_in: Input joint coordinates [m or rad] for the base
+                problems, shape [n_problems, joint_coord_count].
+            joint_q_out: Output joint coordinates [m or rad] for the selected
+                solution of each base problem, shape [n_problems, joint_coord_count].
+                It may alias ``joint_q_in``.
+            iterations: Number of optimizer iterations to run for each sampled
+                seed.
+            step_size: Unitless LM step scale. Ignored by the L-BFGS backend.
+        """
         if joint_q_in.shape != (self.n_problems, self.n_coords):
             raise ValueError("joint_q_in has incompatible shape")
         if joint_q_out.shape != (self.n_problems, self.n_coords):
@@ -336,7 +386,8 @@ class IKSolver:
             device=self.device,
         )
 
-    def reset(self):
+    def reset(self) -> None:
+        """Reset optimizer state, selected seeds, and the sampler RNG."""
         self._impl.reset()
         self.best_indices.zero_()
         wp.launch(
@@ -347,17 +398,19 @@ class IKSolver:
         )
 
     @property
-    def joint_q(self):
+    def joint_q(self) -> wp.array2d(dtype=wp.float32):
+        """Expanded joint-coordinate buffer that stores all sampled seeds."""
         return self.joint_q_expanded
 
     @property
-    def costs(self):
+    def costs(self) -> wp.array(dtype=wp.float32):
+        """Expanded per-seed objective costs from the most recent solve."""
         return self.costs_expanded
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self._impl, name)
 
-    def _sample(self, joint_q_in: wp.array2d):
+    def _sample(self, joint_q_in: wp.array2d(dtype=wp.float32)) -> None:
         wp.launch(
             _pull_seed,
             dim=1,
