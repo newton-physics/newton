@@ -2566,6 +2566,14 @@ def parse_usd(
                     sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
                 )
 
+                # Hydroelastic parameters
+                is_hydroelastic = R.get_value(prim, prim_type=PrimType.SHAPE, key="is_hydroelastic", verbose=verbose)
+                if is_hydroelastic is None:
+                    is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
+
+                kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                if kh is None:
+                    kh = builder.default_shape_cfg.kh
 
                 shape_params = {
                     "body": body_id,
@@ -2591,6 +2599,8 @@ def parse_usd(
                         sdf_max_resolution=sdf_max_resolution,
                         sdf_narrow_band_range=sdf_narrow_band_range,
                         sdf_target_voxel_size=sdf_target_voxel_size,
+                        is_hydroelastic=is_hydroelastic,
+                        kh=kh,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,

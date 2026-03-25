@@ -39,12 +39,30 @@ CUBE_POINTS = [
 CUBE_FACE_VERTEX_COUNTS = [4, 4, 4, 4, 4, 4]
 
 CUBE_FACE_VERTEX_INDICES = [
-    0, 1, 2, 3,
-    4, 5, 6, 7,
-    0, 1, 5, 4,
-    2, 3, 7, 6,
-    0, 3, 7, 4,
-    1, 2, 6, 5,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    0,
+    1,
+    5,
+    4,
+    2,
+    3,
+    7,
+    6,
+    0,
+    3,
+    7,
+    4,
+    1,
+    2,
+    6,
+    5,
 ]
 
 
@@ -165,11 +183,64 @@ class TestSDFUSDParsing(unittest.TestCase):
             mesh1 = builder.shape_source[s1]
             self.assertIsNotNone(mesh1.sdf, "Expected SDF built from default_shape_cfg")
 
+    def test_usd_hydroelastic_attributes(self, device=None):
+        """USD newton:isHydroelastic and newton:kh are parsed into shape config."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_hydro.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            p1 = m1.GetPrim()
+            # Set SDF + hydroelastic
+            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(128)
+            p1.CreateAttribute("newton:isHydroelastic", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
+            p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
+
+            # Body2: no hydroelastic
+            _add_rigid_body(stage, "/World/Body2")
+            _add_collision_mesh(stage, "/World/Body2/CollisionMesh")
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            psm = result["path_shape_map"]
+
+            s1 = psm["/World/Body1/CollisionMesh"]
+            s2 = psm["/World/Body2/CollisionMesh"]
+
+            # Body1: hydroelastic enabled
+            self.assertTrue(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
+            self.assertAlmostEqual(builder.shape_material_kh[s1], 1e7)
+
+            # Body2: hydroelastic disabled (default)
+            self.assertFalse(builder.shape_flags[s2] & newton.ShapeFlags.HYDROELASTIC)
+
 
 devices = get_selected_cuda_test_devices()
-add_function_test(TestSDFUSDParsing, "test_usd_sdf_mesh_attributes", TestSDFUSDParsing.test_usd_sdf_mesh_attributes, devices=devices)
+add_function_test(
+    TestSDFUSDParsing, "test_usd_sdf_mesh_attributes", TestSDFUSDParsing.test_usd_sdf_mesh_attributes, devices=devices
+)
 add_function_test(TestSDFUSDParsing, "test_usd_sdf_defaults", TestSDFUSDParsing.test_usd_sdf_defaults, devices=devices)
-add_function_test(TestSDFUSDParsing, "test_usd_sdf_with_default_shape_cfg", TestSDFUSDParsing.test_usd_sdf_with_default_shape_cfg, devices=devices)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_sdf_with_default_shape_cfg",
+    TestSDFUSDParsing.test_usd_sdf_with_default_shape_cfg,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_hydroelastic_attributes",
+    TestSDFUSDParsing.test_usd_hydroelastic_attributes,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":
