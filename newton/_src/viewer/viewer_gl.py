@@ -192,6 +192,7 @@ class ViewerGL(ViewerBase):
         height: int = 1080,
         vsync: bool = False,
         headless: bool = False,
+        paused: bool = False,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -214,7 +215,7 @@ class ViewerGL(ViewerBase):
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
-        self._paused = False
+        self._paused = paused
 
         # Selection panel state
         self._selection_ui_state = {

@@ -146,7 +146,7 @@ class ViewerRTX(ViewerUSD):
 
         # Pre-initialize fields that clear_model() (called from super().__init__) touches
         self._ui_callbacks: dict[str, list] = {"side": [], "stats": [], "free": [], "panel": []}
-        self._paused = False
+        self._paused = paused
         self._rtx = None
         self._pending_line_batches: dict[str, tuple[Any, Any, Any, float, bool]] = {}
         self._line_batch_paths: dict[str, str] = {}
