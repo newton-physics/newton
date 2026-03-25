@@ -77,7 +77,14 @@ def load_file(
         raise ValueError(f"Unsupported file format: '{ext}'. Expected .usd, .usda, .usdc, .urdf, .xml, or .mjcf")
 
     if ground:
-        builder.add_shape_plane()
+        # Place ground plane at the lowest body position in the asset
+        min_z = 0.0
+        for q in builder.body_q:
+            z = float(q[2])  # transform layout: [px, py, pz, qx, qy, qz, qw]
+            if z < min_z:
+                min_z = z
+        # plane equation (0,0,1,-h) defines z = h
+        builder.add_shape_plane(plane=(0.0, 0.0, 1.0, -min_z))
 
     model = builder.finalize(device=device)
     solver = _create_solver(solver_name, model)
