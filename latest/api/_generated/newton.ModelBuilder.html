@@ -4236,16 +4236,17 @@ ensuring physical validity (I1 + I2 &gt;= I3 for principal moments). Default: Tr
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.ModelBuilder.bound_inertia">
 <span class="sig-name descname"><span class="pre">bound_inertia</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.ModelBuilder.bound_inertia" title="Link to this definition">#</a></dt>
-<dd><p>Minimum allowed eigenvalue for rigid body inertia tensors. If set, ensures all principal
-moments of inertia are at least this value. Set to None to disable inertia eigenvalue
-clamping. Default: None.</p>
+<dd><p>Minimum allowed eigenvalue for rigid body inertia tensors [kg*m^2]. If set, ensures
+all principal moments of inertia are at least this value. Set to None to disable inertia
+eigenvalue clamping. Default: None.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.ModelBuilder.bound_mass">
 <span class="sig-name descname"><span class="pre">bound_mass</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.ModelBuilder.bound_mass" title="Link to this definition">#</a></dt>
-<dd><p>Minimum allowed mass value for rigid bodies. If set, any body mass below this value will be
-clamped to this minimum. Set to None to disable mass clamping. Default: None.</p>
+<dd><p>Minimum allowed mass value for rigid bodies [kg]. If set, any body mass below this
+value will be clamped to this minimum. Set to None to disable mass clamping.
+Default: None.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -4548,6 +4549,16 @@ Update this object before adding shapes to set default contact/material properti
 <dt class="sig sig-object py" id="newton.ModelBuilder.gravity">
 <span class="sig-name descname"><span class="pre">gravity</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a></em><a class="headerlink" href="#newton.ModelBuilder.gravity" title="Link to this definition">#</a></dt>
 <dd><p>Gravity acceleration [m/s^2] applied along <a class="reference internal" href="#newton.ModelBuilder.up_axis" title="newton.ModelBuilder.up_axis"><code class="xref py py-attr docutils literal notranslate"><span class="pre">up_axis</span></code></a> for newly added worlds.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.ModelBuilder.inertia_tolerance">
+<span class="sig-name descname"><span class="pre">inertia_tolerance</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a></em><a class="headerlink" href="#newton.ModelBuilder.inertia_tolerance" title="Link to this definition">#</a></dt>
+<dd><p>Tolerance for inertia eigenvalue positivity checks and triangle inequality
+validation [kg*m^2]. Lower this for models with lightweight components (&lt; ~50g).
+Values below ~1e-7 may not behave identically across the detailed (float64) and
+fast (float32) validation paths due to float32 precision limits.
+Default: 1e-6.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -5494,6 +5505,7 @@ Default: False.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.equality_constraint_world"><code class="docutils literal notranslate"><span class="pre">equality_constraint_world</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.equality_constraint_world_start"><code class="docutils literal notranslate"><span class="pre">equality_constraint_world_start</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.gravity"><code class="docutils literal notranslate"><span class="pre">gravity</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.inertia_tolerance"><code class="docutils literal notranslate"><span class="pre">inertia_tolerance</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.joint_X_c"><code class="docutils literal notranslate"><span class="pre">joint_X_c</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.joint_X_p"><code class="docutils literal notranslate"><span class="pre">joint_X_p</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.joint_act"><code class="docutils literal notranslate"><span class="pre">joint_act</span></code></a></li>
