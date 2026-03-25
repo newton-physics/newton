@@ -9,18 +9,17 @@ from typing import Any
 
 import warp as wp
 
-try:
-    from mujoco_warp._src.support import contact_force_fn
-except ImportError:
-    try:
-        import mujoco_warp  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        raise  # Package exists but contact_force_fn missing
-
 from ...core.types import vec5
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
+
+
+def _import_contact_force_fn():
+    try:
+        from mujoco_warp._src.support import contact_force_fn
+    except ImportError:
+        raise ImportError("Failed to import contact_force_fn from mujoco_warp._src.support") from None
+    return contact_force_fn
+
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
@@ -744,7 +743,7 @@ def convert_mjw_contacts_to_newton_kernel(
 
     if contact_force:
         # Negate: contact_force_fn returns force on geom2; Newton stores force on shape0 (geom1).
-        contact_force[contact_idx] = -contact_force_fn(
+        contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
             mj_opt_cone,
             mj_contact_frame,
             mj_contact_friction,
