@@ -127,6 +127,8 @@ def flatten_depth_image(
 
 
 class Utils:
+    """Utility functions for the RenderContext."""
+
     def __init__(self, render_context: RenderContext):
         self.__render_context = render_context
 
@@ -434,6 +436,8 @@ class Utils:
 
         Args:
             enable_shadows: Enable shadow casting for this light.
+            direction: Normalized light direction. If ``None``, defaults to
+                (normalized ``(-1, 1, -1)``).
         """
         self.__render_context.config.enable_shadows = enable_shadows
         self.__render_context.lights_active = wp.array([True], dtype=wp.bool, device=self.__render_context.device)

@@ -11,10 +11,13 @@ import warp as wp
 
 from ..sim import Model, State
 from .warp_raytrace import (
+    ClearData,
     GaussianRenderMode,
+    RenderConfig,
     RenderContext,
     RenderLightType,
     RenderOrder,
+    Utils,
 )
 
 
@@ -49,8 +52,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         ::
 
             sensor = SensorTiledCamera(model)
-            rays = sensor.compute_pinhole_camera_rays(width, height, fov)
-            color = sensor.create_color_image_output(width, height)
+            rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
+            color = sensor.utils.create_color_image_output(width, height)
 
             # each step
             sensor.update(state, camera_transforms, rays, color_image=color)
@@ -62,8 +65,9 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
     GaussianRenderMode = GaussianRenderMode
-    RenderConfig = RenderContext.Config
-    ClearData = RenderContext.ClearData
+    RenderConfig = RenderConfig
+    ClearData = ClearData
+    Utils = Utils
 
     DEFAULT_CLEAR_DATA = ClearData()
     GRAY_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
@@ -104,12 +108,27 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         """.. deprecated:: Use ``render_config.enable_particles`` instead."""
 
     def __init__(self, model: Model, *, config: Config | RenderConfig | None = None, load_textures: bool = True):
+        """Initialize the tiled camera sensor from a simulation model.
+
+        Builds the internal :class:`RenderContext`, loads shape geometry (and
+        optionally textures) from *model*, and exposes :attr:`utils` for
+        creating output buffers, computing rays, and assigning materials.
+
+        Args:
+            model: Simulation model whose shapes will be rendered.
+            config: Rendering configuration. Pass a :class:`RenderConfig` to
+                control raytrace settings directly, or ``None`` to use
+                defaults. The legacy :class:`Config` dataclass is still
+                accepted but deprecated.
+            load_textures: Load texture data from the model. Set to ``False``
+                to skip texture loading when textures are not needed.
+        """
         self.model = model
 
         render_config = config
 
         if render_config is None:
-            render_config = SensorTiledCamera.RenderConfig()
+            render_config = RenderConfig()
 
         elif isinstance(config, SensorTiledCamera.Config):
             warnings.warn(
@@ -118,7 +137,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 stacklevel=2,
             )
 
-            render_config = SensorTiledCamera.RenderConfig()
+            render_config = RenderConfig()
             render_config.enable_ambient_lighting = config.enable_ambient_lighting
             render_config.enable_backface_culling = config.backface_culling
             render_config.enable_textures = config.enable_textures
@@ -131,8 +150,6 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         )
 
         self.__render_context.init_from_model(self.model, load_textures)
-
-        self.utils = self.__render_context.utils
 
         if isinstance(config, SensorTiledCamera.Config):
             if config.checkerboard_texture:
@@ -166,7 +183,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None = None,
         albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         refit_bvh: bool = True,
-        clear_data: SensorTiledCamera.ClearData | None = DEFAULT_CLEAR_DATA,
+        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):
         """Render output images for all worlds and cameras.
 
@@ -511,7 +528,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         return self.__render_context
 
     @property
-    def render_config(self) -> SensorTiledCamera.RenderConfig:
+    def render_config(self) -> RenderConfig:
         """Low-level raytrace settings on the internal :class:`RenderContext`.
 
         Populated at construction from :class:`Config` and from fixed defaults
@@ -519,7 +536,12 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         be modified to change behavior for subsequent :meth:`update` calls.
 
         Returns:
-            The live :class:`SensorTiledCamera.RenderConfig` instance (same object as
+            The live :class:`RenderConfig` instance (same object as
             ``render_context.config`` without triggering deprecation warnings).
         """
         return self.__render_context.config
+
+    @property
+    def utils(self) -> Utils:
+        """Utility helpers for creating output buffers, computing rays, and assigning materials/lights."""
+        return self.__render_context.utils
