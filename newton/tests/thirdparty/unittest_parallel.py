@@ -233,6 +233,7 @@ def main(argv=None):
                     # NVIDIA Modification added concurrent.futures
                     with concurrent.futures.ProcessPoolExecutor(
                         max_workers=process_count,
+                        max_tasks_per_child=1,
                         mp_context=multiprocessing.get_context(method="spawn"),
                         initializer=initialize_test_process,
                         initargs=(manager.Lock(), shared_index, args, temp_dir),
