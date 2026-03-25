@@ -47,7 +47,7 @@ def move_hand(
     # animate the finger joints
     for i in range(20):
         di = root_dof_start + i
-        target = wp.sin(t + float(i * 6) * 0.1) * 0.1 + 0.3
+        target = wp.sin(t + float(i * 6) * 0.1) * 0.08 + 0.3
         joint_target_pos[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
@@ -136,7 +136,7 @@ class Example:
             integrator="implicitfast",
             njmax=200,
             nconmax=max_contacts_per_world,
-            impratio=10.0,
+            impratio=20.0,
             cone="elliptic",
             iterations=100,
             ls_iterations=50,
