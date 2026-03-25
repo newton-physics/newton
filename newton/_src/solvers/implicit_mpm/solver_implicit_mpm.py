@@ -616,8 +616,13 @@ class SolverImplicitMPM(SolverBase):
         """Maximum number of iterations for the rheology solver."""
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
-        solver: str = "gauss-seidel"
-        """Solver to use for the rheology solver. May be one of auto, gauss-seidel, gauss-seidel-reordered, gauss-seidel-hybrid, jacobi, cg. ``"auto"`` selects ``"gauss-seidel"`` for Q1 velocity basis and ``"gauss-seidel-hybrid"`` for higher-order bases (B2, B3)."""
+        solver: str = "auto"
+        """Solver to use for the rheology solver. ``"auto"`` selects ``"gs"``
+        for Q1 velocity basis and ``"gs-batched"`` for higher-order bases
+        (B2, B3).  Accepted values: ``"auto"``, ``"gs"`` (or
+        ``"gauss-seidel"``), ``"gs-soa"`` (or ``"gauss-seidel-soa"``),
+        ``"gs-batched"`` (or ``"gauss-seidel-batched"``), ``"jacobi"``,
+        ``"cg"``, ``"cg+<solver>"``."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver."""
         collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
@@ -652,7 +657,7 @@ class SolverImplicitMPM(SolverBase):
         # experimental
         collider_normal_from_sdf_gradient: bool = False
         """Compute collider normals from sdf gradient rather than closest point"""
-        collider_basis: str = "Q1"
+        collider_basis: str = "S2"
         """Collider basis function string. Examples: P0 (piecewise constant), Q1 (trilinear), S2 (quadratic serendipity), pic8 (particle-based with max 8 points per cell)"""
         strain_basis: str = "P0"
         """Strain basis functions. May be one of P0, P1d, Q1, Q1d, or pic[n]."""
@@ -890,10 +895,10 @@ class SolverImplicitMPM(SolverBase):
         self.solver = config.solver
         if self.solver == "auto":
             if self.velocity_basis in ("B2", "B3"):
-                self.solver = "gauss-seidel-hybrid"
+                self.solver = "gs-batched"
             else:
-                self.solver = "gauss-seidel"
-        self.coloring = "gauss-seidel" in self.solver
+                self.solver = "gs"
+        self.coloring = "gauss-seidel" in self.solver or self.solver.startswith("gs")
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"
         self.max_active_cell_count = config.max_active_cell_count
