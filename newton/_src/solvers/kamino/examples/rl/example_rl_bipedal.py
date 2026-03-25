@@ -189,7 +189,6 @@ class Example:
         headless: bool = False,
         viewer_type: str = "gl",
         num_balls: int = 1,
-        flat: bool = False,
     ):
         # Timing
         self.sim_dt = 0.02
@@ -215,7 +214,7 @@ class Example:
                 shadow_radius=10.0,
             ),
             viewer_type=viewer_type,
-            terrain_fn=None if flat else _make_terrain_fn(),
+            terrain_fn=_make_terrain_fn(),
             scene_callback=_make_balls_fn(num_balls),
         )
 
@@ -378,11 +377,6 @@ if __name__ == "__main__":
         help="Number of balls to add to the scene (max 5, default: 1)",
     )
     parser.add_argument(
-        "--flat",
-        action="store_true",
-        help="Use a flat ground plane instead of the heightfield terrain",
-    )
-    parser.add_argument(
         "--render-fps",
         type=float,
         default=30.0,
@@ -416,7 +410,6 @@ if __name__ == "__main__":
         headless=args.headless,
         viewer_type=args.viewer,
         num_balls=args.num_balls,
-        flat=args.flat,
     )
 
     try:
