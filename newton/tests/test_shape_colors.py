@@ -142,12 +142,54 @@ class TestShapeColors(unittest.TestCase):
         self.assertIsNotNone(packed_shape_colors)
         self.assertIsNotNone(shape_to_slot)
         self.assertIsNotNone(slot_to_shape)
+        assert packed_shape_colors is not None
+        assert shape_to_slot is not None
+        assert slot_to_shape is not None
         self.assertEqual(len(slot_to_shape), len(packed_shape_colors))
 
         rendered_shapes = np.flatnonzero(shape_to_slot >= 0)
+        self.assertEqual(len(rendered_shapes), len(slot_to_shape))
+        np.testing.assert_array_equal(np.sort(slot_to_shape), rendered_shapes)
         for shape_idx in rendered_shapes:
             slot = int(shape_to_slot[shape_idx])
             self.assertEqual(int(slot_to_shape[slot]), int(shape_idx))
+
+    def test_viewer_repacks_runtime_shape_colors_into_packed_order(self):
+        """Verify runtime color sync repacks model colors into packed viewer order."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_body(mass=1.0)
+        body1 = builder.add_body(mass=1.0)
+        body2 = builder.add_body(mass=1.0)
+        shape0 = builder.add_shape_box(body=body0, hx=0.1, hy=0.2, hz=0.3)
+        shape1 = builder.add_shape_sphere(body=body1, radius=0.15)
+        shape2 = builder.add_shape_box(body=body2, hx=0.2, hy=0.1, hz=0.3)
+
+        model = builder.finalize(device=self.device)
+        viewer = ViewerNull()
+        viewer.set_model(model)
+
+        packed_shape_colors = viewer.model_shape_color
+        slot_to_shape = viewer._slot_to_shape
+        self.assertIsNotNone(packed_shape_colors)
+        self.assertIsNotNone(slot_to_shape)
+        assert packed_shape_colors is not None
+        assert slot_to_shape is not None
+
+        expected_slot_order = np.array([shape0, shape2, shape1], dtype=np.int32)
+        np.testing.assert_array_equal(slot_to_shape, expected_slot_order)
+
+        updated_colors = {
+            shape0: (0.8, 0.1, 0.2),
+            shape1: (0.1, 0.9, 0.3),
+            shape2: (0.2, 0.3, 0.95),
+        }
+        for shape_idx, color in updated_colors.items():
+            model.shape_color[shape_idx : shape_idx + 1].fill_(wp.vec3(*color))
+
+        viewer._sync_shape_colors_from_model()
+
+        expected_colors = model.shape_color.numpy()[slot_to_shape]
+        np.testing.assert_allclose(packed_shape_colors.numpy(), expected_colors, atol=1e-6, rtol=1e-6)
 
     def test_update_shape_colors_warns_and_writes_model_shape_color(self):
         """Verify deprecated viewer color updates warn and write through to the model."""

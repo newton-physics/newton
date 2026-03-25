@@ -1276,13 +1276,6 @@ class ModelBuilder:
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
             return
 
-        # Reject names that would shadow built-in Model/Builder attributes
-        if attribute.namespace is None and hasattr(self, attribute.name):
-            raise ValueError(
-                f"Custom attribute name '{attribute.name}' conflicts with a built-in attribute. "
-                f"Use a namespace to avoid collisions."
-            )
-
         # Validate that custom frequencies are registered before use
         if attribute.is_custom_frequency:
             freq_key = attribute.frequency
