@@ -254,7 +254,6 @@ class RigidBodySim:
         render_config: ViewerConfig | None = None,
         collapse_fixed_joints: bool = False,
         viewer_type: str = "gl",
-        background_fn: callable | None = None,
         terrain_fn: callable | None = None,
         scene_callback: callable | None = None,
     ):
@@ -361,10 +360,6 @@ class RigidBodySim:
             msg.notif("Creating the 3D viewer ...")
             if viewer_type == "rtx":
                 self.viewer = ViewerRTX(environment="studio")
-
-                # add a visual background
-                if background_fn:
-                    background_fn(self.viewer)
             else:
                 self.viewer = ViewerGL()
             self.viewer.set_model(self._newton_model)

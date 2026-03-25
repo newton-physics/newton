@@ -28,7 +28,6 @@
 # Python
 import argparse
 import os
-from collections.abc import Callable
 
 # Thirdparty
 import numpy as np
@@ -94,7 +93,7 @@ def _build_normalization(joint_names: list[str]):
     return offsets, scales
 
 
-def _make_heightfield_terrain_fn(
+def _make_terrain_fn(
     nrow: int = 40,
     ncol: int = 40,
     hx: float = 10.0,
@@ -145,36 +144,6 @@ def _make_heightfield_terrain_fn(
     return _add_terrain
 
 
-def _make_usd_terrain_fn(file_path: str, root_prim: str | None = None):
-    """Return a callback that adds collision geometry from a USD file to a builder.
-
-    Args:
-        file_path: The path of the USD file.
-        root_prim: The root USD prim path for the collision geometry. Shapes will be loaded
-            recursively from this path. If None, load shapes from the entire file.
-    """
-
-    if root_prim is None:
-        root_prim = "/"
-
-    def _add_terrain(builder):
-        shape_start = builder.shape_count
-        builder.add_usd(file_path, root_path=root_prim, hide_collision_shapes=True, load_visual_shapes=False)
-        # clear ShapeFlags.VISIBLE to hide the collision shape
-        for idx in range(shape_start, builder.shape_count):
-            flags = builder.shape_flags[idx]
-            builder.shape_flags[idx] = flags & ~newton.ShapeFlags.VISIBLE
-
-    return _add_terrain
-
-
-def _make_usd_background_fn(file_path: str, root_prim: str | None = None):
-    def _add_background(viewer):
-        viewer.add_background_usd(file_path, root_prim)
-
-    return _add_background
-
-
 ###########################################################################
 # Scene callback - adds pushable balls
 ###########################################################################
@@ -220,8 +189,7 @@ class Example:
         headless: bool = False,
         viewer_type: str = "gl",
         num_balls: int = 1,
-        background_fn: Callable | None = None,
-        terrain_fn: Callable | None = None,
+        flat: bool = False,
     ):
         # Timing
         self.sim_dt = 0.02
@@ -247,8 +215,7 @@ class Example:
                 shadow_radius=10.0,
             ),
             viewer_type=viewer_type,
-            background_fn=background_fn,
-            terrain_fn=terrain_fn,
+            terrain_fn=None if flat else _make_terrain_fn(),
             scene_callback=_make_balls_fn(num_balls),
         )
 
@@ -416,14 +383,6 @@ if __name__ == "__main__":
         help="Use a flat ground plane instead of the heightfield terrain",
     )
     parser.add_argument(
-        "--usd-background",
-        help="USD file to load as background",
-    )
-    parser.add_argument(
-        "--usd-background-root",
-        help="Root path of the background geometry in the USD background file",
-    )
-    parser.add_argument(
         "--render-fps",
         type=float,
         default=30.0,
@@ -451,22 +410,13 @@ if __name__ == "__main__":
     policy = _load_policy_checkpoint(POLICY_PATH, device=torch_device)
     msg.info(f"Loaded policy from: {POLICY_PATH}")
 
-    terrain_fn = _make_heightfield_terrain_fn()
-    background_fn = None
-    if args.flat:
-        terrain_fn = None
-    elif args.usd_background:
-        terrain_fn = _make_usd_terrain_fn(args.usd_background, args.usd_background_root)
-        background_fn = _make_usd_background_fn(args.usd_background, args.usd_background_root)
-
     example = Example(
         device=device,
         policy=policy,
         headless=args.headless,
         viewer_type=args.viewer,
         num_balls=args.num_balls,
-        background_fn=background_fn,
-        terrain_fn=terrain_fn,
+        flat=args.flat,
     )
 
     try:
