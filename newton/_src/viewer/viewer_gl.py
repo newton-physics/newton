@@ -245,6 +245,8 @@ class ViewerGL(ViewerBase):
         self.on_reset: Callable[[], None] | None = None
         self.on_solver_change: Callable[[str], None] | None = None
         self._step_requested = False
+        self._error_message: str | None = None
+        self._error_popup_pending = False
 
         # Camera movement settings
         self._camera_speed = 0.04
@@ -1224,7 +1226,14 @@ class ViewerGL(ViewerBase):
 
             # Render the UI
             self._render_ui()
+            self._render_error_popup()
 
+            self.ui.end_frame()
+            self.ui.render()
+        elif self.ui and self.ui.is_available and self._error_message is not None:
+            # Render error popup even when the rest of the UI is hidden
+            self.ui.begin_frame()
+            self._render_error_popup()
             self.ui.end_frame()
             self.ui.render()
 
@@ -1352,6 +1361,15 @@ class ViewerGL(ViewerBase):
             self._step_requested = False
             return True
         return False
+
+    def show_error(self, message: str):
+        """Display a dismissible error popup in the viewer.
+
+        Args:
+            message: Error message to display.
+        """
+        self._error_message = message
+        self._error_popup_pending = True
 
     @override
     def close(self):
@@ -1885,6 +1903,23 @@ class ViewerGL(ViewerBase):
                 del self._gizmo_active[gid]
 
         self.gizmo_is_using = giz.is_using_any()
+
+    def _render_error_popup(self):
+        """Render the error popup if an error message is pending."""
+        if self._error_message is None or not self.ui:
+            return
+        imgui = self.ui.imgui
+        if self._error_popup_pending:
+            imgui.open_popup("Error")
+            self._error_popup_pending = False
+        if imgui.begin_popup_modal("Error", True)[0]:
+            imgui.text_wrapped(self._error_message)
+            if imgui.button("OK"):
+                self._error_message = None
+                imgui.close_current_popup()
+            imgui.end_popup()
+        else:
+            self._error_message = None  # closed via X
 
     def _render_ui(self):
         """
