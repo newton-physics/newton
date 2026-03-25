@@ -426,7 +426,7 @@ if __name__ == "__main__":
         else:
             msg.notif(f"Running in Viewer mode ({args.mode})...")
             if hasattr(example.viewer, "set_camera"):
-                example.viewer.set_camera(wp.vec3(2.5, 1.5, 1.0), -10.0, 225.0)
+                example.viewer.set_camera(wp.vec3(0.6, 0.6, 0.3), -10.0, 225.0)
             SimulationRunner(example, mode=args.mode, render_fps=args.render_fps).run()
     except KeyboardInterrupt:
         pass
