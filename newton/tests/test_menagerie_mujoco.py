@@ -478,6 +478,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
+    # Inertia frame offset: derived from inertia diagonalization. Differs when Newton
+    # produces different principal axes (e.g. for bodies with mesh-based visual geoms).
+    "body_ipos",
+    # Inertia frame orientation: derived from inertia diagonalization.
     "body_iquat",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
@@ -526,16 +530,19 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     # Derived from inertia and dof_armature by set_const_0. Backfilled.
     "dof_invweight0",
+    # Body frame position/orientation: compilation-dependent, derived from joint and inertia
+    # frames by mj_setConst. Differs due to inertia re-diagonalization. Backfilled.
     "body_pos",
     "body_quat",
+    # Subtree mass: sum of masses in subtree, differs when body_mass differs (visual geom mass).
     "body_subtreemass",
     # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
     # re-diagonalization. Backfilled instead.
     "actuator_acc0",
     "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
-    # Meshes: Newton / trimesh deduplicates vertices on load and may create different
-    # vertex/face/polygon counts. Skip geometry data fields but NOT mesh_pos/mesh_quat/mesh_scale.
+    # Meshes: Newton / trimesh may create a different number of meshes (nmesh differs),
+    # so ALL per-mesh fields have incompatible shapes. Skip everything mesh-related.
     "nmesh",
     "nmeshvert",
     "nmeshnormal",
@@ -543,15 +550,7 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "nmeshface",
     "nmaxmeshdeg",
     "nmaxpolygon",
-    "mesh_vert",
-    "mesh_face",
-    "mesh_normal",
-    "mesh_texcoord",
-    "mesh_graph",
-    "mesh_poly",
-    "mesh_bvh",
-    "mesh_oct",
-    "mesh_path",
+    "mesh_",
 }
 
 
