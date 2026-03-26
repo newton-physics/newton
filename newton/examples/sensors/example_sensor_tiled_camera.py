@@ -97,10 +97,11 @@ class Example:
         self.time_delta = 0.005
         self.image_output = 0
         self.texture_id = 0
-        self.show_sensor_output = viewer.ui.is_available
+        self.show_sensor_output = True
 
         self.viewer = viewer
         if isinstance(self.viewer, ViewerGL):
+            self.show_sensor_output = viewer.ui.is_available
             self.viewer.register_ui_callback(self.display, "free")
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
