@@ -52,6 +52,12 @@ except Exception as e:
 
 release = project_version
 
+# -- Nitpicky mode -----------------------------------------------------------
+# Set nitpicky = True to warn about all broken cross-references (e.g. missing
+# intersphinx targets, typos in :class:/:func:/:attr: roles, etc.).  Useful for
+# auditing docs but noisy during regular development.
+nitpicky = False
+
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
@@ -114,7 +120,21 @@ intersphinx_mapping = {
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://docs.pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp", None),
+    "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
 }
+
+# Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
+# ``pxr.*`` paths so intersphinx can resolve them against the USD inventory.
+# Note: this only affects annotations processed by autodoc, not autosummary stubs.
+autodoc_type_aliases = {
+    "Usd.Prim": "pxr.Usd.Prim",
+    "Usd.Stage": "pxr.Usd.Stage",
+    "UsdGeom.XformCache": "pxr.UsdGeom.XformCache",
+    "UsdGeom.Mesh": "pxr.UsdGeom.Mesh",
+    "UsdShade.Material": "pxr.UsdShade.Material",
+    "UsdShade.Shader": "pxr.UsdShade.Shader",
+}
+
 
 source_suffix = {
     ".rst": "restructuredtext",
