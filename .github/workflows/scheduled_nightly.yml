@@ -54,7 +54,7 @@ jobs:
   run-nightly-tests:
     name: Run nightly test suites
     needs: [check-warp-update]
-    if: github.repository == 'newton-physics/newton'
+    if: ${{ !cancelled() && github.repository == 'newton-physics/newton' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180  # Budget for sequential dispatch+poll of all sub-workflows (typical total ~90 min)
     permissions:
@@ -98,7 +98,7 @@ jobs:
 
       - name: Dispatch and wait for Warp Nightly tests
         id: warp-nightly-tests
-        if: needs.check-warp-update.outputs.warp-updated == 'true'
+        if: needs.check-warp-update.result == 'success' && needs.check-warp-update.outputs.warp-updated == 'true'
         run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py warp_nightly_tests.yml
 
   notify-on-failure:
@@ -106,9 +106,12 @@ jobs:
     needs: [run-nightly-tests]
     if: |
       !cancelled() &&
-      (needs.run-nightly-tests.outputs.gpu-tests-conclusion == 'failure' ||
-       needs.run-nightly-tests.outputs.minimum-deps-tests-conclusion == 'failure' ||
-       needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion == 'failure')
+      ((needs.run-nightly-tests.outputs.gpu-tests-conclusion != '' &&
+        needs.run-nightly-tests.outputs.gpu-tests-conclusion != 'success') ||
+       (needs.run-nightly-tests.outputs.minimum-deps-tests-conclusion != '' &&
+        needs.run-nightly-tests.outputs.minimum-deps-tests-conclusion != 'success') ||
+       (needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion != '' &&
+        needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion != 'success'))
     runs-on: ubuntu-latest
     permissions:
       issues: write

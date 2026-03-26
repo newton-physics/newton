@@ -1,7 +1,7 @@
 name: MuJoCo Warp Tests on AWS EC2 (Reusable)
 
 # Standalone workflow that tests Newton with the latest mujoco-warp from source.
-# Dispatched by scheduled_nightly.yml via the workflow_dispatch API.
+# Not currently dispatched by scheduled_nightly.yml; kept available for manual dispatch/reuse.
 
 env:
   AWS_REGION: us-east-2

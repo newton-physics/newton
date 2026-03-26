@@ -205,8 +205,9 @@ def main() -> int:
     except RuntimeError as e:
         log_error(f"Failed to dispatch {workflow_file}: {e}")
         log_endgroup()
+        set_output("run-url", "")
         set_output("conclusion", "dispatch_error")
-        return 1
+        return 0
 
     print(f"Triggered run {run_id}: {html_url}", flush=True)
     set_output("run-url", html_url)
