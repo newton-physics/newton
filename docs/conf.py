@@ -105,8 +105,27 @@ exclude_patterns = [
     "sphinx-env",
     "**/site-packages/**",
     "**/lib/**",
-    "tutorials/**/*.ipynb",
 ]
+
+# nbsphinx requires pandoc to convert Jupyter notebooks.  When pandoc is not
+# installed we exclude the notebook tutorials so the rest of the docs can still
+# be built locally without a hard error.  CI workflows install pandoc explicitly
+# so published docs always include the tutorials.
+#
+# Set NEWTON_REQUIRE_PANDOC=1 to turn the missing-pandoc warning into an error
+# (used in CI to guarantee tutorials are never silently skipped).
+if shutil.which("pandoc") is None:
+    if os.environ.get("NEWTON_REQUIRE_PANDOC", "") == "1":
+        raise RuntimeError(
+            "pandoc is required but not found. Install pandoc "
+            "(https://pandoc.org/installing.html) or unset NEWTON_REQUIRE_PANDOC."
+        )
+    exclude_patterns.append("tutorials/**")
+    print(
+        "WARNING: pandoc not found - Jupyter notebook tutorials will be "
+        "skipped.  Install pandoc (https://pandoc.org/installing.html) to "
+        "build the complete documentation."
+    )
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
