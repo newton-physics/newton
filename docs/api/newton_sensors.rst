@@ -4,6 +4,7 @@
 newton.sensors
 ==============
 
+.. py:module:: newton.sensors
 .. currentmodule:: newton.sensors
 
 .. rubric:: Classes

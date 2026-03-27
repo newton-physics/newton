@@ -504,7 +504,7 @@ class ModelBuilder:
             - A :class:`Model.AttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
               Uses dict-based storage where keys are entity indices, allowing sparse assignment.
             - A string for custom frequencies using the full frequency key (e.g., ``"mujoco:pair"``).
-              Uses list-based storage for sequential data appended via :meth:`add_custom_values`. All attributes
+              Uses list-based storage for sequential data appended via :meth:`~newton.ModelBuilder.add_custom_values`. All attributes
               sharing the same custom frequency must have the same count, validated by
               :meth:`finalize <ModelBuilder.finalize>`."""
 
@@ -1129,7 +1129,7 @@ class ModelBuilder:
 
         self.rigid_gap: float = 0.1
         """Default rigid contact gap [m] applied when adding a shape whose
-        :attr:`ShapeConfig.gap` is ``None``. The resolved per-shape values are later
+        ``ModelBuilder.ShapeConfig.gap`` is ``None``. The resolved per-shape values are later
         propagated to :attr:`Model.shape_gap`."""
 
         self.num_rigid_contacts_per_world: int | None = None
@@ -2346,7 +2346,7 @@ class ModelBuilder:
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
                 are authored in the USD but not strictly required to build the simulation. This is useful for
                 inspection, experimentation, or custom pipelines that read these values via
-                ``result["schema_attrs"]`` returned from :func:`parse_usd`.
+                ``result["schema_attrs"]`` returned from ``parse_usd()``.
 
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
@@ -3660,14 +3660,14 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
-            limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
-            limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
-            limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
-            armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
-            effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
-            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
-            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
+            limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
+            limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
+            limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
+            limit_kd: The damping of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_kd`` is used.
+            armature: Artificial inertia added around the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
+            effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -3752,14 +3752,14 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
-            limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
-            limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
-            limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
-            armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
-            effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
-            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
-            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
+            limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
+            limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
+            limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
+            limit_kd: The damping of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_kd`` is used.
+            armature: Artificial inertia added around the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
+            effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -3825,8 +3825,8 @@ class ModelBuilder:
             child: The index of the child body.
             parent_xform: The transform from the parent body frame to the joint parent anchor frame.
             child_xform: The transform from the child body frame to the joint child anchor frame.
-            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
-            friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
+            armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
+            friction: Friction coefficient for the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -4062,7 +4062,7 @@ class ModelBuilder:
             label: The label of the joint.
             parent_xform: The transform from the parent body frame to the joint parent anchor frame.
             child_xform: The transform from the child body frame to the joint child anchor frame.
-            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
+            armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
@@ -5132,7 +5132,7 @@ class ModelBuilder:
             scale: The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color. Mesh-backed shapes fall back to :attr:`Mesh.color`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color. Mesh-backed shapes fall back to :attr:`~newton.Mesh.color`.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5706,7 +5706,7 @@ class ModelBuilder:
             mesh: The :class:`Mesh` object containing the vertex and triangle data. Defaults to `None`.
             scale: The scale of the mesh. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`Mesh.color` when available.
+            color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5747,7 +5747,7 @@ class ModelBuilder:
             mesh: The :class:`Mesh` object containing the vertex data for the convex hull. Defaults to `None`.
             scale: The scale of the convex hull. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`Mesh.color` when available.
+            color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -6963,7 +6963,7 @@ class ModelBuilder:
         """Adds a triangular FEM element between three particles in the system.
 
         Triangles are modeled as viscoelastic elements with elastic stiffness and damping
-        parameters specified on the model. See :attr:`~newton.Model.tri_ke`, :attr:`~newton.Model.tri_kd`.
+        parameters specified on the model. See :attr:`~newton.Model.tri_materials`.
 
         Args:
             i: The index of the first particle.

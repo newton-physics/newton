@@ -1,10 +1,12 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 MuJoCo Integration
 ==================
 
-:class:`~newton.solvers.SolverMuJoCo` translates a Newton :class:`~newton.Model`
+:class:`~solvers.SolverMuJoCo` translates a Newton :class:`~Model`
 into a `MuJoCo <https://github.com/google-deepmind/mujoco>`_ model and steps it
 with `mujoco_warp <https://github.com/google-deepmind/mujoco_warp>`_.
 Because MuJoCo has its own modelling conventions, some Newton properties are
@@ -229,7 +231,7 @@ Solver options
 
 Solver parameters follow a three-level resolution priority:
 
-1. **Constructor argument** — value passed to :class:`~newton.solvers.SolverMuJoCo`.
+1. **Constructor argument** — value passed to :class:`~solvers.SolverMuJoCo`.
 2. **Custom attribute** (``model.mujoco.<option>``) — supports per-world values.
    These attributes are typically populated automatically when importing USD or
    MJCF assets.
@@ -281,10 +283,10 @@ all worlds without replication.
 Collision pipeline
 ------------------
 
-By default :class:`~newton.solvers.SolverMuJoCo` uses MuJoCo's built-in
+By default :class:`~solvers.SolverMuJoCo` uses MuJoCo's built-in
 collision detection (``use_mujoco_contacts=True``).  Alternatively, you can set
 ``use_mujoco_contacts=False`` and pass contacts computed by Newton's own
-collision pipeline into :meth:`~newton.solvers.SolverMuJoCo.step`.  Newton's
+collision pipeline into :meth:`~solvers.SolverMuJoCo.step`.  Newton's
 pipeline supports non-convex meshes, SDF-based contacts, and hydroelastic
 contacts, which are not available through MuJoCo's collision detection.
 
@@ -299,10 +301,10 @@ Caveats
   collision pipeline is active it runs every step, so there is no benefit to
   keeping inactive contacts around.  Setting ``geom_gap > 0`` would inflate
   ``geom_margin``, which disables MuJoCo's multicontact and degrades contact
-  quality.  Therefore :class:`~newton.solvers.SolverMuJoCo` always sets
-  ``geom_gap = 0`` regardless of the Newton :attr:`~newton.ModelBuilder.ShapeConfig.gap`
+  quality.  Therefore :class:`~solvers.SolverMuJoCo` always sets
+  ``geom_gap = 0`` regardless of the Newton ``ModelBuilder.ShapeConfig.gap``
   value.  MJCF/USD ``gap`` values are still imported into
-  :attr:`~newton.ModelBuilder.ShapeConfig.gap` in the Newton model, but they are
+  ``ModelBuilder.ShapeConfig.gap`` in the Newton model, but they are
   not forwarded to the MuJoCo solver.
 
 **shape_collision_radius is ignored.**
@@ -332,11 +334,11 @@ Newton only allows ``is_kinematic=True`` on articulation roots, so in the
 MuJoCo exporter a "kinematic link" always means a kinematic root body. Any
 descendants of that root can still be dynamic and are exported normally.
 
-At runtime, :class:`~newton.solvers.SolverMuJoCo` keeps kinematic roots
+At runtime, :class:`~solvers.SolverMuJoCo` keeps kinematic roots
 user-prescribed rather than dynamically integrated:
 
 - When converting MuJoCo state back to Newton, the previous Newton
-  :attr:`newton.State.joint_q` and :attr:`newton.State.joint_qd` values are
+  :attr:`State.joint_q` and :attr:`State.joint_qd` values are
   passed through for kinematic roots instead of being overwritten from MuJoCo's
   integrated ``qpos`` and ``qvel``.
 - Applied body wrenches and joint forces targeting kinematic bodies are ignored
@@ -344,7 +346,7 @@ user-prescribed rather than dynamically integrated:
 - Kinematic bodies still participate in contacts, so they can act as moving or
   fixed obstacles for dynamic bodies.
 
-During export, :class:`~newton.solvers.SolverMuJoCo` maps roots according to
+During export, :class:`~solvers.SolverMuJoCo` maps roots according to
 their joint type:
 
 - **Kinematic roots with non-fixed joints** are exported as ordinary MuJoCo
@@ -353,13 +355,13 @@ their joint type:
   effectively infinite-mass coordinates.
 - **Roots attached to world with a fixed joint** are exported as MuJoCo mocap
   bodies. This applies to both kinematic and non-kinematic Newton roots
-  attached to world by :class:`~newton.JointType.FIXED`. MuJoCo has no joint
+  attached to world by :class:`~JointType.FIXED`. MuJoCo has no joint
   coordinates for a fixed root, so Newton drives the pose through
   ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead.
 - **World-attached shapes that are not part of an articulation** remain
   ordinary static MuJoCo geometry rather than mocap bodies.
 
-If you edit :attr:`newton.Model.joint_X_p` or :attr:`newton.Model.joint_X_c`
+If you edit :attr:`Model.joint_X_p` or :attr:`Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 ``solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES)``
 to synchronize the updated fixed-root poses into MuJoCo.

@@ -319,7 +319,7 @@ class SolverBase:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
-        ``SolverNotifyFlags`` enums defined in :mod:`newton.solvers`.
+        :class:`~newton.solvers.SolverNotifyFlags` enums defined in :mod:`newton.solvers`.
         Each flag represents a category of model data that may have been
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its
