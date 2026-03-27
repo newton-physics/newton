@@ -1208,7 +1208,6 @@ def compare_contacts_sorted(
     Returns:
         (matches, message) - True if contacts match within tolerance, with diagnostic message.
     """
-    wp.synchronize()
 
     nacon_newton = int(newton_data.nacon.numpy()[0])
     nacon_native = int(native_data.nacon.numpy()[0])
@@ -1306,7 +1305,6 @@ def compare_constraints_sorted(
     Returns:
         (matches, message) - True if constraint rows match modulo ordering.
     """
-    wp.synchronize()
 
     nefc_newton = newton_data.nefc.numpy()
     nefc_native = native_data.nefc.numpy()
@@ -1435,7 +1433,6 @@ def compare_mjdata_field(
         return
 
     # Sync and copy to numpy
-    wp.synchronize()
     newton_np = newton_arr.numpy()
     native_np = native_arr.numpy()
 

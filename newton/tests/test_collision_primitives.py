@@ -458,7 +458,6 @@ class TestCollisionPrimitives(unittest.TestCase):
             dim=len(test_cases),
             inputs=[plane_normals, plane_positions, sphere_positions, sphere_radii, distances, contact_positions],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         positions_np = contact_positions.numpy()
@@ -538,7 +537,6 @@ class TestCollisionPrimitives(unittest.TestCase):
             dim=len(test_cases),
             inputs=[pos1, radius1, pos2, radius2, distances, contact_positions, contact_normals],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -639,7 +637,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -824,7 +821,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -940,7 +936,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1083,7 +1078,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1193,7 +1187,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1308,7 +1301,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_frames,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         frames_np = contact_frames.numpy()
@@ -1393,7 +1385,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1490,7 +1481,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1577,7 +1567,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1715,7 +1704,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1820,7 +1808,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -2088,7 +2075,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()

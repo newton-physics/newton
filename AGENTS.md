@@ -22,16 +22,24 @@ Run `uvx pre-commit run -a` to lint/format before committing. Use `uv` for all c
 # Examples
 uv sync --extra examples
 uv run -m newton.examples basic_pendulum
+```
 
-# Tests
+## Tests
 
 Always use `unittest`, not pytest.
 
+```bash
 uv run --extra dev -m newton.tests
 uv run --extra dev -m newton.tests -k test_viewer_log_shapes           # specific test
 uv run --extra dev -m newton.tests -k test_basic.example_basic_shapes  # example test
 uv run --extra dev --extra torch-cu12 -m newton.tests                  # with PyTorch
+```
 
+### Testing guidelines
+
+- Never call `wp.synchronize()` or `wp.synchronize_device()` right before `.numpy()` on a Warp array. This is redundant as `.numpy()` performs a synchronous device-to-host copy that completes all outstanding work.
+
+```bash
 # Benchmarks
 uvx --with virtualenv asv run --launch-method spawn main^!
 ```
