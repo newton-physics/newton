@@ -11,10 +11,10 @@ Usage:
 import argparse
 import time
 
+import matplotlib
 import numpy as np
 import warp as wp
 
-import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -34,7 +34,7 @@ def measure_n(n: int, steps: int, warmup: int) -> dict[str, float]:
 
     Returns a dict mapping component name → mean seconds per step_dt call.
     """
-    model  = build_model(n)
+    model = build_model(n)
     solver = make_solver(model)
 
     state_0 = model.state()
@@ -77,13 +77,13 @@ def measure_n(n: int, steps: int, warmup: int) -> dict[str, float]:
         _ = solver.get_status_summary()
 
     components = {
-        "3x_substep":      _time_substep_full,
-        "graph_replay":    _time_graph_replay,
+        "3x_substep": _time_substep_full,
+        "graph_replay": _time_graph_replay,
         "update_mjc_data": _time_update_mjc,
-        "update_newton":   _time_update_newton,
-        "mujoco_warp":     _time_mujoco_warp,
-        "boundary_numpy":  _time_boundary_numpy,
-        "status_summary":  _time_status_summary,
+        "update_newton": _time_update_newton,
+        "mujoco_warp": _time_mujoco_warp,
+        "boundary_numpy": _time_boundary_numpy,
+        "status_summary": _time_status_summary,
     }
 
     timings = {k: [] for k in components}
@@ -95,17 +95,17 @@ def measure_n(n: int, steps: int, warmup: int) -> dict[str, float]:
     for name, vals in timings.items():
         result[name] = float(np.mean(vals))
 
-    SUBSTEPS   = 3
+    SUBSTEPS = 3
     bodies_per_world = model.body_count // n
-    dofs_per_world   = model.joint_dof_count // n
+    dofs_per_world = model.joint_dof_count // n
     threads_per_world = (bodies_per_world + dofs_per_world) * 100 * SUBSTEPS
     result["threads_total"] = float(n * threads_per_world)
     result["threads_per_world"] = float(threads_per_world)
 
     print(
-        f"  N={n:>5}  step_dt={result['step_dt']*1e3:6.2f} ms  "
-        f"mujoco_warp={result['mujoco_warp']*1e3:5.2f} ms  "
-        f"threads_total={result['threads_total']/1e6:.2f}M",
+        f"  N={n:>5}  step_dt={result['step_dt'] * 1e3:6.2f} ms  "
+        f"mujoco_warp={result['mujoco_warp'] * 1e3:5.2f} ms  "
+        f"threads_total={result['threads_total'] / 1e6:.2f}M",
         flush=True,
     )
     return result
@@ -114,13 +114,15 @@ def measure_n(n: int, steps: int, warmup: int) -> dict[str, float]:
 def main():
     parser = argparse.ArgumentParser(description="CENIC GPU scaling diagnostic")
     parser.add_argument(
-        "--ns", type=int, nargs="+",
+        "--ns",
+        type=int,
+        nargs="+",
         default=[1, 2, 4, 8, 16, 32, 64, 128, 256],
         help="List of world counts to benchmark",
     )
-    parser.add_argument("--steps",  type=int, default=50,  help="Timed steps per N")
-    parser.add_argument("--warmup", type=int, default=20,  help="Warm-up steps per N")
-    parser.add_argument("--out",    type=str, default="cenic_scaling_diag.png", help="Output plot path")
+    parser.add_argument("--steps", type=int, default=50, help="Timed steps per N")
+    parser.add_argument("--warmup", type=int, default=20, help="Warm-up steps per N")
+    parser.add_argument("--out", type=str, default="cenic_scaling_diag.png", help="Output plot path")
     args = parser.parse_args()
 
     ns = sorted(args.ns)
@@ -132,14 +134,14 @@ def main():
         all_results.append(r)
 
     components = [
-        ("step_dt",         "step_dt (end-to-end)",              "black",      "-",  2.5),
-        ("3x_substep",      "3× MuJoCo substep (uncaptured)",    "tab:blue",   "-",  1.5),
-        ("mujoco_warp",     "mujoco_warp_step (×1)",             "tab:cyan",   "--", 1.2),
-        ("graph_replay",    "CUDA graph replay (full inner step)","tab:orange", "-",  1.5),
-        ("update_mjc_data", "update_mjc_data (×1)",              "tab:green",  "--", 1.2),
-        ("update_newton",   "update_newton_state (×1)",          "tab:red",    "--", 1.2),
-        ("boundary_numpy",  "boundary_flag.numpy() (×1)",        "tab:purple", ":",  1.2),
-        ("status_summary",  "get_status_summary() (×1)",         "tab:brown",  ":",  1.2),
+        ("step_dt", "step_dt (end-to-end)", "black", "-", 2.5),
+        ("3x_substep", "3× MuJoCo substep (uncaptured)", "tab:blue", "-", 1.5),
+        ("mujoco_warp", "mujoco_warp_step (×1)", "tab:cyan", "--", 1.2),
+        ("graph_replay", "CUDA graph replay (full inner step)", "tab:orange", "-", 1.5),
+        ("update_mjc_data", "update_mjc_data (×1)", "tab:green", "--", 1.2),
+        ("update_newton", "update_newton_state (×1)", "tab:red", "--", 1.2),
+        ("boundary_numpy", "boundary_flag.numpy() (×1)", "tab:purple", ":", 1.2),
+        ("status_summary", "get_status_summary() (×1)", "tab:brown", ":", 1.2),
     ]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
@@ -162,43 +164,50 @@ def main():
     print(f"\nPlot saved → {args.out}", flush=True)
 
     threads_total = [r["threads_total"] / 1e6 for r in all_results]
-    wall_times    = [r["mujoco_warp"] * 1e3 for r in all_results]
+    wall_times = [r["mujoco_warp"] * 1e3 for r in all_results]
 
     device = wp.get_device()
     gpu_name = device.name
     try:
         import pynvml
+
         pynvml.nvmlInit()
         h = pynvml.nvmlDeviceGetHandleByIndex(0)
-        sm_count  = pynvml.nvmlDeviceGetNumGpuCores(h)
+        sm_count = pynvml.nvmlDeviceGetNumGpuCores(h)
         gpu_label = f"{gpu_name}  ({sm_count} SMs)"
     except Exception:
-        sm_count  = None
+        sm_count = None
         gpu_label = gpu_name
 
     thread_out = args.out.replace(".png", "_threads.png")
     fig, ax1 = plt.subplots(figsize=(9, 5))
     color_threads = "tab:blue"
-    color_wall    = "tab:red"
+    color_wall = "tab:red"
 
     ax1.set_xlabel("N worlds")
     ax1.set_ylabel("Theoretical threads dispatched (M)", color=color_threads)
-    ax1.plot(ns, threads_total, color=color_threads, marker="o", markersize=4,
-             linewidth=1.8, label="threads (M)")
+    ax1.plot(ns, threads_total, color=color_threads, marker="o", markersize=4, linewidth=1.8, label="threads (M)")
     ax1.tick_params(axis="y", labelcolor=color_threads)
     ax1.set_xscale("log", base=2)
 
     ax2 = ax1.twinx()
     ax2.set_ylabel("mujoco_warp wall time [ms]", color=color_wall)
-    ax2.plot(ns, wall_times, color=color_wall, marker="s", markersize=4,
-             linewidth=1.8, linestyle="--", label="wall time (ms)")
+    ax2.plot(
+        ns,
+        wall_times,
+        color=color_wall,
+        marker="s",
+        markersize=4,
+        linewidth=1.8,
+        linestyle="--",
+        label="wall time (ms)",
+    )
     ax2.tick_params(axis="y", labelcolor=color_wall)
 
     min_wall = min(wall_times)
     knee_ns = [n for n, w in zip(ns, wall_times) if w > min_wall * 1.2]
     if knee_ns:
-        ax1.axvline(knee_ns[0], color="grey", linestyle=":", linewidth=1.2,
-                    label=f"saturation ≈ N={knee_ns[0]}")
+        ax1.axvline(knee_ns[0], color="grey", linestyle=":", linewidth=1.2, label=f"saturation ≈ N={knee_ns[0]}")
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -212,12 +221,33 @@ def main():
     print(f"Thread plot saved → {thread_out}", flush=True)
 
     print("\n=== Mean wall time per step_dt [ms] ===")
-    header = f"{'N':>6}" + "".join(f"  {k:>16}" for k in ["step_dt", "3x_substep", "mujoco_warp", "graph_replay", "update_mjc_data", "update_newton", "boundary_numpy", "status_summary"])
+    header = f"{'N':>6}" + "".join(
+        f"  {k:>16}"
+        for k in [
+            "step_dt",
+            "3x_substep",
+            "mujoco_warp",
+            "graph_replay",
+            "update_mjc_data",
+            "update_newton",
+            "boundary_numpy",
+            "status_summary",
+        ]
+    )
     print(header)
     for n, r in zip(ns, all_results):
         row = f"{n:>6}"
-        for k in ["step_dt", "3x_substep", "mujoco_warp", "graph_replay", "update_mjc_data", "update_newton", "boundary_numpy", "status_summary"]:
-            row += f"  {r[k]*1e3:>16.3f}"
+        for k in [
+            "step_dt",
+            "3x_substep",
+            "mujoco_warp",
+            "graph_replay",
+            "update_mjc_data",
+            "update_newton",
+            "boundary_numpy",
+            "status_summary",
+        ]:
+            row += f"  {r[k] * 1e3:>16.3f}"
         print(row)
 
 

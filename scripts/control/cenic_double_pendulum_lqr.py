@@ -38,9 +38,9 @@ wp.config.enable_backward = False
 import newton
 import newton.solvers
 
-MASS           = 1.0    # kg per link
-LENGTH         = 0.5    # m per link
-GRAVITY        = 9.81   # m/s²
+MASS = 1.0  # kg per link
+LENGTH = 0.5  # m per link
+GRAVITY = 9.81  # m/s²
 ROD_HALF_WIDTH = 0.025  # m, visual half-extent for box shape
 
 PIVOT_Z = LENGTH * 2 + 0.4  # 1.4 m — clearance for both links fully extended downward
@@ -51,15 +51,15 @@ CONTROL_DT = 0.002  # 2 ms
 
 @wp.kernel
 def _control_kernel(
-    joint_q:        wp.array(dtype=wp.float32),   # [num_worlds * 2] joint positions θ₁, θ₂
-    joint_qd:       wp.array(dtype=wp.float32),   # [num_worlds * 2] joint velocities θ̇₁, θ̇₂
-    K:              wp.array(dtype=wp.float32),   # [num_worlds * 4] flat row-major LQR gains
-    torque_limit:   float,                        # N·m
-    sim_time:       wp.array(dtype=wp.float32),   # [num_worlds] per-world simulation time [s]
-    last_ctrl_time: wp.array(dtype=wp.float32),   # [num_worlds] sim_time of last control update
-    stored_tau:     wp.array(dtype=wp.float32),   # [num_worlds] zero-order-hold torque
-    control_dt:     float,                        # controller period [s]
-    joint_f:        wp.array(dtype=wp.float32),   # [num_worlds * 2] output generalized forces
+    joint_q: wp.array(dtype=wp.float32),  # [num_worlds * 2] joint positions θ₁, θ₂
+    joint_qd: wp.array(dtype=wp.float32),  # [num_worlds * 2] joint velocities θ̇₁, θ̇₂
+    K: wp.array(dtype=wp.float32),  # [num_worlds * 4] flat row-major LQR gains
+    torque_limit: float,  # N·m
+    sim_time: wp.array(dtype=wp.float32),  # [num_worlds] per-world simulation time [s]
+    last_ctrl_time: wp.array(dtype=wp.float32),  # [num_worlds] sim_time of last control update
+    stored_tau: wp.array(dtype=wp.float32),  # [num_worlds] zero-order-hold torque
+    control_dt: float,  # controller period [s]
+    joint_f: wp.array(dtype=wp.float32),  # [num_worlds * 2] output generalized forces
 ):
     """Shoulder-only LQR with zero-order hold — one GPU thread per world.
 
@@ -69,46 +69,44 @@ def _control_kernel(
     """
     w = wp.tid()
 
-    theta1  = joint_q[w * 2]
-    theta2  = joint_q[w * 2 + 1]
+    theta1 = joint_q[w * 2]
+    theta2 = joint_q[w * 2 + 1]
     dtheta1 = joint_qd[w * 2]
     dtheta2 = joint_qd[w * 2 + 1]
 
-    eta1 = wp.atan2(wp.sin(theta1 - wp.float32(wp.pi)),
-                    wp.cos(theta1 - wp.float32(wp.pi)))
+    eta1 = wp.atan2(wp.sin(theta1 - wp.float32(wp.pi)), wp.cos(theta1 - wp.float32(wp.pi)))
     eta2 = wp.atan2(wp.sin(theta2), wp.cos(theta2))
 
     kg = w * 4
 
     if sim_time[w] - last_ctrl_time[w] >= control_dt:
-        tau1 = -(K[kg + 0] * eta1 + K[kg + 1] * eta2
-                 + K[kg + 2] * dtheta1 + K[kg + 3] * dtheta2)
-        stored_tau[w]     = tau1
+        tau1 = -(K[kg + 0] * eta1 + K[kg + 1] * eta2 + K[kg + 2] * dtheta1 + K[kg + 3] * dtheta2)
+        stored_tau[w] = tau1
         last_ctrl_time[w] = sim_time[w]
 
-    joint_f[w * 2]     = wp.clamp(stored_tau[w], -torque_limit, torque_limit)
+    joint_f[w * 2] = wp.clamp(stored_tau[w], -torque_limit, torque_limit)
     joint_f[w * 2 + 1] = wp.float32(0.0)
 
 
 @wp.kernel
 def _tally_balanced_kernel(
-    joint_q:        wp.array(dtype=wp.float32),
-    joint_qd:       wp.array(dtype=wp.float32),
+    joint_q: wp.array(dtype=wp.float32),
+    joint_qd: wp.array(dtype=wp.float32),
     balanced_count: wp.array(dtype=wp.int32),
 ):
     """Increment per-world counter each physics step the pendulum is near upright.
 
     Thresholds: |η₁| < 0.5 rad, |η₂| < 0.5 rad, |θ̇₁| + |θ̇₂| < 4.0 rad/s.
     """
-    w    = wp.tid()
-    eta1 = wp.atan2(wp.sin(joint_q[w * 2]     - wp.float32(wp.pi)),
-                    wp.cos(joint_q[w * 2]     - wp.float32(wp.pi)))
-    eta2 = wp.atan2(wp.sin(joint_q[w * 2 + 1]),
-                    wp.cos(joint_q[w * 2 + 1]))
+    w = wp.tid()
+    eta1 = wp.atan2(wp.sin(joint_q[w * 2] - wp.float32(wp.pi)), wp.cos(joint_q[w * 2] - wp.float32(wp.pi)))
+    eta2 = wp.atan2(wp.sin(joint_q[w * 2 + 1]), wp.cos(joint_q[w * 2 + 1]))
 
-    is_balanced = (wp.abs(eta1) < wp.float32(0.5)
-                   and wp.abs(eta2) < wp.float32(0.5)
-                   and wp.abs(joint_qd[w * 2]) + wp.abs(joint_qd[w * 2 + 1]) < wp.float32(4.0))
+    is_balanced = (
+        wp.abs(eta1) < wp.float32(0.5)
+        and wp.abs(eta2) < wp.float32(0.5)
+        and wp.abs(joint_qd[w * 2]) + wp.abs(joint_qd[w * 2 + 1]) < wp.float32(4.0)
+    )
     if is_balanced:
         wp.atomic_add(balanced_count, w, 1)
 
@@ -149,9 +147,9 @@ def compute_lqr_gains(num_worlds: int, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     K_all = np.zeros((num_worlds, 1, 4), dtype=np.float32)
 
-    q_pos = np.exp(rng.uniform(np.log(1.0),  np.log(1000.0), (num_worlds, 2)))
-    q_vel = np.exp(rng.uniform(np.log(0.1),  np.log(100.0),  (num_worlds, 2)))
-    r_act = np.exp(rng.uniform(np.log(0.01), np.log(10.0),   (num_worlds, 1)))
+    q_pos = np.exp(rng.uniform(np.log(1.0), np.log(1000.0), (num_worlds, 2)))
+    q_vel = np.exp(rng.uniform(np.log(0.1), np.log(100.0), (num_worlds, 2)))
+    r_act = np.exp(rng.uniform(np.log(0.01), np.log(10.0), (num_worlds, 1)))
 
     K_default = np.array([[20.0, 10.0, 8.0, 4.0]], dtype=np.float32)
 
@@ -178,9 +176,15 @@ def build_model(num_worlds: int) -> newton.Model:
 
     I_bend = m * l**2 / 12.0
     inertia = wp.mat33(
-        I_bend, 0.0,    0.0,
-        0.0,    I_bend, 0.0,
-        0.0,    0.0,    I_bend * 0.01,
+        I_bend,
+        0.0,
+        0.0,
+        0.0,
+        I_bend,
+        0.0,
+        0.0,
+        0.0,
+        I_bend * 0.01,
     )
 
     hw = ROD_HALF_WIDTH
@@ -213,7 +217,7 @@ def build_model(num_worlds: int) -> newton.Model:
 
     pendulum.add_articulation([j0, j1], label="pendulum")
 
-    pendulum.joint_q[0] = float(np.pi) - 0.2   # ≈11° off upright
+    pendulum.joint_q[0] = float(np.pi) - 0.2  # ≈11° off upright
 
     scene = newton.ModelBuilder()
     scene.replicate(pendulum, num_worlds, spacing=(0.4, 0.0, 0.0))
@@ -227,38 +231,29 @@ def print_status_grid(solver, step, balanced_counts, total_steps, viewer_t=None,
     global _grid_lines_written
 
     sim_times = solver.sim_time.numpy()
-    dts       = solver.dt.numpy()
-    errors    = solver.last_error.numpy()
-    counts    = balanced_counts.numpy()
+    dts = solver.dt.numpy()
+    errors = solver.last_error.numpy()
+    counts = balanced_counts.numpy()
 
-    n    = min(num_show, len(sim_times))
+    n = min(num_show, len(sim_times))
     frac = counts / max(total_steps, 1)
     order = np.argsort(frac)[::-1]
 
     col = 14
     bar = "+" + ("-" * col + "+") * 5
-    header = (
-        f"{'world':>{col}}"
-        f"{'sim_t (s)':>{col}}"
-        f"{'dt (s)':>{col}}"
-        f"{'RMS err':>{col}}"
-        f"{'balanced%':>{col}}"
-    )
+    header = f"{'world':>{col}}{'sim_t (s)':>{col}}{'dt (s)':>{col}}{'RMS err':>{col}}{'balanced%':>{col}}"
 
     viewer_str = f"  viewer_t={viewer_t:.3f}s" if viewer_t is not None else ""
     lines = [
-        f"  step {step}  tol={solver._tol:.1e}{viewer_str}  "
-        f"showing top {n} of {len(sim_times)} worlds",
-        bar, header, bar,
+        f"  step {step}  tol={solver._tol:.1e}{viewer_str}  showing top {n} of {len(sim_times)} worlds",
+        bar,
+        header,
+        bar,
     ]
 
     for i in order[:n]:
         lines.append(
-            f"{f'world {i}':>{col}}"
-            f"{sim_times[i]:>{col}.3f}"
-            f"{dts[i]:>{col}.6f}"
-            f"{errors[i]:>{col}.2e}"
-            f"{frac[i]:>{col}.1%}"
+            f"{f'world {i}':>{col}}{sim_times[i]:>{col}.3f}{dts[i]:>{col}.6f}{errors[i]:>{col}.2e}{frac[i]:>{col}.1%}"
         )
     lines.append(bar)
 
@@ -270,12 +265,10 @@ def print_status_grid(solver, step, balanced_counts, total_steps, viewer_t=None,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="CENIC underactuated double pendulum LQR gain sweep"
-    )
-    parser.add_argument("--num-worlds", type=int, default=9,    help="parallel pendulums")
-    parser.add_argument("--headless",   action="store_true",   help="skip viewer, exit after --num-steps")
-    parser.add_argument("--num-steps",  type=int, default=2000, help="steps in headless mode")
+    parser = argparse.ArgumentParser(description="CENIC underactuated double pendulum LQR gain sweep")
+    parser.add_argument("--num-worlds", type=int, default=9, help="parallel pendulums")
+    parser.add_argument("--headless", action="store_true", help="skip viewer, exit after --num-steps")
+    parser.add_argument("--num-steps", type=int, default=2000, help="steps in headless mode")
     args = parser.parse_args()
 
     device = wp.get_device()
@@ -284,12 +277,10 @@ def main() -> None:
     K_wp = wp.from_numpy(K_np.reshape(-1), dtype=wp.float32, device=device)
 
     # last_ctrl_time starts at −CONTROL_DT so the first physics step triggers a control update.
-    last_ctrl_time = wp.array(
-        np.full(args.num_worlds, -CONTROL_DT, dtype=np.float32), device=device
-    )
+    last_ctrl_time = wp.array(np.full(args.num_worlds, -CONTROL_DT, dtype=np.float32), device=device)
     stored_tau = wp.zeros(args.num_worlds, dtype=wp.float32, device=device)
 
-    model  = build_model(args.num_worlds)
+    model = build_model(args.num_worlds)
     solver = newton.solvers.SolverMuJoCoCENIC(
         model,
         tol=1e-3,
@@ -311,7 +302,7 @@ def main() -> None:
     print(
         f"CENIC LQR gain sweep — {args.num_worlds} worlds  "
         f"tol=1e-3  dt_init=0.005  "
-        f"start θ₁ = π − 0.2 rad  control_dt={CONTROL_DT*1000:.0f} ms",
+        f"start θ₁ = π − 0.2 rad  control_dt={CONTROL_DT * 1000:.0f} ms",
         flush=True,
     )
 
@@ -320,8 +311,14 @@ def main() -> None:
             _control_kernel,
             dim=args.num_worlds,
             inputs=[
-                state_0.joint_q, state_0.joint_qd, K_wp, 50.0,
-                solver.sim_time, last_ctrl_time, stored_tau, CONTROL_DT,
+                state_0.joint_q,
+                state_0.joint_qd,
+                K_wp,
+                50.0,
+                solver.sim_time,
+                last_ctrl_time,
+                stored_tau,
+                CONTROL_DT,
             ],
             outputs=[control.joint_f],
             device=device,
@@ -344,21 +341,19 @@ def main() -> None:
             state_0, state_1 = state_1, state_0
 
             if step % LOG_EVERY == 0:
-                print_status_grid(solver, step, balanced_counts, step + 1,
-                                  num_show=min(20, args.num_worlds))
+                print_status_grid(solver, step, balanced_counts, step + 1, num_show=min(20, args.num_worlds))
 
         counts_np = balanced_counts.numpy()
-        times_np  = solver.sim_time.numpy()
-        frac      = counts_np / max(args.num_steps, 1)
-        order     = np.argsort(frac)[::-1]
-        K_flat    = K_wp.numpy().reshape(args.num_worlds, 1, 4)
+        times_np = solver.sim_time.numpy()
+        frac = counts_np / max(args.num_steps, 1)
+        order = np.argsort(frac)[::-1]
+        K_flat = K_wp.numpy().reshape(args.num_worlds, 1, 4)
 
         print("\n=== Gain Ranking (top 20 by balanced fraction) ===")
         print(f"{'Rank':>5}  {'World':>6}  {'Balanced%':>10}  {'sim_t':>8}  K[0,:4]")
         for rank in range(min(20, args.num_worlds)):
             i = order[rank]
-            print(f"{rank+1:>5}  {i:>6}  {frac[i]:>10.1%}  {times_np[i]:>8.3f}  "
-                  f"{K_flat[i, 0]}")
+            print(f"{rank + 1:>5}  {i:>6}  {frac[i]:>10.1%}  {times_np[i]:>8.3f}  {K_flat[i, 0]}")
 
     else:
         viewer = newton.viewer.ViewerGL(headless=False)
@@ -372,8 +367,8 @@ def main() -> None:
             yaw=90.0,
         )
 
-        step             = 0
-        t                = 0.0
+        step = 0
+        t = 0.0
         next_render_time = np.zeros(args.num_worlds, dtype=np.float32)
 
         while viewer.is_running():
@@ -382,8 +377,14 @@ def main() -> None:
                     _control_kernel,
                     dim=args.num_worlds,
                     inputs=[
-                        state_0.joint_q, state_0.joint_qd, K_wp, 50.0,
-                        solver.sim_time, last_ctrl_time, stored_tau, CONTROL_DT,
+                        state_0.joint_q,
+                        state_0.joint_qd,
+                        K_wp,
+                        50.0,
+                        solver.sim_time,
+                        last_ctrl_time,
+                        stored_tau,
+                        CONTROL_DT,
                     ],
                     outputs=[control.joint_f],
                     device=device,
@@ -403,13 +404,11 @@ def main() -> None:
                 device=device,
             )
             next_render_time += CONTROL_DT
-            t    += CONTROL_DT
+            t += CONTROL_DT
             step += 1
 
             if step % LOG_EVERY == 0:
-                print_status_grid(solver, step, balanced_counts, step,
-                                  viewer_t=t,
-                                  num_show=min(12, args.num_worlds))
+                print_status_grid(solver, step, balanced_counts, step, viewer_t=t, num_show=min(12, args.num_worlds))
 
             viewer.begin_frame(t)
             viewer.log_state(state_0)

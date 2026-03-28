@@ -2,6 +2,7 @@ import sys
 
 import numpy as np
 import warp as wp
+
 import newton
 import newton.examples
 
@@ -57,19 +58,13 @@ def print_status_grid(solver, step):
     global _grid_lines_written
 
     sim_times = solver.sim_time.numpy()
-    dts       = solver.dt.numpy()
-    errors    = solver.last_error.numpy()
-    accepted  = solver.accepted.numpy()
+    dts = solver.dt.numpy()
+    errors = solver.last_error.numpy()
+    accepted = solver.accepted.numpy()
 
     col = 16
     bar = "+" + ("-" * col + "+") * 5
-    header = (
-        f"{'world':>{col}}"
-        f"{'sim_time (s)':>{col}}"
-        f"{'dt (s)':>{col}}"
-        f"{'RMS error':>{col}}"
-        f"{'status':>{col}}"
-    )
+    header = f"{'world':>{col}}{'sim_time (s)':>{col}}{'dt (s)':>{col}}{'RMS error':>{col}}{'status':>{col}}"
 
     lines = [
         f"  step {step}  (tol={solver._tol:.1e})",
@@ -80,11 +75,7 @@ def print_status_grid(solver, step):
     for i in range(len(sim_times)):
         status = "ok" if accepted[i] else "REJECT"
         lines.append(
-            f"{f'world {i}':>{col}}"
-            f"{sim_times[i]:>{col}.4f}"
-            f"{dts[i]:>{col}.6f}"
-            f"{errors[i]:>{col}.3e}"
-            f"{status:>{col}}"
+            f"{f'world {i}':>{col}}{sim_times[i]:>{col}.4f}{dts[i]:>{col}.6f}{errors[i]:>{col}.3e}{status:>{col}}"
         )
     lines.append(bar)
     if not any(accepted):
@@ -106,12 +97,11 @@ viewer = newton.viewer.ViewerGL(headless=False)
 viewer.set_model(model)
 
 step = 0
-t    = 0.0
+t = 0.0
 
 next_step_time = np.zeros(num_worlds, dtype=np.float32)
 
 while viewer.is_running():
-
     with wp.ScopedTimer("simulate", active=False):
         while True:
             state_0.clear_forces()
@@ -121,7 +111,7 @@ while viewer.is_running():
             if np.all(solver.sim_time.numpy() >= next_step_time):
                 break
         next_step_time += STEP_DT
-        t    += STEP_DT
+        t += STEP_DT
         step += 1
 
     if step % LOG_EVERY_N_STEPS == 0:

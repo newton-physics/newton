@@ -1,3 +1,61 @@
+## Implementation log workflow
+
+All optimization approaches, solver changes, and non-trivial implementation attempts must be documented in the `claude_context/` Obsidian vault before and after testing. This prevents wasted effort retrying failed approaches.
+
+### Before implementing anything
+
+1. Read the vault index (`claude_context/README.md`) and any notes tagged with the relevant area (e.g. `#scaling`, `#solver`, `#contact`).
+2. If the approach (or a close variant) has already been tried, do not retry it. Propose a genuinely different approach instead.
+
+### After testing an implementation
+
+Create or update a note in `claude_context/` with this template:
+
+```markdown
+# <Short descriptive title>
+
+**Date:** YYYY-MM-DD
+**Area:** scaling | solver | contact | viewer | ...
+**Status:** success | failed | partial | abandoned
+**Commit:** <hash or "reverted">
+**Tags:** #<area> #<status>
+
+## Goal
+What we were trying to achieve.
+
+## Approach
+What was implemented and why this approach was chosen.
+
+## Results
+Measured data -- timings, exponents, error norms, or other quantitative evidence.
+Never leave this blank. No result = no note.
+
+## Verdict
+Why it worked or didn't. What we learned. Constraints for future attempts.
+```
+
+File naming: `YYYY-MM-DD-<short-slug>.md` (e.g. `2026-03-28-capture-while-scaling.md`).
+
+### Vault structure
+
+```
+claude_context/
+  README.md          -- index of all notes, grouped by area
+  scaling/           -- N-scaling optimization attempts
+  solver/            -- adaptive stepping, error control, CUDA graph changes
+  contact/           -- contact model, broad/narrow phase
+  viewer/            -- rendering, VBO, sync
+```
+
+### Rules
+
+- Every approach gets a note, even failures. Especially failures.
+- Notes must include quantitative results. "It felt faster" is not a result.
+- The `README.md` index must stay current -- add a one-line entry when creating a note.
+- Migrate existing knowledge: the memory file `scaling_approaches.md` content should be ported into individual vault notes.
+
+---
+
 ## CENIC simulation loop pattern
 
 All scripts using `SolverMuJoCoCENIC` must use `step_dt` — never reimplement the inner loop manually.
@@ -85,5 +143,13 @@ Multi-world scripts (`--num-worlds N`) produce diverging trajectories even from 
 ## Plotting conventions
 
 All benchmark and scaling plots must use log-log axes unless the plot is a time series (x-axis is simulation time) or log scale does not make sense for the data. Time series plots use linear x with log y where appropriate (e.g. error traces).
+
+---
+
+## N-scaling optimization log
+
+See memory file `scaling_approaches.md` for the full log of approaches tried, their implementations, and measured results. **Before proposing a new approach, read that file. Never retry something already listed. Never move on without recording measured exponents.**
+
+Measurement command: `uv run -m scripts.bench --only scaling --ns 1 4 16 64 256 --steps 50 --warmup 20`
 
 @AGENTS.md

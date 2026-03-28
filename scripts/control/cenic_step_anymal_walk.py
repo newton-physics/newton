@@ -9,7 +9,7 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
-from newton import GeoType, State
+from newton import GeoType
 
 num_worlds = 3
 
@@ -31,22 +31,37 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     return a - b + c
 
 
-def compute_obs_for_world(world, actions_w, state, joint_pos_initial, torch_device,
-                          lab_indices, gravity_vec, command, q_offset, qd_offset,
-                          coords_per_world, dofs_per_world):
+def compute_obs_for_world(
+    world,
+    actions_w,
+    state,
+    joint_pos_initial,
+    torch_device,
+    lab_indices,
+    gravity_vec,
+    command,
+    q_offset,
+    qd_offset,
+    coords_per_world,
+    dofs_per_world,
+):
     """Build the policy observation for a single world."""
-    q  = q_offset
+    q = q_offset
     qd = qd_offset
 
-    root_quat    = torch.tensor(state.joint_q[q+3  : q+7],                 device=torch_device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel = torch.tensor(state.joint_qd[qd   : qd+3],               device=torch_device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel = torch.tensor(state.joint_qd[qd+3 : qd+6],               device=torch_device, dtype=torch.float32).unsqueeze(0)
-    joint_pos    = torch.tensor(state.joint_q[q+7   : q+coords_per_world], device=torch_device, dtype=torch.float32).unsqueeze(0)
-    joint_vel    = torch.tensor(state.joint_qd[qd+6 : qd+dofs_per_world],  device=torch_device, dtype=torch.float32).unsqueeze(0)
+    root_quat = torch.tensor(state.joint_q[q + 3 : q + 7], device=torch_device, dtype=torch.float32).unsqueeze(0)
+    root_lin_vel = torch.tensor(state.joint_qd[qd : qd + 3], device=torch_device, dtype=torch.float32).unsqueeze(0)
+    root_ang_vel = torch.tensor(state.joint_qd[qd + 3 : qd + 6], device=torch_device, dtype=torch.float32).unsqueeze(0)
+    joint_pos = torch.tensor(
+        state.joint_q[q + 7 : q + coords_per_world], device=torch_device, dtype=torch.float32
+    ).unsqueeze(0)
+    joint_vel = torch.tensor(
+        state.joint_qd[qd + 6 : qd + dofs_per_world], device=torch_device, dtype=torch.float32
+    ).unsqueeze(0)
 
-    vel_b    = quat_rotate_inverse(root_quat, root_lin_vel)
+    vel_b = quat_rotate_inverse(root_quat, root_lin_vel)
     ang_vel_b = quat_rotate_inverse(root_quat, root_ang_vel)
-    grav     = quat_rotate_inverse(root_quat, gravity_vec)
+    grav = quat_rotate_inverse(root_quat, gravity_vec)
 
     joint_pos_rel = torch.index_select(joint_pos - joint_pos_initial, 1, lab_indices)
     joint_vel_rel = torch.index_select(joint_vel, 1, lab_indices)
@@ -85,10 +100,18 @@ for i in range(len(robot.shape_type)):
         robot.shape_scale[i] = (r * 2.0, 0.0, 0.0)
 
 initial_q = {
-    "RH_HAA": 0.0, "RH_HFE": -0.4, "RH_KFE":  0.8,
-    "LH_HAA": 0.0, "LH_HFE": -0.4, "LH_KFE":  0.8,
-    "RF_HAA": 0.0, "RF_HFE":  0.4, "RF_KFE": -0.8,
-    "LF_HAA": 0.0, "LF_HFE":  0.4, "LF_KFE": -0.8,
+    "RH_HAA": 0.0,
+    "RH_HFE": -0.4,
+    "RH_KFE": 0.8,
+    "LH_HAA": 0.0,
+    "LH_HFE": -0.4,
+    "LH_KFE": 0.8,
+    "RF_HAA": 0.0,
+    "RF_HFE": 0.4,
+    "RF_KFE": -0.8,
+    "LF_HAA": 0.0,
+    "LF_HFE": 0.4,
+    "LF_KFE": -0.8,
 }
 for name, value in initial_q.items():
     idx = next((i for i, lbl in enumerate(robot.joint_label) if lbl.endswith(f"/{name}")), None)
@@ -106,7 +129,7 @@ scene.add_ground_plane()
 model = scene.finalize()
 
 coords_per_world = model.joint_coord_count // num_worlds
-dofs_per_world   = model.joint_dof_count   // num_worlds
+dofs_per_world = model.joint_dof_count // num_worlds
 
 solver = newton.solvers.SolverMuJoCoCENIC(
     model,
@@ -134,16 +157,17 @@ policy = torch.jit.load(
 
 joint_pos_initial = torch.tensor(
     state_0.joint_q[7:coords_per_world],
-    device=torch_device, dtype=torch.float32,
+    device=torch_device,
+    dtype=torch.float32,
 ).unsqueeze(0)
 
 actions = torch.zeros(num_worlds, 12, device=torch_device, dtype=torch.float32)
 
-lab_indices    = torch.tensor(lab_to_mujoco, device=torch_device)
+lab_indices = torch.tensor(lab_to_mujoco, device=torch_device)
 mujoco_indices = torch.tensor(mujoco_to_lab, device=torch_device)
-gravity_vec    = torch.tensor([[0.0, 0.0, -1.0]], device=torch_device, dtype=torch.float32)
-command        = torch.zeros((1, 3), device=torch_device, dtype=torch.float32)
-command[0, 0]  = 1.0
+gravity_vec = torch.tensor([[0.0, 0.0, -1.0]], device=torch_device, dtype=torch.float32)
+command = torch.zeros((1, 3), device=torch_device, dtype=torch.float32)
+command[0, 0] = 1.0
 
 all_targets = torch.zeros(num_worlds * dofs_per_world, device=torch_device, dtype=torch.float32)
 
@@ -155,29 +179,19 @@ def print_status_grid(solver, step):
     global _grid_lines_written
 
     sim_times = solver.sim_time.numpy()
-    dts       = solver.dt.numpy()
-    errors    = solver.last_error.numpy()
-    accepted  = solver.accepted.numpy()
+    dts = solver.dt.numpy()
+    errors = solver.last_error.numpy()
+    accepted = solver.accepted.numpy()
 
     col = 16
     bar = "+" + ("-" * col + "+") * 5
-    header = (
-        f"{'world':>{col}}"
-        f"{'sim_time (s)':>{col}}"
-        f"{'dt (s)':>{col}}"
-        f"{'RMS error':>{col}}"
-        f"{'status':>{col}}"
-    )
+    header = f"{'world':>{col}}{'sim_time (s)':>{col}}{'dt (s)':>{col}}{'RMS error':>{col}}{'status':>{col}}"
 
     lines = [f"  step {step}  (tol={solver._tol:.1e})", bar, header, bar]
     for i in range(len(sim_times)):
         status = "ok" if accepted[i] else "REJECT"
         lines.append(
-            f"{f'world {i}':>{col}}"
-            f"{sim_times[i]:>{col}.4f}"
-            f"{dts[i]:>{col}.6f}"
-            f"{errors[i]:>{col}.3e}"
-            f"{status:>{col}}"
+            f"{f'world {i}':>{col}}{sim_times[i]:>{col}.4f}{dts[i]:>{col}.6f}{errors[i]:>{col}.3e}{status:>{col}}"
         )
     lines.append(bar)
     if not any(accepted):
@@ -199,33 +213,43 @@ print(
 viewer = newton.viewer.ViewerGL(headless=False)
 viewer.set_model(model)
 
-t          = 0.0
+t = 0.0
 outer_step = 0
 
 next_policy_time = np.zeros(num_worlds, dtype=np.float32)
 
 while viewer.is_running():
-
     with wp.ScopedTimer("policy", active=False):
         with torch.no_grad():
             for w in range(num_worlds):
-                q_offset  = w * coords_per_world
+                q_offset = w * coords_per_world
                 qd_offset = w * dofs_per_world
 
                 obs_w = compute_obs_for_world(
-                    w, actions[w:w+1], state_0, joint_pos_initial,
-                    torch_device, lab_indices, gravity_vec, command,
-                    q_offset, qd_offset, coords_per_world, dofs_per_world,
+                    w,
+                    actions[w : w + 1],
+                    state_0,
+                    joint_pos_initial,
+                    torch_device,
+                    lab_indices,
+                    gravity_vec,
+                    command,
+                    q_offset,
+                    qd_offset,
+                    coords_per_world,
+                    dofs_per_world,
                 )
                 act_w = policy(obs_w)
                 actions[w] = act_w[0]
 
                 rearranged = torch.gather(act_w, 1, mujoco_indices.unsqueeze(0))
-                targets    = joint_pos_initial + 0.5 * rearranged
-                all_targets[w * dofs_per_world : (w + 1) * dofs_per_world] = torch.cat([
-                    torch.zeros(6, device=torch_device, dtype=torch.float32),
-                    targets.squeeze(0),
-                ])
+                targets = joint_pos_initial + 0.5 * rearranged
+                all_targets[w * dofs_per_world : (w + 1) * dofs_per_world] = torch.cat(
+                    [
+                        torch.zeros(6, device=torch_device, dtype=torch.float32),
+                        targets.squeeze(0),
+                    ]
+                )
 
             wp.copy(control.joint_target_pos, wp.from_torch(all_targets, dtype=wp.float32))
 
@@ -239,7 +263,7 @@ while viewer.is_running():
                 break
 
         next_policy_time += POLICY_DT
-        t          += POLICY_DT
+        t += POLICY_DT
         outer_step += 1
 
     if outer_step % LOG_EVERY_N_STEPS == 0:

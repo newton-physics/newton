@@ -212,6 +212,12 @@ def _boundary_advance(arr: wp.array(dtype=wp.float32), delta: float):
 
 
 @wp.kernel
+def _iter_count_increment(count: wp.array(dtype=wp.int32)):
+    """Increment iteration counter (dim=1, single thread)."""
+    count[0] = count[0] + 1
+
+
+@wp.kernel
 def _status_sentinel_reset(out: wp.array(dtype=wp.float32)):
     """Reset 6-element summary buffer: [min_sim_time, max_sim_time, max_error, accept_count, min_dt, max_dt]."""
     out[0] = float(1.0e38)
@@ -323,6 +329,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._status_scalars = wp.zeros(6, dtype=wp.float32, device=device)
 
         self._effective_dt_max_buf = wp.zeros(1, dtype=wp.float32, device=device)
+        self._iteration_count_buf = wp.zeros(1, dtype=wp.int32, device=device)
 
         # Stable buffer for opt.timestep; wp.copy() into it is a device-side
         # op captured by the CUDA graph (unlike Python reference assignment).
@@ -361,6 +368,8 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         model = self.model
         n = model.world_count
         dev = model.device
+
+        wp.launch(_iter_count_increment, dim=1, inputs=[self._iteration_count_buf], device=dev)
 
         # Snapshot for rollback on rejection.
         wp.copy(self._state_saved.joint_q, self._state_cur.joint_q)
@@ -635,6 +644,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
 
         # Set condition to 1 (not done) so capture_while executes at least
         # one iteration, then launch the conditional graph.
+        self._iteration_count_buf.fill_(0)
         self._boundary_flag.fill_(1)
         wp.capture_launch(self._graph)
 
@@ -646,6 +656,79 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             wp.copy(state_0.body_qd, self._state_cur.body_qd)
 
         return state_0, state_1
+
+    def step_dt_loop(
+        self,
+        dt_outer: float,
+        state_0: State,
+        state_1: State,
+        control: Control,
+        apply_forces=None,
+    ) -> tuple[State, State]:
+        """Like :meth:`step_dt` but uses a Python loop instead of ``capture_while``.
+
+        Each iteration launches GPU kernels individually and checks the
+        boundary flag via a single ``.numpy()`` call (4 bytes, one int32).
+        No CUDA graph is used for the outer boundary loop.
+
+        Args:
+            dt_outer: Outer control/render period [s].
+            state_0: Current state (input/output).
+            state_1: Scratch state (unused; returned unchanged).
+            control: Control inputs (applied once, persists across substeps).
+            apply_forces: Optional ``fn(state)`` for external forces.
+
+        Returns:
+            ``(state_0, state_1)`` with ``state_0`` updated.
+        """
+        device = self.model.device
+        n = self.model.world_count
+
+        effective_dt_max = min(self._dt_max, dt_outer)
+        self._effective_dt_max_buf.fill_(effective_dt_max)
+
+        wp.launch(
+            _apply_dt_cap,
+            dim=n,
+            inputs=[self._ideal_dt, self._dt_min, effective_dt_max,
+                    self._dt, self._dt_half],
+            device=device,
+        )
+
+        wp.copy(self._state_cur.joint_q, state_0.joint_q)
+        wp.copy(self._state_cur.joint_qd, state_0.joint_qd)
+        if state_0.body_q is not None and self._state_cur.body_q is not None:
+            wp.copy(self._state_cur.body_q, state_0.body_q)
+        if state_0.body_qd is not None and self._state_cur.body_qd is not None:
+            wp.copy(self._state_cur.body_qd, state_0.body_qd)
+
+        self._apply_mjc_control(self.model, state_0, control, self.mjw_data)
+        if apply_forces is not None:
+            apply_forces(state_0)
+
+        self._enable_rne_postconstraint(self._state_cur)
+
+        wp.launch(_boundary_advance, dim=n, inputs=[self._next_time, dt_outer], device=device)
+
+        self._iteration_count_buf.fill_(0)
+        while True:
+            self._run_iteration_body()
+            if self._boundary_flag.numpy()[0] == 0:
+                break
+
+        wp.copy(state_0.joint_q, self._state_cur.joint_q)
+        wp.copy(state_0.joint_qd, self._state_cur.joint_qd)
+        if state_0.body_q is not None and self._state_cur.body_q is not None:
+            wp.copy(state_0.body_q, self._state_cur.body_q)
+        if state_0.body_qd is not None and self._state_cur.body_qd is not None:
+            wp.copy(state_0.body_qd, self._state_cur.body_qd)
+
+        return state_0, state_1
+
+    @property
+    def iteration_count(self) -> wp.array:
+        """Iteration count from the most recent ``step_dt`` or ``step_dt_loop``, shape ``[1]``, int32, on device."""
+        return self._iteration_count_buf
 
     @property
     def sim_time(self) -> wp.array:

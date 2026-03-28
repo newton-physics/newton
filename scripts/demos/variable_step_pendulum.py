@@ -1,8 +1,8 @@
 import numpy as np
 import warp as wp
+
 import newton
 import newton.examples
-
 
 # Number of simulations to run in parallel
 num_worlds = 4
