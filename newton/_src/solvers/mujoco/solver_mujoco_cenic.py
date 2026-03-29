@@ -29,20 +29,6 @@ def _apply_dt_cap(
     dt_half[i] = actual * wp.float32(0.5)
 
 
-@wp.kernel
-def _apply_dt_cap_dev(
-    ideal_dt: wp.array(dtype=wp.float32),
-    dt_min: float,
-    dt_max_buf: wp.array(dtype=wp.float32),
-    dt: wp.array(dtype=wp.float32),
-    dt_half: wp.array(dtype=wp.float32),
-):
-    """Clamp ideal_dt to [dt_min, dt_max_buf[0]], reading dt_max from device memory."""
-    i = wp.tid()
-    actual = wp.clamp(ideal_dt[i], dt_min, dt_max_buf[0])
-    dt[i] = actual
-    dt_half[i] = actual * wp.float32(0.5)
-
 
 @wp.kernel
 def _inf_norm_q_error_kernel(
@@ -251,10 +237,10 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
     """Adaptive-step MuJoCo solver for high-accuracy dataset generation.
 
     Uses step doubling (3 MuJoCo evals per attempt) to estimate per-world
-    integration error and adapt the timestep on the GPU.  The inner boundary
-    loop is a ``wp.capture_while`` conditional CUDA graph -- zero CPU syncs
-    or Python overhead per iteration, so wall time is flat as N increases
-    until GPU saturation.
+    integration error and adapt the timestep on the GPU.  The boundary loop
+    launches kernels directly via ``wp.launch()`` each iteration, checking
+    a 4-byte flag via ``.numpy()`` to detect when all worlds have reached
+    the target time.
 
     Timesteps are managed internally by the error controller.  Set the
     initial value via ``dt_inner_init`` and query current values via
@@ -316,7 +302,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._scratch_mid = model.state()
         self._scratch_double = model.state()
 
-        # Stable buffers whose pointers are baked into the CUDA graph.
+        # Internal state buffers for the iteration body.
         self._state_cur = model.state()
         self._state_saved = model.state()
 
@@ -328,16 +314,13 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._boundary_flag = wp.zeros(1, dtype=wp.int32, device=device)
         self._status_scalars = wp.zeros(6, dtype=wp.float32, device=device)
 
-        self._effective_dt_max_buf = wp.zeros(1, dtype=wp.float32, device=device)
         self._iteration_count_buf = wp.zeros(1, dtype=wp.int32, device=device)
 
-        # Stable buffer for opt.timestep; wp.copy() into it is a device-side
-        # op captured by the CUDA graph (unlike Python reference assignment).
+        # Stable buffer for opt.timestep; updated via wp.copy() per substep.
         self._timestep_buf = wp.full(world_count, dt_inner_init, dtype=wp.float32, device=device)
         self.mjw_model.opt.timestep = self._timestep_buf
 
-        # Captured once on first step_dt call.
-        self._graph: wp.Graph | None = None
+
 
     def _run_substep(
         self,
@@ -359,12 +342,8 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
 
         self._update_newton_state(self.model, state_out, self.mjw_data)
 
-    def _run_iteration_body(self) -> None:
-        """One step-doubling iteration: 3-eval + dt cap + boundary check.
-
-        This is the body of the ``wp.capture_while`` boundary loop.
-        Everything runs on GPU -- no Python control flow or device transfers.
-        """
+    def _run_iteration_body(self, effective_dt_max: float) -> None:
+        """One step-doubling iteration: 3-eval + error control + dt cap + boundary check."""
         model = self.model
         n = model.world_count
         dev = model.device
@@ -448,11 +427,11 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             device=dev,
         )
 
-        # Cap dt for the next iteration (reads effective_dt_max from device).
+        # Cap dt for the next iteration.
         wp.launch(
-            _apply_dt_cap_dev,
+            _apply_dt_cap,
             dim=n,
-            inputs=[self._ideal_dt, self._dt_min, self._effective_dt_max_buf,
+            inputs=[self._ideal_dt, self._dt_min, effective_dt_max,
                     self._dt, self._dt_half],
             device=dev,
         )
@@ -465,19 +444,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             inputs=[self._sim_time, self._next_time, self._boundary_flag],
             device=dev,
         )
-
-    def _capture_graph(self) -> None:
-        """Build the CUDA graph for the conditional boundary loop."""
-        self._run_iteration_body()  # warm-up: primes JIT + CUDA allocations
-
-        with wp.ScopedCapture() as capture:
-            wp.capture_while(self._boundary_flag, while_body=self._run_iteration_body)
-        self._graph = capture.graph
-
-    def _maybe_recapture(self) -> None:
-        """Capture the CUDA graph on first use."""
-        if self._graph is None:
-            self._capture_graph()
 
     @event_scope
     @override
@@ -583,6 +549,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._step += 1
         return state_out
 
+    @event_scope
     @override
     def step_dt(
         self,
@@ -594,8 +561,11 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
     ) -> tuple[State, State]:
         """Advance all worlds by exactly ``dt_outer`` seconds of simulation time.
 
-        The inner boundary loop runs as a conditional CUDA graph -- zero CPU
-        syncs or Python overhead per iteration.
+        The 3-eval step-doubling block is captured as a CUDA graph and replayed
+        once per iteration via ``wp.capture_launch()``.  The dt cap and boundary
+        check run as direct ``wp.launch()`` calls outside the graph, with a
+        single ``.numpy()`` read-back (4 bytes) per iteration to check
+        termination.
 
         Args:
             dt_outer: Outer control/render period [s].
@@ -612,11 +582,6 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
 
         effective_dt_max = min(self._dt_max, dt_outer)
 
-        # Write effective_dt_max to device so the in-graph _apply_dt_cap_dev
-        # reads the current value (pointer is baked in, value is not).
-        self._effective_dt_max_buf.fill_(effective_dt_max)
-
-        # Pre-cap: ensure first iteration uses a properly bounded dt.
         wp.launch(
             _apply_dt_cap,
             dim=n,
@@ -638,81 +603,14 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
 
         self._enable_rne_postconstraint(self._state_cur)
 
-        wp.launch(_boundary_advance, dim=n, inputs=[self._next_time, dt_outer], device=device)
+        wp.launch(_boundary_advance, dim=n,
+                  inputs=[self._next_time, dt_outer], device=device)
 
-        self._maybe_recapture()
-
-        # Set condition to 1 (not done) so capture_while executes at least
-        # one iteration, then launch the conditional graph.
         self._iteration_count_buf.fill_(0)
         self._boundary_flag.fill_(1)
-        wp.capture_launch(self._graph)
 
-        wp.copy(state_0.joint_q, self._state_cur.joint_q)
-        wp.copy(state_0.joint_qd, self._state_cur.joint_qd)
-        if state_0.body_q is not None and self._state_cur.body_q is not None:
-            wp.copy(state_0.body_q, self._state_cur.body_q)
-        if state_0.body_qd is not None and self._state_cur.body_qd is not None:
-            wp.copy(state_0.body_qd, self._state_cur.body_qd)
-
-        return state_0, state_1
-
-    def step_dt_loop(
-        self,
-        dt_outer: float,
-        state_0: State,
-        state_1: State,
-        control: Control,
-        apply_forces=None,
-    ) -> tuple[State, State]:
-        """Like :meth:`step_dt` but uses a Python loop instead of ``capture_while``.
-
-        Each iteration launches GPU kernels individually and checks the
-        boundary flag via a single ``.numpy()`` call (4 bytes, one int32).
-        No CUDA graph is used for the outer boundary loop.
-
-        Args:
-            dt_outer: Outer control/render period [s].
-            state_0: Current state (input/output).
-            state_1: Scratch state (unused; returned unchanged).
-            control: Control inputs (applied once, persists across substeps).
-            apply_forces: Optional ``fn(state)`` for external forces.
-
-        Returns:
-            ``(state_0, state_1)`` with ``state_0`` updated.
-        """
-        device = self.model.device
-        n = self.model.world_count
-
-        effective_dt_max = min(self._dt_max, dt_outer)
-        self._effective_dt_max_buf.fill_(effective_dt_max)
-
-        wp.launch(
-            _apply_dt_cap,
-            dim=n,
-            inputs=[self._ideal_dt, self._dt_min, effective_dt_max,
-                    self._dt, self._dt_half],
-            device=device,
-        )
-
-        wp.copy(self._state_cur.joint_q, state_0.joint_q)
-        wp.copy(self._state_cur.joint_qd, state_0.joint_qd)
-        if state_0.body_q is not None and self._state_cur.body_q is not None:
-            wp.copy(self._state_cur.body_q, state_0.body_q)
-        if state_0.body_qd is not None and self._state_cur.body_qd is not None:
-            wp.copy(self._state_cur.body_qd, state_0.body_qd)
-
-        self._apply_mjc_control(self.model, state_0, control, self.mjw_data)
-        if apply_forces is not None:
-            apply_forces(state_0)
-
-        self._enable_rne_postconstraint(self._state_cur)
-
-        wp.launch(_boundary_advance, dim=n, inputs=[self._next_time, dt_outer], device=device)
-
-        self._iteration_count_buf.fill_(0)
         while True:
-            self._run_iteration_body()
+            self._run_iteration_body(effective_dt_max)
             if self._boundary_flag.numpy()[0] == 0:
                 break
 
@@ -727,7 +625,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
 
     @property
     def iteration_count(self) -> wp.array:
-        """Iteration count from the most recent ``step_dt`` or ``step_dt_loop``, shape ``[1]``, int32, on device."""
+        """Iteration count from the most recent ``step_dt``, shape ``[1]``, int32, on device."""
         return self._iteration_count_buf
 
     @property

@@ -33,8 +33,7 @@ class PlotStyle:
 
 # Consistent style registry for stepping modes.
 STYLES: dict[str, PlotStyle] = {
-    "graph": PlotStyle("#1f77b4", "o", "-", "CENIC adaptive (capture_while)"),
-    "loop": PlotStyle("#2ca02c", "^", "-", "CENIC adaptive (Python loop)"),
+    "graph": PlotStyle("#1f77b4", "o", "-", "CENIC adaptive"),
     "fixed": PlotStyle("#ff7f0e", "D", "-", "Fixed-step (dt=10 ms)"),
     "manual": PlotStyle("#d62728", "s", "--", "Manual (fixed K, no graph)"),
 }

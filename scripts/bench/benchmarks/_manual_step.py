@@ -28,12 +28,14 @@ def measure_manual(n: int, steps: int, warmup: int) -> MeasureResult:
     solver = make_solver(model)
     s0, s1, ctrl = model.state(), model.state(), model.control()
 
-    # Warmup with step_dt to capture graph + settle contact.
-    for _ in range(warmup):
+    # Warmup with step_dt -- run enough steps to reach the contact phase
+    # (contact onset ~step 45 for this scene) so K sampling is representative.
+    contact_warmup = max(warmup, 50)
+    for _ in range(contact_warmup):
         s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
     wp.synchronize()
 
-    # Measure K from the same simulation window.
+    # Measure K during the contact phase (not free-fall).
     k_samples = []
     for _ in range(10):
         s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
@@ -47,7 +49,6 @@ def measure_manual(n: int, steps: int, warmup: int) -> MeasureResult:
     times = []
     for _ in range(steps):
         effective_dt_max = min(solver._dt_max, DT_OUTER)
-        solver._effective_dt_max_buf.fill_(effective_dt_max)
         wp.launch(
             _apply_dt_cap, dim=nw,
             inputs=[solver._ideal_dt, solver._dt_min, effective_dt_max,
@@ -70,7 +71,7 @@ def measure_manual(n: int, steps: int, warmup: int) -> MeasureResult:
                   inputs=[solver._next_time, DT_OUTER], device=dev)
 
         for _ in range(k_fixed):
-            solver._run_iteration_body()
+            solver._run_iteration_body(effective_dt_max)
 
         wp.copy(s0.joint_q, solver._state_cur.joint_q)
         wp.copy(s0.joint_qd, solver._state_cur.joint_qd)
@@ -85,6 +86,8 @@ def measure_manual(n: int, steps: int, warmup: int) -> MeasureResult:
     times_arr = np.array(times)
     ks_arr = np.full(steps, k_fixed, dtype=np.int32)
 
+    per_iter = times_arr / max(k_fixed, 1)
+
     return MeasureResult(
         times=times_arr,
         ks=ks_arr,
@@ -93,4 +96,7 @@ def measure_manual(n: int, steps: int, warmup: int) -> MeasureResult:
         p75=float(np.percentile(times_arr, 75)),
         k_mean=float(k_fixed),
         k_max=k_fixed,
+        k_p25=float(k_fixed),
+        k_p75=float(k_fixed),
+        per_iter_median=float(np.median(per_iter)),
     )

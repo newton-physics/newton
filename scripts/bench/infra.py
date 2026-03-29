@@ -31,6 +31,9 @@ class MeasureResult:
     p75: float
     k_mean: float
     k_max: int
+    k_p25: float
+    k_p75: float
+    per_iter_median: float  # median of (time_i / K_i) -- the real per-iteration cost
 
 
 def measure(
@@ -79,6 +82,8 @@ def measure(
     times_arr = np.array(times)
     ks_arr = np.array(ks, dtype=np.int32)
 
+    per_iter = times_arr / np.maximum(ks_arr, 1)
+
     return MeasureResult(
         times=times_arr,
         ks=ks_arr,
@@ -87,6 +92,9 @@ def measure(
         p75=float(np.percentile(times_arr, 75)),
         k_mean=float(np.mean(ks_arr)),
         k_max=int(np.max(ks_arr)),
+        k_p25=float(np.percentile(ks_arr, 25)),
+        k_p75=float(np.percentile(ks_arr, 75)),
+        per_iter_median=float(np.median(per_iter)),
     )
 
 

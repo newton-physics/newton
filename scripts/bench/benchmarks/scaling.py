@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""N-scaling benchmark: wall time vs world count for graph/loop/fixed/manual.
+"""N-scaling benchmark: wall time vs world count for graph/fixed/manual.
 
 Standalone:
     uv run python -m scripts.bench.benchmarks.scaling --ns 1 4 16 64 256
@@ -27,26 +27,16 @@ from scripts.bench.infra import MeasureResult, measure, power_law_exponent
 from scripts.bench.plotting import STYLES, SeriesData, log_log_plot, save_fig
 from scripts.scenes.contact_objects import DT_OUTER, build_model, make_fixed_solver, make_solver
 
-MODES = ["graph", "loop", "fixed", "manual"]
+MODES = ["graph", "fixed", "manual"]
 
 
 def _step_graph(model, s0, s1, ctrl, _state={}):
-    """step_dt via capture_while. Solver created on first call."""
+    """step_dt via CUDA graph replay. Solver created on first call."""
     key = id(model)
     if key not in _state:
         _state[key] = make_solver(model)
     solver = _state[key]
     s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-    return s0, s1
-
-
-def _step_loop(model, s0, s1, ctrl, _state={}):
-    """step_dt_loop via Python loop. Solver created on first call."""
-    key = id(model)
-    if key not in _state:
-        _state[key] = make_solver(model)
-    solver = _state[key]
-    s0, s1 = solver.step_dt_loop(DT_OUTER, s0, s1, ctrl)
     return s0, s1
 
 
@@ -70,76 +60,109 @@ def _get_solver(model, _state, factory):
     return _state[key]
 
 
-def _measure_mode(mode: str, n: int, steps: int, warmup: int) -> MeasureResult:
-    """Measure one mode at one N with a completely fresh solver."""
-    if mode == "graph":
-        solver_cache = {}
-        def step_fn(model, s0, s1, ctrl):
-            solver = _get_solver(model, solver_cache, make_solver)
-            return solver.step_dt(DT_OUTER, s0, s1, ctrl)
-        def get_k():
-            solver = next(iter(solver_cache.values()))
-            return int(solver.iteration_count.numpy()[0])
-        return measure(build_model, step_fn, n, steps, warmup, get_k=get_k)
+def _measure_mode(mode: str, n: int, steps: int, warmup: int, trials: int = 1) -> MeasureResult:
+    """Measure one mode at one N with a completely fresh solver.
 
-    elif mode == "loop":
-        solver_cache = {}
-        def step_fn(model, s0, s1, ctrl):
-            solver = _get_solver(model, solver_cache, make_solver)
-            return solver.step_dt_loop(DT_OUTER, s0, s1, ctrl)
-        def get_k():
-            solver = next(iter(solver_cache.values()))
-            return int(solver.iteration_count.numpy()[0])
-        return measure(build_model, step_fn, n, steps, warmup, get_k=get_k)
+    When trials > 1, runs the full measurement multiple times and returns
+    the trial with the lowest median (least system interference).
+    """
+    def _single_trial() -> MeasureResult:
+        if mode == "graph":
+            solver_cache = {}
+            def step_fn(model, s0, s1, ctrl):
+                solver = _get_solver(model, solver_cache, make_solver)
+                return solver.step_dt(DT_OUTER, s0, s1, ctrl)
+            def get_k():
+                solver = next(iter(solver_cache.values()))
+                return int(solver.iteration_count.numpy()[0])
+            return measure(build_model, step_fn, n, steps, warmup, get_k=get_k)
 
-    elif mode == "fixed":
-        state_cache = {}
-        def step_fn(model, s0, s1, ctrl):
-            key = id(model)
-            if key not in state_cache:
-                state_cache[key] = (make_fixed_solver(model), model.contacts())
-            solver, contacts = state_cache[key]
-            s1 = solver.step(s0, s1, ctrl, contacts, DT_OUTER)
-            return s1, s0
-        return measure(build_model, step_fn, n, steps, warmup)
+        elif mode == "fixed":
+            state_cache = {}
+            def step_fn(model, s0, s1, ctrl):
+                key = id(model)
+                if key not in state_cache:
+                    state_cache[key] = (make_fixed_solver(model), model.contacts())
+                solver, contacts = state_cache[key]
+                s1 = solver.step(s0, s1, ctrl, contacts, DT_OUTER)
+                return s1, s0
+            return measure(build_model, step_fn, n, steps, warmup)
 
-    elif mode == "manual":
-        from scripts.bench.benchmarks._manual_step import measure_manual
-        return measure_manual(n, steps, warmup)
+        elif mode == "manual":
+            from scripts.bench.benchmarks._manual_step import measure_manual
+            return measure_manual(n, steps, warmup)
 
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+    best = _single_trial()
+    for _ in range(trials - 1):
+        result = _single_trial()
+        if result.median < best.median:
+            best = result
+    return best
 
 
-def run(ns: list[int], steps: int, warmup: int) -> dict:
+def _collect_error_trace(steps: int) -> dict:
+    """Run N=1 graph mode and record accepted error + dt at each outer step."""
+    model = build_model(1)
+    solver = make_solver(model)
+    s0, s1, ctrl = model.state(), model.state(), model.control()
+
+    sim_times, errors, dts = [], [], []
+    for _ in range(steps):
+        s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
+        sim_times.append(float(solver.sim_time.numpy()[0]))
+        errors.append(float(solver.last_error.numpy()[0]))
+        dts.append(float(solver.dt.numpy()[0]))
+
+    return {
+        "sim_times": sim_times,
+        "errors": errors,
+        "dts": dts,
+        "tol": solver._tol,
+    }
+
+
+def run(ns: list[int], steps: int, warmup: int, trials: int = 1) -> dict:
     """Run all modes at all N values. Returns JSON-serializable dict."""
-    data: dict = {"ns": ns, "steps": steps, "warmup": warmup, "modes": {}}
+    data: dict = {"ns": ns, "steps": steps, "warmup": warmup, "trials": trials, "modes": {}}
 
     for mode in MODES:
         mode_data: dict = {
             "medians": [], "p25": [], "p75": [],
-            "k_means": [], "k_maxes": [],
+            "k_means": [], "k_maxes": [], "k_p25s": [], "k_p75s": [],
+            "per_iter_medians": [],
         }
         for n in ns:
-            result = _measure_mode(mode, n, steps, warmup)
+            result = _measure_mode(mode, n, steps, warmup, trials)
             mode_data["medians"].append(result.median)
             mode_data["p25"].append(result.p25)
             mode_data["p75"].append(result.p75)
             mode_data["k_means"].append(result.k_mean)
             mode_data["k_maxes"].append(result.k_max)
+            mode_data["k_p25s"].append(result.k_p25)
+            mode_data["k_p75s"].append(result.k_p75)
+            mode_data["per_iter_medians"].append(result.per_iter_median)
             print(
                 f"  N={n:>5}  {mode:>7}  "
                 f"median={result.median * 1e3:7.2f} ms  "
+                f"per_iter={result.per_iter_median * 1e3:7.2f} ms  "
                 f"K_mean={result.k_mean:.1f}  K_max={result.k_max}",
                 flush=True,
             )
         data["modes"][mode] = mode_data
 
-    # Compute exponents.
+    # Compute exponents on per-iteration cost (not total wall time).
     data["exponents"] = {
-        mode: power_law_exponent(ns, data["modes"][mode]["medians"])
+        mode: power_law_exponent(ns, data["modes"][mode]["per_iter_medians"])
         for mode in MODES
     }
+
+    # Error trace (N=1, graph mode).
+    print("  Collecting error trace (N=1)...", flush=True)
+    data["error_trace"] = _collect_error_trace(steps + warmup)
+
     return data
 
 
@@ -166,40 +189,44 @@ def plot(data: dict, out_dir: Path) -> None:
     )
     save_fig(fig, out_dir / "scaling_wall_time.png")
 
-    # Plot 2: Iteration count K vs N
+    # Plot 2: Iteration count K vs N (log-log, with IQR)
     fig, ax = plt.subplots(figsize=(10, 6))
-    for mode in ["graph", "loop"]:
+    for mode in ["graph"]:
         style = STYLES[mode]
         md = modes_data[mode]
         ax.plot(
             ns, md["k_means"], color=style.color, marker=style.marker,
             ls="-", lw=2, ms=5, label=f'{style.label}  $K_{{mean}}$',
         )
+        if "k_p25s" in md and "k_p75s" in md:
+            ax.fill_between(ns, md["k_p25s"], md["k_p75s"],
+                            color=style.color, alpha=0.10)
         ax.plot(
             ns, md["k_maxes"], color=style.color, marker=style.marker,
-            ls="--", lw=1.5, ms=4, alpha=0.6,
-            label=f'{style.label}  $K_{{max}}$',
+            ls=":", lw=1, ms=3, alpha=0.5, label=f'{style.label}  $K_{{max}}$',
         )
     ax.axhline(1, color="grey", ls=":", lw=1, label="K = 1 (ideal)")
     ax.set_xlabel("N worlds", fontsize=11)
     ax.set_ylabel("Iterations per step_dt call", fontsize=11)
     ax.set_title("Adaptive iteration count K vs N  (tol=1e-3)", fontsize=11)
     ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
     ax.legend(fontsize=9)
     ax.grid(True, which="both", alpha=0.3)
     save_fig(fig, out_dir / "scaling_iterations.png")
 
-    # Plot 3: Per-iteration wall time vs N
+    # Plot 3: Per-iteration wall time vs N (computed as median(time_i / K_i))
     fig, ax = plt.subplots(figsize=(10, 6))
     per_iter_series = {}
     for mode in MODES:
         md = modes_data[mode]
-        per_iter = [m / max(k, 1) for m, k in zip(md["medians"], md["k_means"])]
-        per_iter_series[mode] = SeriesData(medians=[p * 1e3 for p in per_iter])
+        per_iter_series[mode] = SeriesData(
+            medians=[p * 1e3 for p in md["per_iter_medians"]],
+        )
     log_log_plot(
         ax, ns, per_iter_series,
         ylabel="Wall time per iteration [ms]",
-        title="Per-iteration wall time vs N  (wall_time / K)",
+        title="Per-iteration wall time vs N  (median of time_i / K_i)",
         show_iqr=False,
     )
     save_fig(fig, out_dir / "scaling_per_iter.png")
@@ -219,21 +246,45 @@ def plot(data: dict, out_dir: Path) -> None:
     )
     save_fig(fig, out_dir / "scaling_amortization.png")
 
-    # Summary table
+    # Plot 5: Error vs simulation time (N=1, graph mode)
+    if "error_trace" in data:
+        trace = data["error_trace"]
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(
+            trace["sim_times"], trace["errors"],
+            color="#1f77b4", lw=1, alpha=0.8,
+            label="accepted error (inf-norm on q)",
+        )
+        ax.axhline(
+            trace["tol"], color="red", ls="--", lw=1.5,
+            label=f'tol = {trace["tol"]:.0e}',
+        )
+        ax.set_xlabel("Simulation time [s]", fontsize=11)
+        ax.set_ylabel("Error (inf-norm on q)", fontsize=11)
+        ax.set_title(
+            f"Step doubling error vs simulation time  (N=1, tol={trace['tol']:.0e})",
+            fontsize=11,
+        )
+        ax.set_yscale("log")
+        ax.legend(fontsize=9)
+        ax.grid(True, which="both", alpha=0.3)
+        save_fig(fig, out_dir / "scaling_error_trace.png")
+
+    # Summary table (exponents are on per-iteration cost, not total wall time)
     print(f"\n{'=' * 72}")
-    print("SCALING SUMMARY")
+    print("SCALING SUMMARY  (exponents on per-iteration cost = median(time_i/K_i))")
     print(f"{'=' * 72}")
-    hdr = f"{'mode':>10}  {'exponent':>8}  {'N=1 (ms)':>10}  {'N=' + str(ns[-1]) + ' (ms)':>12}  {'ratio':>6}  {'K_mean':>6}"
+    hdr = f"{'mode':>10}  {'exponent':>8}  {'N=1 /iter':>10}  {'N=' + str(ns[-1]) + ' /iter':>14}  {'ratio':>6}  {'K_mean':>6}"
     print(hdr)
     print("-" * len(hdr))
     for mode in MODES:
         md = modes_data[mode]
-        t1 = md["medians"][0] * 1e3
-        tN = md["medians"][-1] * 1e3
+        t1 = md["per_iter_medians"][0] * 1e3
+        tN = md["per_iter_medians"][-1] * 1e3
         exp = data["exponents"][mode]
         k = md["k_means"][-1]
         print(
-            f"{mode:>10}  N^{exp:<6.3f}  {t1:10.2f}  {tN:12.2f}  "
+            f"{mode:>10}  N^{exp:<6.3f}  {t1:10.2f}  {tN:14.2f}  "
             f"{tN / t1:5.1f}x  {k:6.1f}"
         )
 
@@ -243,13 +294,15 @@ def main():
     parser.add_argument("--ns", type=int, nargs="+", default=[1, 4, 16, 64, 256])
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--warmup", type=int, default=20)
+    parser.add_argument("--trials", type=int, default=1,
+                        help="Repeat each (N, mode) measurement and keep the best median.")
     parser.add_argument("--out-dir", type=str, default="scripts/bench/results")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    data = run(sorted(args.ns), args.steps, args.warmup)
+    data = run(sorted(args.ns), args.steps, args.warmup, args.trials)
 
     with open(out_dir / "scaling.json", "w") as f:
         json.dump(data, f, indent=2)

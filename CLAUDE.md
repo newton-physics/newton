@@ -91,13 +91,12 @@ while True:
         break
 ```
 
-✅ **Correct** — all logic stays on GPU; exactly one `int32` exits the device, once per DT boundary:
+✅ **Correct** — use `step_dt`, which handles the inner loop internally:
 ```python
-# This is what step_dt does internally — do not reimplement it.
-wp.launch(_boundary_reset, dim=1, inputs=[flag])
-wp.launch(_boundary_check, dim=n, inputs=[sim_time, next_time, flag])
-if flag.numpy()[0]:   # 1 int32, fires once per render frame
-    break
+# step_dt launches kernels directly via wp.launch() per iteration and checks a
+# 4-byte boundary flag via .numpy() -- one int32 per iteration (K~3).
+# Do not reimplement this loop manually.
+state_0, state_1 = solver.step_dt(DT, state_0, state_1, control)
 ```
 
 ### Why N worlds do not hurt physics throughput — but do hurt render throughput

@@ -4,21 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "dba0fd4b38c78e9c",
+        "id": "abff66c3204fcdae",
         "type": "tabs",
         "children": [
           {
-            "id": "9811828561023bf9",
+            "id": "9c1e959141bdcaa9",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "contact/2026-03-12-benchmark-infrastructure.md",
+                "file": "scaling/2026-03-28-world-divergence-root-cause.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "2026-03-12-benchmark-infrastructure"
+              "title": "2026-03-28-world-divergence-root-cause"
             }
           }
         ]
@@ -74,7 +74,8 @@
               "title": "Bookmarks"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
@@ -94,7 +95,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "contact/2026-03-12-benchmark-infrastructure.md",
+                "file": "README.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +105,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for 2026-03-12-benchmark-infrastructure"
+              "title": "Backlinks for README"
             }
           },
           {
@@ -181,18 +182,24 @@
       "bases:Create new base": false
     }
   },
-  "active": "9811828561023bf9",
+  "active": "9c1e959141bdcaa9",
   "lastOpenFiles": [
+    "next-steps.md",
     "README.md",
+    "scaling/2026-03-28-world-divergence-root-cause.md",
+    "scaling/approaches-tried.md",
+    "solver/2026-03-19-error-metric-evolution.md",
+    "contact/2026-03-12-benchmark-infrastructure.md",
+    "scaling/2026-03-28-n-scaling-verdict.md",
+    "scaling/2026-03-28-sync-based-measured.md",
+    "scaling/2026-03-28-capture-while-isolation.md",
     "scaling/2026-03-27-direct-subroutine-calls.md",
     "scaling/2026-03-27-capture-while.md",
     "scaling/2026-03-13-sync-based-step-dt.md",
     "scaling/2026-03-13-k8-flat-graph.md",
-    "contact/2026-03-12-benchmark-infrastructure.md",
     "solver/2026-03-12-architecture-overhaul.md",
     "solver/2026-03-13-cuda-graph-capture.md",
     "solver/2026-03-13-drake-error-controller.md",
-    "solver/2026-03-19-error-metric-evolution.md",
     "solver/2026-03-20-zero-alloc-step.md",
     "scaling/2026-03-28-python-loop-vs-graph.md",
     "solver/2026-03-01-initial-cenic-solver.md",
