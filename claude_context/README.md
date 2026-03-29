@@ -24,6 +24,7 @@ tags:
 ## Benchmarking
 
 - [[2026-03-12-benchmark-infrastructure|Benchmark infrastructure]] -- scenes, bench platform, fresh solver per measurement.
+- Benchmark modes (Mar 29): `cenic` (wall time), `fixed` (baseline), `single_iter` (raw per-iter GPU cost). `manual` and `capture_while_isolation` removed.
 
 ## Roadmap
 

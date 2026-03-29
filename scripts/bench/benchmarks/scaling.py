@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""N-scaling benchmark: wall time vs world count for graph/fixed/manual.
+"""N-scaling benchmark: wall time vs world count for cenic/fixed/single_iter.
 
 Standalone:
     uv run python -m scripts.bench.benchmarks.scaling --ns 1 4 16 64 256
 
-Produces 4 plots: wall_time, iterations, per_iter, amortization.
+Produces 5 plots: wall_time, per_iter, iterations, amortization, error_trace.
 """
 
 from __future__ import annotations
@@ -27,29 +27,7 @@ from scripts.bench.infra import MeasureResult, measure, power_law_exponent
 from scripts.bench.plotting import STYLES, SeriesData, log_log_plot, save_fig
 from scripts.scenes.contact_objects import DT_OUTER, build_model, make_fixed_solver, make_solver
 
-MODES = ["graph", "fixed", "manual"]
-
-
-def _step_graph(model, s0, s1, ctrl, _state={}):
-    """step_dt via CUDA graph replay. Solver created on first call."""
-    key = id(model)
-    if key not in _state:
-        _state[key] = make_solver(model)
-    solver = _state[key]
-    s0, s1 = solver.step_dt(DT_OUTER, s0, s1, ctrl)
-    return s0, s1
-
-
-def _step_fixed(model, s0, s1, ctrl, _state={}):
-    """Fixed-step SolverMuJoCo. Solver + contacts created on first call."""
-    key = id(model)
-    if key not in _state:
-        solver = make_fixed_solver(model)
-        contacts = model.contacts()
-        _state[key] = (solver, contacts)
-    solver, contacts = _state[key]
-    s1 = solver.step(s0, s1, ctrl, contacts, DT_OUTER)
-    return s1, s0
+MODES = ["cenic", "fixed", "single_iter"]
 
 
 def _get_solver(model, _state, factory):
@@ -67,7 +45,7 @@ def _measure_mode(mode: str, n: int, steps: int, warmup: int, trials: int = 1) -
     the trial with the lowest median (least system interference).
     """
     def _single_trial() -> MeasureResult:
-        if mode == "graph":
+        if mode == "cenic":
             solver_cache = {}
             def step_fn(model, s0, s1, ctrl):
                 solver = _get_solver(model, solver_cache, make_solver)
@@ -88,9 +66,9 @@ def _measure_mode(mode: str, n: int, steps: int, warmup: int, trials: int = 1) -
                 return s1, s0
             return measure(build_model, step_fn, n, steps, warmup)
 
-        elif mode == "manual":
-            from scripts.bench.benchmarks._manual_step import measure_manual
-            return measure_manual(n, steps, warmup)
+        elif mode == "single_iter":
+            from scripts.bench.benchmarks._single_iter import measure_single_iter
+            return measure_single_iter(n, steps, warmup)
 
         else:
             raise ValueError(f"Unknown mode: {mode}")
@@ -104,7 +82,7 @@ def _measure_mode(mode: str, n: int, steps: int, warmup: int, trials: int = 1) -
 
 
 def _collect_error_trace(steps: int) -> dict:
-    """Run N=1 graph mode and record accepted error + dt at each outer step."""
+    """Run N=1 cenic mode and record accepted error + dt at each outer step."""
     model = build_model(1)
     solver = make_solver(model)
     s0, s1, ctrl = model.state(), model.state(), model.control()
@@ -145,7 +123,7 @@ def run(ns: list[int], steps: int, warmup: int, trials: int = 1) -> dict:
             mode_data["k_p75s"].append(result.k_p75)
             mode_data["per_iter_medians"].append(result.per_iter_median)
             print(
-                f"  N={n:>5}  {mode:>7}  "
+                f"  N={n:>5}  {mode:>12}  "
                 f"median={result.median * 1e3:7.2f} ms  "
                 f"per_iter={result.per_iter_median * 1e3:7.2f} ms  "
                 f"K_mean={result.k_mean:.1f}  K_max={result.k_max}",
@@ -153,13 +131,18 @@ def run(ns: list[int], steps: int, warmup: int, trials: int = 1) -> dict:
             )
         data["modes"][mode] = mode_data
 
-    # Compute exponents on per-iteration cost (not total wall time).
-    data["exponents"] = {
-        mode: power_law_exponent(ns, data["modes"][mode]["per_iter_medians"])
-        for mode in MODES
-    }
+    # Exponents: per-iteration cost for single_iter and fixed,
+    # wall time for cenic (per_iter is biased by K correlation with N).
+    data["exponents"] = {}
+    for mode in MODES:
+        if mode == "cenic":
+            data["exponents"][mode] = power_law_exponent(
+                ns, data["modes"][mode]["medians"])
+        else:
+            data["exponents"][mode] = power_law_exponent(
+                ns, data["modes"][mode]["per_iter_medians"])
 
-    # Error trace (N=1, graph mode).
+    # Error trace (N=1, cenic mode).
     print("  Collecting error trace (N=1)...", flush=True)
     data["error_trace"] = _collect_error_trace(steps + warmup)
 
@@ -167,15 +150,18 @@ def run(ns: list[int], steps: int, warmup: int, trials: int = 1) -> dict:
 
 
 def plot(data: dict, out_dir: Path) -> None:
-    """Generate 4 scaling plots from results dict."""
+    """Generate 5 scaling plots from results dict."""
     ns = data["ns"]
     modes_data = data["modes"]
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Plot 1: Wall time per outer step vs N
+    # Plot 1: Wall time per outer step vs N (cenic + fixed)
     fig, ax = plt.subplots(figsize=(10, 6))
+    wall_modes = ["cenic", "fixed"]
     series = {}
-    for mode in MODES:
+    for mode in wall_modes:
+        if mode not in modes_data:
+            continue
         md = modes_data[mode]
         series[mode] = SeriesData(
             medians=[m * 1e3 for m in md["medians"]],
@@ -189,11 +175,31 @@ def plot(data: dict, out_dir: Path) -> None:
     )
     save_fig(fig, out_dir / "scaling_wall_time.png")
 
-    # Plot 2: Iteration count K vs N (log-log, with IQR)
+    # Plot 2: Per-iteration cost vs N (cenic + single_iter + fixed)
     fig, ax = plt.subplots(figsize=(10, 6))
-    for mode in ["graph"]:
-        style = STYLES[mode]
+    iter_modes = ["cenic", "single_iter", "fixed"]
+    per_iter_series = {}
+    for mode in iter_modes:
+        if mode not in modes_data:
+            continue
         md = modes_data[mode]
+        per_iter_series[mode] = SeriesData(
+            medians=[p * 1e3 for p in md["per_iter_medians"]],
+            p25=[p * 1e3 for p in md["p25"]] if mode == "single_iter" else None,
+            p75=[p * 1e3 for p in md["p75"]] if mode == "single_iter" else None,
+        )
+    log_log_plot(
+        ax, ns, per_iter_series,
+        ylabel="Wall time per iteration [ms]",
+        title="Per-iteration GPU cost vs N  (single iteration, sync-to-sync)",
+    )
+    save_fig(fig, out_dir / "scaling_per_iter.png")
+
+    # Plot 3: Iteration count K vs N (cenic only)
+    if "cenic" in modes_data:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        style = STYLES["cenic"]
+        md = modes_data["cenic"]
         ax.plot(
             ns, md["k_means"], color=style.color, marker=style.marker,
             ls="-", lw=2, ms=5, label=f'{style.label}  $K_{{mean}}$',
@@ -205,36 +211,22 @@ def plot(data: dict, out_dir: Path) -> None:
             ns, md["k_maxes"], color=style.color, marker=style.marker,
             ls=":", lw=1, ms=3, alpha=0.5, label=f'{style.label}  $K_{{max}}$',
         )
-    ax.axhline(1, color="grey", ls=":", lw=1, label="K = 1 (ideal)")
-    ax.set_xlabel("N worlds", fontsize=11)
-    ax.set_ylabel("Iterations per step_dt call", fontsize=11)
-    ax.set_title("Adaptive iteration count K vs N  (tol=1e-3)", fontsize=11)
-    ax.set_xscale("log", base=2)
-    ax.set_yscale("log")
-    ax.legend(fontsize=9)
-    ax.grid(True, which="both", alpha=0.3)
-    save_fig(fig, out_dir / "scaling_iterations.png")
+        ax.axhline(1, color="grey", ls=":", lw=1, label="K = 1 (ideal)")
+        ax.set_xlabel("N worlds", fontsize=11)
+        ax.set_ylabel("Iterations per step_dt call", fontsize=11)
+        ax.set_title("Adaptive iteration count K vs N  (tol=1e-3)", fontsize=11)
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.legend(fontsize=9, loc="upper left")
+        ax.grid(True, which="both", alpha=0.3)
+        save_fig(fig, out_dir / "scaling_iterations.png")
 
-    # Plot 3: Per-iteration wall time vs N (computed as median(time_i / K_i))
-    fig, ax = plt.subplots(figsize=(10, 6))
-    per_iter_series = {}
-    for mode in MODES:
-        md = modes_data[mode]
-        per_iter_series[mode] = SeriesData(
-            medians=[p * 1e3 for p in md["per_iter_medians"]],
-        )
-    log_log_plot(
-        ax, ns, per_iter_series,
-        ylabel="Wall time per iteration [ms]",
-        title="Per-iteration wall time vs N  (median of time_i / K_i)",
-        show_iqr=False,
-    )
-    save_fig(fig, out_dir / "scaling_per_iter.png")
-
-    # Plot 4: Cost per world vs N
+    # Plot 4: Cost per world vs N (cenic + fixed)
     fig, ax = plt.subplots(figsize=(10, 6))
     amort_series = {}
-    for mode in MODES:
+    for mode in wall_modes:
+        if mode not in modes_data:
+            continue
         md = modes_data[mode]
         amort = [m / n_val * 1e3 for m, n_val in zip(md["medians"], ns)]
         amort_series[mode] = SeriesData(medians=amort)
@@ -246,7 +238,7 @@ def plot(data: dict, out_dir: Path) -> None:
     )
     save_fig(fig, out_dir / "scaling_amortization.png")
 
-    # Plot 5: Error vs simulation time (N=1, graph mode)
+    # Plot 5: Error vs simulation time (N=1, cenic)
     if "error_trace" in data:
         trace = data["error_trace"]
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -270,22 +262,31 @@ def plot(data: dict, out_dir: Path) -> None:
         ax.grid(True, which="both", alpha=0.3)
         save_fig(fig, out_dir / "scaling_error_trace.png")
 
-    # Summary table (exponents are on per-iteration cost, not total wall time)
-    print(f"\n{'=' * 72}")
-    print("SCALING SUMMARY  (exponents on per-iteration cost = median(time_i/K_i))")
-    print(f"{'=' * 72}")
-    hdr = f"{'mode':>10}  {'exponent':>8}  {'N=1 /iter':>10}  {'N=' + str(ns[-1]) + ' /iter':>14}  {'ratio':>6}  {'K_mean':>6}"
+    # Summary table
+    print(f"\n{'=' * 78}")
+    print("SCALING SUMMARY")
+    print(f"{'=' * 78}")
+    hdr = (
+        f"{'mode':>12}  {'exponent':>10}  {'N=1':>10}  "
+        f"{'N=' + str(ns[-1]):>10}  {'ratio':>6}  {'K_mean':>6}"
+    )
     print(hdr)
     print("-" * len(hdr))
     for mode in MODES:
         md = modes_data[mode]
-        t1 = md["per_iter_medians"][0] * 1e3
-        tN = md["per_iter_medians"][-1] * 1e3
         exp = data["exponents"][mode]
         k = md["k_means"][-1]
+        if mode == "cenic":
+            t1 = md["medians"][0] * 1e3
+            tN = md["medians"][-1] * 1e3
+            label = "wall time"
+        else:
+            t1 = md["per_iter_medians"][0] * 1e3
+            tN = md["per_iter_medians"][-1] * 1e3
+            label = "per iter"
         print(
-            f"{mode:>10}  N^{exp:<6.3f}  {t1:10.2f}  {tN:14.2f}  "
-            f"{tN / t1:5.1f}x  {k:6.1f}"
+            f"{mode:>12}  N^{exp:<7.3f}   {t1:9.2f}  {tN:10.2f}  "
+            f"{tN / t1:5.1f}x  {k:6.1f}  ({label})"
         )
 
 

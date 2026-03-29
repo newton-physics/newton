@@ -24,7 +24,7 @@ BENCHMARKS_PKG = "scripts.bench.benchmarks"
 RESULTS_ROOT = Path("scripts/bench/results")
 
 # Benchmark modules in execution order.
-BENCHMARK_NAMES = ["scaling", "capture_while_isolation", "components", "accuracy"]
+BENCHMARK_NAMES = ["scaling", "components", "accuracy"]
 
 
 def _git_short_hash() -> str:
@@ -71,12 +71,12 @@ def _run_benchmark_subprocess(
     cmd = [sys.executable, "-m", f"{BENCHMARKS_PKG}.{bench_name}"]
     cmd.extend(["--out-dir", str(out_dir)])
 
-    if "ns" in args and bench_name in ("scaling", "capture_while_isolation", "components"):
+    if "ns" in args and bench_name in ("scaling", "components"):
         cmd.append("--ns")
         cmd.extend(str(n) for n in args["ns"])
-    if "steps" in args and bench_name in ("scaling", "capture_while_isolation", "components"):
+    if "steps" in args and bench_name in ("scaling", "components"):
         cmd.extend(["--steps", str(args["steps"])])
-    if "warmup" in args and bench_name in ("scaling", "capture_while_isolation", "components"):
+    if "warmup" in args and bench_name in ("scaling", "components"):
         cmd.extend(["--warmup", str(args["warmup"])])
     if "trials" in args and bench_name == "accuracy":
         cmd.extend(["--trials", str(args["trials"])])

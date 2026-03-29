@@ -60,6 +60,28 @@ See [[2026-03-28-sync-based-measured|current architecture]] for full details.
 
 **Key lesson:** Benchmark warmup must reach the contact phase before sampling adaptive parameters. 20 warmup steps is insufficient for this scene (contact at step ~45).
 
+## 5. Replace manual mode with single_iter (Mar 29)
+
+**Problem:** The `manual` benchmark mode ran K=5 calls to `_run_iteration_body()` and divided by K. This produced a `per_iter_median = median(time_i / K_i)` metric that is broken because K correlates with N (world divergence causes K to inflate at large N, suppressing the apparent exponent). This made CENIC appear to scale better than fixed-step, which is physically impossible since CENIC does 3x the MuJoCo evals per iteration.
+
+**Fix:** Replaced `manual` with `single_iter`: times one `_run_iteration_body()` call directly, sync-to-sync, from a saved contact-phase state. No K division needed. Also renamed `graph` mode to `cenic`.
+
+**Result (N=1..256, warmup=50, 50 steps):**
+- single_iter: N^0.03, 7.5ms (N=1) to 9.5ms (N=256)
+- fixed: N^0.02, 2.5ms (N=1) to 3.0ms (N=256)
+- cenic wall time: N^0.02, ~40ms (N=1) to ~48ms (N=256), K_mean~5
+
+single_iter and fixed have matching exponents (zero CENIC scaling overhead confirmed). single_iter is ~3x fixed, correctly reflecting step-doubling cost (3 evals vs 1).
+
+**Also removed:** `capture_while_isolation` benchmark (dead code after abandoning CUDA graph approach).
+
+**Benchmark modes after this change:**
+- `cenic` (was `graph`): total throughput per `step_dt()` -- wall time plot
+- `fixed`: baseline throughput per `step()` -- wall time + per-iter plots
+- `single_iter` (was `manual`): raw per-iteration GPU cost -- per-iter plot
+
+**5 plots:** wall_time (cenic+fixed), per_iter (all three), K vs N (cenic), amortization (cenic+fixed), error trace (N=1 cenic).
+
 ## Summary table
 
 | Approach | Per-iter exponent | Status |
@@ -67,4 +89,4 @@ See [[2026-03-28-sync-based-measured|current architecture]] for full details.
 | Graph replay (ScopedCapture) | N^0.243 | Replaced |
 | capture_while (conditional graph) | N^0.094 | Abandoned (CUDA 12.4+, no real benefit) |
 | **Direct wp.launch() + Python loop** | **N^0.174** | **Current** |
-| All modes (CENIC/fixed/manual) | ~N^0.18 | Base GPU physics scaling |
+| All modes (CENIC/fixed/single_iter) | ~N^0.02-0.03 | Base GPU physics scaling (N=1..256) |

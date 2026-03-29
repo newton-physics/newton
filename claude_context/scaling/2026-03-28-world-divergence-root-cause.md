@@ -11,7 +11,6 @@ tags:
   - mujoco-warp
   - upstream-issue
 ---
-
 # World divergence: why identical worlds produce different physics
 
 > [!bug] Upstream issue
@@ -62,6 +61,7 @@ A fix would use per-world counters: `nacon_out[world_id]` instead of `nacon_out[
 
 - World divergence is expected and unavoidable with the current MuJoCo Warp architecture
 - Per-iteration cost is the correct scaling metric (factors out K variation)
+- The `single_iter` benchmark mode (Mar 29) times one `_run_iteration_body()` directly to avoid the `median(time/K)` bias caused by K correlating with N
 - Use `--num-worlds 1` for visualization; use `--headless` for data collection at N > 1
 - K_max=11-14 happens at all N values -- it's not N-dependent
 
