@@ -20,8 +20,7 @@ from newton.utils import compute_world_offsets, solidify_mesh
 from ..core.types import MAXVAL, Axis
 from .kernels import (
     build_active_particle_mask,
-    compact_float,
-    compact_vec3,
+    compact,
     compute_hydro_contact_surface_lines,
     estimate_world_extents,
     repack_shape_colors,
@@ -2015,11 +2014,11 @@ class ViewerBase(ABC):
                     return
                 if active_count < n:
                     points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)
-                    wp.launch(compact_vec3, dim=n, inputs=[points, mask, offsets, points_out], device=self.device)
+                    wp.launch(compact, dim=n, inputs=[points, mask, offsets, points_out], device=self.device)
                     points = points_out
                     if isinstance(radii, wp.array):
                         radii_out = wp.empty(active_count, dtype=wp.float32, device=self.device)
-                        wp.launch(compact_float, dim=n, inputs=[radii, mask, offsets, radii_out], device=self.device)
+                        wp.launch(compact, dim=n, inputs=[radii, mask, offsets, radii_out], device=self.device)
                         radii = radii_out
 
             if self.model_changed:

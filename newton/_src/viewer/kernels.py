@@ -6,6 +6,8 @@ Warp kernels for simplified Newton viewers.
 These kernels handle mesh operations and transformations.
 """
 
+from typing import Any
+
 import warp as wp
 
 import newton
@@ -726,23 +728,11 @@ def build_active_particle_mask(
 
 
 @wp.kernel
-def compact_vec3(
-    src: wp.array(dtype=wp.vec3),
+def compact(
+    src: wp.array(dtype=Any),
     mask: wp.array(dtype=wp.int32),
     offsets: wp.array(dtype=wp.int32),
-    dst: wp.array(dtype=wp.vec3),
-):
-    i = wp.tid()
-    if mask[i] == wp.int32(1):
-        dst[offsets[i]] = src[i]
-
-
-@wp.kernel
-def compact_float(
-    src: wp.array(dtype=wp.float32),
-    mask: wp.array(dtype=wp.int32),
-    offsets: wp.array(dtype=wp.int32),
-    dst: wp.array(dtype=wp.float32),
+    dst: wp.array(dtype=Any),
 ):
     i = wp.tid()
     if mask[i] == wp.int32(1):
