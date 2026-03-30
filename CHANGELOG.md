@@ -86,6 +86,7 @@
 - Fix `get_tetmesh()` winding order for left-handed USD meshes
 - Fix contact force conversion in `SolverMuJoCo` to include friction (tangential) components
 - Fix URDF inertial parameters parsing in parse_urdf so inertia tensor is correctly calculated as R@I@R.T
+- Fix `SolverMuJoCo` passing non-zero geom/pair margins to `mujoco_warp.put_model()`, which fails when NATIVECCD is enabled. Margins are forced to zero when MuJoCo handles collisions (`use_mujoco_contacts=True`); the Newton collision pipeline (`use_mujoco_contacts=False`) is unchanged
 
 ## [1.0.0] - 2026-03-10
 
