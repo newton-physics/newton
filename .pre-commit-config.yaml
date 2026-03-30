@@ -6,10 +6,10 @@ ci:
   autoupdate_commit_msg: "[pre-commit.ci] pre-commit autoupdate"
   autoupdate_schedule: quarterly
   # pre-commit.ci runs hooks without network access; uv-lock may need
-  # network to resolve build dependencies. Test removing this skip
-  # now that we've switched from hatchling to uv_build.
-  skip:
-    - uv-lock
+  # network to resolve build dependencies. Testing if uv_build works
+  # without network in pre-commit.ci (remove skip if it does).
+  # skip:
+  #   - uv-lock
   submodules: false
 
 # See https://pre-commit.com for more information
