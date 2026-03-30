@@ -2547,7 +2547,7 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     robot_folder = "franka_fr3_v2"
     num_steps = 0
     fk_enabled = True
-    fk_tolerance = 5e-6  # equality constraints cause slightly larger FK drift
+    fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
