@@ -155,10 +155,10 @@ def wait_for_completion(repo: str, run_id: int) -> str:
         The run conclusion (e.g. ``success``, ``failure``, ``cancelled``)
         or ``timed_out`` if the maximum poll duration is exceeded.
     """
-    elapsed = 0
-    while elapsed < MAX_POLL_DURATION:
+    start_time = time.monotonic()
+    while time.monotonic() - start_time < MAX_POLL_DURATION:
         time.sleep(POLL_INTERVAL)
-        elapsed += POLL_INTERVAL
+        elapsed = int(time.monotonic() - start_time)
 
         result = gh("run", "view", str(run_id), "--repo", repo, "--json", "status,conclusion")
         if result.returncode != 0:
@@ -179,6 +179,7 @@ def wait_for_completion(repo: str, run_id: int) -> str:
 
         print(f"Status: {status} ({elapsed}s elapsed)", flush=True)
 
+    elapsed = int(time.monotonic() - start_time)
     log_error(f"Timed out waiting for run {run_id} after {elapsed // 60} minutes")
     return "timed_out"
 
@@ -207,6 +208,9 @@ def main() -> int:
         log_endgroup()
         set_output("run-url", "")
         set_output("conclusion", "dispatch_error")
+        # Exit 0 so the orchestrator step is not marked as failed — the
+        # "dispatch_error" conclusion output lets downstream jobs decide
+        # how to handle it without aborting the entire nightly run.
         return 0
 
     print(f"Triggered run {run_id}: {html_url}", flush=True)
