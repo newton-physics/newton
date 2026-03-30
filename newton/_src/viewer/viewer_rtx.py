@@ -18,6 +18,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import tempfile
 import warnings
 from time import perf_counter
 from typing import Any
@@ -143,7 +144,9 @@ class ViewerRTX(ViewerUSD):
                 f"Unknown RTX environment {self._environment!r}. Choose from: {', '.join(self.ENVIRONMENTS)}"
             )
 
-        self._tmp_usd_path = os.path.abspath("_tmp_rtx_scene.usd")
+        self._tmp_usd_file = tempfile.NamedTemporaryFile(suffix=".usd", delete=False)
+        self._tmp_usd_file.close()
+        self._tmp_usd_path = self._tmp_usd_file.name
 
         # Pre-initialize fields that clear_model() (called from super().__init__) touches
         self._ui_callbacks: dict[str, list] = {"side": [], "stats": [], "free": [], "panel": []}
@@ -1824,3 +1827,10 @@ void main() {
                     pass
             self._window.close()
             self._window = None
+
+        if self._tmp_usd_path and os.path.exists(self._tmp_usd_path):
+            try:
+                os.unlink(self._tmp_usd_path)
+            except OSError:
+                pass
+            self._tmp_usd_path = ""
