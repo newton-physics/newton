@@ -455,27 +455,32 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
    for details.
 
-**Shape** (``PhysicsCollisionAPI``, ``MjcCollisionAPI``):
+**Shape** (``PhysicsCollisionAPI``):
 
 .. list-table::
    :header-rows: 1
-   :widths: 35 35 30
+   :widths: 30 30 15 25
 
    * - USD attribute
      - Newton property
      - Default
+     - Schema
    * - ``mjc:maxhullvert``
      - ``max_hull_vertices``
      - -1
+     - ``MjcMeshCollisionAPI``
    * - ``mjc:margin``
      - ``margin``
      - 0.0
+     - ``MjcCollisionAPI``
    * - ``mjc:gap``
      - ``gap``
      - 0.0
+     - ``MjcCollisionAPI``
    * - ``mjc:solref``
      - ``ke`` / ``kd``
      - ``[0.02, 1.0]``
+     - ``MjcCollisionAPI``
 
 .. note::
 
@@ -484,30 +489,36 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
    for details.
 
-**Material** (``PhysicsMaterialAPI``, ``MjcCollisionAPI``):
+**Material** (``PhysicsMaterialAPI``):
 
 .. list-table::
    :header-rows: 1
-   :widths: 35 35 30
+   :widths: 30 30 15 25
 
    * - USD attribute
      - Newton property
      - Default
+     - Schema
    * - ``mjc:torsionalfriction``
      - ``mu_torsional``
      - 0.005
+     - ``MjcMaterialAPI``
    * - ``mjc:rollingfriction``
      - ``mu_rolling``
      - 0.0001
+     - ``MjcMaterialAPI``
    * - ``mjc:priority``
      - ``priority``
      - 0
+     - ``MjcCollisionAPI``
    * - ``mjc:solmix``
      - ``weight``
      - 1.0
+     - ``MjcCollisionAPI``
    * - ``mjc:solref``
      - ``stiffness`` / ``damping``
      - ``[0.02, 1.0]``
+     - ``MjcCollisionAPI``
 
 .. note::
 
