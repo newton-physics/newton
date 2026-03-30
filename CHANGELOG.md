@@ -90,6 +90,8 @@
 - Fix `get_tetmesh()` winding order for left-handed USD meshes
 - Fix contact force conversion in `SolverMuJoCo` to include friction (tangential) components
 - Fix URDF inertial parameters parsing in parse_urdf so inertia tensor is correctly calculated as R@I@R.T
+- Fix overly conservative broadphase AABB for mesh shapes by using the pre-computed local AABB with a rotated-box transform instead of a bounding-sphere fallback, eliminating false contacts between distant meshes
+- Fix heightfield bounding-sphere radius underestimating Z extent for asymmetric height ranges (e.g. `min_z=0, max_z=10`)
 
 ## [1.0.0] - 2026-03-10
 

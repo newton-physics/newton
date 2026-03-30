@@ -149,13 +149,16 @@ def compute_shape_aabbs(
     shape_source_ptr: wp.array(dtype=wp.uint64),
     shape_margin: wp.array(dtype=float),
     shape_gap: wp.array(dtype=float),
+    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
+    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
     # outputs
     aabb_lower: wp.array(dtype=wp.vec3),
     aabb_upper: wp.array(dtype=wp.vec3),
 ):
     """Compute axis-aligned bounding boxes for each shape in world space.
 
-    Uses support function for most shapes. Infinite planes and meshes use bounding sphere fallback.
+    Uses support function for most shapes. Meshes and heightfields use the pre-computed
+    local AABB transformed to world frame. Infinite planes use bounding sphere fallback.
     AABBs are enlarged by per-shape effective gap for contact detection.
     Effective expansion is ``shape_margin + shape_gap``.
     """
@@ -177,18 +180,44 @@ def compute_shape_aabbs(
     effective_gap = shape_margin[shape_id] + shape_gap[shape_id]
     margin_vec = wp.vec3(effective_gap, effective_gap, effective_gap)
 
-    # Check if this is an infinite plane, mesh, or heightfield - use bounding sphere fallback
+    # Check if this is an infinite plane, mesh, or heightfield
     scale = shape_scale[shape_id]
     is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
     is_mesh = geo_type == GeoType.MESH
     is_hfield = geo_type == GeoType.HFIELD
 
-    if is_infinite_plane or is_mesh or is_hfield:
-        # Use conservative bounding sphere approach for infinite planes, meshes, and heightfields
+    if is_infinite_plane:
+        # Bounding sphere fallback for infinite planes
         radius = shape_collision_radius[shape_id]
         half_extents = wp.vec3(radius, radius, radius)
         aabb_lower[shape_id] = pos - half_extents - margin_vec
         aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif is_mesh or is_hfield:
+        # Tight local AABB transformed to world space.
+        # Scale is already baked into shape_collision_aabb by the builder,
+        # so we only need to handle the rotation here.
+        local_lo = shape_collision_aabb_lower[shape_id]
+        local_hi = shape_collision_aabb_upper[shape_id]
+
+        center = (local_lo + local_hi) * 0.5
+        half = (local_hi - local_lo) * 0.5
+
+        # Rotate center to world frame
+        world_center = wp.quat_rotate(orientation, center) + pos
+
+        # Rotated AABB half-extents via abs of rotation matrix columns
+        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+
+        world_half = wp.vec3(
+            wp.abs(r0[0]) * half[0] + wp.abs(r1[0]) * half[1] + wp.abs(r2[0]) * half[2],
+            wp.abs(r0[1]) * half[0] + wp.abs(r1[1]) * half[1] + wp.abs(r2[1]) * half[2],
+            wp.abs(r0[2]) * half[0] + wp.abs(r1[2]) * half[1] + wp.abs(r2[2]) * half[2],
+        )
+
+        aabb_lower[shape_id] = world_center - world_half - margin_vec
+        aabb_upper[shape_id] = world_center + world_half + margin_vec
     else:
         # Use support function to compute tight AABB
         # Create generic shape data
@@ -744,6 +773,8 @@ class CollisionPipeline:
                 model.shape_source_ptr,
                 model.shape_margin,
                 model.shape_gap,
+                model.shape_collision_aabb_lower,
+                model.shape_collision_aabb_upper,
             ],
             outputs=[
                 self.narrow_phase.shape_aabb_lower,
