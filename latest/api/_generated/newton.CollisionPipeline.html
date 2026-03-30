@@ -808,7 +808,7 @@
 <h1>newton.CollisionPipeline<a class="headerlink" href="#newton-collisionpipeline" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.CollisionPipeline">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">CollisionPipeline</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduce_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rigid_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_triangle_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_pairs_filtered</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">broad_phase</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">narrow_phase</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_hydroelastic_config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/collide.py#L364"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.CollisionPipeline" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">CollisionPipeline</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduce_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rigid_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_triangle_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_pairs_filtered</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">broad_phase</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">narrow_phase</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_hydroelastic_config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/collide.py#L365"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.CollisionPipeline" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.</p>
 <dl class="simple">
@@ -821,6 +821,13 @@
 </dd>
 </dl>
 <p>For most users, construct with <code class="docutils literal notranslate"><span class="pre">CollisionPipeline(model,</span> <span class="pre">...)</span></code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Differentiable rigid contacts (the <code class="docutils literal notranslate"><span class="pre">rigid_contact_diff_*</span></code> arrays when
+<code class="docutils literal notranslate"><span class="pre">requires_grad</span></code> is enabled) are <strong>experimental</strong>. The narrow phase stays
+frozen and gradients are a tangent approximation; validate accuracy and
+usefulness on your workflow before relying on them in optimization loops.</p>
+</div>
 <dl class="field-list simple">
 </dl>
 <dl class="py method">
@@ -857,18 +864,40 @@ hydroelastic collision handling. Defaults to None.</p></li>
 </ul>
 </dd>
 </dl>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">requires_grad</span></code> is true (explicitly or via <code class="docutils literal notranslate"><span class="pre">model.requires_grad</span></code>),
+rigid-contact autodiff via <code class="docutils literal notranslate"><span class="pre">rigid_contact_diff_*</span></code> is <strong>experimental</strong>;
+see <a class="reference internal" href="#newton.CollisionPipeline.collide" title="newton.CollisionPipeline.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a>.</p>
+</div>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.CollisionPipeline.collide">
 <span class="sig-name descname"><span class="pre">collide</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.CollisionPipeline.collide" title="Link to this definition">#</a></dt>
 <dd><p>Run the collision pipeline using NarrowPhase.</p>
+<p>Safe to call inside a <code class="xref py py-class docutils literal notranslate"><span class="pre">wp.Tape</span></code> context.  The non-differentiable
+broad-phase and narrow-phase kernels are launched with tape recording
+hardcoded <code class="docutils literal notranslate"><span class="pre">record_tape=False</span></code> internally.  The differentiable kernels
+(soft-contact generation and rigid-contact augmentation) are recorded on
+the tape so that gradients flow through <code class="docutils literal notranslate"><span class="pre">state.body_q</span></code> and
+<code class="docutils literal notranslate"><span class="pre">state.particle_q</span></code>.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">requires_grad=True</span></code>, the differentiable rigid-contact arrays
+(<code class="docutils literal notranslate"><span class="pre">contacts.rigid_contact_diff_*</span></code>) are populated by a lightweight
+augmentation kernel that reconstructs world-space contact points from
+the frozen narrow-phase output through the body transforms.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This rigid-contact gradient path is <strong>experimental</strong>: usefulness and
+numerical behaviour are still being assessed across real-world scenarios.</p>
+</div>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The current simulation state.</p></li>
 <li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a>) – The contacts buffer to populate (will be cleared first).</p></li>
-<li><p><strong>soft_contact_margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Margin for soft contact generation. If None, uses the value from construction.</p></li>
+<li><p><strong>soft_contact_margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Margin for soft contact generation.
+If <code class="docutils literal notranslate"><span class="pre">None</span></code>, uses the value from construction.</p></li>
 </ul>
 </dd>
 </dl>
@@ -878,6 +907,8 @@ hydroelastic collision handling. Defaults to None.</p></li>
 <dt class="sig sig-object py" id="newton.CollisionPipeline.contacts">
 <span class="sig-name descname"><span class="pre">contacts</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.CollisionPipeline.contacts" title="Link to this definition">#</a></dt>
 <dd><p>Allocate and return a new <a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Contacts</span></code></a> object for this pipeline.</p>
+<p>The returned buffer uses this pipeline’s <code class="docutils literal notranslate"><span class="pre">requires_grad</span></code> flag (resolved at
+construction from the argument or <code class="docutils literal notranslate"><span class="pre">model.requires_grad</span></code>).</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
 <dd class="field-odd"><p>A newly allocated contacts buffer sized for this pipeline.</p>
@@ -886,6 +917,12 @@ hydroelastic collision handling. Defaults to None.</p></li>
 <dd class="field-even"><p><a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a></p>
 </dd>
 </dl>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>If <code class="docutils literal notranslate"><span class="pre">requires_grad</span></code> is true, <code class="docutils literal notranslate"><span class="pre">rigid_contact_diff_*</span></code> arrays may be
+allocated; rigid-contact differentiability is <strong>experimental</strong> (see
+<a class="reference internal" href="#newton.CollisionPipeline.collide" title="newton.CollisionPipeline.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a>).</p>
+</div>
 </dd></dl>
 
 <dl class="py property">
