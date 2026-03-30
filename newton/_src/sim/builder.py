@@ -5414,9 +5414,9 @@ class ModelBuilder:
         self,
         body: int,
         xform: Transform | None = None,
-        a: float = 1.0,
-        b: float = 0.75,
-        c: float = 0.5,
+        rx: float = 1.0,
+        ry: float = 0.75,
+        rz: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
@@ -5426,7 +5426,7 @@ class ModelBuilder:
         """Adds an ellipsoid collision shape or site to a body.
 
         The ellipsoid is centered at its local origin as defined by `xform`, with semi-axes
-        `a`, `b`, `c` along the local X, Y, Z axes respectively.
+        `rx`, `ry`, `rz` along the local X, Y, Z axes respectively.
 
         Note:
             Ellipsoid collision is handled by the GJK/MPR collision pipeline,
@@ -5435,9 +5435,9 @@ class ModelBuilder:
         Args:
             body: The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform: The transform of the ellipsoid in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
-            a: The semi-axis of the ellipsoid along its local X-axis. Defaults to `1.0`.
-            b: The semi-axis of the ellipsoid along its local Y-axis. Defaults to `0.75`.
-            c: The semi-axis of the ellipsoid along its local Z-axis. Defaults to `0.5`.
+            rx: The semi-axis of the ellipsoid along its local X-axis [m]. Defaults to `1.0`.
+            ry: The semi-axis of the ellipsoid along its local Y-axis [m]. Defaults to `0.75`.
+            rz: The semi-axis of the ellipsoid along its local Z-axis [m]. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
@@ -5458,13 +5458,13 @@ class ModelBuilder:
                 # Add an ellipsoid with semi-axes 1.0, 0.5, 0.25
                 builder.add_shape_ellipsoid(
                     body=body,
-                    a=1.0,  # X semi-axis
-                    b=0.5,  # Y semi-axis
-                    c=0.25,  # Z semi-axis
+                    rx=1.0,  # X semi-axis
+                    ry=0.5,  # Y semi-axis
+                    rz=0.25,  # Z semi-axis
                 )
 
-                # A sphere is a special case where a = b = c
-                builder.add_shape_ellipsoid(body=body, a=0.5, b=0.5, c=0.5)
+                # A sphere is a special case where rx = ry = rz
+                builder.add_shape_ellipsoid(body=body, rx=0.5, ry=0.5, rz=0.5)
         """
         if cfg is None:
             cfg = self.default_site_cfg if as_site else self.default_shape_cfg
@@ -5472,7 +5472,7 @@ class ModelBuilder:
             cfg = cfg.copy()
             cfg.mark_as_site()
 
-        scale = wp.vec3(a, b, c)
+        scale = wp.vec3(rx, ry, rz)
         return self.add_shape(
             body=body,
             type=GeoType.ELLIPSOID,
