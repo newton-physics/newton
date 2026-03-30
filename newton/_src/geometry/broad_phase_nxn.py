@@ -25,7 +25,7 @@ from .broad_phase_common import (
 )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _nxn_broadphase_precomputed_pairs(
     # Input arrays
     shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
@@ -126,7 +126,7 @@ def _find_world_and_local_id(
     return world_id, local_id
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _nxn_broadphase_kernel(
     # Input arrays
     shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
@@ -381,6 +381,7 @@ class BroadPhaseAllPairs:
             ],
             outputs=[candidate_pair, candidate_pair_count, max_candidate_pair],
             device=device,
+            record_tape=False,
         )
 
 
@@ -455,4 +456,5 @@ class BroadPhaseExplicit:
                 max_candidate_pair,
             ],
             device=device,
+            record_tape=False,
         )
