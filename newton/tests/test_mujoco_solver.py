@@ -2849,6 +2849,9 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         Confirms that shape_margin values are propagated to geom_margin during
         solver initialization and after runtime updates via
         notify_model_changed across multiple worlds.
+
+        Uses use_mujoco_contacts=False because geom_margin is kept at zero
+        when MuJoCo handles collisions (NATIVECCD compatibility, #2106).
         """
         num_worlds = 2
         template_builder = newton.ModelBuilder()
@@ -2872,7 +2875,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         non_zero_gap = np.array([0.03 + i * 0.01 for i in range(model.shape_count)], dtype=np.float32)
         model.shape_gap.assign(wp.array(non_zero_gap, dtype=wp.float32, device=model.device))
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_contacts=False)
         to_newton = solver.mjc_geom_to_newton_shape.numpy()
         num_geoms = solver.mj_model.ngeom
 
