@@ -98,6 +98,7 @@ torch-cu13 = [
 dev = [
     "newton[examples]",      # includes examples, which pulls in sim and visualization
     "coverage[toml]>=7.8.0", # for code coverage testing
+    "six>=1.16.0",           # TEMP: dummy dep to make lockfile stale for pre-commit.ci test
 ]
 
 # Documentation dependencies
