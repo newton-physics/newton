@@ -37,12 +37,12 @@ from .kernels import (
     apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
     convert_mj_coords_to_warp_kernel,
-    convert_mjw_contacts_to_newton_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
     convert_qfrc_actuator_from_mj_kernel,
     convert_rigid_forces_from_mj_kernel,
     convert_solref,
     convert_warp_coords_to_mj_kernel,
+    create_convert_mjw_contacts_to_newton_kernel,
     create_inverse_shape_mapping_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
@@ -194,6 +194,7 @@ class SolverMuJoCo(SolverBase):
     # Class variables to cache the imported modules
     _mujoco = None
     _mujoco_warp = None
+    _convert_mjw_contacts_to_newton_kernel = None
 
     @classmethod
     def import_mujoco(cls):
@@ -2824,6 +2825,10 @@ class SolverMuJoCo(SolverBase):
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
 
+        # Deferred from module scope: wp.static() in this kernel imports mujoco_warp.
+        if SolverMuJoCo._convert_mjw_contacts_to_newton_kernel is None:
+            SolverMuJoCo._convert_mjw_contacts_to_newton_kernel = create_convert_mjw_contacts_to_newton_kernel()
+
         # --- New unified mappings: MuJoCo[world, entity] -> Newton[entity] ---
         self.mjc_body_to_newton: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
@@ -3555,7 +3560,7 @@ class SolverMuJoCo(SolverBase):
             )
 
         wp.launch(
-            convert_mjw_contacts_to_newton_kernel,
+            self._convert_mjw_contacts_to_newton_kernel,
             dim=mj_data.naconmax,
             inputs=[
                 self.mjc_geom_to_newton_shape,

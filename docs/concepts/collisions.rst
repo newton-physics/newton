@@ -1290,6 +1290,87 @@ Example usage:
     shape0 = contacts.rigid_contact_shape0.numpy()[:n]
     shape1 = contacts.rigid_contact_shape1.numpy()[:n]
 
+.. _Differentiable Contacts:
+
+Differentiable Contacts
+-----------------------
+
+When ``requires_grad=True``, the :class:`~newton.Contacts` object provides an
+additional set of **differentiable** rigid-contact arrays that participate in
+:class:`wp.Tape` autodiff.  These arrays give first-order gradients of contact
+distance and world-space contact points with respect to body poses
+(``state.body_q``).
+
+.. note::
+   Rigid-contact differentiability is **experimental**.  Accuracy and fitness for
+   real-world optimization or learning workflows should be validated case by case
+   before relying on these gradients.
+
+Making the full narrow-phase pipeline differentiable end-to-end would be
+prohibitively expensive and numerically fragile — iterative GJK/MPR solvers,
+BVH traversals, and discrete contact-set changes all introduce discontinuities
+or ill-conditioned gradients.  Newton therefore keeps the narrow phase frozen
+(``enable_backward=False``) and applies a lightweight **post-processing** step:
+it re-reads the contact geometry produced by the narrow phase (body-local
+points, world normal, margins) and reconstructs the world-space quantities
+through the differentiable ``body_q``.  The result is a first-order
+tangent-plane approximation that is cheap, stable, and sufficient for most
+gradient-based optimization and reinforcement-learning workflows.
+
+**Differentiable arrays** (allocated only when ``requires_grad=True``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Attribute
+     - Description
+   * - ``rigid_contact_diff_distance``
+     - Signed contact distance [m] (negative = penetration).
+   * - ``rigid_contact_diff_normal``
+     - World-space contact normal (A → B).
+   * - ``rigid_contact_diff_point0_world``
+     - World-space contact point on shape 0 [m].
+   * - ``rigid_contact_diff_point1_world``
+     - World-space contact point on shape 1 [m].
+
+Gradients flow through the contact points and distance; the normal direction is
+treated as a frozen constant.
+
+.. testsetup:: diff-contacts
+
+    import warp as wp
+    import newton
+
+.. testcode:: diff-contacts
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.3)))
+    builder.add_shape_sphere(body=body, radius=0.5)
+    builder.add_ground_plane()
+    model = builder.finalize(requires_grad=True)
+
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state = model.state(requires_grad=True)
+
+    with wp.Tape() as tape:
+        pipeline.collide(state, contacts)
+
+    # Backpropagate through differentiable distance
+    tape.backward(grads={
+        contacts.rigid_contact_diff_distance: wp.ones(
+            contacts.rigid_contact_max, dtype=float
+        )
+    })
+    grad_body_q = tape.gradients[state.body_q]
+
+.. note::
+   The standard (non-differentiable) rigid-contact arrays
+   (``rigid_contact_point0``, ``rigid_contact_normal``, etc.) are unaffected and
+   remain available for solvers.  The ``rigid_contact_diff_*`` arrays are an
+   additional output intended for gradient-based optimization and ML workflows.
+
 .. _Creating Contacts:
 
 Creating and Populating Contacts

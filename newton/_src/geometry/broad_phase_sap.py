@@ -109,7 +109,7 @@ def _create_tile_sort_kernel(tile_size: int):
         A Warp kernel that performs segmented tile-based sorting
     """
 
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def tile_sort_kernel(
         sap_projection_lower: wp.array(dtype=float, ndim=1),
         sap_sort_index: wp.array(dtype=int, ndim=1),
@@ -141,7 +141,7 @@ def _create_tile_sort_kernel(tile_size: int):
     return tile_sort_kernel
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sap_project_kernel(
     direction: wp.vec3,  # Must be normalized
     shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
@@ -186,7 +186,7 @@ def _sap_project_kernel(
     sap_sort_index_out[idx] = local_shape_id
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sap_range_kernel(
     world_slice_ends: wp.array(dtype=int, ndim=1),
     max_shapes_per_world: int,
@@ -281,7 +281,7 @@ def _process_single_sap_pair(
         )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sap_broadphase_kernel(
     # Input arrays
     shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
@@ -588,6 +588,7 @@ class BroadPhaseSAP:
                 self.sap_sort_index,
             ],
             device=device,
+            record_tape=False,
         )
 
         # Perform segmented sort - each world is sorted independently
@@ -604,6 +605,7 @@ class BroadPhaseSAP:
                 ],
                 block_dim=self.tile_block_dim,
                 device=device,
+                record_tape=False,
             )
         else:
             # Use segmented sort (default)
@@ -628,6 +630,7 @@ class BroadPhaseSAP:
                 self.sap_range,
             ],
             device=device,
+            record_tape=False,
         )
 
         # Compute cumulative sum of ranges
@@ -664,4 +667,5 @@ class BroadPhaseSAP:
                 max_candidate_pair,
             ],
             device=device,
+            record_tape=False,
         )
