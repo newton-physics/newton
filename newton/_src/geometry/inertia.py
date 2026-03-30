@@ -692,7 +692,7 @@ def verify_and_correct_inertia(
             )
             # Make positive definite by adjusting eigenvalues
             min_eig = np.min(eigenvalues)
-            adjustment = -min_eig + _INERTIA_ABS_ADJUSTMENT
+            adjustment = eig_threshold - min_eig + _INERTIA_ABS_ADJUSTMENT
             corrected_inertia += np.eye(3) * adjustment
             eigenvalues += adjustment
             was_corrected = True
@@ -879,7 +879,7 @@ def validate_and_correct_inertia_kernel(
         # Use a relative threshold so lightweight components are not inflated.
         eig_threshold = wp.max(1.0e-3 * I3, 1.0e-10)
         if I1 < eig_threshold:
-            adjustment = -I1 + 1.0e-6
+            adjustment = eig_threshold - I1 + 1.0e-6
             # Add scalar to all eigenvalues
             I1 += adjustment
             I2 += adjustment
