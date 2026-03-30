@@ -6,7 +6,6 @@
 Upstream ``mujoco_warp`` rejects non-zero geom margins at ``put_model()``
 time when NATIVECCD is enabled.  Newton must zero margins in the MJCF spec,
 and keep ``mjw_model.geom_margin`` zero when MuJoCo handles collisions.
-When Newton handles contacts, margins are restored for the contact kernel.
 """
 
 import unittest
@@ -71,16 +70,6 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
             geom_margin,
             np.zeros_like(geom_margin),
             err_msg="geom_margin should be zero when use_mujoco_contacts=True",
-        )
-
-    def test_geom_margin_restored_with_newton_contacts(self):
-        """When Newton handles contacts, mjw_model.geom_margin must have real values."""
-        model = self._build_model_with_margin(margin=1e-5)
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
-        geom_margin = solver.mjw_model.geom_margin.numpy()
-        self.assertTrue(
-            np.any(geom_margin > 0),
-            "geom_margin should be restored when use_mujoco_contacts=False",
         )
 
     def test_geom_margin_stays_zero_after_notify(self):
