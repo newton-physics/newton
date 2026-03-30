@@ -294,17 +294,15 @@ class RenderContext:
         Updates shape, particle, and triangle-mesh BVHs so that
         subsequent :meth:`render` calls use current geometry positions.
         """
-        if self.bvh_shapes is not None:
-            self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(
-                self.bvh_shapes, self.bvh_shapes_group_roots, self.shape_count_enabled, self.__compute_bvh_bounds_shapes
-            )
-        if self.bvh_particles is not None:
-            self.bvh_particles, self.bvh_particles_group_roots = self.__update_bvh(
-                self.bvh_particles,
-                self.bvh_particles_group_roots,
-                self.particle_count_total,
-                self.__compute_bvh_bounds_particles,
-            )
+        self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(
+            self.bvh_shapes, self.bvh_shapes_group_roots, self.shape_count_enabled, self.__compute_bvh_bounds_shapes
+        )
+        self.bvh_particles, self.bvh_particles_group_roots = self.__update_bvh(
+            self.bvh_particles,
+            self.bvh_particles_group_roots,
+            self.particle_count_total,
+            self.__compute_bvh_bounds_particles,
+        )
 
         if self.has_triangle_mesh:
             if self.triangle_mesh is None:
