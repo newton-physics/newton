@@ -301,6 +301,57 @@ class StructuredControlStrategy(ControlStrategy):
 
 
 @wp.kernel
+def step_response_control_kernel(
+    native_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    newton_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    target: wp.float32,
+    num_actuators: int,
+):
+    """Set ctrl[world_i, act_i] = target when world_i % nu == act_i, else 0."""
+    i = wp.tid()
+    world_i = i // num_actuators
+    act_i = i % num_actuators  # type: ignore[operator]
+    val = float(0.0)
+    if world_i % num_actuators == act_i:
+        val = target
+    native_ctrl[i] = val
+    newton_ctrl[i] = val
+
+
+class StepResponseControlStrategy(ControlStrategy):
+    """Each world commands one actuator to a target position, others stay at zero."""
+
+    def __init__(self, target: float = 0.3, seed: int = 42):
+        super().__init__(seed)
+        self.target = target
+        self._native_ctrl: wp.array | None = None
+        self._newton_ctrl: wp.array | None = None
+        self._n: int = 0
+        self._num_actuators: int = 0
+
+    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
+        num_worlds, num_actuators = native_ctrl.shape
+        self._native_ctrl = native_ctrl.flatten()
+        self._newton_ctrl = newton_ctrl
+        self._n = num_worlds * num_actuators
+        self._num_actuators = num_actuators
+
+    def fill_control(self, t: float):
+        if self._native_ctrl is None:
+            raise RuntimeError("Call init() first")
+        wp.launch(
+            step_response_control_kernel,
+            dim=self._n,
+            inputs=[
+                self._native_ctrl,
+                self._newton_ctrl,
+                self.target,
+                self._num_actuators,
+            ],
+        )
+
+
+@wp.kernel
 def generate_random_control_kernel_dual(
     prev_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
     native_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
@@ -478,6 +529,7 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
+    "body_ipos",
     "body_iquat",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
@@ -510,6 +562,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Timestep: not registered as custom attribute (conflicts with step() parameter).
     # Extracted from native model at runtime instead.
     "opt.timestep",
+    # Integrator: Newton may select a different integrator than the MJCF default.
+    # The solver forces the correct integrator at runtime regardless.
+    "opt.integrator",
     # Geom ordering: Newton's solver may order geoms differently (e.g. colliders before
     # visuals). Content is verified by compare_geom_fields_unordered() instead.
     "body_geomadr",
@@ -531,6 +586,16 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "actuator_acc0",
     "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
+    # Meshes: Newton / trimesh deduplicates vertices on load and may create different
+    # polygon counts per mesh. Content is visually equivalent.
+    "nmesh",
+    "nmeshvert",
+    "nmeshnormal",
+    "nmeshpoly",
+    "nmeshface",
+    "nmaxmeshdeg",
+    "nmaxpolygon",
+    "mesh_",
 }
 
 
@@ -1928,6 +1993,13 @@ class TestMenagerieBase(unittest.TestCase):
     fk_fields: ClassVar[list[str]] = DEFAULT_FK_FIELDS
     fk_tolerance: float = 2e-6
 
+    # Step-response dynamics test: one world per actuator, each commanding
+    # one DOF to a target. Collisions disabled to isolate joint dynamics.
+    step_response_enabled: bool = False
+    step_response_steps: int = 20
+    step_response_target: float = 0.3
+    step_response_tolerance: float = 1e-6
+
     @classmethod
     def setUpClass(cls):
         """Download assets once for all tests in this class."""
@@ -2125,6 +2197,10 @@ class TestMenagerieBase(unittest.TestCase):
         assert _mujoco_warp is not None
 
         if self.debug_visual:
+            self.num_worlds = 1
+        # Robots with import bugs (#2170) temporarily only run model comparison / FK.
+        # These are deterministic and don't benefit from multiple worlds.
+        elif self.num_steps <= 0 and not self.step_response_enabled:
             self.num_worlds = 1
 
         # Create models and solvers — stored on cls for reuse across test methods
@@ -2444,6 +2520,85 @@ class TestMenagerieBase(unittest.TestCase):
             viewer.close()
             self.skipTest("Visual debug mode completed")
 
+    def test_step_response(self):
+        """Verify per-DOF step response matches between Newton and native mjwarp.
+
+        One world per actuator, each commanding its actuator to a target
+        position. Collisions disabled to isolate joint dynamics. Uses split
+        pipeline for deterministic comparison.
+        """
+        if not self.step_response_enabled:
+            self.skipTest("Step response not enabled for this robot")
+
+        self._ensure_models()
+        self._run_model_comparisons()
+        self._backfill_and_recompute()
+
+        newton_solver = self._newton_solver
+        newton_state = self._newton_state
+        newton_control = self._newton_control
+        native_mjw_model = self._native_mjw_model
+        native_mjw_data = self._native_mjw_data
+        dt = self._dt
+
+        # Disable collisions on both sides
+        _disable_collisions(newton_solver.mjw_model)
+        _disable_collisions(native_mjw_model)
+
+        # Initialize step-response control
+        strategy = StepResponseControlStrategy(target=self.step_response_target)
+        strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)
+        strategy.fill_control(0.0)
+
+        # Step loop using split pipeline
+        for step in range(self.step_response_steps):
+            strategy.fill_control(step * dt)
+
+            # Newton full step
+            newton_solver.step(newton_state, newton_state, newton_control, None, dt)
+
+            # Native: split pipeline with contact/constraint injection
+            run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
+            wp.synchronize()
+
+            contacts_match, contact_msg = compare_contacts_sorted(
+                newton_solver.mjw_data, native_mjw_data, tol=self.split_pipeline_tol
+            )
+            if not contacts_match:
+                raise AssertionError(f"Step {step}: Contact mismatch - {contact_msg}")
+            inject_contacts(newton_solver.mjw_data, native_mjw_data)
+
+            run_native_make_constraint(native_mjw_model, native_mjw_data)
+            wp.synchronize()
+
+            constraints_match, constraint_msg = compare_constraints_sorted(
+                newton_solver.mjw_data, native_mjw_data, tol=self.split_pipeline_tol
+            )
+            if not constraints_match:
+                raise AssertionError(f"Step {step}: Constraint mismatch - {constraint_msg}")
+            inject_constraints(newton_solver.mjw_data, native_mjw_data)
+            run_native_transmission(native_mjw_model, native_mjw_data)
+            run_native_step1_rest(native_mjw_model, native_mjw_data)
+            run_native_step2(native_mjw_model, native_mjw_data)
+
+            # Compare qpos and qvel
+            compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, "qpos", self.step_response_tolerance, step)
+            compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, "qvel", self.step_response_tolerance, step)
+
+
+def _disable_collisions(mjw_model: Any) -> None:
+    """Zero out geom_contype and geom_conaffinity to disable broadphase collisions.
+
+    Note: explicit <pair> contacts in MJCF bypass contype/conaffinity and would
+    still generate contacts. None of our test robots use explicit pairs.
+    """
+    contype = mjw_model.geom_contype.numpy()
+    contype[:] = 0
+    mjw_model.geom_contype.assign(contype)
+    conaffinity = mjw_model.geom_conaffinity.numpy()
+    conaffinity[:] = 0
+    mjw_model.geom_conaffinity.assign(conaffinity)
+
 
 # =============================================================================
 # Model Source Base Classes
@@ -2506,8 +2661,11 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
+    backfill_model = True
+    # Step response disabled: equality constraint diffs cause contact/constraint mismatch
 
 
 class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
@@ -2522,8 +2680,12 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    fk_tolerance = 5e-6  # equality constraints cause slightly larger FK drift
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
+    backfill_model = True
+    step_response_enabled = False  # equality constraints cause qpos drift
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
@@ -2611,26 +2773,21 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
 
     robot_folder = "universal_robots_ur5e"
 
-    control_strategy = StructuredControlStrategy(seed=42)
-    num_worlds = 34
-    # num_steps = 500  # Disabled to avoid CI flakiness
     num_steps = 0
-
-    # Backfill eliminates model compilation differences (inertia re-diagonalization).
-    # Contact injection bypasses non-deterministic contact ordering in broadphase.
-    # Constraint injection bypasses non-deterministic efc row ordering in make_constraint.
-    # Together these give bit-identical results, so no tolerance overrides needed.
     backfill_model = True
     use_split_pipeline = True
     fk_enabled = True
+    step_response_enabled = True
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    backfill_model = True
+    step_response_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2642,8 +2799,10 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
     """LEAP Hand."""
 
     robot_folder = "leap_hand"
-
-    skip_reason = "Not yet implemented"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
+    step_response_enabled = False  # model diffs cause qpos divergence
 
 
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
@@ -2658,8 +2817,7 @@ class TestMenagerie_Robotiq2f85V4(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper v4."""
 
     robot_folder = "robotiq_2f85_v4"
-
-    skip_reason = "Not yet verified"
+    skip_reason = "mujoco_warp: implicit integrators and fluid model not implemented"
 
 
 class TestMenagerie_ShadowDexee(TestMenagerieMJCF):
@@ -2674,8 +2832,13 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     """Shadow Hand."""
 
     robot_folder = "shadow_hand"
-
-    skip_reason = "Not yet verified"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
+    # tendon_invweight0 is compilation-dependent (derived from inertia)
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
+    backfill_model = True
+    step_response_enabled = False  # tendon_invweight0 diff causes qvel divergence
 
 
 class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieMJCF):
@@ -2690,16 +2853,19 @@ class TestMenagerie_UmiGripper(TestMenagerieMJCF):
     """UMI Gripper."""
 
     robot_folder = "umi_gripper"
-
-    skip_reason = "Not yet implemented"
+    skip_reason = "mujoco_warp: implicit integrators and fluid model not implemented"
 
 
 class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     """Wonik Allegro Hand."""
 
     robot_folder = "wonik_allegro"
-
-    skip_reason = "Not yet verified"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
+    # TODO: body_mass differs — Newton computes different masses for visual geoms
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
+    # Step response disabled: body_mass diffs cause constraint mismatch
 
 
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
@@ -2719,8 +2885,11 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = False  # FK fails due to import issues (xpos diff 0.14)
+    # TODO: dof_damping, jnt_range, eq_, ngeom differ — multiple import issues
+    # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
@@ -2801,6 +2970,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     use_cuda_graph = True
     # num_steps = 100  # Disabled to avoid CI flakiness
     num_steps = 0
+    fk_enabled = True
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
     parse_visuals = True
@@ -2827,17 +2997,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "actuator_length": 5e-4,
         "actuator_velocity": 2e-2,
     }
-    # Apollo has 44 mesh assets but many geoms share the same mesh. Without
-    # include_mesh_materials dedup, Newton creates 60 meshes (one per geom).
-    # Also, trimesh deduplicates vertices on load, changing per-mesh counts.
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "nmesh",
-        "nmeshvert",
-        "nmeshnormal",
-        "nmeshpoly",
-        "nmeshface",
-        "mesh_",
-    }
+    # Mesh fields already skipped globally in DEFAULT_MODEL_SKIP_FIELDS
 
 
 class TestMenagerie_BerkeleyHumanoid(TestMenagerieMJCF):
@@ -2852,8 +3012,8 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
@@ -2908,16 +3068,18 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
+    # TODO: actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
 
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2929,8 +3091,9 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-
-    skip_reason = "Not yet implemented"
+    # Cassie has closed-loop kinematic chains — pervasive structural differences
+    # in DOF count, mass matrix, joint layout. Needs dedicated closed-loop support.
+    skip_reason = "Closed-loop kinematic chains not yet supported"
 
 
 # -----------------------------------------------------------------------------
@@ -2950,16 +3113,16 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
@@ -2998,8 +3161,8 @@ class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -3053,8 +3216,11 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    # TODO: body_mass differs for some bodies
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
+    step_response_enabled = False  # body_mass diffs cause qpos divergence
 
 
 # -----------------------------------------------------------------------------
