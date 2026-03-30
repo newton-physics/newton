@@ -1,1 +1,6 @@
-__version__ = "1.1.0.dev0"
+try:
+    from importlib.metadata import version
+
+    __version__ = version("newton")
+except Exception:
+    __version__ = "unknown"
