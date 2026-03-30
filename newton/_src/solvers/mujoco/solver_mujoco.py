@@ -2033,8 +2033,9 @@ class SolverMuJoCo(SolverBase):
                 pair_kwargs["solreffriction"] = pair_solreffriction[i].tolist()
             if pair_solimp is not None:
                 pair_kwargs["solimp"] = pair_solimp[i].tolist()
-            # Always zero in the spec for NATIVECCD compatibility (#2106).
-            # Real values are restored by _update_pair_properties() after put_model().
+            # Zeroed in the spec for NATIVECCD compatibility (#2106).
+            # When use_mujoco_contacts=False, real values are written back
+            # at runtime via notify_model_changed -> _update_pair_properties().
             pair_kwargs["margin"] = 0.0
             pair_kwargs["gap"] = 0.0
             if pair_friction is not None:
@@ -2896,6 +2897,10 @@ class SolverMuJoCo(SolverBase):
         """Instance of the MuJoCo viewer for debugging."""
 
         self._use_mujoco_contacts = use_mujoco_contacts
+        """Whether MuJoCo handles collision detection.
+
+        Controls margin zeroing: when True, geom/pair margins on the MuJoCo
+        model are kept at zero for NATIVECCD compatibility (#2106)."""
 
         disableflags = 0
         if disable_contacts:
@@ -5752,8 +5757,9 @@ class SolverMuJoCo(SolverBase):
         pair_solref = getattr(mujoco_attrs, "pair_solref", None)
         pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
-        pair_margin = getattr(mujoco_attrs, "pair_margin", None)
-        pair_gap = getattr(mujoco_attrs, "pair_gap", None)
+        # Keep pair margin/gap at zero when MuJoCo handles collisions (#2106).
+        pair_margin = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_margin", None)
+        pair_gap = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_gap", None)
         pair_friction = getattr(mujoco_attrs, "pair_friction", None)
 
         # Only launch kernel if at least one attribute is defined

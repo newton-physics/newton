@@ -1,4 +1,4 @@
-# Copyright 2025 The Newton Developers. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Regression test for issue #2106: NATIVECCD margin NotImplementedError.
@@ -41,8 +41,19 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
         )
         return builder.finalize()
 
+    def test_solver_creation_with_nonzero_margin(self):
+        """SolverMuJoCo must not raise when shapes have non-zero margin.
+
+        Regression test for #2106: upstream mujoco_warp raises
+        NotImplementedError in put_model() when NATIVECCD is enabled and
+        geom pairs have non-zero margin.
+        """
+        model = self._build_model_with_margin(margin=1e-5)
+        # Must not raise — margins are zeroed in the spec before put_model().
+        SolverMuJoCo(model, use_mujoco_contacts=True)
+
     def test_mj_model_geom_margin_zero(self):
-        """The compiled MjModel must have zero margins (spec-level)."""
+        """The compiled MjModel must have zero geom_margin (zeroed in MjSpec before compilation)."""
         model = self._build_model_with_margin(margin=1e-5)
         solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         np.testing.assert_array_equal(

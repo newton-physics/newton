@@ -1769,8 +1769,10 @@ def update_geom_properties_kernel(
 
     Note: geom_gap is always set to 0 because Newton does not use MuJoCo's
     gap concept.  geom_margin is zeroed when MuJoCo handles collisions
-    (NATIVECCD compat) and restored from shape_margin when Newton provides
-    contacts (the contact conversion kernel needs real margin values).
+    because mujoco_warp's NATIVECCD broadphase rejects non-zero margins at
+    put_model() time (#2106).  When Newton provides contacts, margins are
+    restored from shape_margin so that ``convert_newton_contacts_to_mjwarp_kernel``
+    can compute correct ``includemargin`` thresholds via ``contact_params``.
     """
     world, geom_idx = wp.tid()
 
