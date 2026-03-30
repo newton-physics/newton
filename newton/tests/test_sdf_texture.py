@@ -360,7 +360,6 @@ def _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narro
     wp.launch(
         _sample_nanovdb_grad_kernel, dim=n, inputs=[nanovdb_data, query_points, nano_vals, nano_grads], device=device
     )
-    wp.synchronize()
 
     tv = tex_vals.numpy()
     nv = nano_vals.numpy()
@@ -470,7 +469,6 @@ def test_texture_sdf_extrapolation(test, device):
     results = wp.zeros(4, dtype=float, device=device)
 
     wp.launch(_sample_texture_sdf_kernel, dim=4, inputs=[tex_sdf, query_points, results], device=device)
-    wp.synchronize()
 
     vals = results.numpy()
     # Points far outside should have positive distance
@@ -528,7 +526,6 @@ def test_texture_sdf_array_indexing(test, device):
         inputs=[sdf_array, 1, query, results1],
         device=device,
     )
-    wp.synchronize()
 
     val0 = float(results0.numpy()[0])
     val1 = float(results1.numpy()[0])
@@ -554,7 +551,6 @@ def test_texture_sdf_multi_resolution(test, device):
     ref_data = mesh_copy.sdf.to_kernel_data()
     ref_results = wp.zeros(500, dtype=float, device=device)
     wp.launch(_sample_nanovdb_value_kernel, dim=500, inputs=[ref_data, query_points, ref_results], device=device)
-    wp.synchronize()
     ref_np = ref_results.numpy()
 
     prev_mean_err = float("inf")
@@ -573,7 +569,6 @@ def test_texture_sdf_multi_resolution(test, device):
         )
         tex_results = wp.zeros(500, dtype=float, device=device)
         wp.launch(_sample_texture_sdf_kernel, dim=500, inputs=[tex_sdf, query_points, tex_results], device=device)
-        wp.synchronize()
 
         tex_np = tex_results.numpy()
         valid = (np.abs(tex_np) < 1e5) & (np.abs(ref_np) < 1e5)
@@ -659,7 +654,6 @@ def test_texture_sdf_quantization_uint16(test, device):
 
     wp.launch(_sample_texture_sdf_kernel, dim=500, inputs=[tex_sdf_f32, query_points, results_f32], device=device)
     wp.launch(_sample_texture_sdf_kernel, dim=500, inputs=[tex_sdf_u16, query_points, results_u16], device=device)
-    wp.synchronize()
 
     f32_np = results_f32.numpy()
     u16_np = results_u16.numpy()
@@ -706,7 +700,6 @@ def test_texture_sdf_quantization_uint8(test, device):
 
     wp.launch(_sample_texture_sdf_kernel, dim=500, inputs=[tex_sdf_f32, query_points, results_f32], device=device)
     wp.launch(_sample_texture_sdf_kernel, dim=500, inputs=[tex_sdf_u8, query_points, results_u8], device=device)
-    wp.synchronize()
 
     f32_np = results_f32.numpy()
     u8_np = results_u8.numpy()
@@ -858,7 +851,6 @@ def test_texture_sdf_from_volume(test, device):
     query = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
     result = wp.zeros(1, dtype=float, device=device)
     wp.launch(_sample_texture_sdf_kernel, dim=1, inputs=[tex_sdf, query, result], device=device)
-    wp.synchronize()
     val = float(result.numpy()[0])
     test.assertLess(val, 0.0, f"Origin should be inside box, got {val:.4f}")
 
@@ -866,7 +858,6 @@ def test_texture_sdf_from_volume(test, device):
     query_out = wp.array([wp.vec3(2.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
     result_out = wp.zeros(1, dtype=float, device=device)
     wp.launch(_sample_texture_sdf_kernel, dim=1, inputs=[tex_sdf, query_out, result_out], device=device)
-    wp.synchronize()
     val_out = float(result_out.numpy()[0])
     test.assertGreater(val_out, 0.0, f"Far point should be outside box, got {val_out:.4f}")
 
@@ -921,7 +912,7 @@ def test_uint16_vs_nanovdb_distance(test, device):
     )
 
     mesh_copy = _create_box_mesh()
-    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05, device=device)
     nanovdb_data = mesh_copy.sdf.to_kernel_data()
 
     query_np = _generate_query_points(mesh, num_points=2000)
@@ -955,7 +946,7 @@ def test_uint16_vs_nanovdb_gradient(test, device):
     )
 
     mesh_copy = _create_box_mesh()
-    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05, device=device)
     nanovdb_data = mesh_copy.sdf.to_kernel_data()
 
     query_np = _generate_query_points(mesh, num_points=2000)
@@ -1010,7 +1001,6 @@ def test_uint16_vs_float32_texture_accuracy(test, device):
     wp.launch(
         _sample_texture_sdf_grad_kernel, dim=n, inputs=[tex_u16, query_points, results_u16, grads_u16], device=device
     )
-    wp.synchronize()
 
     f32_np = results_f32.numpy()
     u16_np = results_u16.numpy()
@@ -1079,7 +1069,6 @@ def test_texture_sdf_vs_ground_truth_distance(test, device):
     bvh_results = wp.zeros(n, dtype=float, device=device)
     wp.launch(_sample_texture_sdf_kernel, dim=n, inputs=[tex_sdf, query_points, tex_results], device=device)
     wp.launch(_bvh_ground_truth_kernel, dim=n, inputs=[wp_mesh.id, query_points, bvh_results], device=device)
-    wp.synchronize()
 
     tex_np = tex_results.numpy()
     bvh_np = bvh_results.numpy()
@@ -1133,7 +1122,6 @@ def test_texture_sdf_vs_ground_truth_gradient(test, device):
     wp.launch(
         _bvh_ground_truth_grad_kernel, dim=n, inputs=[wp_mesh.id, query_points, bvh_vals, bvh_grads], device=device
     )
-    wp.synchronize()
 
     bv = bvh_vals.numpy()
     tg = tex_grads.numpy()

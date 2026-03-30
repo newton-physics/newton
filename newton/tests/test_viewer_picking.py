@@ -196,7 +196,6 @@ class TestPickingSetup(unittest.TestCase):
         picking.update(wp.vec3(0.5, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
         state.body_f.zero_()
         picking._apply_picking_force(state)
-        wp.synchronize()
 
         forces = state.body_f.numpy()
         self.assertEqual(forces.shape[0], model.body_count)

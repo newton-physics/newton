@@ -16,7 +16,7 @@ import warp as wp
 import newton as nt
 from newton.selection import ArticulationView
 
-from ..core.types import Axis, nparray, override
+from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
@@ -1004,7 +1004,7 @@ class ViewerGL(ViewerBase):
             cache["colors_uploaded"] = True
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """
         Log a generic array for visualization (not implemented).
 
@@ -1041,6 +1041,8 @@ class ViewerGL(ViewerBase):
 
         if self.model is None:
             return
+
+        self._sync_shape_colors_from_model()
 
         if self._packed_vbo_xforms is not None and self.device.is_cuda:
             # ---- Single kernel over all model shapes, scatter-write to grouped output ----

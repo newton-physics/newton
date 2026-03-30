@@ -14,7 +14,7 @@ import warp as wp
 
 import newton
 
-from ..core.types import nparray, override
+from ..core.types import override
 from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
 
@@ -897,7 +897,7 @@ class ViewerViser(ViewerBase):
         self._scene_handles[name] = handle
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """Viser viewer does not visualize generic arrays.
 
         Args:

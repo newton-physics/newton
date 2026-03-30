@@ -113,6 +113,10 @@ class Example:
 
         self.capture()
 
+    def _set_shape_colors(self, shape_colors: dict[int, list[float] | tuple[float, float, float]]):
+        for shape_idx, color in shape_colors.items():
+            self.model.shape_color[shape_idx : shape_idx + 1].fill_(wp.vec3(color))
+
     def capture(self):
         self.graph = None
 
@@ -156,7 +160,7 @@ class Example:
             plate_label = self.model.shape_label[plate_shape]
             counterpart_label = self.model.shape_label[counterpart_shape]
             print(f"Plate {plate_label} was touched by counterpart {counterpart_label}")
-            self.viewer.update_shape_colors({plate_shape: self.shape_colors[counterpart_label]})
+            self._set_shape_colors({plate_shape: self.shape_colors[counterpart_label]})
 
         self.flap_contact_sensor.update(self.state_0, self.contacts)
         self.plot_window.add_point(np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]))
@@ -165,7 +169,7 @@ class Example:
     def reset(self):
         self.sim_time = 0
         self.next_reset = self.sim_time + self.reset_interval
-        self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
+        self._set_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
         self.plates_touched = 2 * [False]
         self.plot_window.reset()
 

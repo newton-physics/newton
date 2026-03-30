@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ...core.types import MAXVAL, nparray, override, vec5, vec10
+from ...core.types import MAXVAL, override, vec5, vec10
 from ...geometry import GeoType, ShapeFlags
 from ...sim import (
     BodyFlags,
@@ -3430,8 +3430,8 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _find_body_collision_filter_pairs(
         model: Model,
-        selected_bodies: nparray,
-        colliding_shapes: nparray,
+        selected_bodies: np.ndarray,
+        colliding_shapes: np.ndarray,
     ):
         """For shape collision filter pairs, find body collision filter pairs that are contained within."""
 
@@ -3465,8 +3465,8 @@ class SolverMuJoCo(SolverBase):
 
     @staticmethod
     def _color_collision_shapes(
-        model: Model, selected_shapes: nparray, visualize_graph: bool = False, shape_labels: list[str] | None = None
-    ) -> nparray:
+        model: Model, selected_shapes: np.ndarray, visualize_graph: bool = False, shape_labels: list[str] | None = None
+    ) -> np.ndarray:
         """
         Find a graph coloring of the collision filter pairs in the model.
         Shapes within the same color cannot collide with each other.
@@ -3479,7 +3479,7 @@ class SolverMuJoCo(SolverBase):
             shape_labels: The labels of the shapes, only used for visualization.
 
         Returns:
-            nparray: An integer array of shape (num_shapes,), where each element is the color of the corresponding shape.
+            np.ndarray: An integer array of shape (num_shapes,), where each element is the color of the corresponding shape.
         """
         # we first create a mapping from selected shape to local color shape index
         # to reduce the number of nodes in the graph to only the number of selected shapes
@@ -3552,15 +3552,21 @@ class SolverMuJoCo(SolverBase):
             dim=mj_data.naconmax,
             inputs=[
                 self.mjc_geom_to_newton_shape,
-                self.mjc_body_to_newton,
-                self.mjw_model.opt.cone == int(self._mujoco.mjtCone.mjCONE_PYRAMIDAL),
+                self.mjw_model.opt.cone,
                 mj_data.nacon,
+                mj_contact.pos,
                 mj_contact.frame,
+                mj_contact.friction,
+                mj_contact.dist,
                 mj_contact.dim,
                 mj_contact.geom,
                 mj_contact.efc_address,
                 mj_contact.worldid,
                 mj_data.efc.force,
+                self.mjw_model.geom_bodyid,
+                mj_data.xpos,
+                mj_data.xquat,
+                mj_data.njmax,
             ],
             outputs=[
                 contacts.rigid_contact_count,
@@ -3706,7 +3712,7 @@ class SolverMuJoCo(SolverBase):
             # For Warp kernel equivalent, see quat_wxyz_to_xyzw() in kernels.py
             return [q[1], q[2], q[3], q[0]]
 
-        def fill_arr_from_dict(arr: nparray, d: dict[int, Any]):
+        def fill_arr_from_dict(arr: np.ndarray, d: dict[int, Any]):
             # fast way to fill an array from a dictionary
             # keys and values can also be tuples of integers
             keys = np.array(list(d.keys()), dtype=int)
@@ -3885,7 +3891,7 @@ class SolverMuJoCo(SolverBase):
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
 
-        def get_custom_attribute(name: str) -> nparray | None:
+        def get_custom_attribute(name: str) -> np.ndarray | None:
             if mujoco_attrs is None:
                 return None
             attr = getattr(mujoco_attrs, name, None)
