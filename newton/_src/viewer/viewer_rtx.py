@@ -1799,7 +1799,10 @@ void main() {
     def is_running(self) -> bool:
         if self._should_close:
             return False
-        if self.num_frames is not None:
+        # In headless mode num_frames acts as a hard stop (e.g. for CI tests).
+        # In windowed mode the user closes the window themselves; ignoring
+        # num_frames prevents the window from disappearing unexpectedly.
+        if self._headless and self.num_frames is not None:
             return self._frame_count < self.num_frames
         return True
 

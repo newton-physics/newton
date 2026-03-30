@@ -563,7 +563,7 @@ def init(parser=None):
             raise ValueError("--output-path is required when using usd viewer")
         viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
     elif args.viewer == "rtx":
-        viewer = newton.viewer.ViewerRTX(headless=args.headless, paused=args.paused)
+        viewer = newton.viewer.ViewerRTX(headless=args.headless, paused=args.paused, num_frames=args.num_frames)
     elif args.viewer == "rerun":
         viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
     elif args.viewer == "null":
