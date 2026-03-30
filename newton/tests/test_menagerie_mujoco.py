@@ -2728,7 +2728,7 @@ class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     robot_xml = "scene_right.xml"
     num_steps = 0
     fk_enabled = True
-    # TODO: body_mass differs — Newton computes different masses for visual geoms
+    # TODO(#2170): body_mass differs — Newton computes different masses for visual geoms
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
@@ -2750,8 +2750,8 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
 
     robot_folder = "aloha"
     num_steps = 0
-    fk_enabled = False  # FK fails due to import issues (xpos diff 0.14)
-    # TODO: dof_damping, jnt_range, eq_, ngeom differ — multiple import issues
+    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2170)
+    # TODO(#2170): dof_damping, jnt_range, eq_, ngeom differ
     # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
 
@@ -2934,7 +2934,7 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     robot_folder = "unitree_g1"
     num_steps = 0
     fk_enabled = True
-    # TODO: actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
+    # TODO(#2170): actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
 
@@ -3080,7 +3080,7 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     robot_folder = "robotstudio_so101"
     num_steps = 0
     fk_enabled = True
-    # TODO: body_mass differs for some bodies
+    # TODO(#2170): body_mass differs for some bodies
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
