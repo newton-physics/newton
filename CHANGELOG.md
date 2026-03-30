@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add repeatable `--warp-config KEY=VALUE` CLI option for overriding `warp.config` attributes when running examples
 - Add 3D texture-based SDF, replacing NanoVDB volumes in the mesh-mesh collision pipeline for improved performance and CPU compatibility.
 - Add `--benchmark [SECONDS]` flag to examples for headless FPS measurement with warmup
 - Interactive example browser in the GL viewer with tree-view navigation and switch/reset support
