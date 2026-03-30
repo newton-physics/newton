@@ -93,10 +93,10 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         """.. deprecated:: Use ``render_config.enable_ambient_lighting`` instead."""
 
         colors_per_world: bool = False
-        """.. deprecated:: Use ``SensorTiledCamera.utils.assign_random_colors_per_world()`` instead."""
+        """.. deprecated:: Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``) instead."""
 
         colors_per_shape: bool = False
-        """.. deprecated:: Use ``SensorTiledCamera.utils.assign_random_colors_per_shape()`` instead."""
+        """.. deprecated:: Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``) instead."""
 
         backface_culling: bool = True
         """.. deprecated:: Use ``render_config.enable_backface_culling`` instead."""
