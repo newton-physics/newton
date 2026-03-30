@@ -544,10 +544,10 @@ class ViewerGui:
         try:
             state["error_message"] = ""
 
-            include_joints = [j.strip() for j in state["include_joints"].split(",") if j.strip()] or None
-            exclude_joints = [j.strip() for j in state["exclude_joints"].split(",") if j.strip()] or None
-            include_links = [l.strip() for l in state["include_links"].split(",") if l.strip()] or None
-            exclude_links = [l.strip() for l in state["exclude_links"].split(",") if l.strip()] or None
+            include_joints = [joint.strip() for joint in state["include_joints"].split(",") if joint.strip()] or None
+            exclude_joints = [joint.strip() for joint in state["exclude_joints"].split(",") if joint.strip()] or None
+            include_links = [link.strip() for link in state["include_links"].split(",") if link.strip()] or None
+            exclude_links = [link.strip() for link in state["exclude_links"].split(",") if link.strip()] or None
 
             state["selected_articulation_view"] = ArticulationView(
                 model=viewer.model,
