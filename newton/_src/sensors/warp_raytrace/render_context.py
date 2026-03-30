@@ -145,53 +145,53 @@ class RenderContext:
             device: Warp device string (e.g. ``"cuda:0"``). If ``None``,
                 the default Warp device is used.
         """
-        self.device = device
+        self.device: str | None = device
         self.utils = Utils(self)
         self.config = config if config else RenderContext.Config()
         self.state = RenderContext.State()
 
-        self.kernel_cache: dict[int, wp.kernel] = {}
+        self.kernel_cache: dict[int, wp.Kernel] = {}
 
-        self.world_count = world_count
+        self.world_count: int = world_count
 
-        self.bvh_shapes: wp.Bvh = None
-        self.bvh_shapes_group_roots: wp.array(dtype=wp.int32) = None
+        self.bvh_shapes: wp.Bvh | None = None
+        self.bvh_shapes_group_roots: wp.array(dtype=wp.int32) | None = None
 
-        self.bvh_particles: wp.Bvh = None
-        self.bvh_particles_group_roots: wp.array(dtype=wp.int32) = None
+        self.bvh_particles: wp.Bvh | None = None
+        self.bvh_particles_group_roots: wp.array(dtype=wp.int32) | None = None
 
-        self.triangle_mesh: wp.Mesh = None
-        self.shape_count_enabled = 0
-        self.shape_count_total = 0
+        self.triangle_mesh: wp.Mesh | None = None
+        self.shape_count_enabled: int = 0
+        self.shape_count_total: int = 0
 
-        self.__triangle_points: wp.array(dtype=wp.vec3f) = None
-        self.__triangle_indices: wp.array(dtype=wp.int32) = None
+        self.__triangle_points: wp.array(dtype=wp.vec3f) | None = None
+        self.__triangle_indices: wp.array(dtype=wp.int32) | None = None
 
-        self.__particles_position: wp.array(dtype=wp.vec3f) = None
-        self.__particles_radius: wp.array(dtype=wp.float32) = None
-        self.__particles_world_index: wp.array(dtype=wp.int32) = None
+        self.__particles_position: wp.array(dtype=wp.vec3f) | None = None
+        self.__particles_radius: wp.array(dtype=wp.float32) | None = None
+        self.__particles_world_index: wp.array(dtype=wp.int32) | None = None
 
-        self.__gaussians_data: wp.array(dtype=Gaussian.Data) = None
+        self.__gaussians_data: wp.array(dtype=Gaussian.Data) | None = None
 
-        self.shape_enabled: wp.array(dtype=wp.uint32) = None
-        self.shape_types: wp.array(dtype=wp.int32) = None
-        self.shape_sizes: wp.array(dtype=wp.vec3f) = None
-        self.shape_transforms: wp.array(dtype=wp.transformf) = None
-        self.shape_colors: wp.array(dtype=wp.vec4f) = None
-        self.shape_world_index: wp.array(dtype=wp.int32) = None
-        self.shape_source_ptr: wp.array(dtype=wp.uint64) = None
-        self.shape_bounds: wp.array2d(dtype=wp.vec3f) = None
-        self.shape_texture_ids: wp.array(dtype=wp.int32) = None
-        self.shape_mesh_data_ids: wp.array(dtype=wp.int32) = None
+        self.shape_enabled: wp.array(dtype=wp.uint32) | None = None
+        self.shape_types: wp.array(dtype=wp.int32) | None = None
+        self.shape_sizes: wp.array(dtype=wp.vec3f) | None = None
+        self.shape_transforms: wp.array(dtype=wp.transformf) | None = None
+        self.shape_colors: wp.array(dtype=wp.vec4f) | None = None
+        self.shape_world_index: wp.array(dtype=wp.int32) | None = None
+        self.shape_source_ptr: wp.array(dtype=wp.uint64) | None = None
+        self.shape_bounds: wp.array2d(dtype=wp.vec3f) | None = None
+        self.shape_texture_ids: wp.array(dtype=wp.int32) | None = None
+        self.shape_mesh_data_ids: wp.array(dtype=wp.int32) | None = None
 
-        self.mesh_data: wp.array(dtype=MeshData) = None
-        self.texture_data: wp.array(dtype=TextureData) = None
+        self.mesh_data: wp.array(dtype=MeshData) | None = None
+        self.texture_data: wp.array(dtype=TextureData) | None = None
 
-        self.lights_active: wp.array(dtype=wp.bool) = None
-        self.lights_type: wp.array(dtype=wp.int32) = None
-        self.lights_cast_shadow: wp.array(dtype=wp.bool) = None
-        self.lights_position: wp.array(dtype=wp.vec3f) = None
-        self.lights_orientation: wp.array(dtype=wp.vec3f) = None
+        self.lights_active: wp.array(dtype=wp.bool) | None = None
+        self.lights_type: wp.array(dtype=wp.int32) | None = None
+        self.lights_cast_shadow: wp.array(dtype=wp.bool) | None = None
+        self.lights_position: wp.array(dtype=wp.vec3f) | None = None
+        self.lights_orientation: wp.array(dtype=wp.vec3f) | None = None
 
     def init_from_model(self, model: Model, load_textures: bool = True):
         """Initialize render context state from a Newton simulation model.
@@ -294,15 +294,17 @@ class RenderContext:
         Updates shape, particle, and triangle-mesh BVHs so that
         subsequent :meth:`render` calls use current geometry positions.
         """
-        self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(
-            self.bvh_shapes, self.bvh_shapes_group_roots, self.shape_count_enabled, self.__compute_bvh_bounds_shapes
-        )
-        self.bvh_particles, self.bvh_particles_group_roots = self.__update_bvh(
-            self.bvh_particles,
-            self.bvh_particles_group_roots,
-            self.particle_count_total,
-            self.__compute_bvh_bounds_particles,
-        )
+        if self.bvh_shapes is not None:
+            self.bvh_shapes, self.bvh_shapes_group_roots = self.__update_bvh(
+                self.bvh_shapes, self.bvh_shapes_group_roots, self.shape_count_enabled, self.__compute_bvh_bounds_shapes
+            )
+        if self.bvh_particles is not None:
+            self.bvh_particles, self.bvh_particles_group_roots = self.__update_bvh(
+                self.bvh_particles,
+                self.bvh_particles_group_roots,
+                self.particle_count_total,
+                self.__compute_bvh_bounds_particles,
+            )
 
         if self.has_triangle_mesh:
             if self.triangle_mesh is None:
