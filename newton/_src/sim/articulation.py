@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..math import quat_decompose, transform_twist
+from ..math import quat_decompose, transform_twist, velocity_at_point
 from .enums import BodyFlags, JointType
 from .model import Model
 from .state import State
@@ -202,20 +202,6 @@ def eval_single_articulation_fk(
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
 
-        # parent anchor frame in world space
-        X_wpj = X_pj
-        # velocity of parent anchor point in world space
-        v_wpj = wp.spatial_vector()
-        if parent >= 0:
-            X_wp = body_q[parent]
-            X_wpj = X_wp * X_wpj
-            r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
-
-            v_wp = body_qd[parent]
-            w_p = wp.spatial_bottom(v_wp)
-            v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
-            v_wpj = wp.spatial_vector(v_p, w_p)
-
         q_start = joint_q_start[i]
         qd_start = joint_qd_start[i]
         lin_axis_count = joint_dof_dim[i, 0]
@@ -317,16 +303,38 @@ def eval_single_articulation_fk(
             X_j = wp.transform(pos, rot)
             v_j = wp.spatial_vector(vel_v, vel_w)
 
+        # transform from world to parent joint anchor frame
+        X_wpj = X_pj
+        if parent >= 0:
+            X_wp = body_q[parent]
+            X_wpj = X_wp * X_wpj
+
         # transform from world to joint anchor frame at child body
         X_wcj = X_wpj * X_j
         # transform from world to child body frame
         X_wc = X_wcj * wp.transform_inverse(X_cj)
 
-        # transform velocity across the joint to world space
-        linear_vel = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
-        angular_vel = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+        # Velocity must be evaluated at the actual child-body origin. For translated
+        # joints, sampling parent motion only at the fixed
+        # parent anchor misses the transport term from the current joint displacement.
+        v_parent_origin = wp.vec3()
+        w_parent = wp.vec3()
+        if parent >= 0:
+            v_wp = body_qd[parent]
+            w_parent = wp.spatial_bottom(v_wp)
+            v_parent_origin = velocity_at_point(
+                v_wp, wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
+            )
 
-        v_wc = v_wpj + wp.spatial_vector(linear_vel, angular_vel)
+        # Transform joint motion into world space. The linear part of v_j is defined
+        # at the child joint anchor; if the child body origin is offset from that
+        # anchor, transport the joint angular motion to the body origin.
+        linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+        angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+        child_origin_offset_world = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wcj)
+        linear_joint_origin = linear_joint_anchor + wp.cross(angular_joint_world, child_origin_offset_world)
+
+        v_wc = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
 
         if (body_flags[child] & body_flag_filter) != 0:
             body_q[child] = X_wc
@@ -602,11 +610,10 @@ def eval_articulation_ik(
     if parent >= 0:
         X_wp = body_q[parent]
         X_wpj = X_wp * X_pj
-        r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
 
         v_wp = body_qd[parent]
         w_p = wp.spatial_bottom(v_wp)
-        v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
+        v_p = velocity_at_point(v_wp, wp.transform_get_translation(X_wpj) - wp.transform_get_translation(X_wp))
 
     # child transform and moment arm
     X_wc = body_q[child]
@@ -615,7 +622,7 @@ def eval_articulation_ik(
     v_wc = body_qd[child]
 
     w_c = wp.spatial_bottom(v_wc)
-    v_c = wp.spatial_top(v_wc)
+    v_c = velocity_at_point(v_wc, wp.transform_get_translation(X_wcj) - wp.transform_get_translation(X_wc))
 
     # joint properties
     type = joint_type[joint_idx]

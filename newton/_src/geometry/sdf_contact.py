@@ -701,74 +701,131 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
 
 
 @wp.kernel(enable_backward=False)
-def compute_mesh_mesh_block_offsets(
+def compute_mesh_mesh_tri_counts(
     shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
     shape_pairs_mesh_mesh_count: wp.array(dtype=int),
     shape_source: wp.array(dtype=wp.uint64),
     shape_heightfield_index: wp.array(dtype=wp.int32),
     heightfield_data: wp.array(dtype=HeightfieldData),
-    target_blocks: int,
-    block_offsets: wp.array(dtype=wp.int32),
+    tri_counts: wp.array(dtype=wp.int32),
 ):
-    """Compute per-pair block counts and prefix sum for dynamic load balancing.
+    """Compute per-pair triangle counts for mesh-mesh (or heightfield-mesh) pairs.
 
-    Block counts are proportional to the total triangle count of both meshes
-    (or heightfields) in each pair, so pairs with larger geometry get more
-    GPU blocks.
-
-    Args:
-        target_blocks: Desired total number of blocks (e.g., sm_count * 4).
-        block_offsets: Output array of size ``max_pairs + 1``.
-            ``block_offsets[i]`` is the cumulative block count up to pair *i*.
+    Sums the triangle counts of both shapes in each pair — each shape may be
+    a triangle mesh or a heightfield.  Each thread handles one slot in the
+    ``tri_counts`` array.  Slots beyond ``pair_count`` are zeroed so that a
+    subsequent ``array_scan`` over the full array produces correct prefix sums.
     """
-    tid = wp.tid()
-    if tid > 0:
-        return
+    i = wp.tid()
     pair_count = wp.min(shape_pairs_mesh_mesh_count[0], shape_pairs_mesh_mesh.shape[0])
+    if i >= pair_count:
+        tri_counts[i] = 0
+        return
 
-    # First pass: sum all triangle counts across all pairs and directions
-    total_tris = int(0)
-    for i in range(pair_count):
-        pair_encoded = shape_pairs_mesh_mesh[i]
-        has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
-        pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
-        for mode in range(2):
-            is_hfield = has_hfield and mode == 0
-            shape_idx = pair[mode]
-            if is_hfield:
-                hfd = heightfield_data[shape_heightfield_index[shape_idx]]
-                total_tris += get_triangle_count(GeoType.HFIELD, wp.uint64(0), hfd)
-            else:
-                mesh_id = shape_source[shape_idx]
-                if mesh_id != wp.uint64(0):
-                    total_tris += wp.mesh_get(mesh_id).indices.shape[0] // 3
+    pair_encoded = shape_pairs_mesh_mesh[i]
+    has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
+    pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
+    pair_tris = int(0)
+    for mode in range(2):
+        is_hfield = has_hfield and mode == 0
+        shape_idx = pair[mode]
+        if is_hfield:
+            hfd = heightfield_data[shape_heightfield_index[shape_idx]]
+            pair_tris += get_triangle_count(GeoType.HFIELD, wp.uint64(0), hfd)
+        else:
+            mesh_id = shape_source[shape_idx]
+            if mesh_id != wp.uint64(0):
+                pair_tris += wp.mesh_get(mesh_id).indices.shape[0] // 3
+    tri_counts[i] = wp.int32(pair_tris)
 
-    # Compute target triangles per block
-    tris_per_block = int(total_tris)
-    if target_blocks > 0 and total_tris > 0:
-        tris_per_block = wp.max(256, total_tris // target_blocks)
 
-    # Second pass: compute per-pair block counts and prefix sum
-    offset = int(0)
-    for i in range(pair_count):
-        block_offsets[i] = offset
-        pair_encoded = shape_pairs_mesh_mesh[i]
-        has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
-        pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
-        pair_tris = int(0)
-        for mode in range(2):
-            is_hfield = has_hfield and mode == 0
-            shape_idx = pair[mode]
-            if is_hfield:
-                hfd = heightfield_data[shape_heightfield_index[shape_idx]]
-                pair_tris += get_triangle_count(GeoType.HFIELD, wp.uint64(0), hfd)
-            else:
-                mesh_id = shape_source[shape_idx]
-                if mesh_id != wp.uint64(0):
-                    pair_tris += wp.mesh_get(mesh_id).indices.shape[0] // 3
-        blocks = wp.max(1, (pair_tris + tris_per_block - 1) // tris_per_block)
-        offset += blocks
-    block_offsets[pair_count] = offset
+@wp.kernel(enable_backward=False)
+def compute_block_counts_from_weights(
+    weight_prefix_sums: wp.array(dtype=wp.int32),
+    weights: wp.array(dtype=wp.int32),
+    pair_count_arr: wp.array(dtype=int),
+    max_pairs: int,
+    target_blocks: int,
+    block_counts: wp.array(dtype=wp.int32),
+):
+    """Convert per-pair weights to block counts using adaptive load balancing.
+
+    Reads the total weight from the inclusive prefix sum to compute the
+    adaptive ``weight_per_block`` threshold, then assigns each pair a
+    block count proportional to its weight.  Slots beyond ``pair_count``
+    are zeroed for a subsequent exclusive ``array_scan``.
+    """
+    i = wp.tid()
+    pair_count = wp.min(pair_count_arr[0], max_pairs)
+    if i >= pair_count:
+        block_counts[i] = 0
+        return
+
+    # Read total from inclusive prefix sum
+    total_weight = weight_prefix_sums[pair_count - 1]
+    weight_per_block = int(total_weight)
+    if target_blocks > 0 and total_weight > 0:
+        weight_per_block = wp.max(256, total_weight // target_blocks)
+
+    w = int(weights[i])
+    if weight_per_block > 0:
+        blocks = wp.max(1, (w + weight_per_block - 1) // weight_per_block)
+    else:
+        blocks = 1
+    block_counts[i] = wp.int32(blocks)
+
+
+def compute_mesh_mesh_block_offsets_scan(
+    shape_pairs_mesh_mesh: wp.array,
+    shape_pairs_mesh_mesh_count: wp.array,
+    shape_source: wp.array,
+    shape_heightfield_index: wp.array,
+    heightfield_data: wp.array,
+    target_blocks: int,
+    block_offsets: wp.array,
+    block_counts: wp.array,
+    weight_prefix_sums: wp.array,
+    device: str | None = None,
+):
+    """Compute mesh-mesh block offsets using parallel kernels and array_scan.
+
+    Runs a four-stage parallel pipeline: per-pair triangle counts →
+    inclusive scan → adaptive block counts → exclusive scan into
+    ``block_offsets``.
+    """
+    n = block_counts.shape[0]
+    # Step 1: compute per-pair triangle counts in parallel
+    wp.launch(
+        kernel=compute_mesh_mesh_tri_counts,
+        dim=n,
+        inputs=[
+            shape_pairs_mesh_mesh,
+            shape_pairs_mesh_mesh_count,
+            shape_source,
+            shape_heightfield_index,
+            heightfield_data,
+            block_counts,  # reuse as temp storage for tri counts
+        ],
+        device=device,
+    )
+    # Step 2: inclusive scan to get total in last element
+    wp.utils.array_scan(block_counts, weight_prefix_sums, inclusive=True)
+    # Step 3: compute per-pair block counts using adaptive threshold
+    wp.launch(
+        kernel=compute_block_counts_from_weights,
+        dim=n,
+        inputs=[
+            weight_prefix_sums,
+            block_counts,  # still holds tri counts
+            shape_pairs_mesh_mesh_count,
+            shape_pairs_mesh_mesh.shape[0],
+            target_blocks,
+            block_offsets,  # reuse as temp for block counts
+        ],
+        device=device,
+    )
+    # Step 4: exclusive scan of block counts → block_offsets
+    wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
 def create_narrow_phase_process_mesh_mesh_contacts_kernel(

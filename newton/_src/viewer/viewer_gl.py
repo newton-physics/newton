@@ -1042,6 +1042,8 @@ class ViewerGL(ViewerBase):
         if self.model is None:
             return
 
+        self._sync_shape_colors_from_model()
+
         if self._packed_vbo_xforms is not None and self.device.is_cuda:
             # ---- Single kernel over all model shapes, scatter-write to grouped output ----
             wp.launch(
