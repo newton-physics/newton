@@ -5715,6 +5715,7 @@ class SolverMuJoCo(SolverBase):
                 shape_geom_solimp,
                 shape_geom_solmix,
                 self.model.shape_margin,
+                int(self._use_mujoco_contacts),
             ],
             outputs=[
                 self.mjw_model.geom_friction,
