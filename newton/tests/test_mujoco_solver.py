@@ -3972,6 +3972,303 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.assertEqual(n_stale, 0, f"{n_stale}/{inactive.sum()} inactive contacts have stale efc_address")
 
 
+class TestImmovableContactFiltering(unittest.TestCase):
+    """Verify that contacts between two immovable bodies are filtered out.
+
+    The MuJoCo solver produces degenerate efc_D values when both sides of a
+    contact have zero/near-zero invweight (both bodies are immovable).  The
+    contact conversion kernel must skip such pairs.  Immovable bodies include
+    static shapes (body < 0) and kinematic bodies (BodyFlags.KINEMATIC).
+    """
+
+    @staticmethod
+    def _build_kinematic_on_ground():
+        """Build a model with a kinematic free-joint body resting on a ground plane."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.05)
+        return builder.finalize(), body
+
+    @staticmethod
+    def _build_two_kinematic_bodies():
+        """Build a model with two kinematic free-joint bodies overlapping."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        b1 = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+        b2 = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        return builder.finalize(), b1, b2
+
+    @staticmethod
+    def _build_dynamic_on_ground():
+        """Build a model with a dynamic body on a ground plane (should keep contacts)."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.05)
+        return builder.finalize(), body
+
+    def _get_nacon(self, model):
+        """Run collision + one solver step and return the MuJoCo contact count."""
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed: {e}")
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        model.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+        return int(solver.mjw_data.nacon.numpy()[0])
+
+    def test_kinematic_on_ground_contacts_filtered(self):
+        """Contacts between a kinematic body and the static ground plane must be filtered."""
+        model, _ = self._build_kinematic_on_ground()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for kinematic-on-ground, got {nacon}")
+
+    def test_two_kinematic_bodies_contacts_filtered(self):
+        """Contacts between two kinematic bodies must be filtered."""
+        model, _, _ = self._build_two_kinematic_bodies()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for kinematic-kinematic, got {nacon}")
+
+    def test_dynamic_on_ground_contacts_preserved(self):
+        """Contacts between a dynamic body and the ground plane must be preserved."""
+        model, _ = self._build_dynamic_on_ground()
+        nacon = self._get_nacon(model)
+        self.assertGreater(nacon, 0, "Expected contacts for dynamic-on-ground, got 0")
+
+    def test_kinematic_vs_dynamic_contacts_preserved(self):
+        """Contacts between a kinematic body and a dynamic body must be preserved."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        kinematic_body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(kinematic_body, hx=0.5, hy=0.5, hz=0.05)
+
+        dynamic_body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(dynamic_body, hx=0.1, hy=0.1, hz=0.05)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertGreater(nacon, 0, "Expected contacts for kinematic-vs-dynamic, got 0")
+
+    def test_kinematic_vs_fixed_root_contacts_filtered(self):
+        """Contacts between a kinematic body and a fixed-root body must be filtered.
+
+        Both sides are immovable: the kinematic body via BodyFlags.KINEMATIC,
+        the fixed-root body via body_weldid == 0 (welded to world).
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        kinematic_body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(kinematic_body, hx=0.2, hy=0.2, hz=0.05)
+
+        fixed_root = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        j = builder.add_joint_fixed(parent=-1, child=fixed_root)
+        builder.add_articulation([j])
+        builder.add_shape_box(fixed_root, hx=0.2, hy=0.2, hz=0.05)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for kinematic-vs-fixed-root, got {nacon}")
+
+    def test_fixed_root_vs_ground_contacts_filtered(self):
+        """Contacts between a fixed-root body and the ground plane must be filtered."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        fixed_root = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        j = builder.add_joint_fixed(parent=-1, child=fixed_root)
+        builder.add_articulation([j])
+        builder.add_shape_box(fixed_root, hx=0.2, hy=0.2, hz=0.01)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for fixed-root-vs-ground, got {nacon}")
+
+    def test_dynamic_vs_fixed_root_contacts_preserved(self):
+        """Contacts between a dynamic body and a fixed-root body must be preserved."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        fixed_root = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        j = builder.add_joint_fixed(parent=-1, child=fixed_root)
+        builder.add_articulation([j])
+        builder.add_shape_box(fixed_root, hx=0.5, hy=0.5, hz=0.05)
+
+        dynamic_body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(dynamic_body, hx=0.1, hy=0.1, hz=0.05)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertGreater(nacon, 0, "Expected contacts for dynamic-vs-fixed-root, got 0")
+
+    def test_two_fixed_root_bodies_contacts_filtered(self):
+        """Contacts between two fixed-root bodies must be filtered.
+
+        Both bodies are welded to the world (body_weldid == 0), so both are
+        immovable and the contact should be skipped.
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        root_a = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        ja = builder.add_joint_fixed(parent=-1, child=root_a)
+        builder.add_articulation([ja])
+        builder.add_shape_box(root_a, hx=0.2, hy=0.2, hz=0.1)
+
+        root_b = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        jb = builder.add_joint_fixed(parent=-1, child=root_b)
+        builder.add_articulation([jb])
+        builder.add_shape_box(root_b, hx=0.2, hy=0.2, hz=0.1)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for two-fixed-root-bodies, got {nacon}")
+
+    def test_solver_does_not_freeze_with_kinematic_free_joint_on_ground(self):
+        """A kinematic free-joint body on the ground must not freeze the solver.
+
+        This is the key scenario from the MR comment: kinematic bodies with
+        non-fixed joints (free joint + high armature) produce near-zero invweight
+        that was not caught by the old weld-based filter.
+        """
+        # Build a scene with a kinematic body and a dynamic body
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        kb = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(kb, hx=0.1, hy=0.1, hz=0.05)
+
+        db = builder.add_body(
+            xform=wp.transform(wp.vec3(0.5, 0.0, 1.0), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_sphere(db, radius=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed: {e}")
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        for _ in range(60):
+            state_in.clear_forces()
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+            state_in, state_out = state_out, state_in
+
+        # The dynamic sphere should have fallen and settled on the ground
+        sphere_z = state_in.body_q.numpy()[db, 2]
+        self.assertGreater(sphere_z, 0.05, "Dynamic sphere fell through the ground")
+        self.assertLess(sphere_z, 1.5, "Dynamic sphere is not settling (solver may be frozen)")
+
+
 class TestMuJoCoContactForce(unittest.TestCase):
     """Verify that contact forces from Newton's MuJoCo solver are physically correct."""
 

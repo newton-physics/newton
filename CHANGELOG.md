@@ -22,6 +22,7 @@
 - Add MPM beam twist, snow ball, and viscous coiling examples
 - Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
 - Add `enable_ambient_lighting` and `enable_particles` options to `SensorTiledCamera.Config`
+- Add differentiable rigid contacts (experimental) with respect to body poses via `CollisionPipeline` when `requires_grad=True`
 - Add per-shape display colors via `ModelBuilder.shape_color`, `Model.shape_color`, and `color=` on `ModelBuilder.add_shape_*`; mesh shapes fall back to `Mesh.color` when available and viewers honor runtime `Model.shape_color` updates
 - Add `ModelBuilder.inertia_tolerance` to configure the eigenvalue positivity and triangle inequality threshold used during inertia correction in `finalize()`
 
@@ -61,6 +62,7 @@
 
 ### Fixed
 
+- Fix inertia validation spuriously inflating small but physically valid eigenvalues for lightweight components (< ~50 g) by using a relative threshold instead of an absolute 1e-6 cutoff
 - Restore keyboard camera movement while hovering gizmos so keyboard controls remain active when the pointer is over gizmos
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
 - Unify CPU and GPU inertia validation to produce identical results for zero-mass bodies with `bound_mass`, singular inertia, non-symmetric tensors, and triangle-inequality boundary cases
@@ -74,6 +76,7 @@
 - Fix concurrent asset download races on Windows by using content-addressed cache directories
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
 - Fix body `gravcomp` not being written to the MuJoCo spec, causing it to be absent from XML saved via `save_to_mjcf`
+- Fix `compute_world_offsets` grid ordering to match terrain grid row-major order so replicated world indices align with terrain block indices
 - Fix `eq_solimp` not being written to the MuJoCo spec for equality constraints, causing it to be absent from XML saved via `save_to_mjcf`
 - Fix WELD equality constraint quaternion written in xyzw format instead of MuJoCo's wxyz format in the spec, causing incorrect orientation in XML saved via `save_to_mjcf`
 - Fix `update_contacts` not populating `rigid_contact_point0`/`rigid_contact_point1` when using `use_mujoco_contacts=True`
@@ -82,12 +85,15 @@
 - Decompose loop joint constraints by DOF type (WELD for fixed, CONNECT-pair for revolute, single CONNECT for ball) instead of always emitting 2x CONNECT
 - Fix inertia box wireframe rotation for isotropic and axisymmetric bodies in viewer
 - Implicit MPM solver now uses `mass=0` for kinematic particles instead of `ACTIVE` flag
+- Fix MuJoCo solver freeze when immovable bodies (kinematic, static, or fixed-root) generate contacts with degenerate invweight
 - Fix forward-kinematics child-origin linear velocity for articulated translated joints
 - Fix `ModelBuilder.approximate_meshes()` to handle the duplication of per-shape custom attributes that results from convex decomposition
 - Fix `get_tetmesh()` winding order for left-handed USD meshes
 - Fix contact force conversion in `SolverMuJoCo` to include friction (tangential) components
 - Fix URDF inertial parameters parsing in parse_urdf so inertia tensor is correctly calculated as R@I@R.T
 - Fix Poisson surface reconstruction segfault under parallel test execution by defaulting to single-threaded Open3D Poisson (`n_threads=1`)
+- Fix overly conservative broadphase AABB for mesh shapes by using the pre-computed local AABB with a rotated-box transform instead of a bounding-sphere fallback, eliminating false contacts between distant meshes
+- Fix heightfield bounding-sphere radius underestimating Z extent for asymmetric height ranges (e.g. `min_z=0, max_z=10`)
 
 ## [1.0.0] - 2026-03-10
 

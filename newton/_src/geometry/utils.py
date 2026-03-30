@@ -93,13 +93,14 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         else:
             return 1.0e6
     elif geo_type == GeoType.HFIELD:
-        # Heightfield bounding sphere — hx/hy are already half-extents
+        # Heightfield bounding sphere centered at the shape origin.
+        # X/Y are symmetric ([-hx, +hx], [-hy, +hy]), but Z spans [min_z, max_z]
+        # which may not be symmetric around 0.
         if src is not None:
             half_x = src.hx * scale[0]
             half_y = src.hy * scale[1]
-            # Vertical range: from min_z to max_z, centered at midpoint
-            half_z = (src.max_z - src.min_z) / 2.0 * scale[2]
-            return np.sqrt(half_x**2 + half_y**2 + half_z**2)
+            max_abs_z = max(abs(src.min_z), abs(src.max_z)) * scale[2]
+            return np.sqrt(half_x**2 + half_y**2 + max_abs_z**2)
         else:
             return np.linalg.norm(scale)
     elif geo_type == GeoType.GAUSSIAN:
@@ -791,6 +792,7 @@ def scan_with_total(
         dim=[1],
         inputs=[counts, prefix_sums, num_elements, counts.shape[0], total],
         device=counts.device,
+        record_tape=False,
     )
 
 
