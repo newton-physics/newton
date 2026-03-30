@@ -599,7 +599,7 @@ class SolverMuJoCo(SolverBase):
                 Whether ``ctrlrange`` was explicitly authored
                 (default ``0``).
             ``actuator_forcerange``
-                Force range ``vec2`` (default ``(0, 0)``).
+                Force range [N] ``vec2`` (default ``(0, 0)``).
             ``actuator_has_forcerange``
                 Whether ``forcerange`` was explicitly authored
                 (default ``0``).
@@ -648,7 +648,7 @@ class SolverMuJoCo(SolverBase):
             ``tendon_limited``
                 Length-limit tri-state (default ``2`` = auto).
             ``tendon_range``
-                Length range ``vec2`` (default ``(0, 0)``).
+                Length range [m] ``vec2`` (default ``(0, 0)``).
             ``tendon_margin``
                 Length-limit margin [m] (default ``0.0``).
             ``tendon_solref_limit``
@@ -662,7 +662,7 @@ class SolverMuJoCo(SolverBase):
             ``tendon_solimp_friction``
                 Solver impedance for friction ``vec5``.
             ``tendon_armature``
-                Armature [kg·m²] (default ``0.0``).
+                Armature [kg] (default ``0.0``).
             ``tendon_springlength``
                 Spring rest length [m], ``vec2``
                 (default ``(-1, -1)`` = use model length).
@@ -671,7 +671,7 @@ class SolverMuJoCo(SolverBase):
             ``tendon_joint_num``
                 Number of joints in this tendon.
             ``tendon_actuator_force_range``
-                Actuator force range ``vec2`` (default ``(0, 0)``).
+                Actuator force range [N] ``vec2`` (default ``(0, 0)``).
             ``tendon_actuator_force_limited``
                 Actuator force limiting tri-state (default ``2`` =
                 auto).

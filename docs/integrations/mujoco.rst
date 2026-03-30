@@ -384,8 +384,8 @@ custom-attribute system.
 
 .. _mujoco-usd-schemas:
 
-Mjc USD Schemas
----------------
+MuJoCo USD Schema
+------------------
 
 When loading USD assets, Newton can parse MuJoCo-specific attributes via the
 ``mjc:`` USD attribute prefix.  The ``mjc:`` naming comes from the
@@ -405,7 +405,7 @@ by Newton.  Attributes not listed here are ignored during USD import.  Default
 values shown are the mjcPhysics schema defaults, which may differ from Newton's
 own API defaults.
 
-**Scene** (``PhysicsScene``):
+**Scene** (``PhysicsScene``, ``MjcSceneAPI``):
 
 .. list-table::
    :header-rows: 1
@@ -424,7 +424,7 @@ own API defaults.
      - ``gravity_enabled``
      - ``True``
 
-**Joint** (``PhysicsRevoluteJoint``, ``PhysicsPrismaticJoint``, etc.):
+**Joint** (``PhysicsRevoluteJoint``, ``PhysicsPrismaticJoint``, etc. — ``MjcJointAPI``):
 
 .. list-table::
    :header-rows: 1
@@ -449,12 +449,13 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
 
 .. note::
 
-   The ``solref`` → ``ke``/``kd`` conversion currently produces mass-normalized
-   values rather than force-based values.  See
+   The imported ``solref`` values are currently incorrectly mapped to
+   ``ke``/``kd``: ``solref`` is mass-normalized, while the ``ke``/``kd``
+   Newton properties have force-based units.  See
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
    for details.
 
-**Shape** (``PhysicsCollisionAPI``):
+**Shape** (``PhysicsCollisionAPI``, ``MjcCollisionAPI``):
 
 .. list-table::
    :header-rows: 1
@@ -478,12 +479,12 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
 
 .. note::
 
-   The ``solref`` → ``ke``/``kd`` conversion has the same
+   The ``solref`` → ``ke``/``kd`` direct mapping has the same
    mass-normalization issue as the joint mapping.  See
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
    for details.
 
-**Material** (``PhysicsMaterialAPI``):
+**Material** (``PhysicsMaterialAPI``, ``MjcCollisionAPI``):
 
 .. list-table::
    :header-rows: 1
@@ -510,25 +511,12 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
 
 .. note::
 
-   The ``solref`` → ``stiffness``/``damping`` conversion has the same
+   The ``solref`` → ``stiffness``/``damping`` direct mapping has the same
    mass-normalization issue as the joint mapping.  See
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
    for details.
 
-**Body** (``PhysicsRigidBodyAPI``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 35 35 30
-
-   * - USD attribute
-     - Newton property
-     - Default
-   * - ``mjc:damping``
-     - ``rigid_body_linear_damping``
-     - 0.0
-
-**Actuator** (``MjcActuator``):
+**Actuator** (``MjcActuator``, ``MjcActuatorAPI``):
 
 .. list-table::
    :header-rows: 1
