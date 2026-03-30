@@ -536,7 +536,7 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
    for details.
 
-**Actuator** (``MjcActuator``, ``MjcActuatorAPI``):
+**Actuator** (``MjcActuator``):
 
 .. list-table::
    :header-rows: 1
