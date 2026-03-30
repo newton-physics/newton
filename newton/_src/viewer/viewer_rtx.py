@@ -313,6 +313,14 @@ void main() {
             src_pp = (ctypes.c_char_p * 1)(src_p)
             gl.glShaderSource(s, 1, ctypes.cast(src_pp, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))), None)
             gl.glCompileShader(s)
+            status = (gl.GLint * 1)()
+            gl.glGetShaderiv(s, gl.GL_COMPILE_STATUS, status)
+            if not status[0]:
+                log_len = (gl.GLint * 1)()
+                gl.glGetShaderiv(s, gl.GL_INFO_LOG_LENGTH, log_len)
+                log = (ctypes.c_char * log_len[0])()
+                gl.glGetShaderInfoLog(s, log_len[0], None, log)
+                raise RuntimeError(f"Shader compilation failed:\n{log.value.decode()}")
             return s
 
         vs = _compile_shader(_VS, gl.GL_VERTEX_SHADER)
@@ -321,6 +329,14 @@ void main() {
         gl.glAttachShader(self._gl_program, vs)
         gl.glAttachShader(self._gl_program, fs)
         gl.glLinkProgram(self._gl_program)
+        link_status = (gl.GLint * 1)()
+        gl.glGetProgramiv(self._gl_program, gl.GL_LINK_STATUS, link_status)
+        if not link_status[0]:
+            log_len = (gl.GLint * 1)()
+            gl.glGetProgramiv(self._gl_program, gl.GL_INFO_LOG_LENGTH, log_len)
+            log = (ctypes.c_char * log_len[0])()
+            gl.glGetProgramInfoLog(self._gl_program, log_len[0], None, log)
+            raise RuntimeError(f"Shader program linking failed:\n{log.value.decode()}")
         gl.glDeleteShader(vs)
         gl.glDeleteShader(fs)
 
