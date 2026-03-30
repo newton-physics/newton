@@ -42,9 +42,7 @@ project_root = Path(__file__).parent.parent
 try:
     with open(project_root / "pyproject.toml", encoding="utf-8") as f:
         content = f.read()
-    project_section = re.search(
-        r"^\[project\]\s*\n(.*?)(?=^\[|\Z)", content, re.MULTILINE | re.DOTALL
-    )
+    project_section = re.search(r"^\[project\]\s*\n(.*?)(?=^\[|\Z)", content, re.MULTILINE | re.DOTALL)
     if not project_section:
         raise ValueError("Could not find [project] section in pyproject.toml")
     match = re.search(r'^version\s*=\s*"([^"]+)"', project_section.group(1), re.MULTILINE)
