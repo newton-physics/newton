@@ -126,7 +126,8 @@ class ViewerRTX(ViewerUSD):
         environment="default",
         vsync=False,
     ):
-        os.environ["OVRTX_SKIP_USD_CHECK"] = "1"
+        # Allow callers to override this (e.g. set to "0" for debugging).
+        os.environ.setdefault("OVRTX_SKIP_USD_CHECK", "1")
 
         try:
             import ovrtx  # noqa: F401
