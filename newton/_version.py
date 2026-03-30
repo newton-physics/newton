@@ -1,6 +1,6 @@
-try:
-    from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
+try:
     __version__ = version("newton")
-except Exception:
+except PackageNotFoundError:
     __version__ = "unknown"
