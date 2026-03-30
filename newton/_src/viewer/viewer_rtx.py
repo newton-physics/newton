@@ -685,6 +685,8 @@ void main() {
         Args:
             path: Absolute or relative path to a USD file.
         """
+        if self._phase != self._PHASE_BUILD:
+            raise RuntimeError("add_background_usd() must be called before the first simulation frame")
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Background USD not found: {path}")
