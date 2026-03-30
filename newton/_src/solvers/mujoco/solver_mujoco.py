@@ -1992,8 +1992,6 @@ class SolverMuJoCo(SolverBase):
         pair_solref = get_numpy("pair_solref")
         pair_solreffriction = get_numpy("pair_solreffriction")
         pair_solimp = get_numpy("pair_solimp")
-        pair_margin = get_numpy("pair_margin")
-        pair_gap = get_numpy("pair_gap")
         pair_friction = get_numpy("pair_friction")
 
         for i in range(pair_count):
@@ -2035,10 +2033,10 @@ class SolverMuJoCo(SolverBase):
                 pair_kwargs["solreffriction"] = pair_solreffriction[i].tolist()
             if pair_solimp is not None:
                 pair_kwargs["solimp"] = pair_solimp[i].tolist()
-            if pair_margin is not None:
-                pair_kwargs["margin"] = float(pair_margin[i])
-            if pair_gap is not None:
-                pair_kwargs["gap"] = float(pair_gap[i])
+            # Always zero in the spec for NATIVECCD compatibility (#2106).
+            # Real values are restored by _update_pair_properties() after put_model().
+            pair_kwargs["margin"] = 0.0
+            pair_kwargs["gap"] = 0.0
             if pair_friction is not None:
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
@@ -2896,6 +2894,8 @@ class SolverMuJoCo(SolverBase):
 
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
+
+        self._use_mujoco_contacts = use_mujoco_contacts
 
         disableflags = 0
         if disable_contacts:
@@ -3886,7 +3886,6 @@ class SolverMuJoCo(SolverBase):
         shape_kd = model.shape_material_kd.numpy()
         shape_mu_torsional = model.shape_material_mu_torsional.numpy()
         shape_mu_rolling = model.shape_material_mu_rolling.numpy()
-        shape_margin = model.shape_margin.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -4260,7 +4259,7 @@ class SolverMuJoCo(SolverBase):
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
                 geom_params["gap"] = 0.0
-                geom_params["margin"] = float(shape_margin[shape])
+                geom_params["margin"] = 0.0
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
