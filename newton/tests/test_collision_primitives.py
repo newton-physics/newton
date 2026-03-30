@@ -321,7 +321,7 @@ def test_plane_box_kernel(
 def test_plane_cylinder_kernel(
     plane_normals: wp.array(dtype=wp.vec3),
     plane_positions: wp.array(dtype=wp.vec3),
-    cylinder_centers: wp.array(dtype=wp.vec3),
+    cylinder_positions: wp.array(dtype=wp.vec3),
     cylinder_axes: wp.array(dtype=wp.vec3),
     cylinder_radii: wp.array(dtype=float),
     cylinder_half_heights: wp.array(dtype=float),
@@ -333,7 +333,7 @@ def test_plane_cylinder_kernel(
     dist, pos, normal = geometry.collide_plane_cylinder(
         plane_normals[tid],
         plane_positions[tid],
-        cylinder_centers[tid],
+        cylinder_positions[tid],
         cylinder_axes[tid],
         cylinder_radii[tid],
         cylinder_half_heights[tid],
@@ -969,7 +969,7 @@ class TestCollisionPrimitives(unittest.TestCase):
         - Side surface at radial distance 1.0 from Z-axis
         - Top cap at z=1.0, bottom cap at z=-1.0
         """
-        cylinder_center = [0.0, 0.0, 0.0]
+        cylinder_pos = [0.0, 0.0, 0.0]
         cylinder_axis = [0.0, 0.0, 1.0]
         cylinder_radius = 1.0
         cylinder_half_height = 1.0
@@ -980,7 +980,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [2.0, 0.0, 0.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -989,7 +989,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [1.5, 0.0, 0.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -998,7 +998,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [1.4, 0.0, 0.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1007,7 +1007,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [1.3, 0.0, 0.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1017,7 +1017,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [0.0, 0.0, 2.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1026,7 +1026,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [0.0, 0.0, 1.5],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1035,7 +1035,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [0.0, 0.0, 1.4],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1044,7 +1044,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [0.0, 0.0, 1.3],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1455,7 +1455,7 @@ class TestCollisionPrimitives(unittest.TestCase):
 
         plane_normals = wp.array([wp.vec3(tc[0][0], tc[0][1], tc[0][2]) for tc in test_cases], dtype=wp.vec3)
         plane_positions = wp.array([wp.vec3(tc[1][0], tc[1][1], tc[1][2]) for tc in test_cases], dtype=wp.vec3)
-        cylinder_centers = wp.array([wp.vec3(tc[2][0], tc[2][1], tc[2][2]) for tc in test_cases], dtype=wp.vec3)
+        cylinder_positions = wp.array([wp.vec3(tc[2][0], tc[2][1], tc[2][2]) for tc in test_cases], dtype=wp.vec3)
         cylinder_axes = wp.array([wp.vec3(tc[3][0], tc[3][1], tc[3][2]) for tc in test_cases], dtype=wp.vec3)
         cylinder_radii = wp.array([tc[4] for tc in test_cases], dtype=float)
         cylinder_half_heights = wp.array([tc[5] for tc in test_cases], dtype=float)
@@ -1472,7 +1472,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             inputs=[
                 plane_normals,
                 plane_positions,
-                cylinder_centers,
+                cylinder_positions,
                 cylinder_axes,
                 cylinder_radii,
                 cylinder_half_heights,
