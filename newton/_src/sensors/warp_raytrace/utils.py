@@ -416,7 +416,7 @@ class Utils:
             seed: Random seed.
         """
         warnings.warn(
-            "``SensorTiledCamera.utils.assign_random_colors_per_world`` is deprecated, Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``) instead.",
+            "``SensorTiledCamera.utils.assign_random_colors_per_world`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
             category=DeprecationWarning,
             stacklevel=2,
         )
@@ -440,7 +440,7 @@ class Utils:
             seed: Random seed.
         """
         warnings.warn(
-            "``SensorTiledCamera.utils.assign_random_colors_per_shape`` is deprecated, Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``) instead.",
+            "``SensorTiledCamera.utils.assign_random_colors_per_shape`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
             category=DeprecationWarning,
             stacklevel=2,
         )
