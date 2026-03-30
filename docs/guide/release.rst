@@ -20,8 +20,10 @@ documentation is deployed to
 Version source of truth
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-The version string lives in ``newton/_version.py``.  All other version
-references (PyPI metadata, documentation) are derived from this file.
+The version string lives in the ``[project]`` table of ``pyproject.toml``.
+All other version references (PyPI metadata, documentation) are derived from
+this file.  At runtime, ``newton/_version.py`` reads the version from
+installed package metadata via ``importlib.metadata``.
 
 Dependency versioning strategy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -75,10 +77,10 @@ Code freeze and release branch creation
    * - ☐
      - Create ``release-X.Y`` branch from ``main`` and push it.
    * - ☐
-     - On **main**: bump ``newton/_version.py`` to ``X.(Y+1).0.dev0`` and run
+     - On **main**: bump the version in ``pyproject.toml`` to ``X.(Y+1).0.dev0`` and run
        ``docs/generate_api.py``.
    * - ☐
-     - On **release-X.Y**: bump ``newton/_version.py`` to ``X.Y.ZrcN`` and
+     - On **release-X.Y**: bump the version in ``pyproject.toml`` to ``X.Y.ZrcN`` and
        run ``docs/generate_api.py``.
    * - ☐
      - On **release-X.Y**: update dependencies in ``pyproject.toml`` from dev
@@ -100,7 +102,7 @@ branch and open a pull request targeting ``release-X.Y`` — never push
 directly to the release branch.
 
 For each new RC (``rc2``, ``rc3``, …) bump the version in
-``newton/_version.py`` and run ``docs/generate_api.py``, then tag and push.
+``pyproject.toml`` and run ``docs/generate_api.py``, then tag and push.
 Resolve any cherry-pick conflicts or missing dependent cherry-picks that
 cause CI failures before tagging.
 
@@ -178,7 +180,7 @@ otherwise.
      - Regenerate ``uv.lock`` (``uv lock``) and verify that no pre-release
        dependencies remain in the lock file.
    * - ☐
-     - Bump ``newton/_version.py`` to ``X.Y.Z`` (remove the RC suffix) and
+     - Bump the version in ``pyproject.toml`` to ``X.Y.Z`` (remove the RC suffix) and
        run ``docs/generate_api.py``.
    * - ☐
      - Commit and push tag ``vX.Y.Z``.  Automated workflows trigger:
