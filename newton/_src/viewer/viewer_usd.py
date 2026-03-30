@@ -263,8 +263,10 @@ class ViewerUSD(ViewerBase):
             st_pv = pv_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
             st_pv.Set(uvs_np)
 
-        # Create and bind a textured material when a texture is provided
-        if texture is not None and name not in self._texture_materials:
+        # Create and bind a textured material only when both texture and UVs are
+        # provided — a UsdUVTexture shader with no "st" primvar would sample
+        # undefined data and produce incorrect results.
+        if texture is not None and uvs is not None and name not in self._texture_materials:
             self._create_texture_material(name, mesh_prim, texture)
 
         # how to hide the prototype mesh but not the instances in USD?
