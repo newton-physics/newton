@@ -5825,8 +5825,8 @@ class ModelBuilder:
     def add_shape_gaussian(
         self,
         body: int,
-        gaussian: Gaussian,
         xform: Transform | None = None,
+        gaussian: Gaussian | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         collision_proxy: str | Mesh | None = None,
@@ -5842,8 +5842,8 @@ class ModelBuilder:
         Args:
             body: The index of the parent body this shape belongs to.
                 Use ``-1`` for static world geometry.
-            gaussian: The :class:`Gaussian` splat asset.
             xform: Transform in parent body's local frame. Defaults to identity.
+            gaussian: The :class:`Gaussian` splat asset. Defaults to `None`.
             scale: 3D scale applied to Gaussian positions. Defaults to ``(1, 1, 1)``.
             cfg: Shape configuration. If ``None``, uses :attr:`default_shape_cfg`
                 with ``has_shape_collision=False`` (Gaussians are render-only by
