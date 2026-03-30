@@ -21,13 +21,15 @@ Test tiers (each robot can enable independently):
       (no forces/contacts). Gated by ``fk_enabled``.
     - ``test_dynamics()``: Multi-step simulation with controls. Gated by
       ``num_steps > 0``.
+    - ``test_step_response()``: Per-DOF step response — each world commands one
+      actuator to a target. Gated by ``step_response_enabled``.
 
 Each test:
     1. Downloads the robot from menagerie (cached).
     2. Creates a Newton model (via MJCF) and a native mujoco_warp model.
     3. Compares model fields with physics-equivalence checks for inertia, solref, etc.
-    4. Runs N steps with randomized controls across 34 parallel worlds.
-    5. Compares per-step dynamics fields within tolerance.
+    4. Optionally runs forward kinematics, comparing body poses.
+    5. Optionally runs dynamics or step-response, comparing per-step qpos/qvel.
 
 Comparison modes:
     - **Full pipeline**: Both sides run ``mujoco_warp.step()`` independently. Fast
@@ -2072,7 +2074,7 @@ class TestMenagerieBase(unittest.TestCase):
         assets: dict[str, bytes] = {}
         asset_dir = self.mjcf_path.parent
 
-        # Common mesh extensions
+        # Common mesh and texture extensions
         mesh_extensions = (".stl", ".obj", ".msh", ".STL", ".OBJ", ".MSH")
         texture_extensions = (".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG")
 
@@ -2944,9 +2946,7 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-    # Cassie has closed-loop kinematic chains — pervasive structural differences
-    # in DOF count, mass matrix, joint layout. Needs dedicated closed-loop support.
-    skip_reason = "Closed-loop kinematic chains not yet supported"
+    skip_reason = "Closed-loop kinematic chains cause different DOF layout"
 
 
 # -----------------------------------------------------------------------------
