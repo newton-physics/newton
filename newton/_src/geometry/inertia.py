@@ -21,7 +21,7 @@ from .types import (
 # considered "near-zero" only when it is smaller than this fraction of the
 # largest eigenvalue.  This prevents spurious inflation of physically correct
 # but small inertia values (e.g. lightweight gripper pads).
-_INERTIA_REL_TOL = 1.0e-3
+_INERTIA_REL_TOL = 1.0e-6
 
 # Absolute floor for the eigenvalue check when max_eigenvalue itself is ~0
 # (degenerate tensor).  Must be well below the smallest physically meaningful
@@ -687,7 +687,7 @@ def verify_and_correct_inertia(
         eig_threshold = max(_INERTIA_REL_TOL * max_eig, _INERTIA_ABS_FLOOR)
         if np.any(eigenvalues < eig_threshold):
             warnings.warn(
-                f"Non-positive eigenvalues detected{body_id}: {eigenvalues}, making positive definite",
+                f"Eigenvalues below threshold detected{body_id}: {eigenvalues}, correcting inertia",
                 stacklevel=2,
             )
             # Make positive definite by adjusting eigenvalues
@@ -877,7 +877,7 @@ def validate_and_correct_inertia_kernel(
 
         # Check for negative or near-zero eigenvalues (ensure positive-definite).
         # Use a relative threshold so lightweight components are not inflated.
-        eig_threshold = wp.max(1.0e-3 * I3, 1.0e-10)
+        eig_threshold = wp.max(1.0e-6 * I3, 1.0e-10)
         if I1 < eig_threshold:
             adjustment = eig_threshold - I1 + 1.0e-6
             # Add scalar to all eigenvalues
