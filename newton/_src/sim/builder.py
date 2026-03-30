@@ -5422,6 +5422,7 @@ class ModelBuilder:
         color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        **kwargs,
     ) -> int:
         """Adds an ellipsoid collision shape or site to a body.
 
@@ -5466,6 +5467,24 @@ class ModelBuilder:
                 # A sphere is a special case where rx = ry = rz
                 builder.add_shape_ellipsoid(body=body, rx=0.5, ry=0.5, rz=0.5)
         """
+        # Backward compat: accept deprecated a, b, c parameter names
+        _deprecated_map = {"a": "rx", "b": "ry", "c": "rz"}
+        for old_name, new_name in _deprecated_map.items():
+            if old_name in kwargs:
+                warnings.warn(
+                    f"Parameter '{old_name}' is deprecated, use '{new_name}' instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        if "a" in kwargs:
+            rx = kwargs.pop("a")
+        if "b" in kwargs:
+            ry = kwargs.pop("b")
+        if "c" in kwargs:
+            rz = kwargs.pop("c")
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
+
         if cfg is None:
             cfg = self.default_site_cfg if as_site else self.default_shape_cfg
         elif as_site:
@@ -5825,7 +5844,7 @@ class ModelBuilder:
     def add_shape_gaussian(
         self,
         body: int,
-        xform: Transform | None = None,
+        xform: Transform | Gaussian | None = None,
         gaussian: Gaussian | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
@@ -5843,7 +5862,7 @@ class ModelBuilder:
             body: The index of the parent body this shape belongs to.
                 Use ``-1`` for static world geometry.
             xform: Transform in parent body's local frame. Defaults to identity.
-            gaussian: The :class:`Gaussian` splat asset. Defaults to `None`.
+            gaussian: The :class:`Gaussian` splat asset.
             scale: 3D scale applied to Gaussian positions. Defaults to ``(1, 1, 1)``.
             cfg: Shape configuration. If ``None``, uses :attr:`default_shape_cfg`
                 with ``has_shape_collision=False`` (Gaussians are render-only by
@@ -5861,6 +5880,23 @@ class ModelBuilder:
         Returns:
             The index of the Gaussian shape.
         """
+        # Backward compat: detect Gaussian passed as second positional arg (old API
+        # had signature add_shape_gaussian(body, gaussian, xform=...)).
+        if isinstance(xform, Gaussian):
+            warnings.warn(
+                "Passing 'gaussian' as the second positional argument is deprecated. "
+                "Use add_shape_gaussian(body, xform=..., gaussian=...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if gaussian is not None:
+                raise TypeError("Cannot pass 'gaussian' both as positional and keyword argument.")
+            gaussian = xform
+            xform = None
+
+        if gaussian is None and collision_proxy is not None:
+            raise ValueError("'gaussian' must be provided when 'collision_proxy' is set.")
+
         if cfg is None:
             cfg = self.default_shape_cfg.copy()
         else:

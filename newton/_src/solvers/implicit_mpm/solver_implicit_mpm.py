@@ -620,11 +620,14 @@ class SolverImplicitMPM(SolverBase):
         """Solver to use for the rheology solver."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver."""
-        collider_velocity_mode: Literal["forward", "backward"] = "forward"
+        collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
         """Collider velocity computation mode. ``'forward'`` uses the current velocity,
-        ``'backward'`` uses the previous timestep position. Deprecated aliases ``'instantaneous'``
-        (= ``'forward'``) and ``'finite_difference'`` (= ``'backward'``) are also accepted at
-        runtime."""
+        ``'backward'`` uses the previous timestep position.
+
+        .. deprecated::
+            Aliases ``'instantaneous'`` (= ``'forward'``) and ``'finite_difference'``
+            (= ``'backward'``) are deprecated and will be removed in a future release.
+        """
 
         # grid
         voxel_size: float = 0.1
