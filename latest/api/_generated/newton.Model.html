@@ -2136,17 +2136,17 @@ stores the total particle count.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_collision_aabb_lower">
 <span class="sig-name descname"><span class="pre">shape_collision_aabb_lower</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.vec3</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.shape_collision_aabb_lower" title="Link to this definition">#</a></dt>
-<dd><p>Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
-Computed from base geometry only (excludes shape margin; shape margin and gap are applied
-during contact margin calculations). Used for voxel-based contact reduction.</p>
+<dd><p>Scaled local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
+Includes shape scale but excludes margin and gap (those are applied at runtime).
+Used for broadphase AABB computation and voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_collision_aabb_upper">
 <span class="sig-name descname"><span class="pre">shape_collision_aabb_upper</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.vec3</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.shape_collision_aabb_upper" title="Link to this definition">#</a></dt>
-<dd><p>Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
-Computed from base geometry only (excludes shape margin; shape margin and gap are applied
-during contact margin calculations). Used for voxel-based contact reduction.</p>
+<dd><p>Scaled local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
+Includes shape scale but excludes margin and gap (those are applied at runtime).
+Used for broadphase AABB computation and voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">

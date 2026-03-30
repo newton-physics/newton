@@ -2043,6 +2043,15 @@ attach SDF data on meshes:</p>
 </pre></div>
 </div>
 </div>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p><strong>Build an SDF on every mesh that can collide</strong>, even when high-precision contacts are
+not required. A low-resolution SDF (e.g., <code class="docutils literal notranslate"><span class="pre">max_resolution=64</span></code>) uses very little memory
+yet still provides O(1) distance queries that are dramatically faster than the BVH
+fallback. Without an SDF, mesh-vs-mesh and mesh-vs-primitive contacts must walk the BVH
+for every query point, which dominates collision cost in most scenes. Attaching even a
+coarse SDF eliminates this bottleneck.</p>
+</div>
 <p><a class="reference internal" href="../api/_generated/newton.Mesh.html#newton.Mesh.build_sdf" title="newton.Mesh.build_sdf"><code class="xref py py-meth docutils literal notranslate"><span class="pre">build_sdf()</span></code></a> accepts several optional keyword arguments
 (defaults shown in parentheses):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mesh</span><span class="o">.</span><span class="n">build_sdf</span><span class="p">(</span>
