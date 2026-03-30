@@ -119,15 +119,18 @@ def dispatch(repo: str, ref: str, workflow_file: str, extra_args: list[str]) -> 
         RuntimeError: If the dispatch API call fails or the response does
             not contain a ``workflow_run_id``.
     """
-    result = gh(
-        "api",
-        f"repos/{repo}/actions/workflows/{workflow_file}/dispatches",
-        "-f",
-        f"ref={ref}",
-        *extra_args,
-        "-F",
-        "return_run_details=true",
-    )
+    try:
+        result = gh(
+            "api",
+            f"repos/{repo}/actions/workflows/{workflow_file}/dispatches",
+            "-f",
+            f"ref={ref}",
+            *extra_args,
+            "-F",
+            "return_run_details=true",
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"gh api dispatch timed out after {GH_TIMEOUT}s") from e
     if result.returncode != 0:
         raise RuntimeError(f"gh api failed:\n{result.stderr.strip()}")
 
