@@ -29,6 +29,7 @@ from newton.tests.unittest_utils import (
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
+    is_noise_line,
 )
 
 
@@ -74,8 +75,9 @@ def add_example_test(
     Args:
         expected_output: Regex patterns expected in Python warnings or
             stdout on all devices.  Each pattern must match at least once
-            in the combined output; any unmatched warning or stdout line
-            fails the test.
+            in the combined output.  Any warning not matched by at least
+            one pattern fails the test; unmatched stdout is printed but
+            does not fail.
         expected_output_cpu: Like *expected_output* but only asserted on
             CPU devices.
     """
@@ -107,8 +109,8 @@ def add_example_test(
                 if wp.get_device(device).is_cuda and not torch.cuda.is_available():
                     test.skipTest("Torch not compiled with CUDA support")
 
-            except Exception as e:
-                test.skipTest(f"{e}")
+            except ImportError as e:
+                test.skipTest(f"torch not available: {e}")
 
         # Mark the test as skipped if USD is not installed but required
         usd_required = options.pop("usd_required", False)
@@ -155,14 +157,17 @@ def add_example_test(
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
         capture = StdOutCapture()
         capture.begin()
+        try:
+            with wp.ScopedDevice(device), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                example = mod.Example(viewer, args)
+                newton.examples.run(example, args)
+                wp.synchronize()
 
-        with wp.ScopedDevice(device), warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", UserWarning)
-            example = mod.Example(viewer, args)
-            newton.examples.run(example, args)
-
-        wp.synchronize()
-        stdout = capture.end()
+            stdout = capture.end()
+        except BaseException:
+            capture.end()
+            raise
 
         # Build expected pattern list
         is_cpu = wp.get_device(device).is_cpu
@@ -193,11 +198,7 @@ def add_example_test(
             filtered = [
                 line
                 for line in stdout.splitlines()
-                if not (line.startswith("Module") and "load on device" in line)
-                and not (line.startswith("#") and "PXR_WORK_THREAD_LIMIT" in line)
-                and not (line == "##################################################################")
-                and not line.startswith("Matplotlib is building the font cache")
-                and not any(p.search(line) for p in compiled_patterns)
+                if not is_noise_line(line) and not any(p.search(line) for p in compiled_patterns)
             ]
             if filtered:
                 print("\n".join(filtered))

@@ -192,6 +192,19 @@ class StdOutCapture(StreamCapture):
         super().__init__("stdout")
 
 
+def is_noise_line(line: str) -> bool:
+    """Return True if *line* is a known noisy framework message that should be ignored."""
+    if line.startswith("Module") and "load on device" in line:
+        return True
+    if line.startswith("#") and "PXR_WORK_THREAD_LIMIT" in line:
+        return True
+    if line == "##################################################################":
+        return True
+    if line.startswith("Matplotlib is building the font cache"):
+        return True
+    return False
+
+
 class CheckOutput:
     def __init__(self, test):
         self.test = test
@@ -213,16 +226,7 @@ class CheckOutput:
             # fail if test produces unexpected output (e.g.: from wp.expect_eq() builtins)
             # we allow strings starting of the form "Module xxx load on device xxx"
             # for lazy loaded modules
-            filtered_s = "\n".join(
-                [
-                    line
-                    for line in s.splitlines()
-                    if not (line.startswith("Module") and "load on device" in line)
-                    and not (line.startswith("#") and "PXR_WORK_THREAD_LIMIT" in line)
-                    and not (line == "##################################################################")
-                    and not line.startswith("Matplotlib is building the font cache")
-                ]
-            )
+            filtered_s = "\n".join(line for line in s.splitlines() if not is_noise_line(line))
 
             if filtered_s.strip():
                 self.test.fail(f"Unexpected output:\n'{s.rstrip()}'")
