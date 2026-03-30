@@ -626,7 +626,7 @@ class SolverKamino(SolverBase):
             )
 
     @override
-    def update_contacts(self, contacts: Contacts, state: State) -> None:
+    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """
         Converts Kamino contacts to Newton's Contacts format.
 
