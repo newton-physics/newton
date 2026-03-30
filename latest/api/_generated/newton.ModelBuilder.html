@@ -4566,16 +4566,6 @@ Update this object before adding shapes to set default contact/material properti
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.ModelBuilder.inertia_tolerance">
-<span class="sig-name descname"><span class="pre">inertia_tolerance</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a></em><a class="headerlink" href="#newton.ModelBuilder.inertia_tolerance" title="Link to this definition">#</a></dt>
-<dd><p>Tolerance for inertia eigenvalue positivity checks and triangle inequality
-validation [kg*m^2]. Lower this for models with lightweight components (&lt; ~50g).
-Values below ~1e-7 may not behave identically across the detailed (float64) and
-fast (float32) validation paths due to float32 precision limits.
-Default: 1e-6.</p>
-</dd></dl>
-
-<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.ModelBuilder.joint_X_c">
 <span class="sig-name descname"><span class="pre">joint_X_c</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><span class="pre">Transform</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.ModelBuilder.joint_X_c" title="Link to this definition">#</a></dt>
 <dd><p>Child-frame joint transforms accumulated for <a class="reference internal" href="newton.Model.html#newton.Model.joint_X_c" title="newton.Model.joint_X_c"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code></a>.</p>
@@ -5525,7 +5515,6 @@ Default: False.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.equality_constraint_world"><code class="docutils literal notranslate"><span class="pre">equality_constraint_world</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.equality_constraint_world_start"><code class="docutils literal notranslate"><span class="pre">equality_constraint_world_start</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.gravity"><code class="docutils literal notranslate"><span class="pre">gravity</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.inertia_tolerance"><code class="docutils literal notranslate"><span class="pre">inertia_tolerance</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.joint_X_c"><code class="docutils literal notranslate"><span class="pre">joint_X_c</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.joint_X_p"><code class="docutils literal notranslate"><span class="pre">joint_X_p</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.joint_act"><code class="docutils literal notranslate"><span class="pre">joint_act</span></code></a></li>
