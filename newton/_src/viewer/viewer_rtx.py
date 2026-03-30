@@ -727,8 +727,10 @@ void main() {
         # Create the presentation window now that all Warp kernels have been
         # compiled.  Doing this earlier causes a deadlock on Windows because
         # the Win32 message pump and Warp's JIT compilation fight for the
-        # main thread.
-        self._init_window()
+        # main thread.  Skip entirely in headless mode — a hidden window still
+        # requires a display server and an OpenGL context.
+        if not self._headless:
+            self._init_window()
 
         self._build_flat_shape_arrays()
 
@@ -1641,7 +1643,8 @@ void main() {
             with wp.ScopedTimer("ViewerRTX::rtx_wait", active=PROFILE_ENABLED, use_nvtx=True):
                 products = self._render_result.wait() if self._render_result is not None else None
 
-            if products is not None:
+            # blit to window if not headless
+            if products is not None and self._window is not None and self._window.context is not None:
                 for _pname, product in products.items():
                     for frame in product.frames:
                         if "LdrColor" in frame.render_vars:
@@ -1664,9 +1667,6 @@ void main() {
     def _blit_to_window(self, pixels: wp.array | wp.Texture2D):
         """Upload *pixels* to a GL texture and draw a fullscreen triangle (GPU sRGB + flip)."""
         from pyglet import gl
-
-        if self._window is None or self._window.context is None:
-            return
 
         with wp.ScopedTimer("ViewerRTX::gl_tex_copy", active=PROFILE_ENABLED, use_nvtx=True):
             # copy OVRTX output to OpenGL texture
