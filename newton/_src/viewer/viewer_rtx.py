@@ -178,6 +178,8 @@ class ViewerRTX(ViewerUSD):
 
         # Pyglet window state
         self._window = None
+        self._pyglet = None
+        self._pyglet_gl = None
         self._pyglet_app = None
         self._should_close = False
         self._camera_dirty = True
@@ -255,6 +257,10 @@ class ViewerRTX(ViewerUSD):
             visible=not self._headless,
             vsync=self._vsync_init,
         )
+
+        # cache the imported pyglet modules to avoid reimporting later
+        self._pyglet = pyglet
+        self._pyglet_gl = pyglet.gl
         self._pyglet_app = pyglet.app
 
         # ---- GL texture + shader for zero-copy blit --------------------------
@@ -1167,9 +1173,8 @@ void main() {
 
     @override
     def is_key_down(self, key: str | int) -> bool:
-        try:
-            import pyglet
-        except Exception:
+        pyglet = self._pyglet
+        if pyglet is None:
             return False
 
         if isinstance(key, str):
@@ -1282,8 +1287,8 @@ void main() {
                 try:
                     self._window.switch_to()
                     self._window.dispatch_events()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    warnings.warn(f"ViewerRTX: error dispatching window events: {exc}", stacklevel=2)
 
             now = perf_counter()
             if self._last_perf_time is not None:
@@ -1666,7 +1671,7 @@ void main() {
 
     def _blit_to_window(self, pixels: wp.array | wp.Texture2D):
         """Upload *pixels* to a GL texture and draw a fullscreen triangle (GPU sRGB + flip)."""
-        from pyglet import gl
+        gl = self._pyglet_gl
 
         with wp.ScopedTimer("ViewerRTX::gl_tex_copy", active=PROFILE_ENABLED, use_nvtx=True):
             # copy OVRTX output to OpenGL texture
@@ -1698,7 +1703,7 @@ void main() {
 
     def _read_window_texture_pixels(self) -> np.ndarray:
         """Read back the last presented GL texture for screenshot capture."""
-        from pyglet import gl
+        gl = self._pyglet_gl
 
         if self._window is None or self._window.context is None:
             raise RuntimeError("save_screenshot() requires an active presentation window")
