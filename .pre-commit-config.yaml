@@ -5,10 +5,10 @@ ci:
   autoupdate_branch: ""
   autoupdate_commit_msg: "[pre-commit.ci] pre-commit autoupdate"
   autoupdate_schedule: quarterly
-  # pre-commit.ci runs hooks without network access, but uv-lock needs to
-  # resolve hatchling for this dynamically-versioned project.
-  skip:
-    - uv-lock
+  # pre-commit.ci has no network access, but uv-lock needs to resolve
+  # dependencies from remote indexes (PyPI, nvidia, pytorch).
+  # Using --locked --offline so pre-commit.ci can at least verify the
+  # lockfile is consistent without network access.
   submodules: false
 
 # See https://pre-commit.com for more information
@@ -27,8 +27,9 @@ repos:
     # uv version.
     rev: 0.9.21
     hooks:
-      # Update the uv lockfile
+      # Verify the uv lockfile is up-to-date
       - id: uv-lock
+        args: [--locked, --offline]
   - repo: https://github.com/crate-ci/typos
     rev: v1.42.0
     hooks:
