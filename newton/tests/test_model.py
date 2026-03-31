@@ -293,19 +293,25 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertIsNotNone(model)
 
-    def test_approximate_meshes_different_meshes_not_shared(self):
-        """Shapes with different source meshes should NOT share copies, even if they have the
-        same hash (which would require identical geometry -- this test uses different geometry)."""
+    def test_approximate_meshes_distinct_objects_same_hash_not_shared(self):
+        """Two distinct Mesh objects with identical geometry but different visual properties
+        (same hash, different id) must NOT share copies. This validates that the copy cache
+        uses id(mesh) rather than hash(mesh)."""
         builder = ModelBuilder()
         mesh_a = newton.Mesh.create_box(0.5, 0.5, 0.5, compute_inertia=False)
-        mesh_b = newton.Mesh.create_box(1.0, 1.0, 1.0, compute_inertia=False)
+        mesh_b = newton.Mesh.create_box(0.5, 0.5, 0.5, compute_inertia=False)
+        mesh_b.color = (1.0, 0.0, 0.0)
+
+        # Same geometry means same hash, but different Python objects with different color
+        self.assertEqual(hash(mesh_a), hash(mesh_b))
+        self.assertIsNot(mesh_a, mesh_b)
 
         s0 = builder.add_shape_mesh(body=-1, mesh=mesh_a)
         s1 = builder.add_shape_mesh(body=-1, mesh=mesh_b)
 
         builder.approximate_meshes(method="convex_hull")
 
-        # Different source meshes should produce different copies
+        # Must NOT be shared -- they are different objects with different visual properties
         self.assertIsNot(builder.shape_source[s0], builder.shape_source[s1])
 
     def test_approximate_meshes_collision_filter_child_bodies(self):

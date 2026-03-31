@@ -43,6 +43,7 @@
 - Replace verbose Apache 2.0 boilerplate with two-line SPDX-only license headers across all source and documentation files
 - Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Improve wrench preservation in hydroelastic contacts with contact reduction.
+- Cache `Mesh.copy()` results in `ModelBuilder.approximate_meshes()` so replicated worlds share a single mesh copy instead of creating redundant per-shape allocations
 
 ### Deprecated
 
