@@ -916,7 +916,7 @@ rearrange them into tiled RGBA buffers for display, with one tile per (world, ca
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.colors_per_shape">
 <span class="sig-name descname"><span class="pre">colors_per_shape</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.colors_per_shape" title="Link to this definition">#</a></dt>
 <dd><div class="deprecated">
-<p><span class="versionmodified deprecated">Deprecated since version Use: </span><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.utils.assign_random_colors_per_shape()</span></code> instead.</p>
+<p><span class="versionmodified deprecated">Deprecated since version Use: </span>shape colors instead (e.g. <code class="docutils literal notranslate"><span class="pre">builder.add_shape_cylinder(...,</span> <span class="pre">color=(r,</span> <span class="pre">g,</span> <span class="pre">b))</span></code>).</p>
 </div>
 </dd></dl>
 
@@ -924,7 +924,7 @@ rearrange them into tiled RGBA buffers for display, with one tile per (world, ca
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.colors_per_world">
 <span class="sig-name descname"><span class="pre">colors_per_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.colors_per_world" title="Link to this definition">#</a></dt>
 <dd><div class="deprecated">
-<p><span class="versionmodified deprecated">Deprecated since version Use: </span><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.utils.assign_random_colors_per_world()</span></code> instead.</p>
+<p><span class="versionmodified deprecated">Deprecated since version Use: </span>shape colors instead (e.g. <code class="docutils literal notranslate"><span class="pre">builder.add_shape_cylinder(...,</span> <span class="pre">color=(r,</span> <span class="pre">g,</span> <span class="pre">b))</span></code>).</p>
 </div>
 </dd></dl>
 
@@ -1161,6 +1161,9 @@ in the scene.</p>
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Utils.assign_random_colors_per_shape">
 <span class="sig-name descname"><span class="pre">assign_random_colors_per_shape</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Utils.assign_random_colors_per_shape" title="Link to this definition">#</a></dt>
 <dd><p>Assign a random color to each shape.</p>
+<div class="deprecated">
+<p><span class="versionmodified deprecated">Deprecated since version Use: </span>shape colors instead (e.g. <code class="docutils literal notranslate"><span class="pre">builder.add_shape_cylinder(...,</span> <span class="pre">color=(r,</span> <span class="pre">g,</span> <span class="pre">b))</span></code>).</p>
+</div>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>seed</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Random seed.</p>
@@ -1172,6 +1175,9 @@ in the scene.</p>
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Utils.assign_random_colors_per_world">
 <span class="sig-name descname"><span class="pre">assign_random_colors_per_world</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Utils.assign_random_colors_per_world" title="Link to this definition">#</a></dt>
 <dd><p>Assign each world a random color, applied to all its shapes.</p>
+<div class="deprecated">
+<p><span class="versionmodified deprecated">Deprecated since version Use: </span>shape colors instead (e.g. <code class="docutils literal notranslate"><span class="pre">builder.add_shape_cylinder(...,</span> <span class="pre">color=(r,</span> <span class="pre">g,</span> <span class="pre">b))</span></code>).</p>
+</div>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>seed</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Random seed.</p>
@@ -1420,7 +1426,7 @@ in the scene.</p>
 <span class="sig-name descname"><span class="pre">assign_random_colors_per_shape</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.assign_random_colors_per_shape" title="Link to this definition">#</a></dt>
 <dd><p>Assign a random color to each shape.</p>
 <div class="deprecated">
-<p><span class="versionmodified deprecated">Deprecated since version Use: </span><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.utils.assign_random_colors_per_shape</span></code> instead.</p>
+<p><span class="versionmodified deprecated">Deprecated since version Use: </span>shape colors instead (e.g. <code class="docutils literal notranslate"><span class="pre">builder.add_shape_cylinder(...,</span> <span class="pre">color=(r,</span> <span class="pre">g,</span> <span class="pre">b))</span></code>).</p>
 </div>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -1434,7 +1440,7 @@ in the scene.</p>
 <span class="sig-name descname"><span class="pre">assign_random_colors_per_world</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.assign_random_colors_per_world" title="Link to this definition">#</a></dt>
 <dd><p>Assign each world a random color, applied to all its shapes.</p>
 <div class="deprecated">
-<p><span class="versionmodified deprecated">Deprecated since version Use: </span><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.utils.assign_random_colors_per_world</span></code> instead.</p>
+<p><span class="versionmodified deprecated">Deprecated since version Use: </span>shape colors instead (e.g. <code class="docutils literal notranslate"><span class="pre">builder.add_shape_cylinder(...,</span> <span class="pre">color=(r,</span> <span class="pre">g,</span> <span class="pre">b))</span></code>).</p>
 </div>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>

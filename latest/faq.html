@@ -812,14 +812,14 @@
 </section>
 <section id="what-is-the-difference-between-warp-and-newton">
 <h2>What is the difference between Warp and Newton?<a class="headerlink" href="#what-is-the-difference-between-warp-and-newton" title="Link to this heading">#</a></h2>
-<p><a class="reference external" href="https://github.com/NVIDIA/warp">Warp</a> is a Python framework for writing high‑performance, differentiable GPU kernels for physics simulation and spatial computing. Newton is a full physics engine built on Warp that adds high‑level simulation APIs, interchangeable solvers, and asset I/O for robotics.</p>
+<p><a class="reference external" href="https://github.com/NVIDIA/warp">Warp</a> is a Python framework for writing high-performance, differentiable GPU kernels for physics simulation and spatial computing. Newton is a full physics engine built on Warp that adds high-level simulation APIs, interchangeable solvers, and asset I/O for robotics.</p>
 </section>
 <section id="what-is-the-difference-between-warp-sim-and-newton">
-<h2>What is the difference between Warp.sim and Newton?<a class="headerlink" href="#what-is-the-difference-between-warp-sim-and-newton" title="Link to this heading">#</a></h2>
-<p>Warp.sim is the predecessor to Newton, developed by NVIDIA as a module in Warp, and will be deprecated as of Warp 1.10. See the <a class="reference external" href="https://github.com/NVIDIA/warp/discussions/735">announcement</a> and <a class="reference internal" href="migration.html"><span class="doc">warp.sim Migration Guide</span></a> to Newton.</p>
+<h2>What is the difference between <code class="docutils literal notranslate"><span class="pre">warp.sim</span></code> and Newton?<a class="headerlink" href="#what-is-the-difference-between-warp-sim-and-newton" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">warp.sim</span></code> was the predecessor to Newton, developed by NVIDIA as a module in Warp. It was deprecated in Warp 1.8 and removed in Warp 1.10. See the <a class="reference internal" href="migration.html"><span class="doc">warp.sim Migration Guide</span></a> to Newton.</p>
 </section>
-<section id="does-newton-support-coupling-of-solvers-for-multiphysics-or-cosimulation">
-<h2>Does Newton support coupling of solvers for multiphysics or co‑simulation?<a class="headerlink" href="#does-newton-support-coupling-of-solvers-for-multiphysics-or-cosimulation" title="Link to this heading">#</a></h2>
+<section id="does-newton-support-coupling-of-solvers-for-multiphysics-or-co-simulation">
+<h2>Does Newton support coupling of solvers for multiphysics or co-simulation?<a class="headerlink" href="#does-newton-support-coupling-of-solvers-for-multiphysics-or-co-simulation" title="Link to this heading">#</a></h2>
 <p>Yes, Newton is explicitly designed to be extensible with multiple solver implementations for rich multiphysics scenarios. Newton provides APIs for users to implement coupling between solvers, and we have successfully demonstrated one-way coupling in examples such as cloth manipulation by a robotic arm and a quadruped walking through non-rigid terrain. Two-way coupling and implicit coupling between select solvers are on the Newton roadmap.</p>
 </section>
 <section id="does-newton-support-mujoco-simulation">
@@ -839,7 +839,7 @@
 <section id="does-newton-provide-visualization-capabilities">
 <h2>Does Newton provide visualization capabilities?<a class="headerlink" href="#does-newton-provide-visualization-capabilities" title="Link to this heading">#</a></h2>
 <p>Newton provides basic visualization for debugging purposes. Read more in the <a class="reference internal" href="guide/visualization.html"><span class="doc">Visualization</span></a> Guide.</p>
-<p>For rich real‑time graphics, users commonly pair Newton with Isaac Lab, which provides advanced rendering. Users can also export simulation outputs to a time-sampled USD that can be visualized, for example, in <a class="reference external" href="https://www.nvidia.com/en-us/omniverse/">NVIDIA Omniverse</a> or <a class="reference external" href="https://developer.nvidia.com/isaac/sim">Isaac Sim</a>.</p>
+<p>For rich real-time graphics, users commonly pair Newton with Isaac Lab, which provides advanced rendering. Users can also export simulation outputs to a time-sampled USD that can be visualized, for example, in <a class="reference external" href="https://www.nvidia.com/en-us/omniverse/">NVIDIA Omniverse</a> or <a class="reference external" href="https://developer.nvidia.com/isaac/sim">Isaac Sim</a>.</p>
 </section>
 <section id="how-can-i-contribute-to-newton">
 <h2>How can I contribute to Newton?<a class="headerlink" href="#how-can-i-contribute-to-newton" title="Link to this heading">#</a></h2>
@@ -851,12 +851,12 @@
 </section>
 <section id="what-is-physx">
 <h2>What is PhysX?<a class="headerlink" href="#what-is-physx" title="Link to this heading">#</a></h2>
-<p><a class="reference external" href="https://github.com/NVIDIAGameWorks/PhysX">PhysX</a> is an open-source, multi-physics SDK that provides scalable simulation across CPUs and GPUs, widely used for industrial digital-twin simulation in Omniverse, and robotics simulation in IsaacSim and IsaacLab.</p>
+<p><a class="reference external" href="https://github.com/NVIDIAGameWorks/PhysX">PhysX</a> is an open-source, multi-physics SDK that provides scalable simulation across CPUs and GPUs, widely used for industrial digital-twin simulation in Omniverse, and robotics simulation in Isaac Sim and Isaac Lab.</p>
 <p>It features a unified simulation framework for reduced-coordinate articulations and rigid bodies, deformable bodies and cloth (FEM), fluids/particles (PBD), vehicle dynamics, and character controllers.</p>
 </section>
 <section id="will-newton-replace-physx">
 <h2>Will Newton replace PhysX?<a class="headerlink" href="#will-newton-replace-physx" title="Link to this heading">#</a></h2>
-<p>No, the two engines serve different primary goals: Newton targets robot learning and extensible multiphysics with differentiability, while PhysX focuses on industrial digital-twin simulation as a mature, multi-platform real‑time physics SDK that is actively maintained and updated.</p>
+<p>No, the two engines serve different primary goals: Newton targets robot learning and extensible multiphysics with differentiability, while PhysX focuses on industrial digital-twin simulation as a mature, multi-platform real-time physics SDK that is actively maintained and updated.</p>
 <p>Isaac Lab’s experimental Newton integration does not support PhysX, but Isaac Lab plans to continue supporting PhysX as a simulation backend.</p>
 </section>
 <section id="can-physx-work-in-newton">
@@ -890,8 +890,8 @@
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-newton">What is Newton?</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-the-difference-between-warp-and-newton">What is the difference between Warp and Newton?</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-the-difference-between-warp-sim-and-newton">What is the difference between Warp.sim and Newton?</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#does-newton-support-coupling-of-solvers-for-multiphysics-or-cosimulation">Does Newton support coupling of solvers for multiphysics or co‑simulation?</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-the-difference-between-warp-sim-and-newton">What is the difference between <code class="docutils literal notranslate"><span class="pre">warp.sim</span></code> and Newton?</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#does-newton-support-coupling-of-solvers-for-multiphysics-or-co-simulation">Does Newton support coupling of solvers for multiphysics or co-simulation?</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#does-newton-support-mujoco-simulation">Does Newton support MuJoCo simulation?</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#is-newton-exposed-and-accessible-in-isaac-lab-and-isaac-sim">Is Newton exposed and accessible in Isaac Lab and Isaac Sim?</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#is-newton-a-standalone-framework">Is Newton a standalone framework?</a></li>
