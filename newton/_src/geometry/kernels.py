@@ -967,9 +967,7 @@ def volume_grad(volume: wp.uint64, p: wp.vec3):
 
 
 @wp.func
-def counter_increment(
-    counter: wp.array[int], counter_index: int, tids: wp.array[int], tid: int, index_limit: int = -1
-):
+def counter_increment(counter: wp.array[int], counter_index: int, tids: wp.array[int], tid: int, index_limit: int = -1):
     """
     Increment the counter but only if it is smaller than index_limit, remember which thread received which counter value.
     This allows the counter increment function to be used in differentiable computations where the backward pass will

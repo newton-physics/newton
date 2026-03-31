@@ -67,9 +67,7 @@ def tanh(x: float):
 
 
 @wp.kernel
-def network(
-    phases: wp.array2d[float], weights: wp.array2d[float], tet_activations: wp.array2d[float]
-):
+def network(phases: wp.array2d[float], weights: wp.array2d[float], tet_activations: wp.array2d[float]):
     # output tile index
     i = wp.tid()
 

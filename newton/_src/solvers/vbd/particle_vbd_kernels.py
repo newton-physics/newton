@@ -631,9 +631,7 @@ def compute_cofactor_derivative(F: wp.mat33, scale: float) -> mat99:
 
 
 @wp.kernel
-def _count_num_adjacent_edges(
-    edges_array: wp.array2d[wp.int32], num_vertex_adjacent_edges: wp.array[wp.int32]
-):
+def _count_num_adjacent_edges(edges_array: wp.array2d[wp.int32], num_vertex_adjacent_edges: wp.array[wp.int32]):
     for edge_id in range(edges_array.shape[0]):
         o0 = edges_array[edge_id, 0]
         o1 = edges_array[edge_id, 1]
@@ -691,9 +689,7 @@ def _fill_adjacent_edges(
 
 
 @wp.kernel
-def _count_num_adjacent_faces(
-    face_indices: wp.array2d[wp.int32], num_vertex_adjacent_faces: wp.array[wp.int32]
-):
+def _count_num_adjacent_faces(face_indices: wp.array2d[wp.int32], num_vertex_adjacent_faces: wp.array[wp.int32]):
     for face in range(face_indices.shape[0]):
         v0 = face_indices[face, 0]
         v1 = face_indices[face, 1]
@@ -736,9 +732,7 @@ def _fill_adjacent_faces(
 
 
 @wp.kernel
-def _count_num_adjacent_springs(
-    springs_array: wp.array[wp.int32], num_vertex_adjacent_springs: wp.array[wp.int32]
-):
+def _count_num_adjacent_springs(springs_array: wp.array[wp.int32], num_vertex_adjacent_springs: wp.array[wp.int32]):
     num_springs = springs_array.shape[0] / 2
     for spring_id in range(num_springs):
         v0 = springs_array[spring_id * 2]
@@ -772,9 +766,7 @@ def _fill_adjacent_springs(
 
 
 @wp.kernel
-def _count_num_adjacent_tets(
-    tet_indices: wp.array2d[wp.int32], num_vertex_adjacent_tets: wp.array[wp.int32]
-):
+def _count_num_adjacent_tets(tet_indices: wp.array2d[wp.int32], num_vertex_adjacent_tets: wp.array[wp.int32]):
     for tet in range(tet_indices.shape[0]):
         v0 = tet_indices[tet, 0]
         v1 = tet_indices[tet, 1]
@@ -1903,9 +1895,7 @@ def apply_conservative_bound_truncation(
 
 
 @wp.kernel
-def update_velocity(
-    dt: float, pos_prev: wp.array[wp.vec3], pos: wp.array[wp.vec3], vel: wp.array[wp.vec3]
-):
+def update_velocity(dt: float, pos_prev: wp.array[wp.vec3], pos: wp.array[wp.vec3], vel: wp.array[wp.vec3]):
     particle = wp.tid()
     vel[particle] = (pos[particle] - pos_prev[particle]) / dt
 

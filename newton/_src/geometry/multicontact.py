@@ -618,9 +618,7 @@ def remove_zero_length_edges(loop: wp.array[wp.vec2], loop_count: int, eps: floa
 
 
 @wp.func
-def add_avoid_duplicates_vec2(
-    arr: wp.array[wp.vec2], arr_count: int, vec: wp.vec2, eps: float
-) -> tuple[int, bool]:
+def add_avoid_duplicates_vec2(arr: wp.array[wp.vec2], arr_count: int, vec: wp.vec2, eps: float) -> tuple[int, bool]:
     """
     Add a vector to an array, avoiding duplicates.
 

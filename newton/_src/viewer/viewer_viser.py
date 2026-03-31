@@ -701,9 +701,7 @@ class ViewerViser(ViewerBase):
         name: str,
         starts: wp.array[wp.vec3] | None,
         ends: wp.array[wp.vec3] | None,
-        colors: (
-            wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None
-        ),
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
         width: float = 0.01,
         hidden: bool = False,
     ):
@@ -827,9 +825,7 @@ class ViewerViser(ViewerBase):
         name: str,
         points: wp.array[wp.vec3] | None,
         radii: wp.array[wp.float32] | float | None = None,
-        colors: (
-            wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None
-        ) = None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
         """

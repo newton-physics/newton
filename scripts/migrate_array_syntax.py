@@ -13,19 +13,13 @@ import sys
 from pathlib import Path
 
 # Pattern 1: wp.array(dtype=X, ndim=N) -> wp.arrayNd[X]
-PATTERN_ARRAY_NDIM = re.compile(
-    r"wp\.array\(dtype=([\w.]+),\s*ndim=(\d)\)"
-)
+PATTERN_ARRAY_NDIM = re.compile(r"wp\.array\(dtype=([\w.]+),\s*ndim=(\d)\)")
 
 # Pattern 2: wp.arrayNd(dtype=X) -> wp.arrayNd[X]  (N in 1..4)
-PATTERN_ARRAYND = re.compile(
-    r"wp\.array([1-4])d\(dtype=([\w.]+)\)"
-)
+PATTERN_ARRAYND = re.compile(r"wp\.array([1-4])d\(dtype=([\w.]+)\)")
 
 # Pattern 3: wp.array(dtype=X) -> wp.array[X]  (plain 1d, no other args)
-PATTERN_ARRAY_PLAIN = re.compile(
-    r"wp\.array\(dtype=([\w.]+)\)"
-)
+PATTERN_ARRAY_PLAIN = re.compile(r"wp\.array\(dtype=([\w.]+)\)")
 
 
 def migrate_content(content: str) -> str:

@@ -33,9 +33,7 @@ class ClosestHit:
 
 
 @wp.func
-def get_group_roots(
-    group_roots: wp.array[wp.int32], world_index: wp.int32, want_global_world: wp.int32
-) -> wp.int32:
+def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want_global_world: wp.int32) -> wp.int32:
     if want_global_world != 0:
         return group_roots[group_roots.shape[0] - 1]
     return group_roots[world_index]

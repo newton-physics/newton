@@ -354,9 +354,7 @@ class _DelassusOperator:
         self.delassus_rotation.release()
         self.delassus_diagonal.release()
 
-    def apply_stress_delta(
-        self, stress_delta: wp.array[vec6], velocity: wp.array[wp.vec3], record_cmd: bool = False
-    ):
+    def apply_stress_delta(self, stress_delta: wp.array[vec6], velocity: wp.array[wp.vec3], record_cmd: bool = False):
         return wp.launch(
             kernel=apply_stress_delta_jacobi,
             dim=self.momentum.velocity.shape[0],
@@ -667,9 +665,7 @@ class _CGSolver:
             shape=shape, dtype=dtype, device=device, matvec=self._preconditioner_matvec
         )
 
-    def _delassus_matvec(
-        self, x: wp.array[vec6], y: wp.array[vec6], z: wp.array[vec6], alpha: float, beta: float
-    ):
+    def _delassus_matvec(self, x: wp.array[vec6], y: wp.array[vec6], z: wp.array[vec6], alpha: float, beta: float):
         # dv = B^T x
         self.delta_velocity.zero_()
         self.delassus_operator.apply_stress_delta(x, self.delta_velocity)

@@ -272,9 +272,7 @@ class TriMeshCollisionDetector:
 
         return collision_info
 
-    def compute_collision_buffer_offsets(
-        self, buffer_sizes: wp.array[wp.int32], offsets: wp.array[wp.int32]
-    ):
+    def compute_collision_buffer_offsets(self, buffer_sizes: wp.array[wp.int32], offsets: wp.array[wp.int32]):
         assert offsets.size == buffer_sizes.size + 1
         offsets_np = np.empty(shape=(offsets.size,), dtype=np.int32)
         offsets_np[1:] = np.cumsum(buffer_sizes.numpy())[:]

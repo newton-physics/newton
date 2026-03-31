@@ -202,9 +202,7 @@ def compute_double_dot_product(
 
 
 @wp.func
-def compute_vector_sum(
-    dim: int32, vio: int32, x: wp.array[float32], y: wp.array[float32], z: wp.array[float32]
-):
+def compute_vector_sum(dim: int32, vio: int32, x: wp.array[float32], y: wp.array[float32], z: wp.array[float32]):
     """
     Computes the sum of two vectors `x` and `y` and stores the result in vector `z`.\n
     All vectors are stored in flat arrays, with dimension `dim` and starting from the vector index offset `vio`.

@@ -93,9 +93,7 @@ class TestPairKeyOps(unittest.TestCase):
 
         # Define a Warp kernel to test build_pair_key2
         @wp.kernel
-        def _test_kernel_build_pair_key2(
-            index_A: wp.array[uint32], index_B: wp.array[uint32], key: wp.array[uint64]
-        ):
+        def _test_kernel_build_pair_key2(index_A: wp.array[uint32], index_B: wp.array[uint32], key: wp.array[uint64]):
             tid = wp.tid()
             key[tid] = build_pair_key2(index_A[tid], index_B[tid])
 

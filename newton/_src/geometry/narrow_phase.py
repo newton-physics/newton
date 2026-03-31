@@ -2052,8 +2052,7 @@ class NarrowPhase:
         shape_data: wp.array1d[wp.vec4],  # Shape data (scale xyz, margin w)
         shape_transform: wp.array1d[wp.transform],  # In world space
         shape_source: wp.array1d[wp.uint64],  # The index into the source array, type define by shape_types
-        shape_sdf_index: wp.array1d[wp.int32]
-        | None = None,  # Per-shape index into texture_sdf_data (-1 for none)
+        shape_sdf_index: wp.array1d[wp.int32] | None = None,  # Per-shape index into texture_sdf_data (-1 for none)
         texture_sdf_data: wp.array1d[TextureSDFData] | None = None,  # Compact texture SDF data table
         shape_gap: wp.array1d[wp.float32],  # per-shape contact gap (detection threshold)
         shape_collision_radius: wp.array1d[wp.float32],  # per-shape collision radius for AABB fallback
@@ -2069,8 +2068,7 @@ class NarrowPhase:
         ),  # Pointing from pairId.x to pairId.y, represents z axis of local contact frame
         contact_penetration: wp.array[float],  # negative if bodies overlap
         contact_count: wp.array[int],  # Number of active contacts after narrow
-        contact_tangent: wp.array[wp.vec3]
-        | None = None,  # Represents x axis of local contact frame (None to disable)
+        contact_tangent: wp.array[wp.vec3] | None = None,  # Represents x axis of local contact frame (None to disable)
         device: Devicelike | None = None,  # Device to launch on
         **kwargs: Any,
     ) -> None:

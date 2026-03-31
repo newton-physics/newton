@@ -437,9 +437,7 @@ def _initialize_tolerance_kernel(
 
 
 @wp.kernel
-def make_jacobi_preconditioner(
-    A: wp.array2d[Any], world_dims: wp.array[wp.int32], diag: wp.array2d[Any]
-):
+def make_jacobi_preconditioner(A: wp.array2d[Any], world_dims: wp.array[wp.int32], diag: wp.array2d[Any]):
     world, row = wp.tid()
     world_dim = world_dims[world]
     if row >= world_dim:

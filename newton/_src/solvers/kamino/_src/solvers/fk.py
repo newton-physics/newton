@@ -2287,9 +2287,7 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _eval_max_constraint(
-        self, constraints: wp.array2d[wp.float32], max_constraint: wp.array[wp.float32]
-    ):
+    def _eval_max_constraint(self, constraints: wp.array2d[wp.float32], max_constraint: wp.array[wp.float32]):
         """
         Internal evaluator for the maximal absolute constraint, from the constraints vector, in each world
         """
