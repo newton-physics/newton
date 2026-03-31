@@ -9,17 +9,17 @@ from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State
 
 @wp.kernel
 def integrate_particles(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    f: wp.array(dtype=wp.vec3),
-    w: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    particle_world: wp.array(dtype=wp.int32),
-    gravity: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    f: wp.array[wp.vec3],
+    w: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
     dt: float,
     v_max: float,
-    x_new: wp.array(dtype=wp.vec3),
-    v_new: wp.array(dtype=wp.vec3),
+    x_new: wp.array[wp.vec3],
+    v_new: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     x0 = x[tid]
@@ -97,22 +97,22 @@ def integrate_rigid_body(
 # semi-implicit Euler integration
 @wp.kernel
 def integrate_bodies(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    m: wp.array(dtype=float),
-    I: wp.array(dtype=wp.mat33),
-    inv_m: wp.array(dtype=float),
-    inv_I: wp.array(dtype=wp.mat33),
-    body_flags: wp.array(dtype=wp.int32),
-    body_world: wp.array(dtype=wp.int32),
-    gravity: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    m: wp.array[float],
+    I: wp.array[wp.mat33],
+    inv_m: wp.array[float],
+    inv_I: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
     angular_damping: float,
     dt: float,
     # outputs
-    body_q_new: wp.array(dtype=wp.transform),
-    body_qd_new: wp.array(dtype=wp.spatial_vector),
+    body_q_new: wp.array[wp.transform],
+    body_qd_new: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -159,11 +159,11 @@ def integrate_bodies(
 
 @wp.kernel
 def _update_effective_inv_mass_inertia(
-    body_flags: wp.array(dtype=wp.int32),
-    model_inv_mass: wp.array(dtype=float),
-    model_inv_inertia: wp.array(dtype=wp.mat33),
-    eff_inv_mass: wp.array(dtype=float),
-    eff_inv_inertia: wp.array(dtype=wp.mat33),
+    body_flags: wp.array[wp.int32],
+    model_inv_mass: wp.array[float],
+    model_inv_inertia: wp.array[wp.mat33],
+    eff_inv_mass: wp.array[float],
+    eff_inv_inertia: wp.array[wp.mat33],
 ):
     tid = wp.tid()
     if (body_flags[tid] & BodyFlags.KINEMATIC) != 0:

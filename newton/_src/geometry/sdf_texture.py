@@ -57,7 +57,7 @@ class TextureSDFData:
     # Textures and indirection
     coarse_texture: wp.Texture3D
     subgrid_texture: wp.Texture3D
-    subgrid_start_slots: wp.array(dtype=wp.uint32, ndim=3)
+    subgrid_start_slots: wp.array3d[wp.uint32]
 
     # Grid parameters
     sdf_box_lower: wp.vec3
@@ -104,10 +104,10 @@ def _id_to_xyz(idx: int, size_x: int, size_y: int) -> wp.vec3i:
 @wp.kernel
 def _check_subgrid_occupied_kernel(
     mesh: wp.uint64,
-    subgrid_centers: wp.array(dtype=wp.vec3),
+    subgrid_centers: wp.array[wp.vec3],
     threshold: wp.vec2f,
     winding_threshold: float,
-    subgrid_required: wp.array(dtype=wp.int32),
+    subgrid_required: wp.array[wp.int32],
 ):
     """Mark subgrids that overlap the narrow band by checking mesh SDF at center."""
     tid = wp.tid()
@@ -129,9 +129,9 @@ def _check_subgrid_occupied_kernel(
 @wp.kernel
 def _check_subgrid_linearity_kernel(
     mesh: wp.uint64,
-    background_sdf: wp.array(dtype=float),
-    subgrid_required: wp.array(dtype=wp.int32),
-    subgrid_is_linear: wp.array(dtype=wp.int32),
+    background_sdf: wp.array[float],
+    subgrid_required: wp.array[wp.int32],
+    subgrid_is_linear: wp.array[wp.int32],
     cells_per_subgrid: int,
     min_corner: wp.vec3,
     cell_size: wp.vec3,
@@ -220,7 +220,7 @@ def _check_subgrid_linearity_kernel(
 @wp.kernel
 def _build_coarse_sdf_from_mesh_kernel(
     mesh: wp.uint64,
-    background_sdf: wp.array(dtype=float),
+    background_sdf: wp.array[float],
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     cells_per_subgrid: int,
@@ -253,10 +253,10 @@ def _build_coarse_sdf_from_mesh_kernel(
 @wp.kernel
 def _populate_subgrid_texture_float32_kernel(
     mesh: wp.uint64,
-    subgrid_required: wp.array(dtype=wp.int32),
-    subgrid_addresses: wp.array(dtype=wp.int32),
-    subgrid_start_slots: wp.array(dtype=wp.uint32, ndim=3),
-    subgrid_texture: wp.array(dtype=float),
+    subgrid_required: wp.array[wp.int32],
+    subgrid_addresses: wp.array[wp.int32],
+    subgrid_start_slots: wp.array3d[wp.uint32],
+    subgrid_texture: wp.array[float],
     cells_per_subgrid: int,
     min_corner: wp.vec3,
     cell_size: wp.vec3,
@@ -327,10 +327,10 @@ def _populate_subgrid_texture_float32_kernel(
 @wp.kernel
 def _populate_subgrid_texture_uint16_kernel(
     mesh: wp.uint64,
-    subgrid_required: wp.array(dtype=wp.int32),
-    subgrid_addresses: wp.array(dtype=wp.int32),
-    subgrid_start_slots: wp.array(dtype=wp.uint32, ndim=3),
-    subgrid_texture: wp.array(dtype=wp.uint16),
+    subgrid_required: wp.array[wp.int32],
+    subgrid_addresses: wp.array[wp.int32],
+    subgrid_start_slots: wp.array3d[wp.uint32],
+    subgrid_texture: wp.array[wp.uint16],
     cells_per_subgrid: int,
     min_corner: wp.vec3,
     cell_size: wp.vec3,
@@ -406,10 +406,10 @@ def _populate_subgrid_texture_uint16_kernel(
 @wp.kernel
 def _populate_subgrid_texture_uint8_kernel(
     mesh: wp.uint64,
-    subgrid_required: wp.array(dtype=wp.int32),
-    subgrid_addresses: wp.array(dtype=wp.int32),
-    subgrid_start_slots: wp.array(dtype=wp.uint32, ndim=3),
-    subgrid_texture: wp.array(dtype=wp.uint8),
+    subgrid_required: wp.array[wp.int32],
+    subgrid_addresses: wp.array[wp.int32],
+    subgrid_start_slots: wp.array3d[wp.uint32],
+    subgrid_texture: wp.array[wp.uint8],
     cells_per_subgrid: int,
     min_corner: wp.vec3,
     cell_size: wp.vec3,
@@ -490,8 +490,8 @@ def _populate_subgrid_texture_uint8_kernel(
 @wp.kernel
 def _sample_volume_at_positions_kernel(
     volume: wp.uint64,
-    positions: wp.array(dtype=wp.vec3),
-    out_values: wp.array(dtype=float),
+    positions: wp.array[wp.vec3],
+    out_values: wp.array[float],
 ):
     """Sample NanoVDB volume at world-space positions."""
     tid = wp.tid()
@@ -1784,13 +1784,13 @@ def create_empty_texture_sdf_data() -> TextureSDFData:
 
 @wp.kernel(enable_backward=False)
 def _count_isomesh_faces_texture_kernel(
-    sdf_array: wp.array(dtype=TextureSDFData),
-    active_coarse_cells: wp.array(dtype=wp.vec3i),
+    sdf_array: wp.array[TextureSDFData],
+    active_coarse_cells: wp.array[wp.vec3i],
     subgrid_size: int,
-    tri_range_table: wp.array(dtype=wp.int32),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    tri_range_table: wp.array[wp.int32],
+    corner_offsets_table: wp.array[wp.vec3ub],
     isovalue: wp.float32,
-    face_count: wp.array(dtype=int),
+    face_count: wp.array[int],
 ):
     cell_idx, local_x, local_y, local_z = wp.tid()
     sdf = sdf_array[0]
@@ -1817,15 +1817,15 @@ def _count_isomesh_faces_texture_kernel(
 
 @wp.kernel(enable_backward=False)
 def _generate_isomesh_texture_kernel(
-    sdf_array: wp.array(dtype=TextureSDFData),
-    active_coarse_cells: wp.array(dtype=wp.vec3i),
+    sdf_array: wp.array[TextureSDFData],
+    active_coarse_cells: wp.array[wp.vec3i],
     subgrid_size: int,
-    tri_range_table: wp.array(dtype=wp.int32),
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    tri_range_table: wp.array[wp.int32],
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
     isovalue: wp.float32,
-    face_count: wp.array(dtype=int),
-    vertices: wp.array(dtype=wp.vec3),
+    face_count: wp.array[int],
+    vertices: wp.array[wp.vec3],
 ):
     cell_idx, local_x, local_y, local_z = wp.tid()
     sdf = sdf_array[0]

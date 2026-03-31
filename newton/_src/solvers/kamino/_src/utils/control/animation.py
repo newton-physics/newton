@@ -146,13 +146,13 @@ class AnimationJointReferenceData:
 @wp.kernel
 def _advance_animation_frame(
     # Inputs
-    time_steps: wp.array(dtype=int32),
-    animation_length: wp.array(dtype=int32),
-    animation_decimation: wp.array(dtype=int32),
-    animation_rate: wp.array(dtype=int32),
-    animation_loop: wp.array(dtype=int32),
+    time_steps: wp.array[int32],
+    animation_length: wp.array[int32],
+    animation_decimation: wp.array[int32],
+    animation_rate: wp.array[int32],
+    animation_loop: wp.array[int32],
     # Outputs
-    animation_frame: wp.array(dtype=int32),
+    animation_frame: wp.array[int32],
 ):
     """
     A kernel to advance the animation frame index for each world
@@ -196,14 +196,14 @@ def _advance_animation_frame(
 @wp.kernel
 def _extract_animation_references(
     # Inputs
-    num_actuated_joint_dofs: wp.array(dtype=int32),
-    actuated_joint_dofs_offset: wp.array(dtype=int32),
-    animation_frame: wp.array(dtype=int32),
-    animation_q_j_ref: wp.array2d(dtype=float32),
-    animation_dq_j_ref: wp.array2d(dtype=float32),
+    num_actuated_joint_dofs: wp.array[int32],
+    actuated_joint_dofs_offset: wp.array[int32],
+    animation_frame: wp.array[int32],
+    animation_q_j_ref: wp.array2d[float32],
+    animation_dq_j_ref: wp.array2d[float32],
     # Outputs
-    q_j_ref_active: wp.array(dtype=float32),
-    dq_j_ref_active: wp.array(dtype=float32),
+    q_j_ref_active: wp.array[float32],
+    dq_j_ref_active: wp.array[float32],
 ):
     """
     A kernel to extract the active joint-space references from the animation data.

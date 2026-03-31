@@ -33,10 +33,10 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.kernel
 def _control_callback(
-    model_body_wid: wp.array(dtype=int32),
-    contact_world_num_active: wp.array(dtype=int32),
-    data_t: wp.array(dtype=float32),
-    state_w_i_e: wp.array(dtype=vec6f),
+    model_body_wid: wp.array[int32],
+    contact_world_num_active: wp.array[int32],
+    data_t: wp.array[float32],
+    state_w_i_e: wp.array[vec6f],
 ):
     """
     An example control callback kernel.

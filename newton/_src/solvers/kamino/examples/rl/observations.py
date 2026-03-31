@@ -32,7 +32,7 @@ def _projected_yaw(q: wp.quat) -> float:
 
 
 @wp.func
-def _write_vec3(obs: wp.array(dtype=wp.float32), idx: int, v: wp.vec3):
+def _write_vec3(obs: wp.array[wp.float32], idx: int, v: wp.vec3):
     obs[idx + 0] = v[0]
     obs[idx + 1] = v[1]
     obs[idx + 2] = v[2]
@@ -71,18 +71,18 @@ _OBS_NAMES = [
 
 @wp.kernel
 def _compute_bipedal_obs_core(
-    obs: wp.array(dtype=wp.float32),
-    q_i: wp.array(dtype=wp.float32),
-    u_i: wp.array(dtype=wp.float32),
-    q_j: wp.array(dtype=wp.float32),
-    dq_j: wp.array(dtype=wp.float32),
-    command: wp.array(dtype=wp.float32),
-    phase: wp.array(dtype=wp.float32),
-    freq_2pi: wp.array(dtype=wp.float32),
-    offset_enc: wp.array(dtype=wp.float32),
-    joint_default: wp.array(dtype=wp.float32),
-    joint_range: wp.array(dtype=wp.float32),
-    obs_offsets: wp.array(dtype=wp.int32),
+    obs: wp.array[wp.float32],
+    q_i: wp.array[wp.float32],
+    u_i: wp.array[wp.float32],
+    q_j: wp.array[wp.float32],
+    dq_j: wp.array[wp.float32],
+    command: wp.array[wp.float32],
+    phase: wp.array[wp.float32],
+    freq_2pi: wp.array[wp.float32],
+    offset_enc: wp.array[wp.float32],
+    joint_default: wp.array[wp.float32],
+    joint_range: wp.array[wp.float32],
+    obs_offsets: wp.array[wp.int32],
     num_bodies: int,
     num_joint_coords: int,
     num_joint_dofs: int,
@@ -211,7 +211,7 @@ def _projected_yaw(q: wp.quat) -> float:
 
 
 @wp.func
-def _write_vec3(obs: wp.array(dtype=wp.float32), idx: int, v: wp.vec3):
+def _write_vec3(obs: wp.array[wp.float32], idx: int, v: wp.vec3):
     obs[idx + 0] = v[0]
     obs[idx + 1] = v[1]
     obs[idx + 2] = v[2]
@@ -250,18 +250,18 @@ _OBS_NAMES = [
 
 @wp.kernel
 def _compute_bipedal_obs_core(
-    obs: wp.array(dtype=wp.float32),
-    q_i: wp.array(dtype=wp.float32),
-    u_i: wp.array(dtype=wp.float32),
-    q_j: wp.array(dtype=wp.float32),
-    dq_j: wp.array(dtype=wp.float32),
-    command: wp.array(dtype=wp.float32),
-    phase: wp.array(dtype=wp.float32),
-    freq_2pi: wp.array(dtype=wp.float32),
-    offset_enc: wp.array(dtype=wp.float32),
-    joint_default: wp.array(dtype=wp.float32),
-    joint_range: wp.array(dtype=wp.float32),
-    obs_offsets: wp.array(dtype=wp.int32),
+    obs: wp.array[wp.float32],
+    q_i: wp.array[wp.float32],
+    u_i: wp.array[wp.float32],
+    q_j: wp.array[wp.float32],
+    dq_j: wp.array[wp.float32],
+    command: wp.array[wp.float32],
+    phase: wp.array[wp.float32],
+    freq_2pi: wp.array[wp.float32],
+    offset_enc: wp.array[wp.float32],
+    joint_default: wp.array[wp.float32],
+    joint_range: wp.array[wp.float32],
+    obs_offsets: wp.array[wp.int32],
     num_bodies: int,
     num_joint_coords: int,
     num_joint_dofs: int,

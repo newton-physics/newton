@@ -515,12 +515,12 @@ def add_cloth_grid(
 def compute_sew_v(
     sew_dist: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    vert_indices: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    vert_indices: wp.array[wp.int32],
     # outputs
-    sew_vinds: wp.array(dtype=wp.vec2i, ndim=2),
-    sew_vdists: wp.array(dtype=wp.float32, ndim=2),
+    sew_vinds: wp.array2d[wp.vec2i],
+    sew_vdists: wp.array2d[wp.float32],
 ):
     v_index = vert_indices[wp.tid()]
     v = pos[v_index]

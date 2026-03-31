@@ -72,18 +72,18 @@ class PIDControllerData:
 @wp.kernel
 def _reset_jointspace_pid_references(
     # Inputs
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_act_type: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_actuated_dofs_offset: wp.array(dtype=int32),
-    state_joints_q_j: wp.array(dtype=float32),
-    state_joints_dq_j: wp.array(dtype=float32),
+    model_info_joint_dofs_offset: wp.array[int32],
+    model_info_joint_actuated_dofs_offset: wp.array[int32],
+    model_joints_wid: wp.array[int32],
+    model_joints_act_type: wp.array[int32],
+    model_joints_num_dofs: wp.array[int32],
+    model_joints_dofs_offset: wp.array[int32],
+    model_joints_actuated_dofs_offset: wp.array[int32],
+    state_joints_q_j: wp.array[float32],
+    state_joints_dq_j: wp.array[float32],
     # Outputs
-    controller_q_j_ref: wp.array(dtype=float32),
-    controller_dq_j_ref: wp.array(dtype=float32),
+    controller_q_j_ref: wp.array[float32],
+    controller_dq_j_ref: wp.array[float32],
 ):
     """
     A kernel to reset motion references of the joint-space controller.
@@ -135,28 +135,28 @@ def _reset_jointspace_pid_references(
 @wp.kernel
 def _compute_jointspace_pid_control(
     # Inputs
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_act_type: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_tau_j_max: wp.array(dtype=float32),
-    model_time_dt: wp.array(dtype=float32),
-    state_time_steps: wp.array(dtype=int32),
-    state_joints_q_j: wp.array(dtype=float32),
-    state_joints_dq_j: wp.array(dtype=float32),
-    controller_q_j_ref: wp.array(dtype=float32),
-    controller_dq_j_ref: wp.array(dtype=float32),
-    controller_tau_j_ref: wp.array(dtype=float32),
-    controller_K_p: wp.array(dtype=float32),
-    controller_K_i: wp.array(dtype=float32),
-    controller_K_d: wp.array(dtype=float32),
-    controller_integrator: wp.array(dtype=float32),
-    controller_decimation: wp.array(dtype=int32),
+    model_info_joint_dofs_offset: wp.array[int32],
+    model_info_joint_actuated_dofs_offset: wp.array[int32],
+    model_joints_wid: wp.array[int32],
+    model_joints_act_type: wp.array[int32],
+    model_joints_num_dofs: wp.array[int32],
+    model_joints_dofs_offset: wp.array[int32],
+    model_joints_actuated_dofs_offset: wp.array[int32],
+    model_joints_tau_j_max: wp.array[float32],
+    model_time_dt: wp.array[float32],
+    state_time_steps: wp.array[int32],
+    state_joints_q_j: wp.array[float32],
+    state_joints_dq_j: wp.array[float32],
+    controller_q_j_ref: wp.array[float32],
+    controller_dq_j_ref: wp.array[float32],
+    controller_tau_j_ref: wp.array[float32],
+    controller_K_p: wp.array[float32],
+    controller_K_i: wp.array[float32],
+    controller_K_d: wp.array[float32],
+    controller_integrator: wp.array[float32],
+    controller_decimation: wp.array[int32],
     # Outputs
-    control_tau_j: wp.array(dtype=float32),
+    control_tau_j: wp.array[float32],
 ):
     """
     A kernel to compute joint-space PID control outputs for force-actuated joints.

@@ -103,16 +103,16 @@ def euler_semi_implicit_with_logmap(
 def _integrate_semi_implicit_euler_inplace(
     # Inputs:
     alpha: float,
-    model_dt: wp.array(dtype=float32),
-    model_gravity: wp.array(dtype=vec4f),
-    model_bodies_wid: wp.array(dtype=int32),
-    model_bodies_inv_m: wp.array(dtype=float32),
-    model_bodies_I: wp.array(dtype=mat33f),
-    model_bodies_inv_I: wp.array(dtype=mat33f),
-    state_bodies_w: wp.array(dtype=vec6f),
+    model_dt: wp.array[float32],
+    model_gravity: wp.array[vec4f],
+    model_bodies_wid: wp.array[int32],
+    model_bodies_inv_m: wp.array[float32],
+    model_bodies_I: wp.array[mat33f],
+    model_bodies_inv_I: wp.array[mat33f],
+    state_bodies_w: wp.array[vec6f],
     # Outputs:
-    state_bodies_q: wp.array(dtype=transformf),
-    state_bodies_u: wp.array(dtype=vec6f),
+    state_bodies_q: wp.array[transformf],
+    state_bodies_u: wp.array[vec6f],
 ):
     # Retrieve the thread index
     tid = wp.tid()

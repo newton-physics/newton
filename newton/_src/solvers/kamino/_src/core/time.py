@@ -144,10 +144,10 @@ class TimeData:
 @wp.kernel
 def _advance_time(
     # Inputs
-    dt: wp.array(dtype=float32),
+    dt: wp.array[float32],
     # Outputs
-    steps: wp.array(dtype=int32),  # TODO: Make this uint64
-    time: wp.array(dtype=float32),
+    steps: wp.array[int32],  # TODO: Make this uint64
+    time: wp.array[float32],
 ):
     """
     Advances the time-keeping state of each world by one time-step.

@@ -297,9 +297,9 @@ def make_read_joint_coords_map_and_limits(dof_type: JointDoFType):
         # Inputs:
         dofs_offset: int32,  # Index offset of the joint DoFs
         coords_offset: int32,  # Index offset of the joint coordinates
-        model_joint_q_j_min: wp.array(dtype=float32),
-        model_joint_q_j_max: wp.array(dtype=float32),
-        state_joints_q_j: wp.array(dtype=float32),
+        model_joint_q_j_min: wp.array[float32],
+        model_joint_q_j_max: wp.array[float32],
+        state_joints_q_j: wp.array[float32],
     ) -> tuple[int32, vec6f, vec6f, vec6f]:
         # Statically define the joint DoF counts
         d_j = wp.static(num_dofs)
@@ -337,9 +337,9 @@ def read_joint_coords_map_and_limits(
     dof_type: int32,
     dofs_offset: int32,
     coords_offset: int32,
-    model_joint_q_j_min: wp.array(dtype=float32),
-    model_joint_q_j_max: wp.array(dtype=float32),
-    state_joints_q_j: wp.array(dtype=float32),
+    model_joint_q_j_min: wp.array[float32],
+    model_joint_q_j_max: wp.array[float32],
+    state_joints_q_j: wp.array[float32],
 ) -> tuple[int32, vec6f, vec6f, vec6f]:
     if dof_type == JointDoFType.REVOLUTE:
         d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.REVOLUTE))(
@@ -437,16 +437,16 @@ def detect_active_dof_limit(
     qmin: float32,
     qmax: float32,
     # Outputs:
-    limits_model_num: wp.array(dtype=int32),
-    limits_world_num: wp.array(dtype=int32),
-    limits_wid: wp.array(dtype=int32),
-    limits_lid: wp.array(dtype=int32),
-    limits_jid: wp.array(dtype=int32),
-    limits_bids: wp.array(dtype=vec2i),
-    limits_dof: wp.array(dtype=int32),
-    limits_side: wp.array(dtype=float32),
-    limits_r_q: wp.array(dtype=float32),
-    limits_key: wp.array(dtype=uint64),
+    limits_model_num: wp.array[int32],
+    limits_world_num: wp.array[int32],
+    limits_wid: wp.array[int32],
+    limits_lid: wp.array[int32],
+    limits_jid: wp.array[int32],
+    limits_bids: wp.array[vec2i],
+    limits_dof: wp.array[int32],
+    limits_side: wp.array[float32],
+    limits_r_q: wp.array[float32],
+    limits_key: wp.array[uint64],
 ):
     # Retrieve the state of the joint
     r_min = q - qmin
@@ -475,30 +475,30 @@ def detect_active_dof_limit(
 
 @wp.kernel
 def _detect_active_joint_configuration_limits(
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_coords_offset: wp.array(dtype=int32),
-    model_joint_wid: wp.array(dtype=int32),
-    model_joint_dof_type: wp.array(dtype=int32),
-    model_joint_dofs_offset: wp.array(dtype=int32),
-    model_joint_coords_offset: wp.array(dtype=int32),
-    model_joint_bid_B: wp.array(dtype=int32),
-    model_joint_bid_F: wp.array(dtype=int32),
-    model_joint_q_j_min: wp.array(dtype=float32),
-    model_joint_q_j_max: wp.array(dtype=float32),
-    state_joints_q_j: wp.array(dtype=float32),
-    limits_model_max: wp.array(dtype=int32),
-    limits_world_max: wp.array(dtype=int32),
+    model_info_joint_dofs_offset: wp.array[int32],
+    model_info_joint_coords_offset: wp.array[int32],
+    model_joint_wid: wp.array[int32],
+    model_joint_dof_type: wp.array[int32],
+    model_joint_dofs_offset: wp.array[int32],
+    model_joint_coords_offset: wp.array[int32],
+    model_joint_bid_B: wp.array[int32],
+    model_joint_bid_F: wp.array[int32],
+    model_joint_q_j_min: wp.array[float32],
+    model_joint_q_j_max: wp.array[float32],
+    state_joints_q_j: wp.array[float32],
+    limits_model_max: wp.array[int32],
+    limits_world_max: wp.array[int32],
     # Outputs:
-    limits_model_num: wp.array(dtype=int32),
-    limits_world_num: wp.array(dtype=int32),
-    limits_wid: wp.array(dtype=int32),
-    limits_lid: wp.array(dtype=int32),
-    limits_jid: wp.array(dtype=int32),
-    limits_bids: wp.array(dtype=vec2i),
-    limits_dof: wp.array(dtype=int32),
-    limits_side: wp.array(dtype=float32),
-    limits_r_q: wp.array(dtype=float32),
-    limits_key: wp.array(dtype=uint64),
+    limits_model_num: wp.array[int32],
+    limits_world_num: wp.array[int32],
+    limits_wid: wp.array[int32],
+    limits_lid: wp.array[int32],
+    limits_jid: wp.array[int32],
+    limits_bids: wp.array[vec2i],
+    limits_dof: wp.array[int32],
+    limits_side: wp.array[float32],
+    limits_r_q: wp.array[float32],
+    limits_key: wp.array[uint64],
 ):
     # Retrieve the joint index for the current thread
     # This will be the index w.r.r the model

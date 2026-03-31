@@ -36,9 +36,9 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 @wp.kernel
 def _compute_contact_frame_znorm(
     # Inputs:
-    normal: wp.array(dtype=vec3f),
+    normal: wp.array[vec3f],
     # Outputs:
-    frame: wp.array(dtype=mat33f),
+    frame: wp.array[mat33f],
 ):
     tid = wp.tid()
     frame[tid] = make_contact_frame_znorm(normal[tid])
@@ -47,9 +47,9 @@ def _compute_contact_frame_znorm(
 @wp.kernel
 def _compute_contact_frame_xnorm(
     # Inputs:
-    normal: wp.array(dtype=vec3f),
+    normal: wp.array[vec3f],
     # Outputs:
-    frame: wp.array(dtype=mat33f),
+    frame: wp.array[mat33f],
 ):
     tid = wp.tid()
     frame[tid] = make_contact_frame_xnorm(normal[tid])
@@ -58,9 +58,9 @@ def _compute_contact_frame_xnorm(
 @wp.kernel
 def _compute_contact_mode(
     # Inputs:
-    velocity: wp.array(dtype=vec3f),
+    velocity: wp.array[vec3f],
     # Outputs:
-    mode: wp.array(dtype=int32),
+    mode: wp.array[int32],
 ):
     tid = wp.tid()
     mode[tid] = wp.static(ContactMode.make_compute_mode_func())(velocity[tid])

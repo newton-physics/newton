@@ -1629,10 +1629,10 @@ class Gaussian:
     @wp.struct
     class Data:
         num_points: wp.int32
-        transforms: wp.array(dtype=wp.transformf)
-        scales: wp.array(dtype=wp.vec3f)
-        opacities: wp.array(dtype=wp.float32)
-        sh_coeffs: wp.array(dtype=wp.float32, ndim=2)
+        transforms: wp.array[wp.transformf]
+        scales: wp.array[wp.vec3f]
+        opacities: wp.array[wp.float32]
+        sh_coeffs: wp.array2d[wp.float32]
         bvh_id: wp.uint64
         min_response: wp.float32
 

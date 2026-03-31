@@ -30,8 +30,8 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.kernel
 def _test_control_callback(
-    state_t: wp.array(dtype=float32),
-    control_tau_j: wp.array(dtype=float32),
+    state_t: wp.array[float32],
+    control_tau_j: wp.array[float32],
 ):
     """
     An example control callback kernel.

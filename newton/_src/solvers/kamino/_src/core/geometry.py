@@ -361,11 +361,11 @@ class GeometriesData:
 @wp.kernel
 def _update_geometries_state(
     # Inputs:
-    geom_bid: wp.array(dtype=int32),
-    geom_offset: wp.array(dtype=transformf),
-    body_pose: wp.array(dtype=transformf),
+    geom_bid: wp.array[int32],
+    geom_offset: wp.array[transformf],
+    body_pose: wp.array[transformf],
     # Outputs:
-    geom_pose: wp.array(dtype=transformf),
+    geom_pose: wp.array[transformf],
 ):
     """
     A kernel to update poses of geometry entities in world

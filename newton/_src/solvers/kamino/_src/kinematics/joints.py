@@ -370,12 +370,12 @@ def make_typed_write_joint_data(dof_type: JointDoFType, correction: JointCorrect
         j_r_j: vec3f,  # 3D vector of the joint-local relative pose
         j_q_j: quatf,  # 4D unit-quaternion of the joint-local relative pose
         j_u_j: vec6f,  # 6D vector ofthe joint-local relative twist
-        q_j_p: wp.array(dtype=float32),  # Reference joint coordinates for correction
+        q_j_p: wp.array[float32],  # Reference joint coordinates for correction
         # Outputs:
-        r_j_out: wp.array(dtype=float32),  # Flat array of joint constraint residuals
-        dr_j_out: wp.array(dtype=float32),  # Flat array of joint constraint velocities
-        q_j_out: wp.array(dtype=float32),  # Flat array of joint DoF coordinates
-        dq_j_out: wp.array(dtype=float32),  # Flat array of joint DoF velocities
+        r_j_out: wp.array[float32],  # Flat array of joint constraint residuals
+        dr_j_out: wp.array[float32],  # Flat array of joint constraint velocities
+        q_j_out: wp.array[float32],  # Flat array of joint DoF coordinates
+        dq_j_out: wp.array[float32],  # Flat array of joint DoF velocities
     ):
         # Only write the constraint residual and velocity if the joint defines constraints
         # NOTE: This will be disabled for free joints
@@ -428,12 +428,12 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
         j_r_j: vec3f,
         j_q_j: quatf,
         j_u_j: vec6f,
-        q_j_p: wp.array(dtype=float32),
+        q_j_p: wp.array[float32],
         # Outputs:
-        data_r_j: wp.array(dtype=float32),
-        data_dr_j: wp.array(dtype=float32),
-        data_q_j: wp.array(dtype=float32),
-        data_dq_j: wp.array(dtype=float32),
+        data_r_j: wp.array[float32],
+        data_dr_j: wp.array[float32],
+        data_q_j: wp.array[float32],
+        data_dq_j: wp.array[float32],
     ):
         """
         Stores the joint constraint residuals and DoF motion based on the joint type.
@@ -673,19 +673,19 @@ def compute_and_write_joint_implicit_dynamics(
     num_dynamic_cts: int32,
     dynamic_cts_offset: int32,
     # Inputs:
-    model_joint_a_j: wp.array(dtype=float32),
-    model_joint_b_j: wp.array(dtype=float32),
-    model_joint_k_p_j: wp.array(dtype=float32),
-    model_joint_k_d_j: wp.array(dtype=float32),
-    data_joint_q_j: wp.array(dtype=float32),
-    data_joint_dq_j: wp.array(dtype=float32),
-    data_joint_q_j_ref: wp.array(dtype=float32),
-    data_joint_dq_j_ref: wp.array(dtype=float32),
-    data_joint_tau_j_ref: wp.array(dtype=float32),
+    model_joint_a_j: wp.array[float32],
+    model_joint_b_j: wp.array[float32],
+    model_joint_k_p_j: wp.array[float32],
+    model_joint_k_d_j: wp.array[float32],
+    data_joint_q_j: wp.array[float32],
+    data_joint_dq_j: wp.array[float32],
+    data_joint_q_j_ref: wp.array[float32],
+    data_joint_dq_j_ref: wp.array[float32],
+    data_joint_tau_j_ref: wp.array[float32],
     # Outputs:
-    data_joint_m_j: wp.array(dtype=float32),
-    data_joint_inv_m_j: wp.array(dtype=float32),
-    data_joint_dq_b_j: wp.array(dtype=float32),
+    data_joint_m_j: wp.array[float32],
+    data_joint_inv_m_j: wp.array[float32],
+    data_joint_dq_b_j: wp.array[float32],
 ):
     # Iterate over the dynamic constraints of the joint and
     # compute and store the implicit dynamics intermediates
@@ -740,42 +740,42 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
     @wp.kernel
     def _compute_joints_data(
         # Inputs:
-        model_info_joint_coords_offset: wp.array(dtype=int32),
-        model_info_joint_dofs_offset: wp.array(dtype=int32),
-        model_info_joint_dynamic_cts_offset: wp.array(dtype=int32),
-        model_info_joint_kinematic_cts_offset: wp.array(dtype=int32),
-        model_time_dt: wp.array(dtype=float32),
-        model_joint_wid: wp.array(dtype=int32),
-        model_joint_dof_type: wp.array(dtype=int32),
-        model_joint_num_dynamic_cts: wp.array(dtype=int32),
-        model_joint_coords_offset: wp.array(dtype=int32),
-        model_joint_dofs_offset: wp.array(dtype=int32),
-        model_joint_dynamic_cts_offset: wp.array(dtype=int32),
-        model_joint_kinematic_cts_offset: wp.array(dtype=int32),
-        model_joint_bid_B: wp.array(dtype=int32),
-        model_joint_bid_F: wp.array(dtype=int32),
-        model_joint_B_r_Bj: wp.array(dtype=vec3f),
-        model_joint_F_r_Fj: wp.array(dtype=vec3f),
-        model_joint_X_j: wp.array(dtype=mat33f),
-        model_joint_a_j: wp.array(dtype=float32),
-        model_joint_b_j: wp.array(dtype=float32),
-        model_joint_k_p_j: wp.array(dtype=float32),
-        model_joint_k_d_j: wp.array(dtype=float32),
-        data_body_q_i: wp.array(dtype=transformf),
-        data_body_u_i: wp.array(dtype=vec6f),
-        data_joint_q_j_ref: wp.array(dtype=float32),
-        data_joint_dq_j_ref: wp.array(dtype=float32),
-        data_joint_tau_j_ref: wp.array(dtype=float32),
-        q_j_p: wp.array(dtype=float32),
+        model_info_joint_coords_offset: wp.array[int32],
+        model_info_joint_dofs_offset: wp.array[int32],
+        model_info_joint_dynamic_cts_offset: wp.array[int32],
+        model_info_joint_kinematic_cts_offset: wp.array[int32],
+        model_time_dt: wp.array[float32],
+        model_joint_wid: wp.array[int32],
+        model_joint_dof_type: wp.array[int32],
+        model_joint_num_dynamic_cts: wp.array[int32],
+        model_joint_coords_offset: wp.array[int32],
+        model_joint_dofs_offset: wp.array[int32],
+        model_joint_dynamic_cts_offset: wp.array[int32],
+        model_joint_kinematic_cts_offset: wp.array[int32],
+        model_joint_bid_B: wp.array[int32],
+        model_joint_bid_F: wp.array[int32],
+        model_joint_B_r_Bj: wp.array[vec3f],
+        model_joint_F_r_Fj: wp.array[vec3f],
+        model_joint_X_j: wp.array[mat33f],
+        model_joint_a_j: wp.array[float32],
+        model_joint_b_j: wp.array[float32],
+        model_joint_k_p_j: wp.array[float32],
+        model_joint_k_d_j: wp.array[float32],
+        data_body_q_i: wp.array[transformf],
+        data_body_u_i: wp.array[vec6f],
+        data_joint_q_j_ref: wp.array[float32],
+        data_joint_dq_j_ref: wp.array[float32],
+        data_joint_tau_j_ref: wp.array[float32],
+        q_j_p: wp.array[float32],
         # Outputs:
-        data_joint_p_j: wp.array(dtype=transformf),
-        data_joint_r_j: wp.array(dtype=float32),
-        data_joint_dr_j: wp.array(dtype=float32),
-        data_joint_q_j: wp.array(dtype=float32),
-        data_joint_dq_j: wp.array(dtype=float32),
-        data_joint_m_j: wp.array(dtype=float32),
-        data_joint_inv_m_j: wp.array(dtype=float32),
-        data_joint_dq_b_j: wp.array(dtype=float32),
+        data_joint_p_j: wp.array[transformf],
+        data_joint_r_j: wp.array[float32],
+        data_joint_dr_j: wp.array[float32],
+        data_joint_q_j: wp.array[float32],
+        data_joint_dq_j: wp.array[float32],
+        data_joint_m_j: wp.array[float32],
+        data_joint_inv_m_j: wp.array[float32],
+        data_joint_dq_b_j: wp.array[float32],
     ):
         # Retrieve the thread index
         jid = wp.tid()
@@ -878,24 +878,24 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
 @wp.kernel
 def _extract_actuators_state_from_joints(
     # Inputs:
-    world_mask: wp.array(dtype=int32),
-    model_info_joint_coords_offset: wp.array(dtype=int32),
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_coords_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joint_wid: wp.array(dtype=int32),
-    model_joint_act_type: wp.array(dtype=int32),
-    model_joint_num_coords: wp.array(dtype=int32),
-    model_joint_num_dofs: wp.array(dtype=int32),
-    model_joint_coords_offset: wp.array(dtype=int32),
-    model_joint_dofs_offset: wp.array(dtype=int32),
-    model_joint_actuated_coords_offset: wp.array(dtype=int32),
-    model_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    joint_q: wp.array(dtype=float32),
-    joint_u: wp.array(dtype=float32),
+    world_mask: wp.array[int32],
+    model_info_joint_coords_offset: wp.array[int32],
+    model_info_joint_dofs_offset: wp.array[int32],
+    model_info_joint_actuated_coords_offset: wp.array[int32],
+    model_info_joint_actuated_dofs_offset: wp.array[int32],
+    model_joint_wid: wp.array[int32],
+    model_joint_act_type: wp.array[int32],
+    model_joint_num_coords: wp.array[int32],
+    model_joint_num_dofs: wp.array[int32],
+    model_joint_coords_offset: wp.array[int32],
+    model_joint_dofs_offset: wp.array[int32],
+    model_joint_actuated_coords_offset: wp.array[int32],
+    model_joint_actuated_dofs_offset: wp.array[int32],
+    joint_q: wp.array[float32],
+    joint_u: wp.array[float32],
     # Outputs:
-    actuator_q: wp.array(dtype=float32),
-    actuator_u: wp.array(dtype=float32),
+    actuator_q: wp.array[float32],
+    actuator_u: wp.array[float32],
 ):
     # Retrieve the joint index from the thread grid
     jid = wp.tid()
@@ -943,24 +943,24 @@ def _extract_actuators_state_from_joints(
 @wp.kernel
 def _extract_joints_state_from_actuators(
     # Inputs:
-    world_mask: wp.array(dtype=int32),
-    model_info_joint_coords_offset: wp.array(dtype=int32),
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_coords_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joint_wid: wp.array(dtype=int32),
-    model_joint_act_type: wp.array(dtype=int32),
-    model_joint_num_coords: wp.array(dtype=int32),
-    model_joint_num_dofs: wp.array(dtype=int32),
-    model_joint_coords_offset: wp.array(dtype=int32),
-    model_joint_dofs_offset: wp.array(dtype=int32),
-    model_joint_actuated_coords_offset: wp.array(dtype=int32),
-    model_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    actuator_q: wp.array(dtype=float32),
-    actuator_u: wp.array(dtype=float32),
+    world_mask: wp.array[int32],
+    model_info_joint_coords_offset: wp.array[int32],
+    model_info_joint_dofs_offset: wp.array[int32],
+    model_info_joint_actuated_coords_offset: wp.array[int32],
+    model_info_joint_actuated_dofs_offset: wp.array[int32],
+    model_joint_wid: wp.array[int32],
+    model_joint_act_type: wp.array[int32],
+    model_joint_num_coords: wp.array[int32],
+    model_joint_num_dofs: wp.array[int32],
+    model_joint_coords_offset: wp.array[int32],
+    model_joint_dofs_offset: wp.array[int32],
+    model_joint_actuated_coords_offset: wp.array[int32],
+    model_joint_actuated_dofs_offset: wp.array[int32],
+    actuator_q: wp.array[float32],
+    actuator_u: wp.array[float32],
     # Outputs:
-    joint_q: wp.array(dtype=float32),
-    joint_u: wp.array(dtype=float32),
+    joint_q: wp.array[float32],
+    joint_u: wp.array[float32],
 ):
     # Retrieve the joint index from the thread grid
     jid = wp.tid()

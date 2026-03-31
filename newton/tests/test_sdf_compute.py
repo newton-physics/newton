@@ -193,8 +193,8 @@ def invert_mesh_winding(mesh: Mesh) -> Mesh:
 @wp.kernel
 def sample_sdf_kernel(
     volume_id: wp.uint64,
-    points: wp.array(dtype=wp.vec3),
-    values: wp.array(dtype=wp.float32),
+    points: wp.array[wp.vec3],
+    values: wp.array[wp.float32],
 ):
     tid = wp.tid()
     point = points[tid]
@@ -206,9 +206,9 @@ def sample_sdf_kernel(
 @wp.kernel
 def sample_sdf_gradient_kernel(
     volume_id: wp.uint64,
-    points: wp.array(dtype=wp.vec3),
-    values: wp.array(dtype=wp.float32),
-    gradients: wp.array(dtype=wp.vec3),
+    points: wp.array[wp.vec3],
+    values: wp.array[wp.float32],
+    gradients: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     point = points[tid]
@@ -768,8 +768,8 @@ class TestComputeSDFGridSampling(unittest.TestCase):
 @wp.kernel
 def sample_sdf_extrapolated_kernel(
     sdf_data: SDFData,
-    points: wp.array(dtype=wp.vec3),
-    values: wp.array(dtype=wp.float32),
+    points: wp.array[wp.vec3],
+    values: wp.array[wp.float32],
 ):
     """Kernel to test sample_sdf_extrapolated function."""
     tid = wp.tid()
@@ -779,9 +779,9 @@ def sample_sdf_extrapolated_kernel(
 @wp.kernel
 def sample_sdf_grad_extrapolated_kernel(
     sdf_data: SDFData,
-    points: wp.array(dtype=wp.vec3),
-    values: wp.array(dtype=wp.float32),
-    gradients: wp.array(dtype=wp.vec3),
+    points: wp.array[wp.vec3],
+    values: wp.array[wp.float32],
+    gradients: wp.array[wp.vec3],
 ):
     """Kernel to test sample_sdf_grad_extrapolated function."""
     tid = wp.tid()

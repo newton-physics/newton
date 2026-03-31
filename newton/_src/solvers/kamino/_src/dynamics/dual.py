@@ -369,16 +369,16 @@ def gravity_plus_coriolis_wrench_split(
 @wp.kernel
 def _build_nonlinear_generalized_force(
     # Inputs:
-    model_time_dt: wp.array(dtype=float32),
-    model_gravity_vector: wp.array(dtype=vec4f),
-    model_bodies_wid: wp.array(dtype=int32),
-    model_bodies_m_i: wp.array(dtype=float32),
-    state_bodies_u_i: wp.array(dtype=vec6f),
-    state_bodies_I_i: wp.array(dtype=mat33f),
-    state_bodies_w_e_i: wp.array(dtype=vec6f),
-    state_bodies_w_a_i: wp.array(dtype=vec6f),
+    model_time_dt: wp.array[float32],
+    model_gravity_vector: wp.array[vec4f],
+    model_bodies_wid: wp.array[int32],
+    model_bodies_m_i: wp.array[float32],
+    state_bodies_u_i: wp.array[vec6f],
+    state_bodies_I_i: wp.array[mat33f],
+    state_bodies_w_e_i: wp.array[vec6f],
+    state_bodies_w_a_i: wp.array[vec6f],
     # Outputs:
-    problem_h: wp.array(dtype=vec6f),
+    problem_h: wp.array[vec6f],
 ):
     # Retrieve the body index as the thread index
     bid = wp.tid()
@@ -411,18 +411,18 @@ def _build_nonlinear_generalized_force(
 @wp.kernel
 def _build_generalized_free_velocity(
     # Inputs:
-    model_time_dt: wp.array(dtype=float32),
-    model_gravity_vector: wp.array(dtype=vec4f),
-    model_bodies_wid: wp.array(dtype=int32),
-    model_bodies_m_i: wp.array(dtype=float32),
-    model_bodies_inv_m_i: wp.array(dtype=float32),
-    state_bodies_u_i: wp.array(dtype=vec6f),
-    state_bodies_I_i: wp.array(dtype=mat33f),
-    state_bodies_inv_I_i: wp.array(dtype=mat33f),
-    state_bodies_w_e_i: wp.array(dtype=vec6f),
-    state_bodies_w_a_i: wp.array(dtype=vec6f),
+    model_time_dt: wp.array[float32],
+    model_gravity_vector: wp.array[vec4f],
+    model_bodies_wid: wp.array[int32],
+    model_bodies_m_i: wp.array[float32],
+    model_bodies_inv_m_i: wp.array[float32],
+    state_bodies_u_i: wp.array[vec6f],
+    state_bodies_I_i: wp.array[mat33f],
+    state_bodies_inv_I_i: wp.array[mat33f],
+    state_bodies_w_e_i: wp.array[vec6f],
+    state_bodies_w_a_i: wp.array[vec6f],
     # Outputs:
-    problem_u_f: wp.array(dtype=vec6f),
+    problem_u_f: wp.array[vec6f],
 ):
     # Retrieve the body index as the thread index
     bid = wp.tid()
@@ -464,15 +464,15 @@ def _build_generalized_free_velocity(
 @wp.kernel
 def _build_free_velocity_bias_joint_dynamics(
     # Inputs:
-    model_info_joint_dynamic_cts_offset: wp.array(dtype=int32),
-    model_info_joint_dynamic_cts_group_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_num_dynamic_cts: wp.array(dtype=int32),
-    model_joints_dynamic_cts_offset: wp.array(dtype=int32),
-    data_joints_dq_b_j: wp.array(dtype=float32),
-    problem_vio: wp.array(dtype=int32),
+    model_info_joint_dynamic_cts_offset: wp.array[int32],
+    model_info_joint_dynamic_cts_group_offset: wp.array[int32],
+    model_joints_wid: wp.array[int32],
+    model_joints_num_dynamic_cts: wp.array[int32],
+    model_joints_dynamic_cts_offset: wp.array[int32],
+    data_joints_dq_b_j: wp.array[float32],
+    problem_vio: wp.array[int32],
     # Outputs:
-    problem_v_b: wp.array(dtype=float32),
+    problem_v_b: wp.array[float32],
 ):
     # Retrieve the joint index as the thread index
     jid = wp.tid()
@@ -507,17 +507,17 @@ def _build_free_velocity_bias_joint_dynamics(
 @wp.kernel
 def _build_free_velocity_bias_joint_kinematics(
     # Inputs:
-    model_info_joint_kinematic_cts_offset: wp.array(dtype=int32),
-    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
-    model_time_inv_dt: wp.array(dtype=float32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_num_kinematic_cts: wp.array(dtype=int32),
-    model_joints_kinematic_cts_offset: wp.array(dtype=int32),
-    data_joints_r_j: wp.array(dtype=float32),
-    problem_config: wp.array(dtype=DualProblemConfigStruct),
-    problem_vio: wp.array(dtype=int32),
+    model_info_joint_kinematic_cts_offset: wp.array[int32],
+    model_info_joint_kinematic_cts_group_offset: wp.array[int32],
+    model_time_inv_dt: wp.array[float32],
+    model_joints_wid: wp.array[int32],
+    model_joints_num_kinematic_cts: wp.array[int32],
+    model_joints_kinematic_cts_offset: wp.array[int32],
+    data_joints_r_j: wp.array[float32],
+    problem_config: wp.array[DualProblemConfigStruct],
+    problem_vio: wp.array[int32],
     # Outputs:
-    problem_v_b: wp.array(dtype=float32),
+    problem_v_b: wp.array[float32],
 ):
     # Retrieve the joint index as the thread index
     jid = wp.tid()
@@ -557,17 +557,17 @@ def _build_free_velocity_bias_joint_kinematics(
 @wp.kernel
 def _build_free_velocity_bias_limits(
     # Inputs:
-    model_time_inv_dt: wp.array(dtype=float32),
-    data_info_limit_cts_group_offset: wp.array(dtype=int32),
+    model_time_inv_dt: wp.array[float32],
+    data_info_limit_cts_group_offset: wp.array[int32],
     limits_model_max: int32,
-    limits_model_num: wp.array(dtype=int32),
-    limits_wid: wp.array(dtype=int32),
-    limits_lid: wp.array(dtype=int32),
-    limits_r_q: wp.array(dtype=float32),
-    problem_config: wp.array(dtype=DualProblemConfigStruct),
-    problem_vio: wp.array(dtype=int32),
+    limits_model_num: wp.array[int32],
+    limits_wid: wp.array[int32],
+    limits_lid: wp.array[int32],
+    limits_r_q: wp.array[float32],
+    problem_config: wp.array[DualProblemConfigStruct],
+    problem_vio: wp.array[int32],
     # Outputs:
-    problem_v_b: wp.array(dtype=float32),
+    problem_v_b: wp.array[float32],
 ):
     # Retrieve the limit index as the thread index
     tid = wp.tid()
@@ -600,21 +600,21 @@ def _build_free_velocity_bias_limits(
 @wp.kernel
 def _build_free_velocity_bias_contacts(
     # Inputs:
-    model_time_inv_dt: wp.array(dtype=float32),
-    model_info_contacts_offset: wp.array(dtype=int32),
-    data_info_contact_cts_group_offset: wp.array(dtype=int32),
+    model_time_inv_dt: wp.array[float32],
+    model_info_contacts_offset: wp.array[int32],
+    data_info_contact_cts_group_offset: wp.array[int32],
     contacts_model_max: int32,
-    contacts_model_num: wp.array(dtype=int32),
-    contacts_wid: wp.array(dtype=int32),
-    contacts_cid: wp.array(dtype=int32),
-    contacts_gapfunc: wp.array(dtype=vec4f),
-    contacts_material: wp.array(dtype=vec2f),
-    problem_config: wp.array(dtype=DualProblemConfigStruct),
-    problem_vio: wp.array(dtype=int32),
+    contacts_model_num: wp.array[int32],
+    contacts_wid: wp.array[int32],
+    contacts_cid: wp.array[int32],
+    contacts_gapfunc: wp.array[vec4f],
+    contacts_material: wp.array[vec2f],
+    problem_config: wp.array[DualProblemConfigStruct],
+    problem_vio: wp.array[int32],
     # Outputs:
-    problem_v_b: wp.array(dtype=float32),
-    problem_v_i: wp.array(dtype=float32),
-    problem_mu: wp.array(dtype=float32),
+    problem_v_b: wp.array[float32],
+    problem_v_i: wp.array[float32],
+    problem_mu: wp.array[float32],
 ):
     # Retrieve the contact index as the thread index
     tid = wp.tid()
@@ -688,18 +688,18 @@ def _build_free_velocity_bias_contacts(
 @wp.kernel
 def _build_free_velocity(
     # Inputs:
-    model_info_num_bodies: wp.array(dtype=int32),
-    model_info_bodies_offset: wp.array(dtype=int32),
-    data_bodies_u_i: wp.array(dtype=vec6f),
-    jacobians_J_cts_offsets: wp.array(dtype=int32),
-    jacobians_J_cts_data: wp.array(dtype=float32),
-    problem_dim: wp.array(dtype=int32),
-    problem_vio: wp.array(dtype=int32),
-    problem_u_f: wp.array(dtype=vec6f),
-    problem_v_b: wp.array(dtype=float32),
-    problem_v_i: wp.array(dtype=float32),
+    model_info_num_bodies: wp.array[int32],
+    model_info_bodies_offset: wp.array[int32],
+    data_bodies_u_i: wp.array[vec6f],
+    jacobians_J_cts_offsets: wp.array[int32],
+    jacobians_J_cts_data: wp.array[float32],
+    problem_dim: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_u_f: wp.array[vec6f],
+    problem_v_b: wp.array[float32],
+    problem_v_i: wp.array[float32],
     # Outputs:
-    problem_v_f: wp.array(dtype=float32),
+    problem_v_f: wp.array[float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -765,17 +765,17 @@ def _build_free_velocity(
 @wp.kernel
 def _build_free_velocity_sparse(
     # Inputs:
-    model_info_bodies_offset: wp.array(dtype=int32),
-    state_bodies_u_i: wp.array(dtype=vec6f),
-    jac_num_nzb: wp.array(dtype=int32),
-    jac_nzb_start: wp.array(dtype=int32),
-    jac_nzb_coords: wp.array2d(dtype=int32),
-    jac_nzb_values: wp.array(dtype=vec6f),
-    problem_vio: wp.array(dtype=int32),
-    problem_u_f: wp.array(dtype=vec6f),
-    problem_v_i: wp.array(dtype=float32),
+    model_info_bodies_offset: wp.array[int32],
+    state_bodies_u_i: wp.array[vec6f],
+    jac_num_nzb: wp.array[int32],
+    jac_nzb_start: wp.array[int32],
+    jac_nzb_coords: wp.array2d[int32],
+    jac_nzb_values: wp.array[vec6f],
+    problem_vio: wp.array[int32],
+    problem_u_f: wp.array[vec6f],
+    problem_v_i: wp.array[float32],
     # Outputs:
-    problem_v_f: wp.array(dtype=float32),
+    problem_v_f: wp.array[float32],
 ):
     # Retrieve the thread index
     wid, nzb_id = wp.tid()
@@ -824,15 +824,15 @@ def _build_free_velocity_sparse(
 @wp.kernel
 def _build_dual_preconditioner_all_constraints(
     # Inputs:
-    problem_config: wp.array(dtype=DualProblemConfigStruct),
-    problem_dim: wp.array(dtype=int32),
-    problem_mio: wp.array(dtype=int32),
-    problem_vio: wp.array(dtype=int32),
-    problem_njc: wp.array(dtype=int32),
-    problem_nl: wp.array(dtype=int32),
-    problem_D: wp.array(dtype=float32),
+    problem_config: wp.array[DualProblemConfigStruct],
+    problem_dim: wp.array[int32],
+    problem_mio: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_njc: wp.array[int32],
+    problem_nl: wp.array[int32],
+    problem_D: wp.array[float32],
     # Outputs:
-    problem_P: wp.array(dtype=float32),
+    problem_P: wp.array[float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -888,13 +888,13 @@ def _build_dual_preconditioner_all_constraints(
 @wp.kernel
 def _build_dual_preconditioner_all_constraints_sparse(
     # Inputs:
-    problem_config: wp.array(dtype=DualProblemConfigStruct),
-    problem_dim: wp.array(dtype=int32),
-    problem_vio: wp.array(dtype=int32),
-    problem_njc: wp.array(dtype=int32),
-    problem_nl: wp.array(dtype=int32),
+    problem_config: wp.array[DualProblemConfigStruct],
+    problem_dim: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_njc: wp.array[int32],
+    problem_nl: wp.array[int32],
     # Outputs:
-    problem_P: wp.array(dtype=float32),
+    problem_P: wp.array[float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -947,12 +947,12 @@ def _build_dual_preconditioner_all_constraints_sparse(
 @wp.kernel
 def _apply_dual_preconditioner_to_matrix(
     # Inputs:
-    problem_dim: wp.array(dtype=int32),
-    problem_mio: wp.array(dtype=int32),
-    problem_vio: wp.array(dtype=int32),
-    problem_P: wp.array(dtype=float32),
+    problem_dim: wp.array[int32],
+    problem_mio: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_P: wp.array[float32],
     # Outputs:
-    X: wp.array(dtype=float32),
+    X: wp.array[float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -995,11 +995,11 @@ def _apply_dual_preconditioner_to_matrix(
 @wp.kernel
 def _apply_dual_preconditioner_to_vector(
     # Inputs:
-    problem_dim: wp.array(dtype=int32),
-    problem_vio: wp.array(dtype=int32),
-    problem_P: wp.array(dtype=float32),
+    problem_dim: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_P: wp.array[float32],
     # Outputs:
-    x: wp.array(dtype=float32),
+    x: wp.array[float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()

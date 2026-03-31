@@ -50,7 +50,7 @@ class TestConeOrientation(unittest.TestCase):
 
         @wp.kernel
         def compute_sdf_kernel(
-            points: wp.array(dtype=wp.vec3), sdf_values: wp.array(dtype=float), radius: float, half_height: float
+            points: wp.array[wp.vec3], sdf_values: wp.array[float], radius: float, half_height: float
         ):
             tid = wp.tid()
             p = points[tid]

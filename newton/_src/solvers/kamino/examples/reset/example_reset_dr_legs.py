@@ -29,11 +29,11 @@ from newton._src.solvers.kamino.examples import get_examples_output_path, run_he
 
 @wp.kernel
 def _test_control_callback(
-    sim_has_started_resets: wp.array(dtype=wp.bool),
-    sim_reset_index: wp.array(dtype=wp.int32),
-    actuated_joint_idx: wp.array(dtype=int32),
-    state_t: wp.array(dtype=float32),
-    control_tau_j: wp.array(dtype=float32),
+    sim_has_started_resets: wp.array[wp.bool],
+    sim_reset_index: wp.array[wp.int32],
+    actuated_joint_idx: wp.array[int32],
+    state_t: wp.array[float32],
+    control_tau_j: wp.array[float32],
 ):
     """
     An example control callback kernel.

@@ -29,8 +29,8 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 @wp.kernel
 def _get_slot_kernel(
-    normals: wp.array(dtype=wp.vec3),
-    slots: wp.array(dtype=int),
+    normals: wp.array[wp.vec3],
+    slots: wp.array[int],
 ):
     """Kernel to test get_slot function."""
     tid = wp.tid()

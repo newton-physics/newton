@@ -1364,9 +1364,9 @@ class SolverImplicitMPM(SolverBase):
         def particle_locations(
             cell_arg_value: domain.ElementArg,
             domain_index_arg_value: domain.ElementIndexArg,
-            positions: wp.array(dtype=wp.vec3),
-            cell_index: wp.array(dtype=fem.ElementIndex),
-            cell_coords: wp.array(dtype=fem.Coords),
+            positions: wp.array[wp.vec3],
+            cell_index: wp.array[fem.ElementIndex],
+            cell_coords: wp.array[fem.Coords],
         ):
             p = wp.tid()
             domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
@@ -1405,9 +1405,9 @@ class SolverImplicitMPM(SolverBase):
 
         @wp.func
         def add_cell(
-            particle_cell_indices: wp.array(dtype=fem.ElementIndex),
-            particle_cell_coords: wp.array(dtype=fem.Coords),
-            particle_cell_fractions: wp.array(dtype=float),
+            particle_cell_indices: wp.array[fem.ElementIndex],
+            particle_cell_coords: wp.array[fem.Coords],
+            particle_cell_fractions: wp.array[float],
             cell_index: int,
             cell_coords: fem.Coords,
             cell_weight: float,
@@ -1427,11 +1427,11 @@ class SolverImplicitMPM(SolverBase):
         def particle_locations_gimp(
             cell_arg_value: domain.ElementArg,
             domain_index_arg_value: domain.ElementIndexArg,
-            positions: wp.array(dtype=wp.vec3),
-            radii: wp.array(dtype=float),
-            cell_index: wp.array2d(dtype=fem.ElementIndex),
-            cell_coords: wp.array2d(dtype=fem.Coords),
-            cell_fractions: wp.array2d(dtype=float),
+            positions: wp.array[wp.vec3],
+            radii: wp.array[float],
+            cell_index: wp.array2d[fem.ElementIndex],
+            cell_coords: wp.array2d[fem.Coords],
+            cell_fractions: wp.array2d[float],
         ):
             p = wp.tid()
             domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
@@ -1972,7 +1972,7 @@ class SolverImplicitMPM(SolverBase):
     def _apply_strain_eigenbasis(
         self,
         scratch: ImplicitMPMScratchpad,
-        M_ev: wp.array3d(dtype=float),
+        M_ev: wp.array3d[float],
     ):
         node_count = scratch.strain_node_count
 
@@ -2032,7 +2032,7 @@ class SolverImplicitMPM(SolverBase):
     def _unapply_strain_eigenbasis(
         self,
         scratch: ImplicitMPMScratchpad,
-        M_ev: wp.array3d(dtype=float),
+        M_ev: wp.array3d[float],
     ):
         node_count = scratch.strain_node_count
 

@@ -13,9 +13,9 @@ import newton.usd
 @wp.kernel
 def acc_to_color(
     alpha: float,
-    imu_acc: wp.array(dtype=wp.vec3),
-    buffer: wp.array(dtype=wp.vec3),
-    color: wp.array(dtype=wp.vec3),
+    imu_acc: wp.array[wp.vec3],
+    buffer: wp.array[wp.vec3],
+    color: wp.array[wp.vec3],
 ):
     """Kernel mapping an acceleration to a color, with exponential smoothing."""
     idx = wp.tid()

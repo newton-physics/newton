@@ -224,10 +224,10 @@ def extract_delassus_sparse(
     def _set_unit_entry(
         # Inputs:
         index: int,
-        world_dim: wp.array(dtype=wp.int32),
-        entry_start: wp.array(dtype=wp.int32),
+        world_dim: wp.array[wp.int32],
+        entry_start: wp.array[wp.int32],
         # Output:
-        x: wp.array(dtype=wp.float32),
+        x: wp.array[wp.float32],
     ):
         world_id = wp.tid()
 

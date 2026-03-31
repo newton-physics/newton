@@ -415,12 +415,12 @@ def make_get_material_pair_properties(muxmode: MaterialMuxMode = MaterialMuxMode
     def _get_material_pair_properties(
         mid1: int32,
         mid2: int32,
-        material_restitution: wp.array(dtype=float32),
-        material_static_friction: wp.array(dtype=float32),
-        material_dynamic_friction: wp.array(dtype=float32),
-        material_pair_restitution: wp.array(dtype=float32),
-        material_pair_static_friction: wp.array(dtype=float32),
-        material_pair_dynamic_friction: wp.array(dtype=float32),
+        material_restitution: wp.array[float32],
+        material_static_friction: wp.array[float32],
+        material_dynamic_friction: wp.array[float32],
+        material_pair_restitution: wp.array[float32],
+        material_pair_static_friction: wp.array[float32],
+        material_pair_dynamic_friction: wp.array[float32],
     ) -> tuple[float32, float32, float32]:
         """
         Retrieves the properties of a material pair given their material indices.

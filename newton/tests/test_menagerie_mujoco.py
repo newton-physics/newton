@@ -193,8 +193,8 @@ class ControlStrategy:
 
 @wp.kernel
 def step_response_control_kernel(
-    native_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    newton_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    native_ctrl: wp.array[wp.float32],  # type: ignore[valid-type]
+    newton_ctrl: wp.array[wp.float32],  # type: ignore[valid-type]
     target: wp.float32,
     num_actuators: int,
 ):
@@ -860,11 +860,11 @@ def _quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
 
 @wp.kernel
 def _copy_body_q_to_mjwarp_kernel(
-    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
-    body_q: wp.array(dtype=wp.transform),
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_q: wp.array[wp.transform],
     # outputs
-    xpos: wp.array2d(dtype=wp.vec3),
-    xquat: wp.array2d(dtype=wp.quat),
+    xpos: wp.array2d[wp.vec3],
+    xquat: wp.array2d[wp.quat],
 ):
     """Copy Newton body_q transforms into mjwarp xpos/xquat arrays."""
     world, mjc_body = wp.tid()

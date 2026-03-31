@@ -1391,14 +1391,14 @@ class SolverVBD(SolverBase):
                 kernel=apply_truncation_ts,
                 dim=self.model.particle_count,
                 inputs=[
-                    self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
-                    self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
-                    self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
+                    self.pos_prev_collision_detection,  # pos: wp.array[wp.vec3],
+                    self.particle_displacements,  # displacement_in: wp.array[wp.vec3],
+                    self.truncation_ts,  # truncation_ts: wp.array[float],
                     wp.inf,  # max_displacement: float (input threshold)
                 ],
                 outputs=[
-                    self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
-                    particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
+                    self.particle_displacements,  # displacement_out: wp.array[wp.vec3],
+                    particle_q_out,  # pos_out: wp.array[wp.vec3],
                 ],
                 device=self.device,
             )
@@ -1409,8 +1409,8 @@ class SolverVBD(SolverBase):
             wp.launch(
                 kernel=apply_planar_truncation_parallel_by_collision,
                 inputs=[
-                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array[wp.vec3],
+                    self.particle_displacements,  # particle_displacements: wp.array[wp.vec3],
                     self.model.tri_indices,
                     self.model.edge_indices,
                     self.trimesh_collision_info,
@@ -2199,12 +2199,12 @@ class SolverVBD(SolverBase):
 
         Returns:
             tuple[
-                wp.array(dtype=wp.int32),
-                wp.array(dtype=wp.int32),
-                wp.array(dtype=wp.vec3),
-                wp.array(dtype=wp.vec3),
-                wp.array(dtype=wp.vec3),
-                wp.array(dtype=wp.int32),
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.vec3],
+                wp.array[wp.vec3],
+                wp.array[wp.vec3],
+                wp.array[wp.int32],
             ]: Tuple of per-contact outputs:
                 - body0: Body index for shape0, int32.
                 - body1: Body index for shape1, int32.

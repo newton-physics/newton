@@ -24,9 +24,9 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 @wp.kernel
 def _test_control_callback(
-    model_dt: wp.array(dtype=float32),
-    data_time: wp.array(dtype=float32),
-    control_tau_j: wp.array(dtype=float32),
+    model_dt: wp.array[float32],
+    data_time: wp.array[float32],
+    control_tau_j: wp.array[float32],
 ):
     """
     An example control callback kernel.

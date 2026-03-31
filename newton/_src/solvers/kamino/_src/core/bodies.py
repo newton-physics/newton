@@ -375,12 +375,12 @@ def transform_body_inertial_properties(
 @wp.kernel
 def _update_body_inertias(
     # Inputs:
-    model_bodies_i_I_i_in: wp.array(dtype=mat33f),
-    model_bodies_inv_i_I_i_in: wp.array(dtype=mat33f),
-    state_bodies_q_i_in: wp.array(dtype=transformf),
+    model_bodies_i_I_i_in: wp.array[mat33f],
+    model_bodies_inv_i_I_i_in: wp.array[mat33f],
+    state_bodies_q_i_in: wp.array[transformf],
     # Outputs:
-    state_bodies_I_i_out: wp.array(dtype=mat33f),
-    state_bodies_inv_I_i_out: wp.array(dtype=mat33f),
+    state_bodies_I_i_out: wp.array[mat33f],
+    state_bodies_inv_I_i_out: wp.array[mat33f],
 ):
     # Retrieve the thread index as the body index
     bid = wp.tid()
@@ -401,13 +401,13 @@ def _update_body_inertias(
 @wp.kernel
 def _update_body_wrenches(
     # Inputs
-    state_bodies_w_a_i_in: wp.array(dtype=vec6f),
-    state_bodies_w_j_i_in: wp.array(dtype=vec6f),
-    state_bodies_w_l_i_in: wp.array(dtype=vec6f),
-    state_bodies_w_c_i_in: wp.array(dtype=vec6f),
-    state_bodies_w_e_i_in: wp.array(dtype=vec6f),
+    state_bodies_w_a_i_in: wp.array[vec6f],
+    state_bodies_w_j_i_in: wp.array[vec6f],
+    state_bodies_w_l_i_in: wp.array[vec6f],
+    state_bodies_w_c_i_in: wp.array[vec6f],
+    state_bodies_w_e_i_in: wp.array[vec6f],
     # Outputs
-    state_bodies_w_i_out: wp.array(dtype=vec6f),
+    state_bodies_w_i_out: wp.array[vec6f],
 ):
     # Retrieve the thread index as the body index
     bid = wp.tid()
@@ -429,12 +429,12 @@ def _update_body_wrenches(
 @wp.kernel
 def _convert_body_origin_to_com(
     # Inputs
-    world_mask: wp.array(dtype=int32),
-    body_wid: wp.array(dtype=int32),
-    body_com: wp.array(dtype=vec3f),
-    body_q: wp.array(dtype=transformf),
+    world_mask: wp.array[int32],
+    body_wid: wp.array[int32],
+    body_com: wp.array[vec3f],
+    body_q: wp.array[transformf],
     # Outputs
-    body_q_com: wp.array(dtype=transformf),
+    body_q_com: wp.array[transformf],
 ):
     bid = wp.tid()
 
@@ -456,12 +456,12 @@ def _convert_body_origin_to_com(
 @wp.kernel
 def _convert_body_com_to_origin(
     # Inputs
-    world_mask: wp.array(dtype=int32),
-    body_wid: wp.array(dtype=int32),
-    body_com: wp.array(dtype=vec3f),
-    body_q_com: wp.array(dtype=transformf),
+    world_mask: wp.array[int32],
+    body_wid: wp.array[int32],
+    body_com: wp.array[vec3f],
+    body_q_com: wp.array[transformf],
     # Outputs
-    body_q: wp.array(dtype=transformf),
+    body_q: wp.array[transformf],
 ):
     bid = wp.tid()
 
@@ -483,11 +483,11 @@ def _convert_body_com_to_origin(
 @wp.kernel
 def _convert_base_origin_to_com(
     # Inputs
-    base_body_index: wp.array(dtype=int32),
-    body_com: wp.array(dtype=vec3f),
-    base_q: wp.array(dtype=transformf),
+    base_body_index: wp.array[int32],
+    body_com: wp.array[vec3f],
+    base_q: wp.array[transformf],
     # Outputs
-    base_q_com: wp.array(dtype=transformf),
+    base_q_com: wp.array[transformf],
 ):
     wid = wp.tid()
     base_bid = base_body_index[wid]
@@ -503,11 +503,11 @@ def _convert_base_origin_to_com(
 @wp.kernel
 def _convert_geom_offset_origin_to_com(
     # Inputs
-    body_com: wp.array(dtype=vec3f),
-    geom_bid: wp.array(dtype=int32),
-    geom_offset: wp.array(dtype=transformf),
+    body_com: wp.array[vec3f],
+    geom_bid: wp.array[int32],
+    geom_offset: wp.array[transformf],
     # Outputs
-    geom_offset_com: wp.array(dtype=transformf),
+    geom_offset_com: wp.array[transformf],
 ):
     gid = wp.tid()
     bid = geom_bid[gid]

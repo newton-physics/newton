@@ -65,11 +65,11 @@ def test_body_state(
 
     @wp.kernel
     def test_fn_kernel(
-        body_q: wp.array(dtype=wp.transform),
-        body_qd: wp.array(dtype=wp.spatial_vector),
-        indices: wp.array(dtype=int),
+        body_q: wp.array[wp.transform],
+        body_qd: wp.array[wp.spatial_vector],
+        indices: wp.array[int],
         # output
-        failures: wp.array(dtype=bool),
+        failures: wp.array[bool],
     ):
         world_id = wp.tid()
         index = indices[world_id]
@@ -137,11 +137,11 @@ def test_particle_state(
 
     @wp.kernel
     def test_fn_kernel(
-        particle_q: wp.array(dtype=wp.vec3),
-        particle_qd: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=int),
+        particle_q: wp.array[wp.vec3],
+        particle_qd: wp.array[wp.vec3],
+        indices: wp.array[int],
         # output
-        failures: wp.array(dtype=bool),
+        failures: wp.array[bool],
     ):
         world_id = wp.tid()
         index = indices[world_id]
