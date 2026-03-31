@@ -5837,7 +5837,7 @@ class ModelBuilder:
     def add_shape_gaussian(
         self,
         body: int,
-        xform: Transform | Gaussian | None = None,
+        xform: Transform | None = None,
         gaussian: Gaussian | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
