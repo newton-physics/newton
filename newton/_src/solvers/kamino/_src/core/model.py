@@ -35,7 +35,6 @@ from .joints import (
     JointsModel,
 )
 from .materials import MaterialDescriptor, MaterialManager, MaterialPairsModel, MaterialsModel
-from .shapes import ShapeType
 from .size import SizeKamino
 from .state import StateKamino
 from .time import TimeData, TimeModel
@@ -967,25 +966,30 @@ class ModelKamino:
                 material_param_indices[material_desc] = material_id
             geom_material_np[s] = material_id
 
-        # Convert per-shape properties from Newton to Kamino format
+        # Store Newton shape type and scale directly (no Kamino conversion needed).
+        # The geoms.type array stores GeoType values, and geoms.params stores
+        # Newton's shape_scale convention (half-extents, half-heights, etc.)
+        # padded to vec4f.  Plane shapes are special: params store the plane
+        # normal (derived from the shape transform) instead of scale.
         shape_type_np = model.shape_type.numpy()
         shape_scale_np = model.shape_scale.numpy()
         shape_flags_np = model.shape_flags.numpy()
         geom_shape_collision_group_np = model.shape_collision_group.numpy()
-        geom_shape_type_np = np.zeros((model.shape_count,), dtype=int)
+        geom_shape_type_np = np.array(shape_type_np, dtype=int)
         geom_shape_params_np = np.zeros((model.shape_count, 4), dtype=float)
         model_num_collidable_geoms = 0
         for s in range(model.shape_count):
-            shape_type, params = ShapeType.from_newton(GeoType(int(shape_type_np[s])), vec3f(*shape_scale_np[s]))
-            geom_shape_type_np[s] = shape_type
-            geom_shape_params_np[s, :] = params
+            scale = shape_scale_np[s]
+            geom_shape_params_np[s, 0] = scale[0]
+            geom_shape_params_np[s, 1] = scale[1]
+            geom_shape_params_np[s, 2] = scale[2]
             if (shape_flags_np[s] & ShapeFlags.COLLIDE_SHAPES) != 0 and geom_shape_collision_group_np[s] > 0:
                 model_num_collidable_geoms += 1
             else:
                 geom_material_np[s] = -1  # Ensure non-collidable geoms no material assigned
 
-        # Fix plane normals: derive from the shape transform rotation (local Z-axis)
-        # instead of the hardcoded default in convert_newton_geo_to_kamino_shape.
+        # Plane normals: derive from the shape transform rotation (local Z-axis)
+        # and store in params since Newton's shape_scale doesn't encode plane normals.
         for s in range(model.shape_count):
             if shape_type_np[s] == GeoType.PLANE:
                 tf = shape_transform_np[s, :]
