@@ -15,6 +15,10 @@ from pathlib import Path
 
 from warp._src.thirdparty.appdirs import user_cache_dir
 
+# External asset repositories and their pinned revisions.
+# Pinning to commit SHAs ensures reproducible downloads for any given Newton
+# commit.  Update these SHAs when assets change upstream and the new versions
+# have been validated against Newton's test suite.
 NEWTON_ASSETS_URL = "https://github.com/newton-physics/newton-assets.git"
 NEWTON_ASSETS_REF = "8e8df07d2e4829442d3d3d3aeecee1857f9951d7"
 
@@ -368,12 +372,14 @@ def download_git_folder(
             # Single fetch — skip the clone, which would download the
             # default-branch tip only to throw it away.
             repo = gitpython.Repo.init(temp_dir)
-            repo.create_remote("origin", git_url)
-            repo.git.sparse_checkout("init")
-            repo.git.sparse_checkout("set", folder_path)
-            repo.git.fetch("origin", ref, "--depth=1", "--filter=blob:none")
-            repo.git.checkout("FETCH_HEAD")
-            repo.close()
+            try:
+                repo.create_remote("origin", git_url)
+                repo.git.sparse_checkout("init")
+                repo.git.sparse_checkout("set", folder_path)
+                repo.git.fetch("origin", ref, "--depth=1", "--filter=blob:none")
+                repo.git.checkout("FETCH_HEAD")
+            finally:
+                repo.close()
         else:
             repo = gitpython.Repo.clone_from(
                 git_url,
