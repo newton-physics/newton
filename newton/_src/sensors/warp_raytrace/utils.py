@@ -127,6 +127,32 @@ def flatten_depth_image(
     buffer[py, px, 3] = value
 
 
+@wp.kernel(enable_backward=False)
+def convert_ray_depth_to_forward_depth_kernel(
+    depth_image: wp.array(dtype=wp.float32, ndim=4),
+    camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
+    camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+    img_width: wp.int32,
+    img_height: wp.int32,
+    out_depth: wp.array(dtype=wp.float32, ndim=4),
+):
+    world_index, camera_index, py, px = wp.tid()
+
+    ray_depth = depth_image[world_index, camera_index, py, px]
+    camera_transform = camera_transforms[camera_index, world_index]
+    ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_index, py, px, 1])
+
+    # Use center-pixel ray as the camera forward direction.
+    cy = img_height // 2
+    cx = img_width // 2
+    cam_forward_world = wp.transform_vector(
+        camera_transform,
+        camera_rays[camera_index, cy, cx, 1],
+    )
+    cam_forward_world = wp.normalize(cam_forward_world)
+    out_depth[world_index, camera_index, py, px] = ray_depth * wp.dot(ray_dir_world, cam_forward_world)
+
+
 class Utils:
     """Utility functions for the RenderContext."""
 
@@ -268,6 +294,59 @@ class Utils:
         )
 
         return camera_rays
+
+    def convert_ray_depth_to_forward_depth(
+        self,
+        depth_image: wp.array(dtype=wp.float32, ndim=4),
+        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
+        out_depth: wp.array(dtype=wp.float32, ndim=4) | None = None,
+    ) -> wp.array(dtype=wp.float32, ndim=4):
+        """Convert ray-distance depth to forward (planar) depth.
+
+        Projects each pixel's hit distance along its ray onto the camera's
+        forward axis, producing depth measured perpendicular to the image
+        plane. Uses the center-pixel ray as the forward direction (does not
+        account for an off-center focal point).
+
+        Args:
+            depth_image: Ray-distance depth from :meth:`update`, shape
+                ``(world_count, camera_count, height, width)``.
+            camera_transforms: World-space camera transforms, shape
+                ``(camera_count, world_count)``.
+            camera_rays: Camera-space rays from
+                :meth:`compute_pinhole_camera_rays`, shape
+                ``(camera_count, height, width, 2)``.
+            out_depth: Output array with the same shape as
+                *depth_image*. If ``None``, *depth_image* will be used
+                as output, overwriting the original depth values in it.
+
+        Returns:
+            Forward (planar) depth array, same shape as *depth_image* [m].
+        """
+        world_count = depth_image.shape[0]
+        camera_count = depth_image.shape[1]
+        height = depth_image.shape[2]
+        width = depth_image.shape[3]
+
+        if out_depth is None:
+            out_depth = depth_image
+
+        wp.launch(
+            kernel=convert_ray_depth_to_forward_depth_kernel,
+            dim=(world_count, camera_count, height, width),
+            inputs=[
+                depth_image,
+                camera_rays,
+                camera_transforms,
+                width,
+                height,
+                out_depth,
+            ],
+            device=self.__render_context.device,
+        )
+
+        return out_depth
 
     def flatten_color_image_to_rgba(
         self,
