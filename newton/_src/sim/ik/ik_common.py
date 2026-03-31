@@ -30,21 +30,21 @@ class IKJacobianType(Enum):
 
 @wp.kernel
 def _eval_fk_articulation_batched(
-    articulation_start: wp.array1d[wp.int32],
+    articulation_start: wp.array[wp.int32],
     joint_articulation: wp.array[int],
     joint_q: wp.array2d[wp.float32],
     joint_qd: wp.array2d[wp.float32],
-    joint_q_start: wp.array1d[wp.int32],
-    joint_qd_start: wp.array1d[wp.int32],
-    joint_type: wp.array1d[wp.int32],
-    joint_parent: wp.array1d[wp.int32],
-    joint_child: wp.array1d[wp.int32],
-    joint_X_p: wp.array1d[wp.transform],
-    joint_X_c: wp.array1d[wp.transform],
-    joint_axis: wp.array1d[wp.vec3],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_type: wp.array[wp.int32],
+    joint_parent: wp.array[wp.int32],
+    joint_child: wp.array[wp.int32],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[wp.int32],
-    body_com: wp.array1d[wp.vec3],
-    body_flags: wp.array1d[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_flags: wp.array[wp.int32],
     body_q: wp.array2d[wp.transform],
     body_qd: wp.array2d[wp.spatial_vector],
 ):
@@ -106,7 +106,7 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
 
 @wp.kernel
 def fk_accum(
-    joint_parent: wp.array1d[wp.int32],
+    joint_parent: wp.array[wp.int32],
     X_local: wp.array2d[wp.transform],
     body_q: wp.array2d[wp.transform],
 ):
@@ -123,7 +123,7 @@ def fk_accum(
 def compute_costs(
     residuals: wp.array2d[wp.float32],
     num_residuals: int,
-    costs: wp.array1d[wp.float32],
+    costs: wp.array[wp.float32],
 ):
     problem_idx = wp.tid()
     cost = float(0.0)

@@ -1630,23 +1630,23 @@ class NarrowPhase:
     def launch_custom_write(
         self,
         *,
-        candidate_pair: wp.array1d[wp.vec2i],  # Maybe colliding pairs
-        candidate_pair_count: wp.array1d[wp.int32],  # Size one array
-        shape_types: wp.array1d[wp.int32],  # All shape types, pairs index into it
-        shape_data: wp.array1d[wp.vec4],  # Shape data (scale xyz, margin w)
-        shape_transform: wp.array1d[wp.transform],  # In world space
-        shape_source: wp.array1d[wp.uint64],  # The index into the source array, type define by shape_types
-        shape_sdf_index: wp.array1d[wp.int32],  # Per-shape index into texture_sdf_data (-1 for none)
-        shape_gap: wp.array1d[wp.float32],  # per-shape contact gap (detection threshold)
-        shape_collision_radius: wp.array1d[wp.float32],  # per-shape collision radius for AABB fallback
-        shape_flags: wp.array1d[wp.int32],  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
-        shape_collision_aabb_lower: wp.array1d[wp.vec3],  # Local-space AABB lower bounds
-        shape_collision_aabb_upper: wp.array1d[wp.vec3],  # Local-space AABB upper bounds
-        shape_voxel_resolution: wp.array1d[wp.vec3i],  # Voxel grid resolution per shape
-        texture_sdf_data: wp.array1d[TextureSDFData] | None = None,  # Compact texture SDF data table
-        shape_heightfield_index: wp.array1d[wp.int32] | None = None,
-        heightfield_data: wp.array1d[HeightfieldData] | None = None,
-        heightfield_elevations: wp.array1d[wp.float32] | None = None,
+        candidate_pair: wp.array[wp.vec2i],  # Maybe colliding pairs
+        candidate_pair_count: wp.array[wp.int32],  # Size one array
+        shape_types: wp.array[wp.int32],  # All shape types, pairs index into it
+        shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
+        shape_transform: wp.array[wp.transform],  # In world space
+        shape_source: wp.array[wp.uint64],  # The index into the source array, type define by shape_types
+        shape_sdf_index: wp.array[wp.int32],  # Per-shape index into texture_sdf_data (-1 for none)
+        shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
+        shape_collision_radius: wp.array[wp.float32],  # per-shape collision radius for AABB fallback
+        shape_flags: wp.array[wp.int32],  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
+        shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
+        shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
+        shape_voxel_resolution: wp.array[wp.vec3i],  # Voxel grid resolution per shape
+        texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
+        shape_heightfield_index: wp.array[wp.int32] | None = None,
+        heightfield_data: wp.array[HeightfieldData] | None = None,
+        heightfield_elevations: wp.array[wp.float32] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -2046,20 +2046,20 @@ class NarrowPhase:
     def launch(
         self,
         *,
-        candidate_pair: wp.array1d[wp.vec2i],  # Maybe colliding pairs
-        candidate_pair_count: wp.array1d[wp.int32],  # Size one array
-        shape_types: wp.array1d[wp.int32],  # All shape types, pairs index into it
-        shape_data: wp.array1d[wp.vec4],  # Shape data (scale xyz, margin w)
-        shape_transform: wp.array1d[wp.transform],  # In world space
-        shape_source: wp.array1d[wp.uint64],  # The index into the source array, type define by shape_types
-        shape_sdf_index: wp.array1d[wp.int32] | None = None,  # Per-shape index into texture_sdf_data (-1 for none)
-        texture_sdf_data: wp.array1d[TextureSDFData] | None = None,  # Compact texture SDF data table
-        shape_gap: wp.array1d[wp.float32],  # per-shape contact gap (detection threshold)
-        shape_collision_radius: wp.array1d[wp.float32],  # per-shape collision radius for AABB fallback
-        shape_flags: wp.array1d[wp.int32],  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
-        shape_collision_aabb_lower: wp.array1d[wp.vec3] | None = None,  # Local-space AABB lower bounds
-        shape_collision_aabb_upper: wp.array1d[wp.vec3] | None = None,  # Local-space AABB upper bounds
-        shape_voxel_resolution: wp.array1d[wp.vec3i],  # Voxel grid resolution per shape
+        candidate_pair: wp.array[wp.vec2i],  # Maybe colliding pairs
+        candidate_pair_count: wp.array[wp.int32],  # Size one array
+        shape_types: wp.array[wp.int32],  # All shape types, pairs index into it
+        shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
+        shape_transform: wp.array[wp.transform],  # In world space
+        shape_source: wp.array[wp.uint64],  # The index into the source array, type define by shape_types
+        shape_sdf_index: wp.array[wp.int32] | None = None,  # Per-shape index into texture_sdf_data (-1 for none)
+        texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
+        shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
+        shape_collision_radius: wp.array[wp.float32],  # per-shape collision radius for AABB fallback
+        shape_flags: wp.array[wp.int32],  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
+        shape_collision_aabb_lower: wp.array[wp.vec3] | None = None,  # Local-space AABB lower bounds
+        shape_collision_aabb_upper: wp.array[wp.vec3] | None = None,  # Local-space AABB upper bounds
+        shape_voxel_resolution: wp.array[wp.vec3i],  # Voxel grid resolution per shape
         # Outputs
         contact_pair: wp.array[wp.vec2i],
         contact_position: wp.array[wp.vec3],

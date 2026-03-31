@@ -73,9 +73,9 @@ def reorder_rows_kernel(
     src: wp.array3d[float],
     dst: wp.array3d[float],
     ordering: wp.array2d[int],
-    n_rows_arr: wp.array1d[int],
-    n_cols_arr: wp.array1d[int],
-    batch_mask: wp.array1d[int],
+    n_rows_arr: wp.array[int],
+    n_cols_arr: wp.array[int],
+    batch_mask: wp.array[int],
 ):
     batch_id, i, j = wp.tid()  # 2D launch: (n_rows, n_cols)
     n_rows = n_rows_arr[batch_id]
@@ -91,8 +91,8 @@ def reorder_rows_kernel_col_vector(
     src: wp.array3d[float],
     dst: wp.array3d[float],
     ordering: wp.array2d[int],
-    n_rows_arr: wp.array1d[int],
-    batch_mask: wp.array1d[int],
+    n_rows_arr: wp.array[int],
+    batch_mask: wp.array[int],
 ):
     batch_id, i = wp.tid()
     n_rows = n_rows_arr[batch_id]
@@ -170,8 +170,8 @@ def create_blocked_cholesky_kernel(block_size: int):
         A_batched: wp.array3d[float],
         L_batched: wp.array3d[float],
         L_tile_pattern_batched: wp.array3d[int],
-        active_matrix_size_arr: wp.array1d[int],
-        batch_mask: wp.array1d[int],
+        active_matrix_size_arr: wp.array[int],
+        batch_mask: wp.array[int],
     ):
         """
         Batched Cholesky factorization of symmetric positive definite matrices in blocks.
@@ -299,8 +299,8 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
         b_batched: wp.array3d[float],
         x_batched: wp.array3d[float],
         y_batched: wp.array3d[float],
-        active_matrix_size_arr: wp.array1d[int],
-        batch_mask: wp.array1d[int],
+        active_matrix_size_arr: wp.array[int],
+        batch_mask: wp.array[int],
     ):
         """
         Batched blocked Cholesky solver kernel. For each batch, solves A x = b using L L^T = A.
@@ -488,8 +488,8 @@ class SemiSparseBlockCholeskySolverBatched:
     def factorize(
         self,
         A: wp.array3d[float],
-        num_active_equations: wp.array1d[int],
-        batch_mask: wp.array1d[int],
+        num_active_equations: wp.array[int],
+        batch_mask: wp.array[int],
     ):
         """
         Computes the Cholesky factorization of a symmetric positive definite matrix A in blocks.
@@ -532,7 +532,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         rhs: wp.array3d[float],
         result: wp.array3d[float],
-        batch_mask: wp.array1d[int],
+        batch_mask: wp.array[int],
     ):
         """
         Solves A x = b given the Cholesky factor L (A = L L^T) using

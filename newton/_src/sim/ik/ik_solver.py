@@ -65,10 +65,10 @@ def _sample_gauss_kernel(
     n_seeds: int,
     n_coords: int,
     noise_std: float,
-    joint_lower: wp.array1d[wp.float32],
-    joint_upper: wp.array1d[wp.float32],
-    joint_bounded: wp.array1d[wp.int32],
-    base_seed: wp.array1d[wp.uint32],
+    joint_lower: wp.array[wp.float32],
+    joint_upper: wp.array[wp.float32],
+    joint_bounded: wp.array[wp.int32],
+    base_seed: wp.array[wp.uint32],
     joint_q_out: wp.array2d[wp.float32],
 ):
     expanded_idx = wp.tid()
@@ -94,10 +94,10 @@ def _sample_gauss_kernel(
 @wp.kernel
 def _sample_uniform_kernel(
     n_coords: int,
-    joint_lower: wp.array1d[wp.float32],
-    joint_upper: wp.array1d[wp.float32],
-    joint_bounded: wp.array1d[wp.int32],
-    base_seed: wp.array1d[wp.uint32],
+    joint_lower: wp.array[wp.float32],
+    joint_upper: wp.array[wp.float32],
+    joint_bounded: wp.array[wp.int32],
+    base_seed: wp.array[wp.uint32],
     joint_q_out: wp.array2d[wp.float32],
 ):
     expanded_idx = wp.tid()
@@ -120,10 +120,10 @@ def _sample_uniform_kernel(
 def _sample_roberts_kernel(
     n_seeds: int,
     n_coords: int,
-    roberts_basis: wp.array1d[wp.float32],
-    joint_lower: wp.array1d[wp.float32],
-    joint_upper: wp.array1d[wp.float32],
-    joint_bounded: wp.array1d[wp.int32],
+    roberts_basis: wp.array[wp.float32],
+    joint_lower: wp.array[wp.float32],
+    joint_upper: wp.array[wp.float32],
+    joint_bounded: wp.array[wp.int32],
     joint_q_out: wp.array2d[wp.float32],
 ):
     expanded_idx = wp.tid()
@@ -143,9 +143,9 @@ def _sample_roberts_kernel(
 
 @wp.kernel
 def _select_best_seed_indices(
-    costs: wp.array1d[wp.float32],
+    costs: wp.array[wp.float32],
     n_seeds: int,
-    best: wp.array1d[wp.int32],
+    best: wp.array[wp.int32],
 ):
     problem_idx = wp.tid()
     base = problem_idx * n_seeds
@@ -165,7 +165,7 @@ def _select_best_seed_indices(
 @wp.kernel
 def _gather_best_seed(
     joint_q_expanded: wp.array2d[wp.float32],
-    best: wp.array1d[wp.int32],
+    best: wp.array[wp.int32],
     n_seeds: int,
     n_coords: int,
     joint_q_out: wp.array2d[wp.float32],
@@ -178,8 +178,8 @@ def _gather_best_seed(
 
 @wp.kernel
 def _pull_seed(
-    seed_state: wp.array1d[wp.uint32],
-    out_seed: wp.array1d[wp.uint32],
+    seed_state: wp.array[wp.uint32],
+    out_seed: wp.array[wp.uint32],
 ):
     out_seed[0] = seed_state[0]
     seed_state[0] = seed_state[0] + wp.uint32(1)
@@ -187,7 +187,7 @@ def _pull_seed(
 
 @wp.kernel
 def _set_seed(
-    seed_state: wp.array1d[wp.uint32],
+    seed_state: wp.array[wp.uint32],
     value: wp.uint32,
 ):
     seed_state[0] = value

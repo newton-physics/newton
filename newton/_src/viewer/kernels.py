@@ -143,8 +143,8 @@ def update_shape_xforms(
     shape_xforms: wp.array[wp.transform],
     shape_parents: wp.array[int],
     body_q: wp.array[wp.transform],
-    shape_worlds: wp.array1d[int],
-    world_offsets: wp.array1d[wp.vec3],
+    shape_worlds: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
     world_xforms: wp.array[wp.transform],
 ):
     tid = wp.tid()

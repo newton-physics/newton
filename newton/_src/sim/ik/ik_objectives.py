@@ -159,12 +159,12 @@ class IKObjective:
 @wp.kernel
 def _pos_residuals(
     body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
-    target_pos: wp.array1d[wp.vec3],  # (n_problems)
+    target_pos: wp.array[wp.vec3],  # (n_problems)
     link_index: int,
     link_offset: wp.vec3,
     start_idx: int,
     weight: float,
-    problem_idx_map: wp.array1d[wp.int32],
+    problem_idx_map: wp.array[wp.int32],
     # outputs
     residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
 ):
@@ -201,16 +201,16 @@ def _update_position_target(
     problem_idx: int,
     new_position: wp.vec3,
     # outputs
-    target_array: wp.array1d[wp.vec3],  # (n_problems)
+    target_array: wp.array[wp.vec3],  # (n_problems)
 ):
     target_array[problem_idx] = new_position
 
 
 @wp.kernel
 def _update_position_targets(
-    new_positions: wp.array1d[wp.vec3],  # (n_problems)
+    new_positions: wp.array[wp.vec3],  # (n_problems)
     # outputs
-    target_array: wp.array1d[wp.vec3],  # (n_problems)
+    target_array: wp.array[wp.vec3],  # (n_problems)
 ):
     problem_idx = wp.tid()
     target_array[problem_idx] = new_positions[problem_idx]
@@ -220,7 +220,7 @@ def _update_position_targets(
 def _pos_jac_analytic(
     link_index: int,
     link_offset: wp.vec3,
-    affects_dof: wp.array1d[wp.uint8],  # (n_dofs)
+    affects_dof: wp.array[wp.uint8],  # (n_dofs)
     body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
     joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_dofs)
     start_idx: int,
@@ -498,9 +498,9 @@ class IKObjectivePosition(IKObjective):
 @wp.kernel
 def _limit_residuals(
     joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
-    joint_limit_lower: wp.array1d[wp.float32],  # (n_dofs)
-    joint_limit_upper: wp.array1d[wp.float32],  # (n_dofs)
-    dof_to_coord: wp.array1d[wp.int32],  # (n_dofs)
+    joint_limit_lower: wp.array[wp.float32],  # (n_dofs)
+    joint_limit_upper: wp.array[wp.float32],  # (n_dofs)
+    dof_to_coord: wp.array[wp.int32],  # (n_dofs)
     n_dofs: int,
     weight: float,
     start_idx: int,
@@ -541,9 +541,9 @@ def _limit_jac_fill(
 @wp.kernel
 def _limit_jac_analytic(
     joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
-    joint_limit_lower: wp.array1d[wp.float32],  # (n_dofs)
-    joint_limit_upper: wp.array1d[wp.float32],  # (n_dofs)
-    dof_to_coord: wp.array1d[wp.int32],  # (n_dofs)
+    joint_limit_lower: wp.array[wp.float32],  # (n_dofs)
+    joint_limit_upper: wp.array[wp.float32],  # (n_dofs)
+    dof_to_coord: wp.array[wp.int32],  # (n_dofs)
     n_dofs: int,
     start_idx: int,
     weight: float,
@@ -765,13 +765,13 @@ class IKObjectiveJointLimit(IKObjective):
 @wp.kernel
 def _rot_residuals(
     body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
-    target_rot: wp.array1d[wp.vec4],  # (n_problems)
+    target_rot: wp.array[wp.vec4],  # (n_problems)
     link_index: int,
     link_offset_rotation: wp.quat,
     canonicalize_quat_err: wp.bool,
     start_idx: int,
     weight: float,
-    problem_idx_map: wp.array1d[wp.int32],
+    problem_idx_map: wp.array[wp.int32],
     # outputs
     residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
 ):
@@ -830,16 +830,16 @@ def _update_rotation_target(
     problem_idx: int,
     new_rotation: wp.vec4,
     # outputs
-    target_array: wp.array1d[wp.vec4],  # (n_problems)
+    target_array: wp.array[wp.vec4],  # (n_problems)
 ):
     target_array[problem_idx] = new_rotation
 
 
 @wp.kernel
 def _update_rotation_targets(
-    new_rotation: wp.array1d[wp.vec4],  # (n_problems)
+    new_rotation: wp.array[wp.vec4],  # (n_problems)
     # outputs
-    target_array: wp.array1d[wp.vec4],  # (n_problems)
+    target_array: wp.array[wp.vec4],  # (n_problems)
 ):
     problem_idx = wp.tid()
     target_array[problem_idx] = new_rotation[problem_idx]
@@ -847,7 +847,7 @@ def _update_rotation_targets(
 
 @wp.kernel
 def _rot_jac_analytic(
-    affects_dof: wp.array1d[wp.uint8],  # (n_dofs)
+    affects_dof: wp.array[wp.uint8],  # (n_dofs)
     joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_dofs)
     start_idx: int,  # first residual row for this objective
     n_dofs: int,  # width of the global Jacobian

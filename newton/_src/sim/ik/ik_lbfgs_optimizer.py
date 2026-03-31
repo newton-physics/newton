@@ -30,7 +30,7 @@ def _scale_negate(
 
 @wp.kernel
 def _fan_out_problem_idx(
-    batch_problem_idx: wp.array1d[wp.int32],
+    batch_problem_idx: wp.array[wp.int32],
     out_indices: wp.array2d[wp.int32],
 ):
     row_idx, candidate_idx = wp.tid()
@@ -41,7 +41,7 @@ def _fan_out_problem_idx(
 def _generate_candidates_velocity(
     joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
     search_direction: wp.array2d[wp.float32],  # (n_batch, n_dofs)
-    line_search_alphas: wp.array1d[wp.float32],  # (n_steps)
+    line_search_alphas: wp.array[wp.float32],  # (n_steps)
     # outputs
     candidate_q: wp.array3d[wp.float32],  # (n_batch, n_steps, n_coords)
     candidate_dq: wp.array3d[wp.float32],  # (n_batch, n_steps, n_dofs)
@@ -1103,7 +1103,7 @@ class IKOptimizerLBFGS:
             gradient: wp.array2d[wp.float32],  # (n_batch, n_dofs)
             search_direction: wp.array2d[wp.float32],  # (n_batch, n_dofs)
             # outputs
-            slope_out: wp.array1d[wp.float32],  # (n_batch,)
+            slope_out: wp.array[wp.float32],  # (n_batch,)
         ):
             row = wp.tid()
             DOF = _Specialized.TILE_N_DOFS
@@ -1161,8 +1161,8 @@ class IKOptimizerLBFGS:
             y_history: wp.array3d[wp.float32],  # (n_batch, history_len, n_dofs)
             rho_history: wp.array2d[wp.float32],  # (n_batch, history_len)
             alpha_history: wp.array2d[wp.float32],  # (n_batch, history_len)
-            history_count: wp.array1d[wp.int32],  # (n_batch)
-            history_start: wp.array1d[wp.int32],  # (n_batch)
+            history_count: wp.array[wp.int32],  # (n_batch)
+            history_start: wp.array[wp.int32],  # (n_batch)
             h0_scale: float,  # scalar
             # outputs
             search_direction: wp.array2d[wp.float32],  # (n_batch, n_dofs)
@@ -1225,8 +1225,8 @@ class IKOptimizerLBFGS:
             s_history: wp.array3d[wp.float32],
             y_history: wp.array3d[wp.float32],
             rho_history: wp.array2d[wp.float32],
-            history_count: wp.array1d[wp.int32],
-            history_start: wp.array1d[wp.int32],
+            history_count: wp.array[wp.int32],
+            history_start: wp.array[wp.int32],
         ):
             row = wp.tid()
             DOF = _Specialized.TILE_N_DOFS
@@ -1261,14 +1261,14 @@ class IKOptimizerLBFGS:
             # inputs
             candidate_costs: wp.array2d[wp.float32],  # (n_batch, n_line_steps)
             candidate_step: wp.array3d[wp.float32],  # (n_batch, n_line_steps, n_dofs)
-            cost_initial: wp.array1d[wp.float32],  # (n_batch)
-            slope_initial: wp.array1d[wp.float32],  # (n_batch)
+            cost_initial: wp.array[wp.float32],  # (n_batch)
+            slope_initial: wp.array[wp.float32],  # (n_batch)
             candidate_slopes: wp.array2d[wp.float32],  # (n_batch, n_line_steps)
-            line_search_alphas: wp.array1d[wp.float32],  # (n_line_steps)
+            line_search_alphas: wp.array[wp.float32],  # (n_line_steps)
             wolfe_c1: float,  # scalar
             wolfe_c2: float,  # scalar
             # outputs
-            best_step_idx_out: wp.array1d[wp.int32],  # (n_batch)
+            best_step_idx_out: wp.array[wp.int32],  # (n_batch)
             last_step_out: wp.array2d[wp.float32],  # (n_batch, n_dofs)
         ):
             row = wp.tid()
@@ -1355,9 +1355,9 @@ class IKOptimizerLBFGS:
         @wp.kernel
         def _integrate_dq_dof(
             # model-wide
-            joint_type: wp.array1d[wp.int32],  # (n_joints)
-            joint_q_start: wp.array1d[wp.int32],  # (n_joints + 1)
-            joint_qd_start: wp.array1d[wp.int32],  # (n_joints + 1)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
             # per-row
             joint_q_curr: wp.array2d[wp.float32],  # (n_batch, n_coords)
@@ -1414,14 +1414,14 @@ class IKOptimizerLBFGS:
 
         @wp.kernel(module="unique")
         def _compute_motion_subspace_2d(
-            joint_type: wp.array1d[wp.int32],  # (n_joints)
-            joint_parent: wp.array1d[wp.int32],  # (n_joints)
-            joint_qd_start: wp.array1d[wp.int32],  # (n_joints + 1)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd: wp.array2d[wp.float32],  # (n_batch, n_joint_dof_count)
-            joint_axis: wp.array1d[wp.vec3],  # (n_joint_dof_count)
+            joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
             body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
-            joint_X_p: wp.array1d[wp.transform],  # (n_joints)
+            joint_X_p: wp.array[wp.transform],  # (n_joints)
             # outputs
             joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_joint_dof_count)
         ):
@@ -1455,14 +1455,14 @@ class IKOptimizerLBFGS:
 
         @wp.kernel(module="unique")
         def _fk_local(
-            joint_type: wp.array1d[wp.int32],  # (n_joints)
+            joint_type: wp.array[wp.int32],  # (n_joints)
             joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
-            joint_q_start: wp.array1d[wp.int32],  # (n_joints + 1)
-            joint_qd_start: wp.array1d[wp.int32],  # (n_joints + 1)
-            joint_axis: wp.array1d[wp.vec3],  # (n_axes)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_axis: wp.array[wp.vec3],  # (n_axes)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
-            joint_X_p: wp.array1d[wp.transform],  # (n_joints)
-            joint_X_c: wp.array1d[wp.transform],  # (n_joints)
+            joint_X_p: wp.array[wp.transform],  # (n_joints)
+            joint_X_c: wp.array[wp.transform],  # (n_joints)
             # outputs
             X_local_out: wp.array2d[wp.transform],  # (n_batch, n_joints)
         ):

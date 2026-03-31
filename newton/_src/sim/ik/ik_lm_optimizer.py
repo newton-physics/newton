@@ -39,11 +39,11 @@ class BatchCtx:
 
 @wp.kernel
 def _accept_reject(
-    cost_curr: wp.array1d[wp.float32],
-    cost_prop: wp.array1d[wp.float32],
-    pred_red: wp.array1d[wp.float32],
+    cost_curr: wp.array[wp.float32],
+    cost_prop: wp.array[wp.float32],
+    pred_red: wp.array[wp.float32],
     rho_min: float,
-    accept: wp.array1d[wp.int32],
+    accept: wp.array[wp.int32],
 ):
     row = wp.tid()
     rho = (cost_curr[row] - cost_prop[row]) / (pred_red[row] + 1.0e-8)
@@ -54,8 +54,8 @@ def _accept_reject(
 def _update_lm_state(
     joint_q_proposed: wp.array2d[wp.float32],
     residuals_proposed: wp.array2d[wp.float32],
-    costs_proposed: wp.array1d[wp.float32],
-    accept_flags: wp.array1d[wp.int32],
+    costs_proposed: wp.array[wp.float32],
+    accept_flags: wp.array[wp.int32],
     n_coords: int,
     num_residuals: int,
     lambda_factor: float,
@@ -63,8 +63,8 @@ def _update_lm_state(
     lambda_max: float,
     joint_q_current: wp.array2d[wp.float32],
     residuals_current: wp.array2d[wp.float32],
-    costs: wp.array1d[wp.float32],
-    lambda_values: wp.array1d[wp.float32],
+    costs: wp.array[wp.float32],
+    lambda_values: wp.array[wp.float32],
 ):
     row = wp.tid()
 
@@ -677,10 +677,10 @@ class IKOptimizerLM:
         def _template(
             jacobians: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
             residuals: wp.array3d[wp.float32],  # (n_batch, n_residuals, 1)
-            lambda_values: wp.array1d[wp.float32],  # (n_batch)
+            lambda_values: wp.array[wp.float32],  # (n_batch)
             # outputs
             dq_dof: wp.array2d[wp.float32],  # (n_batch, n_dofs)
-            pred_reduction_out: wp.array1d[wp.float32],  # (n_batch)
+            pred_reduction_out: wp.array[wp.float32],  # (n_batch)
         ):
             row = wp.tid()
 
@@ -731,9 +731,9 @@ class IKOptimizerLM:
         @wp.kernel
         def _integrate_dq_dof(
             # model-wide
-            joint_type: wp.array1d[wp.int32],  # (n_joints)
-            joint_q_start: wp.array1d[wp.int32],  # (n_joints + 1)
-            joint_qd_start: wp.array1d[wp.int32],  # (n_joints + 1)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
             # per-row
             joint_q_curr: wp.array2d[wp.float32],  # (n_batch, n_coords)
@@ -790,14 +790,14 @@ class IKOptimizerLM:
 
         @wp.kernel(module="unique")
         def _compute_motion_subspace_2d(
-            joint_type: wp.array1d[wp.int32],  # (n_joints)
-            joint_parent: wp.array1d[wp.int32],  # (n_joints)
-            joint_qd_start: wp.array1d[wp.int32],  # (n_joints + 1)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd: wp.array2d[wp.float32],  # (n_batch, n_joint_dof_count)
-            joint_axis: wp.array1d[wp.vec3],  # (n_joint_dof_count)
+            joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
             body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
-            joint_X_p: wp.array1d[wp.transform],  # (n_joints)
+            joint_X_p: wp.array[wp.transform],  # (n_joints)
             # outputs
             joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_joint_dof_count)
         ):
@@ -831,14 +831,14 @@ class IKOptimizerLM:
 
         @wp.kernel(module="unique")
         def _fk_local(
-            joint_type: wp.array1d[wp.int32],  # (n_joints)
+            joint_type: wp.array[wp.int32],  # (n_joints)
             joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
-            joint_q_start: wp.array1d[wp.int32],  # (n_joints + 1)
-            joint_qd_start: wp.array1d[wp.int32],  # (n_joints + 1)
-            joint_axis: wp.array1d[wp.vec3],  # (n_axes)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_axis: wp.array[wp.vec3],  # (n_axes)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
-            joint_X_p: wp.array1d[wp.transform],  # (n_joints)
-            joint_X_c: wp.array1d[wp.transform],  # (n_joints)
+            joint_X_p: wp.array[wp.transform],  # (n_joints)
+            joint_X_c: wp.array[wp.transform],  # (n_joints)
             # outputs
             X_local_out: wp.array2d[wp.transform],  # (n_batch, n_joints)
         ):

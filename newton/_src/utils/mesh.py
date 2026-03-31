@@ -1273,10 +1273,10 @@ def create_mesh_plane(
 @wp.kernel
 def solidify_mesh_kernel(
     indices: wp.array2d[int],
-    vertices: wp.array1d[wp.vec3],
-    thickness: wp.array1d[float],
+    vertices: wp.array[wp.vec3],
+    thickness: wp.array[float],
     # outputs
-    out_vertices: wp.array1d[wp.vec3],
+    out_vertices: wp.array[wp.vec3],
     out_indices: wp.array2d[int],
 ):
     """Extrude each triangle into a triangular prism (wedge) for solidification.

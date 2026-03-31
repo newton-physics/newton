@@ -82,7 +82,7 @@ def _vec2i_equal(p: wp.vec2i, q: wp.vec2i) -> bool:
 @wp.func
 def is_pair_excluded(
     pair: wp.vec2i,
-    filter_pairs: wp.array1d[wp.vec2i],
+    filter_pairs: wp.array[wp.vec2i],
     num_filter_pairs: int,
 ) -> bool:
     """Check whether a shape pair is in the sorted exclusion list via binary search.
@@ -116,8 +116,8 @@ def is_pair_excluded(
 @wp.func
 def write_pair(
     pair: wp.vec2i,
-    candidate_pair: wp.array1d[wp.vec2i],
-    candidate_pair_count: wp.array1d[int],  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     pairid = wp.atomic_add(candidate_pair_count, 0, 1)
