@@ -159,7 +159,7 @@ def hashtable_find_or_insert(
     return -1
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _hashtable_clear_keys_kernel(
     keys: wp.array(dtype=wp.uint64),
     active_slots: wp.array(dtype=wp.int32),
@@ -185,7 +185,7 @@ def _hashtable_clear_keys_kernel(
         i += num_threads
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _zero_count_kernel(
     active_slots: wp.array(dtype=wp.int32),
     capacity: int,

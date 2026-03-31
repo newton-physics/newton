@@ -309,13 +309,13 @@ class Model:
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
         # computed once during finalization, not per-frame contact data.
         self.shape_collision_aabb_lower: wp.array(dtype=wp.vec3) | None = None
-        """Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
-        Computed from base geometry only (excludes shape margin; shape margin and gap are applied
-        during contact margin calculations). Used for voxel-based contact reduction."""
+        """Scaled local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
+        Includes shape scale but excludes margin and gap (those are applied at runtime).
+        Used for broadphase AABB computation and voxel-based contact reduction."""
         self.shape_collision_aabb_upper: wp.array(dtype=wp.vec3) | None = None
-        """Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
-        Computed from base geometry only (excludes shape margin; shape margin and gap are applied
-        during contact margin calculations). Used for voxel-based contact reduction."""
+        """Scaled local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
+        Includes shape scale but excludes margin and gap (those are applied at runtime).
+        Used for broadphase AABB computation and voxel-based contact reduction."""
         self._shape_voxel_resolution: wp.array(dtype=wp.vec3i) | None = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 

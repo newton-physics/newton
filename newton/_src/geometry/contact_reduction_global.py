@@ -377,7 +377,7 @@ class GlobalContactReducerData:
     ht_values_per_key: int
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _clear_active_kernel(
     # Hashtable arrays
     ht_keys: wp.array(dtype=wp.uint64),
@@ -443,7 +443,7 @@ def _clear_active_kernel(
         i += num_threads
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _zero_count_and_contacts_kernel(
     ht_active_slots: wp.array(dtype=wp.int32),
     contact_count: wp.array(dtype=wp.int32),
