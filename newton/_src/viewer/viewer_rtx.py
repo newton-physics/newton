@@ -1319,6 +1319,7 @@ void main() {
                         category=RuntimeWarning,
                         stacklevel=2,
                     )
+                    self._should_close = True
 
             now = perf_counter()
             if self._last_perf_time is not None:
