@@ -127,8 +127,8 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
-        self.sim_iterations = 2
+        self.sim_substeps = 5
+        self.sim_iterations = 10
         self.update_step_interval = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -140,7 +140,6 @@ class Example:
 
         # Stiffness sweep (increasing) for bend stiffness
         bend_stiffness_values = [1.0e1, 1.0e2, 1.0e3]
-        stretch_stiffness = 1.0e6
 
         # All cables start untwisted, will be spun dynamically
         self.num_cables = len(bend_stiffness_values)
@@ -150,7 +149,7 @@ class Example:
 
         # Set default material properties before adding any shapes
         builder.default_shape_cfg.ke = 1.0e4  # Contact stiffness
-        builder.default_shape_cfg.kd = 1.0e-1  # Contact damping
+        builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
 
         kinematic_body_indices = []
@@ -181,8 +180,6 @@ class Example:
                 radius=cable_radius,
                 bend_stiffness=bend_stiffness,
                 bend_damping=1.0e-2,
-                stretch_stiffness=stretch_stiffness,
-                stretch_damping=1.0e-4,
                 label=f"cable_{i}",
             )
 
@@ -251,15 +248,12 @@ class Example:
             # Apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            # Decide whether to refresh solver history (anchors used for long-range damping)
-            # and recompute contacts on this substep, using a configurable cadence.
-            update_step_history = (substep % self.update_step_interval) == 0
-
-            # Collide for contact detection
-            if update_step_history:
+            # Collision detection and contact refresh cadence.
+            refresh_contacts = (substep % self.update_step_interval) == 0
+            if refresh_contacts:
                 self.model.collide(self.state_0, self.contacts)
 
-            self.solver.set_rigid_history_update(update_step_history)
+            self.solver.set_rigid_contact_refresh(refresh_contacts)
             self.solver.step(
                 self.state_0,
                 self.state_1,
