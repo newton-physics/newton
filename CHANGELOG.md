@@ -27,6 +27,7 @@
 - Add `ModelBuilder.inertia_tolerance` to configure the eigenvalue positivity and triangle inequality threshold used during inertia correction in `finalize()`
 - Pin `newton-assets` and `mujoco_menagerie` downloads to specific commit SHAs for reproducible builds (`NEWTON_ASSETS_REF`, `MENAGERIE_REF`)
 - Add `ref` parameter to `download_asset()` to allow overriding the pinned revision
+- Add USD parsing support for equality constraints based on the `MjcEquality` schema
 
 ### Changed
 
