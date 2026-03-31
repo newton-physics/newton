@@ -1522,7 +1522,6 @@ class Heightfield:
 
         self.is_solid = True
         self.has_inertia = False
-        self.warp_array = None  # Will be set by finalize()
         self._cached_hash = None
 
         # Heightfields are always static
@@ -1547,21 +1546,6 @@ class Heightfield:
         self.min_z = d_min
         self.max_z = d_max
         self._cached_hash = None
-
-    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
-        """
-        Construct a simulation-ready Warp array from the heightfield data and return its ID.
-
-        Args:
-            device: Device on which to allocate heightfield buffers.
-            requires_grad: If True, data is allocated with gradient tracking.
-
-        Returns:
-            The ID (pointer) of the simulation-ready Warp array.
-        """
-        with wp.ScopedDevice(device):
-            self.warp_array = wp.array(self._data.flatten(), requires_grad=requires_grad, dtype=wp.float32)
-            return self.warp_array.ptr
 
     @override
     def __hash__(self) -> int:
