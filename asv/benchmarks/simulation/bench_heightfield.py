@@ -53,6 +53,10 @@ class HeightfieldCollision:
     number = 1
 
     def setup(self):
+        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        if not cuda_graph_comp:
+            raise SkipNotImplemented
+
         self.num_frames = 50
         self.model = _build_heightfield_scene(num_bodies=200, nrow=100, ncol=100)
         self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
@@ -64,10 +68,6 @@ class HeightfieldCollision:
         self.sim_dt = (1.0 / 100.0) / self.sim_substeps
 
         wp.synchronize_device()
-
-        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
-        if not cuda_graph_comp:
-            raise SkipNotImplemented
 
         with wp.ScopedCapture() as capture:
             for _sub in range(self.sim_substeps):
