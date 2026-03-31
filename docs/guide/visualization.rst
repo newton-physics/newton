@@ -342,7 +342,7 @@ You can use ``uv`` to start Jupyter lab with the required dependencies (or insta
 
   uv run --extra notebook jupyter lab
 
-Then, you can use the rerun SDK in a Jupyter notebook by importing the :mod:`rerun` module and creating a viewer instance.
+Then, you can use the rerun SDK in a Jupyter notebook by importing the ``rerun`` module and creating a viewer instance.
 
 .. code-block:: python
 

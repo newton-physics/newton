@@ -143,7 +143,6 @@ intersphinx_mapping = {
     "pytorch": ("https://docs.pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp", None),
     "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
-    "rerun": ("https://ref.rerun.io/docs/python/stable", None),
 }
 
 # Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
