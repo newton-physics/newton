@@ -1,7 +1,7 @@
 name: Cancel workflows on PR close
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
 
 jobs:
@@ -22,9 +22,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           CURRENT_RUN: ${{ github.run_id }}
         run: |
-          echo "PR #${{ github.event.pull_request.number }} closed, cancelling workflows for branch: $HEAD_BRANCH"
+          echo "PR #$PR_NUMBER closed, cancelling workflows for branch: $HEAD_BRANCH"
 
           # Cancel all in-progress and queued runs on this PR's head branch (except this one)
           for status in in_progress queued; do
