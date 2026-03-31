@@ -6074,6 +6074,7 @@ class ModelBuilder:
                     import trimesh
 
                 decompositions = {}
+                decomp_copy_cache = {}
 
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
@@ -6105,10 +6106,12 @@ class ModelBuilder:
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         continue
-                    # note we need to copy the mesh to avoid modifying the original mesh
-                    self.shape_source[shape] = self.shape_source[shape].copy(
-                        vertices=decomposition[0][0], indices=decomposition[0][1]
-                    )
+                    mesh_id = id(mesh)
+                    if mesh_id not in decomp_copy_cache:
+                        decomp_copy_cache[mesh_id] = mesh.copy(
+                            vertices=decomposition[0][0], indices=decomposition[0][1]
+                        )
+                    self.shape_source[shape] = decomp_copy_cache[mesh_id]
                     # mark as convex mesh type
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                     if len(decomposition) > 1:
@@ -6158,6 +6161,7 @@ class ModelBuilder:
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
+            remeshed_copies = {}
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
@@ -6178,8 +6182,10 @@ class ModelBuilder:
                                 stacklevel=2,
                             )
                             continue
-                # note we need to copy the mesh to avoid modifying the original mesh
-                self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                mesh_id = id(mesh)
+                if mesh_id not in remeshed_copies:
+                    remeshed_copies[mesh_id] = mesh.copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                self.shape_source[shape] = remeshed_copies[mesh_id]
                 # mark convex_hull result as convex mesh type for efficient collision detection
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH
