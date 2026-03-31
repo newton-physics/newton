@@ -61,8 +61,8 @@ def compute_world_offsets(world_count: int, spacing: tuple[float, float, float],
                 d0 = i // side_length
                 d1 = i % side_length
                 offset = np.zeros(3)
-                offset[nonzeros[0]] = d0 * spacing[nonzeros[0]]
-                offset[nonzeros[1]] = d1 * spacing[nonzeros[1]]
+                offset[nonzeros[0]] = d1 * spacing[nonzeros[0]]
+                offset[nonzeros[1]] = d0 * spacing[nonzeros[1]]
                 spacings.append(offset)
         elif num_dim == 3:
             for i in range(world_count):
@@ -70,9 +70,9 @@ def compute_world_offsets(world_count: int, spacing: tuple[float, float, float],
                 d1 = (i // side_length) % side_length
                 d2 = i % side_length
                 offset = np.zeros(3)
-                offset[0] = d0 * spacing[0]
+                offset[0] = d2 * spacing[0]
                 offset[1] = d1 * spacing[1]
-                offset[2] = d2 * spacing[2]
+                offset[2] = d0 * spacing[2]
                 spacings.append(offset)
 
         spacings = np.array(spacings, dtype=np.float32)
