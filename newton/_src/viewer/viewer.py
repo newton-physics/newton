@@ -2007,8 +2007,8 @@ class ViewerBase(ABC):
                 offsets = wp.empty(n, dtype=wp.int32, device=self.device)
                 wp.utils.array_scan(mask, offsets, inclusive=False)
 
-                # Read back total active count (last offset + last mask element).
-                active_count = int(offsets.numpy()[-1]) + int(mask.numpy()[-1])
+                # Slice to transfer only the last element instead of the full array.
+                active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
                 if active_count == 0:
                     self.log_points(name="/model/particles", points=None, hidden=True)
                     return
