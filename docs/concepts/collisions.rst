@@ -843,6 +843,14 @@ Two approaches available:
        my_mesh.build_sdf(max_resolution=64)
        builder.add_shape_mesh(body, mesh=my_mesh)
 
+.. tip::
+   **Build an SDF on every mesh that can collide**, even when high-precision contacts are
+   not required. A low-resolution SDF (e.g., ``max_resolution=64``) uses very little memory
+   yet still provides O(1) distance queries that are dramatically faster than the BVH
+   fallback. Without an SDF, mesh-vs-mesh and mesh-vs-primitive contacts must walk the BVH
+   for every query point, which dominates collision cost in most scenes. Attaching even a
+   coarse SDF eliminates this bottleneck.
+
 :meth:`~newton.Mesh.build_sdf` accepts several optional keyword arguments
 (defaults shown in parentheses):
 
