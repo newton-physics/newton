@@ -6,6 +6,7 @@ import os
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
+from functools import lru_cache
 
 import numpy as np
 import warp as wp
@@ -24,6 +25,12 @@ def get_asset_directory() -> str:
 
 def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
+
+
+@lru_cache(maxsize=1)
+def _enable_example_deprecation_warnings() -> None:
+    """Show Newton deprecations during example runs."""
+    warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
 
 
 def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
@@ -529,6 +536,8 @@ def init(parser=None):
 
     import newton.viewer  # noqa: PLC0415
 
+    _enable_example_deprecation_warnings()
+
     # parse args
     if parser is None:
         parser = create_parser()
@@ -595,6 +604,8 @@ def main():
     """Main entry point for running examples via 'python -m newton.examples <example_name>'."""
     import runpy  # noqa: PLC0415
     import sys  # noqa: PLC0415
+
+    _enable_example_deprecation_warnings()
 
     examples = get_examples()
 

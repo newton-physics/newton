@@ -43,9 +43,11 @@
 - Replace verbose Apache 2.0 boilerplate with two-line SPDX-only license headers across all source and documentation files
 - Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Improve wrench preservation in hydroelastic contacts with contact reduction.
+- Show Newton deprecation warnings during example runs started via `python -m newton.examples ...` or `python -m newton.examples.<category>.<module>`; pass `-W ignore::DeprecationWarning` if you need the previous quiet behavior.
 
 ### Deprecated
 
+- Deprecate `ModelBuilder.default_body_armature`, the `armature` argument on `ModelBuilder.add_link()` / `ModelBuilder.add_body()`, and USD-authored body armature via `newton:armature` in favor of adding any isotropic artificial inertia directly to `inertia`
 - Deprecate `SensorContact.net_force` in favor of `SensorContact.total_force` and `SensorContact.force_matrix`
 - Deprecate `SensorContact(include_total=...)` in favor of `SensorContact(measure_total=...)`
 - Deprecate `SensorContact.sensing_objs` in favor of `SensorContact.sensing_obj_idx`
@@ -94,6 +96,7 @@
 - Fix Poisson surface reconstruction segfault under parallel test execution by defaulting to single-threaded Open3D Poisson (`n_threads=1`)
 - Fix overly conservative broadphase AABB for mesh shapes by using the pre-computed local AABB with a rotated-box transform instead of a bounding-sphere fallback, eliminating false contacts between distant meshes
 - Fix heightfield bounding-sphere radius underestimating Z extent for asymmetric height ranges (e.g. `min_z=0, max_z=10`)
+- Fix fast inertia validation treating near-symmetric tensors within `np.allclose()` default tolerances as corrections, aligning CPU and GPU validation warnings
 
 ## [1.0.0] - 2026-03-10
 

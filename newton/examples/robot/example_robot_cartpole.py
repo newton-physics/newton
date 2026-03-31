@@ -33,7 +33,6 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(cartpole)
         cartpole.default_shape_cfg.density = 100.0
         cartpole.default_joint_cfg.armature = 0.1
-        cartpole.default_body_armature = 0.1
 
         cartpole.add_usd(
             newton.examples.get_asset("cartpole.usda"),

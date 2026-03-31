@@ -14,7 +14,7 @@
 #
 ###########################################################################
 
-
+import numpy as np
 import warp as wp
 
 import newton
@@ -38,7 +38,6 @@ class Example:
         quadruped = newton.ModelBuilder()
 
         # set default parameters for the quadruped
-        quadruped.default_body_armature = 0.01
         quadruped.default_joint_cfg.armature = 0.01
 
         if self.solver_type == "vbd":
@@ -61,6 +60,14 @@ class Example:
             enable_self_collisions=False,
             ignore_inertial_definitions=True,  # Use geometry-based inertia for stability
         )
+
+        # apply additional inertia to the bodies for better stability
+        body_armature = 0.01
+        for body in range(quadruped.body_count):
+            inertia_np = np.asarray(quadruped.body_inertia[body], dtype=np.float32).reshape(3, 3)
+            inertia_np += np.eye(3, dtype=np.float32) * body_armature
+            inertia = wp.mat33(inertia_np)
+            quadruped.body_inertia[body] = inertia
 
         # set initial joint positions
         quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]

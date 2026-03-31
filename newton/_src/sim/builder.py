@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import ctypes
+import inspect
 import math
 import warnings
 from collections import Counter, deque
@@ -174,6 +175,15 @@ class ModelBuilder:
         (170, 51, 119),  # magenta
         (238, 153, 51),  # orange
         (0, 153, 136),  # teal
+    )
+    _BODY_ARMATURE_ARG_DEPRECATION_MESSAGE = (
+        "ModelBuilder.add_link(..., armature=...) and ModelBuilder.add_body(..., armature=...) "
+        "are deprecated and will be removed in a future release. "
+        "Add any isotropic artificial inertia directly to 'inertia' instead."
+    )
+    _DEFAULT_BODY_ARMATURE_DEPRECATION_MESSAGE = (
+        "ModelBuilder.default_body_armature is deprecated and will be removed in a future release. "
+        "Add any isotropic artificial inertia directly to 'inertia' instead."
     )
 
     @staticmethod
@@ -822,8 +832,7 @@ class ModelBuilder:
         self.default_tet_density = 1.0
         """Default density [kg/m^3] for tetrahedral soft bodies."""
 
-        self.default_body_armature = 0.0
-        """Default body armature value used when body armature is not provided."""
+        self._default_body_armature = 0.0
         # endregion
 
         # region compiler settings (similar to MuJoCo)
@@ -3291,6 +3300,53 @@ class ModelBuilder:
 
         return wp.mat33(*value)
 
+    @staticmethod
+    def _external_warning_stacklevel() -> int:
+        frame = inspect.currentframe()
+        if frame is None:
+            return 2
+
+        frame = frame.f_back
+        stacklevel = 1
+        try:
+            while frame is not None and frame.f_code.co_filename == __file__:
+                frame = frame.f_back
+                stacklevel += 1
+            return stacklevel
+        finally:
+            del frame
+
+    @classmethod
+    def _warn_body_armature_arg_deprecated(cls) -> None:
+        warnings.warn(
+            cls._BODY_ARMATURE_ARG_DEPRECATION_MESSAGE,
+            DeprecationWarning,
+            stacklevel=cls._external_warning_stacklevel(),
+        )
+
+    @classmethod
+    def _warn_default_body_armature_deprecated(cls) -> None:
+        warnings.warn(
+            cls._DEFAULT_BODY_ARMATURE_DEPRECATION_MESSAGE,
+            DeprecationWarning,
+            stacklevel=cls._external_warning_stacklevel(),
+        )
+
+    @property
+    def default_body_armature(self) -> float:
+        """Deprecated default body armature.
+
+        .. deprecated::
+            Add any isotropic artificial inertia directly to ``inertia`` instead.
+        """
+        self._warn_default_body_armature_deprecated()
+        return self._default_body_armature
+
+    @default_body_armature.setter
+    def default_body_armature(self, value: float) -> None:
+        self._warn_default_body_armature_deprecated()
+        self._default_body_armature = value
+
     def add_link(
         self,
         xform: Transform | None = None,
@@ -3311,9 +3367,14 @@ class ModelBuilder:
 
         After calling this method and one of the joint methods, ensure that an articulation is created using :meth:`add_articulation`.
 
+        The ``armature`` argument is deprecated. Add any isotropic artificial inertia
+        directly to ``inertia`` instead.
+
         Args:
             xform: The location of the body in the world frame.
-            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            armature: Deprecated. Artificial inertia added to the body. If ``None``,
+                the deprecated default value from :attr:`default_body_armature` is used.
+                Add any isotropic artificial inertia directly to ``inertia`` instead.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
@@ -3329,7 +3390,8 @@ class ModelBuilder:
             The index of the body in the model.
 
         """
-
+        if armature is not None:
+            self._warn_body_armature_arg_deprecated()
         if xform is None:
             xform = wp.transform()
         else:
@@ -3347,7 +3409,7 @@ class ModelBuilder:
 
         # body data
         if armature is None:
-            armature = self.default_body_armature
+            armature = self._default_body_armature
         inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
@@ -3396,7 +3458,7 @@ class ModelBuilder:
         """Adds a stand-alone free-floating rigid body to the model.
 
         This is a convenience method that creates a single-body articulation with a free joint,
-        allowing the body to move freely in 6 degrees of freedom. Internally, this method calls:
+        allowing the body to move freely in 6 degrees of freedom. This is equivalent to calling:
 
         1. :meth:`add_link` to create the body
         2. :meth:`add_joint_free` to add a free joint connecting the body to the world
@@ -3405,9 +3467,14 @@ class ModelBuilder:
         For creating articulations with multiple linked bodies, use :meth:`add_link`,
         the appropriate joint methods, and :meth:`add_articulation` directly.
 
+        The ``armature`` argument is deprecated. Add any isotropic artificial inertia
+        directly to ``inertia`` instead.
+
         Args:
             xform: The location of the body in the world frame.
-            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            armature: Deprecated. Artificial inertia added to the body. If ``None``,
+                the deprecated default value from :attr:`default_body_armature` is used.
+                Add any isotropic artificial inertia directly to ``inertia`` instead.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
@@ -3423,7 +3490,6 @@ class ModelBuilder:
             The index of the body in the model.
 
         """
-        # Create the link
         body_id = self.add_link(
             xform=xform,
             armature=armature,
@@ -3431,9 +3497,9 @@ class ModelBuilder:
             inertia=inertia,
             mass=mass,
             label=label,
-            custom_attributes=custom_attributes,
             lock_inertia=lock_inertia,
             is_kinematic=is_kinematic,
+            custom_attributes=custom_attributes,
         )
 
         # Add a free joint to make it float
