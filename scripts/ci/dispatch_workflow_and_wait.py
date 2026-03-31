@@ -27,10 +27,6 @@ Step outputs (written to ``$GITHUB_OUTPUT``):
         ``timed_out``, or ``dispatch_error``.
     run-url
         HTML URL of the dispatched workflow run on GitHub.
-
-The script uses the ``return_run_details`` parameter (available since
-February 2026) to obtain the run ID directly from the dispatch
-response, avoiding the need to poll the runs list.
 """
 
 from __future__ import annotations
@@ -44,8 +40,8 @@ import time
 POLL_INTERVAL: int = 30
 """Seconds between status polls."""
 
-MAX_POLL_DURATION: int = 2 * 60 * 60
-"""Maximum total seconds to wait for the dispatched run to complete (2 hours)."""
+MAX_POLL_DURATION: int = 60 * 60
+"""Maximum total seconds to wait for the dispatched run to complete (1 hour)."""
 
 GH_TIMEOUT: int = 120
 """Maximum seconds to wait for a single ``gh`` CLI invocation."""
@@ -54,6 +50,10 @@ GH_TIMEOUT: int = 120
 def gh(*args: str) -> subprocess.CompletedProcess[str]:
     """Run a ``gh`` CLI command and return the completed process.
 
+    If the command does not finish within :data:`GH_TIMEOUT` seconds, a
+    synthetic failed :class:`~subprocess.CompletedProcess` is returned
+    instead of raising :exc:`~subprocess.TimeoutExpired`.
+
     Args:
         args: Arguments forwarded to the ``gh`` CLI.
 
@@ -61,13 +61,21 @@ def gh(*args: str) -> subprocess.CompletedProcess[str]:
         The :class:`~subprocess.CompletedProcess` result.  The caller is
         responsible for checking ``returncode``.
     """
-    return subprocess.run(
-        ["gh", *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=GH_TIMEOUT,
-    )
+    try:
+        return subprocess.run(
+            ["gh", *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=["gh", *args],
+            returncode=1,
+            stdout="",
+            stderr=f"gh command timed out after {GH_TIMEOUT}s",
+        )
 
 
 def set_output(name: str, value: str) -> None:
@@ -83,31 +91,8 @@ def set_output(name: str, value: str) -> None:
             f.write(f"{name}={value}\n")
 
 
-def log_group(title: str) -> None:
-    """Emit a ``::group::`` workflow command to start a collapsible log section."""
-    print(f"::group::{title}", flush=True)
-
-
-def log_endgroup() -> None:
-    """Emit ``::endgroup::`` to close the current collapsible log section."""
-    print("::endgroup::", flush=True)
-
-
-def log_error(msg: str) -> None:
-    """Emit an ``::error::`` workflow command that surfaces as an annotation."""
-    print(f"::error::{msg}", flush=True)
-
-
-def log_warning(msg: str) -> None:
-    """Emit a ``::warning::`` workflow command that surfaces as an annotation."""
-    print(f"::warning::{msg}", flush=True)
-
-
 def dispatch(repo: str, ref: str, workflow_file: str, extra_args: list[str]) -> tuple[int, str]:
     """Dispatch a workflow via the GitHub REST API.
-
-    Calls ``POST /repos/{owner}/{repo}/actions/workflows/{id}/dispatches``
-    with ``return_run_details=true`` to obtain the run ID in the response.
 
     Args:
         repo: Repository slug (``owner/repo``).
@@ -123,18 +108,15 @@ def dispatch(repo: str, ref: str, workflow_file: str, extra_args: list[str]) -> 
         RuntimeError: If the dispatch API call fails or the response does
             not contain a ``workflow_run_id``.
     """
-    try:
-        result = gh(
-            "api",
-            f"repos/{repo}/actions/workflows/{workflow_file}/dispatches",
-            "-f",
-            f"ref={ref}",
-            *extra_args,
-            "-F",
-            "return_run_details=true",
-        )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"gh api dispatch timed out after {GH_TIMEOUT}s") from e
+    result = gh(
+        "api",
+        f"repos/{repo}/actions/workflows/{workflow_file}/dispatches",
+        "-f",
+        f"ref={ref}",
+        *extra_args,
+        "-F",
+        "return_run_details=true",
+    )
     if result.returncode != 0:
         raise RuntimeError(f"gh api failed:\n{result.stderr.strip()}")
 
@@ -169,13 +151,13 @@ def wait_for_completion(repo: str, run_id: int) -> str:
 
         result = gh("run", "view", str(run_id), "--repo", repo, "--json", "status,conclusion")
         if result.returncode != 0:
-            log_warning(f"gh run view failed ({elapsed}s elapsed): {result.stderr.strip()}")
+            print(f"::warning::gh run view failed ({elapsed}s elapsed): {result.stderr.strip()}", flush=True)
             continue
 
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
-            log_warning(f"Failed to parse gh run view output ({elapsed}s elapsed)")
+            print(f"::warning::Failed to parse gh run view output ({elapsed}s elapsed)", flush=True)
             continue
 
         status = data.get("status")
@@ -187,17 +169,14 @@ def wait_for_completion(repo: str, run_id: int) -> str:
         print(f"Status: {status} ({elapsed}s elapsed)", flush=True)
 
     elapsed = int(time.monotonic() - start_time)
-    log_error(f"Timed out waiting for run {run_id} after {elapsed // 60} minutes")
+    print(f"::error::Timed out waiting for run {run_id} after {elapsed // 60} minutes", flush=True)
     return "timed_out"
 
 
 def main() -> int:
     """Entry point: parse arguments, dispatch, poll, and write outputs."""
     if len(sys.argv) < 2:
-        print(
-            f"Usage: {sys.argv[0]} <workflow-file> [extra-gh-api-args...]",
-            file=sys.stderr,
-        )
+        print(f"Usage: {sys.argv[0]} <workflow-file> [extra-gh-api-args...]", file=sys.stderr)
         return 1
 
     workflow_file = sys.argv[1]
@@ -207,12 +186,12 @@ def main() -> int:
     ref = os.environ["REF"]
 
     # --- Dispatch ---
-    log_group(f"Dispatching {workflow_file}")
+    print(f"::group::Dispatching {workflow_file}", flush=True)
     try:
         run_id, html_url = dispatch(repo, ref, workflow_file, extra_args)
     except RuntimeError as e:
-        log_error(f"Failed to dispatch {workflow_file}: {e}")
-        log_endgroup()
+        print(f"::error::Failed to dispatch {workflow_file}: {e}", flush=True)
+        print("::endgroup::", flush=True)
         set_output("run-url", "")
         set_output("conclusion", "dispatch_error")
         # Exit 0 so the orchestrator step is not marked as failed — the
@@ -222,13 +201,13 @@ def main() -> int:
 
     print(f"Triggered run {run_id}: {html_url}", flush=True)
     set_output("run-url", html_url)
-    log_endgroup()
+    print("::endgroup::", flush=True)
 
     # --- Poll for completion ---
-    log_group("Waiting for completion")
+    print("::group::Waiting for completion", flush=True)
     conclusion = wait_for_completion(repo, run_id)
     set_output("conclusion", conclusion)
-    log_endgroup()
+    print("::endgroup::", flush=True)
 
     return 0
 
