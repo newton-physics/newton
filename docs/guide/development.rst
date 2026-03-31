@@ -691,17 +691,6 @@ When upstream assets change and the new versions need to be adopted:
 3. Run the full test suite to verify that no tests break with the new assets.
 4. Commit the SHA update together with any test adjustments.
 
-Adding a new example that requires new assets
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-If a new example needs assets that do not yet exist in the ``newton-assets``
-repository:
-
-1. Open a PR in ``newton-assets`` to add the new asset files.
-2. Once the asset PR is merged, note the resulting commit SHA.
-3. In the Newton PR that adds the example, update ``NEWTON_ASSETS_REF`` to the
-   new SHA so that CI can download the required files.
-
 Overriding the pinned revision
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
