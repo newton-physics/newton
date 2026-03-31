@@ -2410,6 +2410,7 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
 
     robot_folder = "franka_emika_panda"
     num_steps = 20
+    dynamics_tolerance = 5e-5  # eq_ diffs cause larger qvel divergence on CI
     fk_enabled = True
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
     backfill_model = True
