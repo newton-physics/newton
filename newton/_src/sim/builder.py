@@ -5461,9 +5461,11 @@ class ModelBuilder:
                 builder.add_shape_ellipsoid(body=body, rx=0.5, ry=0.5, rz=0.5)
         """
         # Backward compat: accept deprecated a, b, c parameter names
-        _deprecated_map = {"a": "rx", "b": "ry", "c": "rz"}
-        for old_name, new_name in _deprecated_map.items():
+        _deprecated_map = {"a": ("rx", rx, 1.0), "b": ("ry", ry, 0.75), "c": ("rz", rz, 0.5)}
+        for old_name, (new_name, new_val, default) in _deprecated_map.items():
             if old_name in kwargs:
+                if new_val != default:
+                    raise TypeError(f"Cannot specify both '{old_name}' and '{new_name}'")
                 warnings.warn(
                     f"Parameter '{old_name}' is deprecated, use '{new_name}' instead.",
                     DeprecationWarning,
