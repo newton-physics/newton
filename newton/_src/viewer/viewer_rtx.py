@@ -843,8 +843,8 @@ void main() {
                 wp.load_module(module="newton._src.viewer.kernels", device=model.device)
             except Exception as exc:
                 warnings.warn(
-                    (f"ViewerRTX: Failed to precompile Warp kernels for device {model.device!r}: {exc}"),
-                    RuntimeWarning,
+                    f"ViewerRTX: Failed to precompile Warp kernels for device {model.device}: {exc}",
+                    category=RuntimeWarning,
                     stacklevel=2,
                 )
 
@@ -1314,7 +1314,11 @@ void main() {
                     self._window.switch_to()
                     self._window.dispatch_events()
                 except Exception as exc:
-                    warnings.warn(f"ViewerRTX: error dispatching window events: {exc}", stacklevel=2)
+                    warnings.warn(
+                        f"ViewerRTX: error dispatching window events: {exc}",
+                        category=RuntimeWarning,
+                        stacklevel=2,
+                    )
 
             now = perf_counter()
             if self._last_perf_time is not None:
