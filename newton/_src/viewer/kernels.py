@@ -353,15 +353,18 @@ def compute_joint_basis_lines(
         line_colors[tid] = zero_color
         return
 
-    # Filter by visible worlds
+    # Filter by visible worlds (fall back to child body for ground-attached joints)
     parent_body = joint_parent[joint_id]
-    if visible_worlds_mask and parent_body >= 0:
-        world_idx = body_world[parent_body]
-        if world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
-            line_starts[tid] = nan_line
-            line_ends[tid] = nan_line
-            line_colors[tid] = zero_color
-            return
+    child_body = joint_child[joint_id]
+    filter_body = parent_body if parent_body >= 0 else child_body
+    if visible_worlds_mask:
+        if filter_body >= 0:
+            world_idx = body_world[filter_body]
+            if world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
+                line_starts[tid] = nan_line
+                line_ends[tid] = nan_line
+                line_colors[tid] = zero_color
+                return
 
     # Get joint transform
     joint_tf = joint_transform[joint_id]
@@ -415,9 +418,10 @@ def compute_com_positions(
 
     # Filter by visible worlds
     world_idx = body_world[tid]
-    if visible_worlds_mask and world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
-        com_positions[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        return
+    if visible_worlds_mask:
+        if world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
+            com_positions[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+            return
 
     body_tf = body_q[tid]
     world_com = wp.transform_point(body_tf, body_com[tid])
@@ -451,11 +455,12 @@ def compute_inertia_box_lines(
 
     # Skip bodies from non-visible worlds
     world_idx = body_world[body_id]
-    if visible_worlds_mask and world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
-        line_starts[tid] = nan_line
-        line_ends[tid] = nan_line
-        line_colors[tid] = zero_color
-        return
+    if visible_worlds_mask:
+        if world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
+            line_starts[tid] = nan_line
+            line_ends[tid] = nan_line
+            line_colors[tid] = zero_color
+            return
 
     inv_m = body_inv_mass[body_id]
     if inv_m == 0.0:
