@@ -221,17 +221,15 @@ class Example:
                 indices=hand_body_indices,
             )
 
-            # Test cube body - allow it to fall to ground plane
-            # Keep X/Y bounds tight, but allow Z from ground (0.0) to initial position + 0.5
+            # Test cube body - must still be in the hand (z > 0.9)
             cube_body_idx = world_offset + self.cube_body_offset
-            cube_lower = wp.vec3(world_pos.x - 0.5, world_pos.y - 0.5, 0.0)
+            cube_lower = wp.vec3(world_pos.x - 0.5, world_pos.y - 0.5, 0.9)
             cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
-                f"cube from world {i} is within bounds and above ground",
-                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.math.vec_inside_limits(q.p, lower, upper)
-                and q.p[2] > 0.0,
+                f"cube from world {i} stayed in the hand",
+                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.math.vec_inside_limits(q.p, lower, upper),
                 indices=np.array([cube_body_idx], dtype=np.int32),
             )
 
