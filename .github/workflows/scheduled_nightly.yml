@@ -214,7 +214,7 @@ jobs:
                   repo: context.repo.repo,
                   issue_number: existing.number,
                   body: [
-                    `@newton-physics/maintainers Nightly tests are still failing.`,
+                    `@newton-physics/newton-ci-notify Nightly tests are still failing.`,
                     ``,
                     table,
                     ``,
@@ -228,7 +228,7 @@ jobs:
                   repo: context.repo.repo,
                   title: `Nightly failure (${date}): ${failedList}`,
                   body: [
-                    `@newton-physics/maintainers`,
+                    `@newton-physics/newton-ci-notify`,
                     ``,
                     `The scheduled nightly workflow failed.`,
                     ``,
