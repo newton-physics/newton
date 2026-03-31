@@ -9442,7 +9442,7 @@ class ModelBuilder:
             gaussians = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
-                if geo:
+                if geo and not isinstance(geo, Heightfield):
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
