@@ -64,10 +64,10 @@ class RenderConfig:
     """Render traversal order (see :class:`RenderOrder`)."""
 
     tile_width: int = 16
-    """Tile width [px] for :attr:`RenderOrder.TILED` traversal."""
+    """Tile width [px] for ``RenderOrder.TILED`` traversal."""
 
     tile_height: int = 8
-    """Tile height [px] for :attr:`RenderOrder.TILED` traversal."""
+    """Tile height [px] for ``RenderOrder.TILED`` traversal."""
 
     max_distance: float = 1000.0
     """Maximum ray distance [m]."""
