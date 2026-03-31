@@ -722,32 +722,36 @@ void main() {
 
     def _init_ovrtx(self):
         """Serialise the USD stage, create the OVRTX renderer and load the scene."""
-        import ovrtx
 
         self._add_camera_lights_and_render_product()
         self._apply_ground_material()
 
         self.stage.GetRootLayer().Save()
 
-        config = ovrtx.RendererConfig()
-        config.log_level = "error"
-        self._rtx = ovrtx.Renderer(config=config)
-        self._rtx.add_usd(self._tmp_usd_path)
+        try:
+            import ovrtx
 
-        # Flat prim-path list for a single transform binding
-        self._all_instance_paths = []
-        for paths in self._instance_prim_paths.values():
-            self._all_instance_paths.extend(paths)
+            config = ovrtx.RendererConfig()
+            config.log_level = "error"
+            self._rtx = ovrtx.Renderer(config=config)
+            self._rtx.add_usd(self._tmp_usd_path)
 
-        if self._all_instance_paths:
-            from ovrtx import PrimMode, Semantic
+            # Flat prim-path list for a single transform binding
+            self._all_instance_paths = []
+            for paths in self._instance_prim_paths.values():
+                self._all_instance_paths.extend(paths)
 
-            self._transform_binding = self._rtx.bind_attribute(
-                prim_paths=self._all_instance_paths,
-                attribute_name="omni:xform",
-                semantic=Semantic.XFORM_MAT4x4,
-                prim_mode=PrimMode.MUST_EXIST,
-            )
+            if self._all_instance_paths:
+                from ovrtx import PrimMode, Semantic
+
+                self._transform_binding = self._rtx.bind_attribute(
+                    prim_paths=self._all_instance_paths,
+                    attribute_name="omni:xform",
+                    semantic=Semantic.XFORM_MAT4x4,
+                    prim_mode=PrimMode.MUST_EXIST,
+                )
+        except Exception as e:
+            raise RuntimeError(f"Failed to create OVRTX renderer: {e}") from e
 
         # Create the presentation window now that all Warp kernels have been
         # compiled.  Doing this earlier causes a deadlock on Windows because
@@ -755,7 +759,10 @@ void main() {
         # main thread.  Skip entirely in headless mode — a hidden window still
         # requires a display server and an OpenGL context.
         if not self._headless:
-            self._init_window()
+            try:
+                self._init_window()
+            except Exception as e:
+                raise RuntimeError(f"Failed to create window: {e}") from e
 
         self._build_flat_shape_arrays()
 
