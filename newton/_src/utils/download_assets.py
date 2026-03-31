@@ -376,8 +376,12 @@ def download_git_folder(
             repo.close()
         else:
             repo = gitpython.Repo.clone_from(
-                git_url, temp_dir, branch=branch, depth=1,
-                no_checkout=True, multi_options=["--filter=blob:none", "--sparse"],
+                git_url,
+                temp_dir,
+                branch=branch,
+                depth=1,
+                no_checkout=True,
+                multi_options=["--filter=blob:none", "--sparse"],
             )
             try:
                 repo.git.sparse_checkout("set", folder_path)
@@ -455,7 +459,8 @@ def download_asset(
             If ``None``, the path is determined in the following order:
             1. ``NEWTON_CACHE_PATH`` environment variable.
             2. System's user cache directory (via ``appdirs.user_cache_dir``).
-        force_refresh: If ``True``, re-downloads even if cached version exists.
+        force_refresh: If ``True``, bypass TTL and verify the cached version
+            against the remote.  Re-downloads only if the remote SHA differs.
         ref: Git branch, tag, or commit SHA to checkout.  Defaults to the
             revision pinned in :data:`NEWTON_ASSETS_REF`.
 
