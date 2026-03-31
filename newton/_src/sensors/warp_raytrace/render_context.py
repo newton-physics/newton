@@ -6,7 +6,6 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import warp as wp
@@ -177,7 +176,7 @@ class RenderContext:
         self.shape_types: wp.array(dtype=wp.int32) = None
         self.shape_sizes: wp.array(dtype=wp.vec3f) = None
         self.shape_transforms: wp.array(dtype=wp.transformf) = None
-        self.shape_colors: wp.array(dtype=wp.vec4f) = None
+        self.shape_colors: wp.array(dtype=wp.vec3f) = None
         self.shape_world_index: wp.array(dtype=wp.int32) = None
         self.shape_source_ptr: wp.array(dtype=wp.uint64) = None
         self.shape_bounds: wp.array2d(dtype=wp.vec3f) = None
@@ -234,13 +233,11 @@ class RenderContext:
         self.shape_sizes = wp.empty(model.shape_count, dtype=wp.vec3f, device=self.device)
         self.shape_transforms = wp.empty(model.shape_count, dtype=wp.transformf, device=self.device)
 
+        self.shape_colors = model.shape_color
         self.shape_world_index = model.shape_world
         self.gaussians_data = model.gaussians_data
 
         self.__load_texture_and_mesh_data(model, load_textures)
-
-        colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(model.shape_source)]
-        self.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.device)
 
         num_enabled_shapes = wp.zeros(1, dtype=wp.int32, device=self.device)
         wp.launch(
@@ -675,36 +672,6 @@ class RenderContext:
             ],
             device=self.device,
         )
-
-    def __get_shape_color(self, index: int, shape: Any):
-        """Return the RGB color tuple for a shape.
-
-        Uses the shape's own ``color`` attribute when available,
-        otherwise cycles through a predefined color palette.
-
-        Args:
-            index: Shape index used to cycle the palette.
-            shape: Shape source object, optionally carrying a ``color``
-                attribute.
-
-        Returns:
-            RGB color as a 3-tuple of floats in ``[0, 1]``.
-        """
-        SHAPE_COLOR_MAP = [
-            (68 / 255.0, 119 / 255.0, 170 / 255.0),  # blue
-            (102 / 255.0, 204 / 255.0, 238 / 255.0),  # cyan
-            (34 / 255.0, 136 / 255.0, 51 / 255.0),  # green
-            (204 / 255.0, 187 / 255.0, 68 / 255.0),  # yellow
-            (238 / 255.0, 102 / 255.0, 119 / 255.0),  # red
-            (170 / 255.0, 51 / 255.0, 119 / 255.0),  # magenta
-            (187 / 255.0, 187 / 255.0, 187 / 255.0),  # grey
-            (238 / 255.0, 153 / 255.0, 51 / 255.0),  # orange
-            (0 / 255.0, 153 / 255.0, 136 / 255.0),  # teal
-        ]
-
-        if color := getattr(shape, "color", None):
-            return color
-        return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
 
     def __load_texture_and_mesh_data(self, model: Model, load_textures: bool):
         """Load mesh UV/normal data and textures from *model*.
