@@ -6137,11 +6137,13 @@ class ModelBuilder:
                         )
                         cfg.flags = self.shape_flags[shape]
                         for i in range(1, len(decomposition)):
-                            # add additional convex parts as convex meshes
+                            part_key = (mesh_id, i)
+                            if part_key not in decomp_copy_cache:
+                                decomp_copy_cache[part_key] = Mesh(decomposition[i][0], decomposition[i][1])
                             self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
-                                mesh=Mesh(decomposition[i][0], decomposition[i][1]),
+                                mesh=decomp_copy_cache[part_key],
                                 scale=scale,
                                 cfg=cfg,
                                 color=color,
