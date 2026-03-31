@@ -47,6 +47,9 @@ POLL_INTERVAL: int = 30
 MAX_POLL_DURATION: int = 2 * 60 * 60
 """Maximum total seconds to wait for the dispatched run to complete (2 hours)."""
 
+GH_TIMEOUT: int = 120
+"""Maximum seconds to wait for a single ``gh`` CLI invocation."""
+
 
 def gh(*args: str) -> subprocess.CompletedProcess[str]:
     """Run a ``gh`` CLI command and return the completed process.
@@ -63,6 +66,7 @@ def gh(*args: str) -> subprocess.CompletedProcess[str]:
         check=False,
         capture_output=True,
         text=True,
+        timeout=GH_TIMEOUT,
     )
 
 
