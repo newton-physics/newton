@@ -93,10 +93,7 @@ class ViewerGui:
         picking = getattr(viewer, "picking", None)
         if picking is None or not hasattr(picking, "is_picking"):
             return False
-        try:
-            return bool(picking.is_picking())
-        except Exception:
-            return False
+        return bool(picking.is_picking())
 
     def rotate_camera_from_drag(self, dx: float, dy: float, sensitivity: float = 0.1):
         camera = getattr(self._viewer, "camera", None)
