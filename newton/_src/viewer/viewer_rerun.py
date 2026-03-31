@@ -12,7 +12,7 @@ import warp as wp
 
 import newton
 
-from ..core.types import nparray, override
+from ..core.types import override
 from ..utils.mesh import compute_vertex_normals
 from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
@@ -547,7 +547,7 @@ class ViewerRerun(ViewerBase):
         rr.log(name, rr.LineStrips3D(line_strips, **rr_kwargs), static=not self.keep_historical_data)
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """
         Log a generic array for visualization.
 

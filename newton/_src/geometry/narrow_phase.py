@@ -42,7 +42,8 @@ from ..geometry.contact_reduction_global import (
 )
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import (
-    compute_mesh_mesh_block_offsets,
+    compute_block_counts_from_weights,
+    compute_mesh_mesh_block_offsets_scan,
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
 )
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
@@ -959,55 +960,76 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
 
 
 @wp.kernel(enable_backward=False)
-def compute_mesh_plane_block_offsets(
+def compute_mesh_plane_vert_counts(
     shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
     shape_pairs_mesh_plane_count: wp.array(dtype=int),
     shape_source: wp.array(dtype=wp.uint64),
-    target_blocks: int,
-    block_offsets: wp.array(dtype=wp.int32),
+    vert_counts: wp.array(dtype=wp.int32),
 ):
-    """Compute per-pair block counts and prefix sum for mesh-plane load balancing.
+    """Compute per-pair vertex counts in parallel for mesh-plane pairs.
 
-    Block counts are proportional to the vertex count of the mesh in each pair,
-    so pairs with denser meshes get more GPU blocks.
-
-    Args:
-        target_blocks: Desired total number of blocks (e.g., sm_count * 4).
-        block_offsets: Output array of size ``max_pairs + 1``.
-            ``block_offsets[i]`` is the cumulative block count up to pair *i*.
+    Slots beyond ``pair_count`` are zeroed for correct ``array_scan`` results.
     """
-    tid = wp.tid()
-    if tid > 0:
-        return
+    i = wp.tid()
     pair_count = wp.min(shape_pairs_mesh_plane_count[0], shape_pairs_mesh_plane.shape[0])
+    if i >= pair_count:
+        vert_counts[i] = 0
+        return
 
-    # First pass: sum vertex counts across all pairs
-    total_verts = int(0)
-    for i in range(pair_count):
-        pair = shape_pairs_mesh_plane[i]
-        mesh_shape = pair[0]
-        mesh_id = shape_source[mesh_shape]
-        if mesh_id != wp.uint64(0):
-            total_verts += wp.mesh_get(mesh_id).points.shape[0]
+    pair = shape_pairs_mesh_plane[i]
+    mesh_shape = pair[0]
+    mesh_id = shape_source[mesh_shape]
+    pair_verts = int(0)
+    if mesh_id != wp.uint64(0):
+        pair_verts = wp.mesh_get(mesh_id).points.shape[0]
+    vert_counts[i] = wp.int32(pair_verts)
 
-    # Compute target vertices per block
-    verts_per_block = int(total_verts)
-    if target_blocks > 0 and total_verts > 0:
-        verts_per_block = wp.max(256, total_verts // target_blocks)
 
-    # Second pass: compute per-pair block counts and prefix sum
-    offset = int(0)
-    for i in range(pair_count):
-        block_offsets[i] = offset
-        pair = shape_pairs_mesh_plane[i]
-        mesh_shape = pair[0]
-        mesh_id = shape_source[mesh_shape]
-        pair_verts = int(0)
-        if mesh_id != wp.uint64(0):
-            pair_verts = wp.mesh_get(mesh_id).points.shape[0]
-        blocks = wp.max(1, (pair_verts + verts_per_block - 1) // verts_per_block)
-        offset += blocks
-    block_offsets[pair_count] = offset
+def compute_mesh_plane_block_offsets_scan(
+    shape_pairs_mesh_plane: wp.array,
+    shape_pairs_mesh_plane_count: wp.array,
+    shape_source: wp.array,
+    target_blocks: int,
+    block_offsets: wp.array,
+    block_counts: wp.array,
+    weight_prefix_sums: wp.array,
+    device: str | None = None,
+    record_tape: bool = True,
+):
+    """Compute mesh-plane block offsets using parallel kernels and array_scan."""
+    n = block_counts.shape[0]
+    # Step 1: compute per-pair vertex counts in parallel
+    wp.launch(
+        kernel=compute_mesh_plane_vert_counts,
+        dim=n,
+        inputs=[
+            shape_pairs_mesh_plane,
+            shape_pairs_mesh_plane_count,
+            shape_source,
+            block_counts,  # reuse as temp storage for vert counts
+        ],
+        device=device,
+        record_tape=record_tape,
+    )
+    # Step 2: inclusive scan to get total
+    wp.utils.array_scan(block_counts, weight_prefix_sums, inclusive=True)
+    # Step 3: compute per-pair block counts using adaptive threshold
+    wp.launch(
+        kernel=compute_block_counts_from_weights,
+        dim=n,
+        inputs=[
+            weight_prefix_sums,
+            block_counts,  # still holds vert counts
+            shape_pairs_mesh_plane_count,
+            shape_pairs_mesh_plane.shape[0],
+            target_blocks,
+            block_offsets,  # reuse as temp for block counts
+        ],
+        device=device,
+        record_tape=record_tape,
+    )
+    # Step 4: exclusive scan of block counts → block_offsets
+    wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
 def create_narrow_phase_process_mesh_plane_contacts_kernel(
@@ -1156,7 +1178,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         """
         block_id, t = wp.tid()
 
-        pair_count = shape_pairs_mesh_plane_count[0]
+        pair_count = wp.min(shape_pairs_mesh_plane_count[0], shape_pairs_mesh_plane.shape[0])
         total_combos = block_offsets[pair_count]
 
         # Grid stride loop over (pair, sub-block) combos for multi-block load balancing.
@@ -1495,7 +1517,7 @@ class NarrowPhase:
         # Create global contact reduction kernels for mesh-triangle contacts (only if has_meshes and reduce_contacts)
         if self.reduce_contacts and has_meshes:
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
-            # Slot layout: 6 spatial direction slots + 1 max-depth slot = 7 slots per key (VALUES_PER_KEY)
+            # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
             # Global contact reducer for all mesh contact types
             self.global_contact_reducer = GlobalContactReducer(max_triangle_pairs, device=device)
@@ -1580,20 +1602,30 @@ class NarrowPhase:
         # Dynamic block allocation for mesh-mesh and mesh-plane contacts
         if device_obj.is_cuda and self.reduce_contacts:
             target_blocks = device_obj.sm_count * 4
+            n = max_candidate_pairs + 1
             # Mesh-mesh
             self.num_mesh_mesh_blocks = target_blocks
             self.mesh_mesh_target_blocks = target_blocks
-            self.mesh_mesh_block_offsets = wp.zeros(max_candidate_pairs + 1, dtype=wp.int32, device=device)
+            self.mesh_mesh_block_offsets = wp.zeros(n, dtype=wp.int32, device=device)
+            self.mesh_mesh_block_counts = wp.zeros(n, dtype=wp.int32, device=device)
+            self.mesh_mesh_weight_prefix_sums = wp.zeros(n, dtype=wp.int32, device=device)
             # Mesh-plane
             self.num_mesh_plane_blocks = target_blocks
             self.mesh_plane_target_blocks = target_blocks
-            self.mesh_plane_block_offsets = wp.zeros(max_candidate_pairs + 1, dtype=wp.int32, device=device)
+            self.mesh_plane_block_offsets = wp.zeros(n, dtype=wp.int32, device=device)
+            self.mesh_plane_block_counts = wp.zeros(n, dtype=wp.int32, device=device)
+            self.mesh_plane_weight_prefix_sums = wp.zeros(n, dtype=wp.int32, device=device)
         else:
             self.num_mesh_mesh_blocks = self.num_tile_blocks
+            self.mesh_mesh_target_blocks = self.num_tile_blocks
             self.mesh_mesh_block_offsets = None
+            self.mesh_mesh_block_counts = None
+            self.mesh_mesh_weight_prefix_sums = None
             self.num_mesh_plane_blocks = self.num_tile_blocks
             self.mesh_plane_target_blocks = self.num_tile_blocks
-            self.mesh_plane_block_offsets = wp.zeros(max_candidate_pairs + 1, dtype=wp.int32, device=device)
+            self.mesh_plane_block_offsets = None
+            self.mesh_plane_block_counts = None
+            self.mesh_plane_weight_prefix_sums = None
 
     def launch_custom_write(
         self,
@@ -1620,6 +1652,9 @@ class NarrowPhase:
     ) -> None:
         """
         Launch narrow phase collision detection with a custom contact writer struct.
+
+        All internal kernel launches use ``record_tape=False`` so that calls
+        are safe inside a :class:`warp.Tape` context.
 
         Args:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
@@ -1679,6 +1714,7 @@ class NarrowPhase:
             ],
             device=device,
             block_dim=self.block_dim,
+            record_tape=False,
         )
 
         # Stage 2: Launch GJK/MPR kernel for remaining convex pairs
@@ -1703,6 +1739,7 @@ class NarrowPhase:
             ],
             device=device,
             block_dim=self.block_dim,
+            record_tape=False,
         )
 
         # Skip mesh/heightfield kernels when no meshes or heightfields are present
@@ -1727,6 +1764,7 @@ class NarrowPhase:
                     ],
                     device=device,
                     block_dim=self.block_dim,
+                    record_tape=False,
                 )
 
             # Launch midphase: finds overlapping triangles for both mesh and heightfield pairs
@@ -1753,6 +1791,7 @@ class NarrowPhase:
                 ],
                 device=device,
                 block_dim=self.tile_size_mesh_convex,
+                record_tape=False,
             )
 
             # Launch contact processing for triangle pairs
@@ -1764,17 +1803,16 @@ class NarrowPhase:
 
                 # Mesh-plane contacts → global reducer (meshes only)
                 if self.has_meshes:
-                    wp.launch(
-                        kernel=compute_mesh_plane_block_offsets,
-                        dim=1,
-                        inputs=[
-                            self.shape_pairs_mesh_plane,
-                            self.shape_pairs_mesh_plane_count,
-                            shape_source,
-                            self.mesh_plane_target_blocks,
-                            self.mesh_plane_block_offsets,
-                        ],
+                    compute_mesh_plane_block_offsets_scan(
+                        shape_pairs_mesh_plane=self.shape_pairs_mesh_plane,
+                        shape_pairs_mesh_plane_count=self.shape_pairs_mesh_plane_count,
+                        shape_source=shape_source,
+                        target_blocks=self.mesh_plane_target_blocks,
+                        block_offsets=self.mesh_plane_block_offsets,
+                        block_counts=self.mesh_plane_block_counts,
+                        weight_prefix_sums=self.mesh_plane_weight_prefix_sums,
                         device=device,
+                        record_tape=False,
                     )
                     wp.launch_tiled(
                         kernel=self.mesh_plane_contacts_kernel,
@@ -1795,6 +1833,7 @@ class NarrowPhase:
                         ],
                         device=device,
                         block_dim=self.tile_size_mesh_plane,
+                        record_tape=False,
                     )
 
                 # Mesh/heightfield-triangle contacts → same global reducer
@@ -1817,6 +1856,7 @@ class NarrowPhase:
                     ],
                     device=device,
                     block_dim=self.block_dim,
+                    record_tape=False,
                 )
             else:
                 # Direct contact processing without reduction
@@ -1839,6 +1879,7 @@ class NarrowPhase:
                     ],
                     device=device,
                     block_dim=self.block_dim,
+                    record_tape=False,
                 )
 
             # Register mesh-plane/mesh-triangle contacts in hashtable BEFORE mesh-mesh.
@@ -1857,6 +1898,7 @@ class NarrowPhase:
                     ],
                     device=device,
                     block_dim=self.block_dim,
+                    record_tape=False,
                 )
 
             # Launch mesh-mesh contact processing kernel on CUDA.
@@ -1868,19 +1910,18 @@ class NarrowPhase:
             if wp.get_device(device).is_cuda and self.mesh_mesh_contacts_kernel is not None:
                 if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
                     # Mesh-mesh contacts → buffer + inline hashtable registration
-                    wp.launch(
-                        kernel=compute_mesh_mesh_block_offsets,
-                        dim=1,
-                        inputs=[
-                            self.shape_pairs_mesh_mesh,
-                            self.shape_pairs_mesh_mesh_count,
-                            shape_source,
-                            shape_heightfield_index,
-                            heightfield_data,
-                            self.mesh_mesh_target_blocks,
-                            self.mesh_mesh_block_offsets,
-                        ],
+                    compute_mesh_mesh_block_offsets_scan(
+                        shape_pairs_mesh_mesh=self.shape_pairs_mesh_mesh,
+                        shape_pairs_mesh_mesh_count=self.shape_pairs_mesh_mesh_count,
+                        shape_source=shape_source,
+                        shape_heightfield_index=shape_heightfield_index,
+                        heightfield_data=heightfield_data,
+                        target_blocks=self.mesh_mesh_target_blocks,
+                        block_offsets=self.mesh_mesh_block_offsets,
+                        block_counts=self.mesh_mesh_block_counts,
+                        weight_prefix_sums=self.mesh_mesh_weight_prefix_sums,
                         device=device,
+                        record_tape=False,
                     )
 
                     wp.launch_tiled(
@@ -1907,6 +1948,7 @@ class NarrowPhase:
                         ],
                         device=device,
                         block_dim=self.tile_size_mesh_mesh,
+                        record_tape=False,
                     )
                 else:
                     # Non-reduce fallback: direct contact write, no dynamic allocation
@@ -1933,6 +1975,7 @@ class NarrowPhase:
                         ],
                         device=device,
                         block_dim=self.tile_size_mesh_mesh,
+                        record_tape=False,
                     )
 
             # Export reduced contacts from hashtable
@@ -1958,6 +2001,7 @@ class NarrowPhase:
                     ],
                     device=device,
                     block_dim=self.block_dim,
+                    record_tape=False,
                 )
         if self.hydroelastic_sdf is not None:
             self.hydroelastic_sdf.launch(
@@ -1996,6 +2040,7 @@ class NarrowPhase:
                 writer_data.contact_max,
             ],
             device=device,
+            record_tape=False,
         )
 
     def launch(

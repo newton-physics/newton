@@ -9,6 +9,7 @@ These kernels handle mesh operations and transformations.
 import warp as wp
 
 import newton
+from newton._src.math import orthonormal_basis
 
 
 @wp.struct
@@ -166,6 +167,17 @@ def update_shape_xforms(
 
 
 @wp.kernel
+def repack_shape_colors(
+    shape_colors: wp.array(dtype=wp.vec3),
+    slot_to_shape: wp.array(dtype=wp.int32),
+    packed_shape_colors: wp.array(dtype=wp.vec3),
+):
+    """Repack model-order shape colors into viewer batch order."""
+    tid = wp.tid()
+    packed_shape_colors[tid] = shape_colors[slot_to_shape[tid]]
+
+
+@wp.kernel
 def estimate_world_extents(
     shape_transform: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
@@ -233,7 +245,7 @@ def compute_contact_lines(
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
+    contact_offset0: wp.array(dtype=wp.vec3),
     contact_normal: wp.array(dtype=wp.vec3),
     line_scale: float,
     # outputs
@@ -256,19 +268,14 @@ def compute_contact_lines(
 
     # Get world transforms for both shapes
     body_a = shape_body[shape_a]
-    body_b = shape_body[shape_b]
     X_wb_a = wp.transform_identity()
-    X_wb_b = wp.transform_identity()
     if body_a >= 0:
         X_wb_a = body_q[body_a]
-    if body_b >= 0:
-        X_wb_b = body_q[body_b]
 
     # Compute world space contact positions
-    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid])
-    world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
-    # Use the midpoint of the contact as the line start
-    contact_center = (world_pos0 + world_pos1) * 0.5
+    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid] + contact_offset0[tid])
+    # Anchor the debug normal at shape 0's contact point.
+    contact_center = world_pos0
 
     # Apply world offset
     world_a, world_b = shape_world[shape_a], shape_world[shape_b]
@@ -429,6 +436,49 @@ def compute_inertia_box_lines(
 
     # Compute principal inertia axes and extents
     rot, principal_inertia = wp.eig3(body_inertia[body_id])
+
+    # Skip eigenvector rotation for near-isotropic inertia (e.g., cubes, spheres).
+    # When eigenvalues are nearly equal, eig3 returns arbitrary eigenvectors
+    # causing the wireframe box to appear randomly rotated.
+    max_eig = wp.max(principal_inertia)
+    min_eig = wp.min(principal_inertia)
+    if min_eig > 0.0 and max_eig < 1.01 * min_eig:  # within 1% -> isotropic
+        rot = wp.identity(3, float)
+    elif min_eig > 0.0:
+        # Stabilize for axisymmetric inertia (2 of 3 eigenvalues nearly equal, e.g. cylinders).
+        # The two degenerate eigenvectors are arbitrary; rebuild a deterministic frame
+        # from the unique eigenvector.
+        d01 = wp.abs(principal_inertia[0] - principal_inertia[1])
+        d02 = wp.abs(principal_inertia[0] - principal_inertia[2])
+        d12 = wp.abs(principal_inertia[1] - principal_inertia[2])
+        min_diff = wp.min(d01, wp.min(d02, d12))
+        if min_diff < 0.01 * max_eig:  # within 1% -> axisymmetric
+            # Identify unique eigenvector (column not in degenerate pair)
+            if d12 <= d01 and d12 <= d02:  # e1 approx eq e2, unique = col 0
+                u = wp.vec3(rot[0, 0], rot[1, 0], rot[2, 0])
+            elif d02 <= d01:  # e0 approx eq e2, unique = col 1
+                u = wp.vec3(rot[0, 1], rot[1, 1], rot[2, 1])
+            else:  # e0 approx eq e1, unique = col 2
+                u = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
+            u = wp.normalize(u)
+
+            # Deterministic orthonormal basis from unique axis
+            v1, v2 = orthonormal_basis(u)
+
+            # Assign columns as cyclic permutation of (u, v1, v2) to keep det=+1
+            c0 = v1
+            c1 = v2
+            c2 = u
+            if d12 <= d01 and d12 <= d02:  # unique col 0
+                c0 = u
+                c1 = v1
+                c2 = v2
+            elif d02 <= d01:  # unique col 1
+                c0 = v2
+                c1 = u
+                c2 = v1
+            # mat33(*v) unpacks vectors as rows; transpose to place them as columns
+            rot = wp.transpose(wp.mat33(*c0, *c1, *c2))
 
     box_inertia = principal_inertia * inv_m * (12.0 / 8.0)
     sx = wp.sqrt(wp.abs(box_inertia[2] + box_inertia[1] - box_inertia[0]))

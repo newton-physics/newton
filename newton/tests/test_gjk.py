@@ -52,7 +52,7 @@ def _gjk_kernel(
         quat_b,
         pos_a,
         pos_b,
-        0.0,  # sum_of_contact_offsets
+        0.0,  # combined_margin
         data_provider,
         MAX_ITERATIONS,
         1e-6,  # COLLIDE_EPSILON

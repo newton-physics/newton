@@ -38,7 +38,7 @@ sim = [
     # MuJoCo simulation
     "mujoco-warp>=3.5.0.2; python_version < '3.14'",  # MuJoCo, warp-accelerated (depends on mujoco which has no 3.14 wheels yet)
     "mujoco>=3.5.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
-    "newton-actuators",
+    "newton-actuators>=0.1.0",
 ]
 
 # Asset import and mesh processing dependencies
@@ -47,7 +47,7 @@ importers = [
     "requests>=2.25.0",
 
     # Mesh processing dependencies used by ModelBuilder.approximate_meshes
-    "scipy",                       # for convex hull approximation
+    "scipy>=1.11.0",               # for convex hull approximation
     "fast-simplification>=0.1.11", # for mesh simplification
     "alphashape>=1.3.1",           # for alphashape remeshing
     "coacd>=1.0.7; python_version < '3.14'",  # for convex decomposition (no 3.14 wheels yet)
@@ -108,7 +108,7 @@ docs = [
     "pydata_sphinx_theme>=0.16.1",
     "sphinxcontrib-mermaid>=1.0.0",
     "sphinx-copybutton>=0.5.0",
-    "sphinx-design<=0.6.1",
+    "sphinx-design>=0.5.0,<=0.6.1",
     "sphinx-tabs>=3.3.0",
     "nbsphinx>=0.9.0",              # for Jupyter notebook integration
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)

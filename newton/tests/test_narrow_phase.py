@@ -1331,7 +1331,6 @@ class TestNarrowPhase(unittest.TestCase):
             contact_count=contact_count,
             contact_tangent=contact_tangent,
         )
-        wp.synchronize()
         self.assertEqual(contact_count.numpy()[0], 0, "Sphere A outside margin should have no contact")
 
         # Test 2: Sphere A at z=0.15 (inside margin) - contact!
@@ -1366,7 +1365,6 @@ class TestNarrowPhase(unittest.TestCase):
             contact_count=contact_count,
             contact_tangent=contact_tangent,
         )
-        wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere A inside margin should have contact")
 
         # Test 3: Sphere B at z=0.23 (inside its larger margin 0.07) - contact!
@@ -1402,7 +1400,6 @@ class TestNarrowPhase(unittest.TestCase):
             contact_count=contact_count,
             contact_tangent=contact_tangent,
         )
-        wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
 
     def _assert_mesh_mesh_scaled_separated_positive_penetration(self, narrow_phase: NarrowPhase):
@@ -1481,7 +1478,6 @@ class TestNarrowPhase(unittest.TestCase):
                 contact_count=contact_count,
                 contact_tangent=contact_tangent,
             )
-            wp.synchronize()
 
             count = int(contact_count.numpy()[0])
             penetrations = contact_penetration.numpy()[:count]

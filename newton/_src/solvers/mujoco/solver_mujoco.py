@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ...core.types import MAXVAL, nparray, override, vec5, vec10
+from ...core.types import MAXVAL, override, vec5, vec10
 from ...geometry import GeoType, ShapeFlags
 from ...sim import (
     BodyFlags,
@@ -37,12 +37,12 @@ from .kernels import (
     apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
     convert_mj_coords_to_warp_kernel,
-    convert_mjw_contacts_to_newton_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
     convert_qfrc_actuator_from_mj_kernel,
     convert_rigid_forces_from_mj_kernel,
     convert_solref,
     convert_warp_coords_to_mj_kernel,
+    create_convert_mjw_contacts_to_newton_kernel,
     create_inverse_shape_mapping_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
@@ -194,6 +194,7 @@ class SolverMuJoCo(SolverBase):
     # Class variables to cache the imported modules
     _mujoco = None
     _mujoco_warp = None
+    _convert_mjw_contacts_to_newton_kernel = None
 
     @classmethod
     def import_mujoco(cls):
@@ -2824,6 +2825,10 @@ class SolverMuJoCo(SolverBase):
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
 
+        # Deferred from module scope: wp.static() in this kernel imports mujoco_warp.
+        if SolverMuJoCo._convert_mjw_contacts_to_newton_kernel is None:
+            SolverMuJoCo._convert_mjw_contacts_to_newton_kernel = create_convert_mjw_contacts_to_newton_kernel()
+
         # --- New unified mappings: MuJoCo[world, entity] -> Newton[entity] ---
         self.mjc_body_to_newton: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
@@ -2988,6 +2993,10 @@ class SolverMuJoCo(SolverBase):
         if self.newton_shape_to_mjc_geom is None:
             self._create_inverse_shape_mapping()
 
+        # Zero nacon before the kernel — the kernel uses atomic_add to count
+        # only the contacts that survive immovable-pair filtering.
+        self.mjw_data.nacon.zero_()
+
         bodies_per_world = self.model.body_count // self.model.world_count
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
@@ -2995,6 +3004,9 @@ class SolverMuJoCo(SolverBase):
             inputs=[
                 state_in.body_q,
                 model.shape_body,
+                model.body_flags,
+                self.mjw_model.geom_bodyid,
+                self.mjw_model.body_weldid,
                 self.mjw_model.geom_condim,
                 self.mjw_model.geom_priority,
                 self.mjw_model.geom_solmix,
@@ -3430,8 +3442,8 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _find_body_collision_filter_pairs(
         model: Model,
-        selected_bodies: nparray,
-        colliding_shapes: nparray,
+        selected_bodies: np.ndarray,
+        colliding_shapes: np.ndarray,
     ):
         """For shape collision filter pairs, find body collision filter pairs that are contained within."""
 
@@ -3465,8 +3477,8 @@ class SolverMuJoCo(SolverBase):
 
     @staticmethod
     def _color_collision_shapes(
-        model: Model, selected_shapes: nparray, visualize_graph: bool = False, shape_labels: list[str] | None = None
-    ) -> nparray:
+        model: Model, selected_shapes: np.ndarray, visualize_graph: bool = False, shape_labels: list[str] | None = None
+    ) -> np.ndarray:
         """
         Find a graph coloring of the collision filter pairs in the model.
         Shapes within the same color cannot collide with each other.
@@ -3479,7 +3491,7 @@ class SolverMuJoCo(SolverBase):
             shape_labels: The labels of the shapes, only used for visualization.
 
         Returns:
-            nparray: An integer array of shape (num_shapes,), where each element is the color of the corresponding shape.
+            np.ndarray: An integer array of shape (num_shapes,), where each element is the color of the corresponding shape.
         """
         # we first create a mapping from selected shape to local color shape index
         # to reduce the number of nodes in the graph to only the number of selected shapes
@@ -3548,19 +3560,25 @@ class SolverMuJoCo(SolverBase):
             )
 
         wp.launch(
-            convert_mjw_contacts_to_newton_kernel,
+            self._convert_mjw_contacts_to_newton_kernel,
             dim=mj_data.naconmax,
             inputs=[
                 self.mjc_geom_to_newton_shape,
-                self.mjc_body_to_newton,
-                self.mjw_model.opt.cone == int(self._mujoco.mjtCone.mjCONE_PYRAMIDAL),
+                self.mjw_model.opt.cone,
                 mj_data.nacon,
+                mj_contact.pos,
                 mj_contact.frame,
+                mj_contact.friction,
+                mj_contact.dist,
                 mj_contact.dim,
                 mj_contact.geom,
                 mj_contact.efc_address,
                 mj_contact.worldid,
                 mj_data.efc.force,
+                self.mjw_model.geom_bodyid,
+                mj_data.xpos,
+                mj_data.xquat,
+                mj_data.njmax,
             ],
             outputs=[
                 contacts.rigid_contact_count,
@@ -3706,7 +3724,7 @@ class SolverMuJoCo(SolverBase):
             # For Warp kernel equivalent, see quat_wxyz_to_xyzw() in kernels.py
             return [q[1], q[2], q[3], q[0]]
 
-        def fill_arr_from_dict(arr: nparray, d: dict[int, Any]):
+        def fill_arr_from_dict(arr: np.ndarray, d: dict[int, Any]):
             # fast way to fill an array from a dictionary
             # keys and values can also be tuples of integers
             keys = np.array(list(d.keys()), dtype=int)
@@ -3885,7 +3903,7 @@ class SolverMuJoCo(SolverBase):
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
 
-        def get_custom_attribute(name: str) -> nparray | None:
+        def get_custom_attribute(name: str) -> np.ndarray | None:
             if mujoco_attrs is None:
                 return None
             attr = getattr(mujoco_attrs, name, None)

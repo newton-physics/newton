@@ -15,22 +15,33 @@ Architecture::
     │   └── ...                                 (61 robots total, most skipped)
     └── TestMenagerieUSD        Load Newton model from USD (all skipped)
 
+Test tiers (each robot can enable independently):
+    - ``test_model_comparison()``: Deterministic model field checks — always runs.
+    - ``test_forward_kinematics()``: Compares body poses from joint positions
+      (no forces/contacts). Gated by ``fk_enabled``.
+    - ``test_dynamics()``: Multi-step simulation with controls. Gated by
+      ``num_steps > 0``.
+    - ``test_step_response()``: Per-DOF step response — each world commands one
+      actuator to a target. Gated by ``step_response_enabled``.
+
 Each test:
     1. Downloads the robot from menagerie (cached).
     2. Creates a Newton model (via MJCF) and a native mujoco_warp model.
     3. Compares model fields with physics-equivalence checks for inertia, solref, etc.
-    4. Runs N steps with randomized controls across 34 parallel worlds.
-    5. Compares per-step dynamics fields within tolerance.
+    4. Optionally runs forward kinematics, comparing body poses.
+    5. Optionally runs dynamics or step-response, comparing per-step qpos/qvel.
 
 Comparison modes:
     - **Full pipeline**: Both sides run ``mujoco_warp.step()`` independently. Fast
       (supports CUDA graph capture) but subject to float32 solver noise from
       ``wp.atomic_add`` in the constraint solver and Euler damping. Suitable for
       position-level comparison at ~5e-4 tolerance.
-    - **Split pipeline**: Newton runs a full step, then native replays kinematics
-      through collision, with contacts and constraints injected from Newton to
-      bypass non-deterministic ordering from ``wp.atomic_add``. Achieves bit-identical
-      results at 1e-6 tolerance but is slower (no CUDA graph support).
+    - **Split pipeline**: Newton runs a full step. Native runs only up to
+      collision detection, then Newton's contacts and constraints are injected
+      into native before it continues solving. This ensures both sides solve
+      the exact same constraint problem (bypassing non-deterministic ordering
+      from ``wp.atomic_add``). Achieves 1e-6 tolerance but is slower (no CUDA
+      graph support).
 
 Per-robot configuration (override in subclass):
     - ``backfill_model``: Copy computed model fields from native to Newton to
@@ -56,6 +67,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sim.enums import JointType
 from newton._src.utils.download_assets import MENAGERIE_REF, MENAGERIE_URL, download_git_folder
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf
 from newton.solvers import SolverMuJoCo
@@ -399,25 +411,28 @@ DEFAULT_TOLERANCES: dict[str, float] = {
 }
 
 # Default fields to compare in MjData (core physics + dynamics)
+DEFAULT_FK_FIELDS: list[str] = [
+    "xpos",
+    "xquat",
+]
+
 DEFAULT_COMPARE_FIELDS: list[str] = [
     # Core state
     "qpos",
     "qvel",
     "qacc",
     # Body kinematics
-    "xpos",
-    "xquat",
+    *DEFAULT_FK_FIELDS,
     "xmat",
     "geom_xpos",
     "geom_xmat",
     "site_xpos",
     "site_xmat",
+    "subtree_com",
     # Forces
     "qfrc_bias",
     "qfrc_passive",
     "qfrc_actuator",
-    # Composite quantities
-    "subtree_com",
     # Dynamics
     "cvel",
     "cacc",
@@ -464,6 +479,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
+    # Inertia frame offset: derived from inertia diagonalization. Differs when Newton
+    # produces different principal axes (e.g. for bodies with mesh-based visual geoms).
+    "body_ipos",
+    # Inertia frame orientation: derived from inertia diagonalization.
     "body_iquat",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
@@ -496,6 +515,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Timestep: not registered as custom attribute (conflicts with step() parameter).
     # Extracted from native model at runtime instead.
     "opt.timestep",
+    # Integrator: Newton may select a different integrator than the MJCF default.
+    # The solver forces the correct integrator at runtime regardless.
+    "opt.integrator",
     # Geom ordering: Newton's solver may order geoms differently (e.g. colliders before
     # visuals). Content is verified by compare_geom_fields_unordered() instead.
     "body_geomadr",
@@ -509,14 +531,27 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     # Derived from inertia and dof_armature by set_const_0. Backfilled.
     "dof_invweight0",
+    # Body frame position/orientation: compilation-dependent, derived from joint and inertia
+    # frames by mj_setConst. Differs due to inertia re-diagonalization. Backfilled.
     "body_pos",
     "body_quat",
+    # Subtree mass: sum of masses in subtree, differs when body_mass differs (visual geom mass).
     "body_subtreemass",
     # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
     # re-diagonalization. Backfilled instead.
     "actuator_acc0",
     "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
+    # Meshes: Newton / trimesh may create a different number of meshes (nmesh differs),
+    # so ALL per-mesh fields have incompatible shapes. Skip everything mesh-related.
+    "nmesh",
+    "nmeshvert",
+    "nmeshnormal",
+    "nmeshpoly",
+    "nmeshface",
+    "nmaxmeshdeg",
+    "nmaxpolygon",
+    "mesh_",
 }
 
 
@@ -1006,6 +1041,47 @@ def compare_jnt_range(
 
 
 # =============================================================================
+# Forward Kinematics Helpers
+# =============================================================================
+
+
+@wp.func
+def _quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
+    return wp.quat(q[3], q[0], q[1], q[2])
+
+
+@wp.kernel
+def _copy_body_q_to_mjwarp_kernel(
+    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
+    body_q: wp.array(dtype=wp.transform),
+    # outputs
+    xpos: wp.array2d(dtype=wp.vec3),
+    xquat: wp.array2d(dtype=wp.quat),
+):
+    """Copy Newton body_q transforms into mjwarp xpos/xquat arrays."""
+    world, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[world, mjc_body]
+    if newton_body >= 0:
+        t = body_q[newton_body]
+        xpos[world, mjc_body] = wp.transform_get_translation(t)
+        xquat[world, mjc_body] = _quat_xyzw_to_wxyz(wp.transform_get_rotation(t))
+
+
+def run_newton_eval_fk(solver: SolverMuJoCo, model: newton.Model, state: newton.State):
+    """Run Newton's FK and copy results into the solver's mjwarp data."""
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    nworld = solver.mjc_body_to_newton.shape[0]
+    nbody = solver.mjc_body_to_newton.shape[1]
+    wp.launch(
+        _copy_body_q_to_mjwarp_kernel,
+        dim=(nworld, nbody),
+        inputs=[solver.mjc_body_to_newton, state.body_q],
+        outputs=[solver.mjw_data.xpos, solver.mjw_data.xquat],
+        device=model.device,
+    )
+
+
+# =============================================================================
 # Contact Injection Helpers
 # =============================================================================
 
@@ -1153,7 +1229,6 @@ def compare_contacts_sorted(
     Returns:
         (matches, message) - True if contacts match within tolerance, with diagnostic message.
     """
-    wp.synchronize()
 
     nacon_newton = int(newton_data.nacon.numpy()[0])
     nacon_native = int(native_data.nacon.numpy()[0])
@@ -1251,7 +1326,6 @@ def compare_constraints_sorted(
     Returns:
         (matches, message) - True if constraint rows match modulo ordering.
     """
-    wp.synchronize()
 
     nefc_newton = newton_data.nefc.numpy()
     nefc_native = native_data.nefc.numpy()
@@ -1380,7 +1454,6 @@ def compare_mjdata_field(
         return
 
     # Sync and copy to numpy
-    wp.synchronize()
     newton_np = newton_arr.numpy()
     native_np = native_arr.numpy()
 
@@ -1393,8 +1466,15 @@ def compare_mjdata_field(
         newton_np = newton_np[:, 1:]
         native_np = native_np[:, 1:]
 
-    # Vectorized comparison
-    diff = np.abs(newton_np - native_np)
+    # Quaternion sign handling: q and -q represent the same rotation.
+    # Pick one sign per quaternion (not per component) to avoid mixing branches.
+    if newton_arr.dtype == wp.quat:
+        direct = np.abs(newton_np - native_np)
+        flipped = np.abs(newton_np + native_np)
+        use_flipped = np.max(flipped, axis=-1, keepdims=True) < np.max(direct, axis=-1, keepdims=True)
+        diff = np.where(use_flipped, flipped, direct)
+    else:
+        diff = np.abs(newton_np - native_np)
     max_diff = float(np.max(diff))
 
     if max_diff > tol:
@@ -1862,6 +1942,13 @@ class TestMenagerieBase(unittest.TestCase):
     # Disabled by default; re-enable per robot once the interaction is understood.
     use_cuda_graph: bool = False
 
+    # Forward kinematics test: compare body poses computed from joint positions.
+    # No forces, no contacts, fully deterministic.
+    # Set to True per robot to enable test_forward_kinematics().
+    fk_enabled: bool = False
+    fk_fields: ClassVar[list[str]] = DEFAULT_FK_FIELDS
+    fk_tolerance: float = 2e-6
+
     @classmethod
     def setUpClass(cls):
         """Download assets once for all tests in this class."""
@@ -1957,6 +2044,13 @@ class TestMenagerieBase(unittest.TestCase):
         Override in subclasses where DOF ordering may differ.
         """
 
+    def _compare_tendon_jacobian_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse tendon Jacobian structure (ten_J_colind, ten_J_rowadr, ten_J_rownnz).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
+
     def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare compilation-dependent fields at relaxed tolerance.
 
@@ -1976,7 +2070,7 @@ class TestMenagerieBase(unittest.TestCase):
         assets: dict[str, bytes] = {}
         asset_dir = self.mjcf_path.parent
 
-        # Common mesh extensions
+        # Common mesh and texture extensions
         mesh_extensions = (".stl", ".obj", ".msh", ".STL", ".OBJ", ".MSH")
         texture_extensions = (".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG")
 
@@ -2030,7 +2124,7 @@ class TestMenagerieBase(unittest.TestCase):
         _mujoco.mj_forward(mj_model, mj_data)
 
         # Create mujoco_warp model/data with multiple worlds
-        # Note: put_model creates arrays with nworld=1, expansion happens in test_simulation_equivalence
+        # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
         mjw_data = _mujoco_warp.put_data(
             mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
@@ -2038,27 +2132,26 @@ class TestMenagerieBase(unittest.TestCase):
 
         return mj_model, mj_data, mjw_model, mjw_data
 
-    def test_simulation_equivalence(self):
-        """
-        Main test: verify Newton's SolverMuJoCo and native mujoco_warp produce equivalent results.
+    def _ensure_models(self):
+        """Create Newton and native models if not already done (lazy init).
 
-        Both sides use mujoco_warp with the same number of worlds.
-        Each world receives different controls (varied by phase/noise).
-        Uses CUDA graphs when available for performance.
-
-        If debug_visual=True, opens MuJoCo viewer (set debug_view_newton to choose view).
+        Stores models on the **class** so all test method instances share
+        them without re-creating expensive GPU resources.
         """
+        cls = self.__class__
+        if hasattr(cls, "_newton_solver"):
+            return
+
         assert _mujoco is not None
         assert _mujoco_warp is not None
-        assert self.control_strategy is not None
 
         if self.debug_visual:
             self.num_worlds = 1
 
-        # Create models and solvers
-        newton_model = self._create_newton_model()
-        newton_state = newton_model.state()
-        newton_control = newton_model.control()
+        # Create models and solvers — stored on cls for reuse across test methods
+        cls._newton_model = self._create_newton_model()
+        cls._newton_state = cls._newton_model.state()
+        cls._newton_control = cls._newton_model.control()
         solver_kwargs = {
             "skip_visual_only_geoms": not self.parse_visuals,
             "njmax": self.njmax,
@@ -2067,31 +2160,33 @@ class TestMenagerieBase(unittest.TestCase):
         if self.solver_integrator is not None:
             solver_kwargs["integrator"] = self.solver_integrator
 
-        newton_solver = SolverMuJoCo(newton_model, **solver_kwargs)
+        cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
 
-        mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
+        cls._mj_model, cls._mj_data_native, cls._native_mjw_model, cls._native_mjw_data = (
+            self._create_native_mujoco_warp()
+        )
 
         # Expand native model's batched arrays to match Newton's shapes
         # Newton is the reference - only expand fields that Newton has expanded
-        expand_mjw_model_to_match(native_mjw_model, newton_solver.mjw_model)
+        expand_mjw_model_to_match(cls._native_mjw_model, cls._newton_solver.mjw_model)
 
         # Extract timestep from native model (Newton doesn't parse <option timestep="..."/> yet)
         # TODO: Remove this workaround once Newton's MJCF parser supports timestep extraction
-        dt = float(mj_model.opt.timestep)
+        cls._dt = float(cls._mj_model.opt.timestep)
 
         # Hook for subclass-specific model alignment (USD fixups, etc.)
-        self._align_models(newton_solver, native_mjw_model, mj_model)
+        self._align_models(cls._newton_solver, cls._native_mjw_model, cls._mj_model)
 
         # Disable sensor_rne_postconstraint on native — Newton doesn't support
         # sensors, so rne_postconstraint would compute cacc/cfrc_int on native
         # but not on Newton, causing spurious diffs.
-        native_mjw_model.sensor_rne_postconstraint = False
+        cls._native_mjw_model.sensor_rne_postconstraint = False
 
-        # Run all standard model comparisons (strict field match, inertia tensors,
-        # solref physics equivalence, geom/joint checks, compiled field validation).
+    def _run_model_comparisons(self):
+        """Run all model field comparisons and subclass hooks."""
         compare_models(
-            newton_solver.mjw_model,
-            native_mjw_model,
+            self._newton_solver.mjw_model,
+            self._native_mjw_model,
             skip_fields=self.model_skip_fields,
             backfill_fields=self.backfill_fields,
         )
@@ -2099,31 +2194,127 @@ class TestMenagerieBase(unittest.TestCase):
         # Subclass hooks for pipelines with reordered bodies/DOFs/actuators (USD).
         # Default implementations are no-ops; compare_models already covers the
         # same-order case.
-        self._compare_inertia(newton_solver.mjw_model, native_mjw_model)
-        self._compare_geoms(newton_solver.mjw_model, native_mjw_model)
-        self._compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
-        self._compare_body_physics(newton_solver.mjw_model, native_mjw_model)
-        self._compare_dof_physics(newton_solver.mjw_model, native_mjw_model)
-        self._compare_mass_matrix_structure(newton_solver.mjw_model, native_mjw_model)
-        self._compare_actuator_physics(newton_solver.mjw_model, native_mjw_model)
-        self._compare_compiled_fields(newton_solver.mjw_model, native_mjw_model)
+        self._compare_inertia(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_geoms(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_jnt_range(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_body_physics(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_dof_physics(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_mass_matrix_structure(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_tendon_jacobian_structure(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_actuator_physics(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_compiled_fields(self._newton_solver.mjw_model, self._native_mjw_model)
 
-        # Optional: backfill computed fields from native to Newton to eliminate
-        # numerical differences from model compilation (enables tighter tolerances for dynamics)
-        # Must happen AFTER all model comparisons
-        if self.backfill_model:
-            backfill_model_from_native(newton_solver.mjw_model, native_mjw_model, self.backfill_fields)
-            # Re-run kinematics and RNE (without collision) so data fields
-            # (qfrc_bias, qM, etc.) reflect backfilled model. The initial forward
-            # ran before backfill and produced stale values.
-            from mujoco_warp._src import smooth as mjw_smooth
+    def _backfill_and_recompute(self):
+        """Backfill computed model fields from native and re-run kinematics/RNE."""
+        if not self.backfill_model:
+            return
+        backfill_model_from_native(self._newton_solver.mjw_model, self._native_mjw_model, self.backfill_fields)
+        # Re-run kinematics and RNE (without collision) so data fields
+        # (qfrc_bias, qM, etc.) reflect backfilled model. The initial forward
+        # ran before backfill and produced stale values.
+        from mujoco_warp._src import smooth as mjw_smooth
 
-            mjw_smooth.kinematics(newton_solver.mjw_model, newton_solver.mjw_data)
-            mjw_smooth.com_pos(newton_solver.mjw_model, newton_solver.mjw_data)
-            mjw_smooth.crb(newton_solver.mjw_model, newton_solver.mjw_data)
-            mjw_smooth.factor_m(newton_solver.mjw_model, newton_solver.mjw_data)
-            mjw_smooth.com_vel(newton_solver.mjw_model, newton_solver.mjw_data)
-            mjw_smooth.rne(newton_solver.mjw_model, newton_solver.mjw_data)
+        mjw_smooth.kinematics(self._newton_solver.mjw_model, self._newton_solver.mjw_data)
+        mjw_smooth.com_pos(self._newton_solver.mjw_model, self._newton_solver.mjw_data)
+        mjw_smooth.crb(self._newton_solver.mjw_model, self._newton_solver.mjw_data)
+        mjw_smooth.factor_m(self._newton_solver.mjw_model, self._newton_solver.mjw_data)
+        mjw_smooth.com_vel(self._newton_solver.mjw_model, self._newton_solver.mjw_data)
+        mjw_smooth.rne(self._newton_solver.mjw_model, self._newton_solver.mjw_data)
+
+    def test_model_comparison(self):
+        """Verify Newton and native mujoco_warp models have equivalent fields.
+
+        Deterministic — compares model parameters, inertia tensors, solref,
+        geoms, joint ranges, compiled fields, and actuator physics. No simulation.
+        """
+        self._ensure_models()
+        self._run_model_comparisons()
+
+    def test_forward_kinematics(self):
+        """Verify forward kinematics produce equivalent body poses.
+
+        Computes body positions and orientations from joint positions on both
+        sides (no forces, no contacts) and compares. Fully deterministic.
+        """
+        if not self.fk_enabled:
+            self.skipTest("Forward kinematics not enabled for this robot")
+
+        self._ensure_models()
+        self._run_model_comparisons()
+        self._backfill_and_recompute()
+
+        from mujoco_warp._src import smooth as mjw_smooth
+
+        model = self._newton_model
+        solver = self._newton_solver
+
+        # Use a local state so we don't mutate shared state used by other tests
+        state = model.state()
+
+        # Perturb joint positions so FK has something to compute
+        rng = np.random.default_rng(seed=42)
+        joint_q_np = model.joint_q.numpy()
+        joint_q_np += rng.uniform(-0.1, 0.1, size=joint_q_np.shape).astype(np.float32)
+
+        # Renormalize quaternions for free and ball joints (perturbation
+        # denormalizes them, which is invalid input for eval_fk)
+        joint_type = model.joint_type.numpy()
+        q_start = model.joint_q_start.numpy()
+        for j in range(len(joint_type)):
+            jt = joint_type[j]
+            qi = q_start[j]
+            if jt == JointType.FREE:
+                q = joint_q_np[qi + 3 : qi + 7]
+                q /= np.linalg.norm(q)
+            elif jt == JointType.BALL:
+                q = joint_q_np[qi : qi + 4]
+                q /= np.linalg.norm(q)
+
+        state.joint_q.assign(joint_q_np)
+
+        # Sync perturbed joints to Newton's mjwarp qpos
+        solver._update_mjc_data(solver.mjw_data, model, state)
+
+        # Copy the same qpos to native so both sides start from identical joint positions
+        self._native_mjw_data.qpos.assign(solver.mjw_data.qpos.numpy())
+
+        # Newton side: eval_fk → copy body poses to mjwarp data
+        run_newton_eval_fk(solver, model, state)
+
+        # Native side: mjwarp kinematics
+        mjw_smooth.kinematics(self._native_mjw_model, self._native_mjw_data)
+        mjw_smooth.com_pos(self._native_mjw_model, self._native_mjw_data)
+
+        # Compare FK fields
+        for field_name in self.fk_fields:
+            compare_mjdata_field(solver.mjw_data, self._native_mjw_data, field_name, self.fk_tolerance, step=-1)
+
+    def test_dynamics(self):
+        """Verify Newton and native mujoco_warp produce equivalent dynamics.
+
+        Runs N steps with controls across parallel worlds, comparing per-step
+        MjData fields within tolerance. Supports full pipeline (fast, CUDA graphs)
+        and split pipeline (deterministic, contact/constraint injection).
+
+        If debug_visual=True, opens MuJoCo viewer (set debug_view_newton to choose view).
+        """
+        if self.num_steps <= 0:
+            self.skipTest("Dynamics not enabled (num_steps=0)")
+
+        assert self.control_strategy is not None
+
+        self._ensure_models()
+        self._run_model_comparisons()
+        self._backfill_and_recompute()
+
+        newton_solver = self._newton_solver
+        newton_state = self._newton_state
+        newton_control = self._newton_control
+        native_mjw_model = self._native_mjw_model
+        native_mjw_data = self._native_mjw_data
+        mj_model = self._mj_model
+        mj_data_native = self._mj_data_native
+        dt = self._dt
 
         # Initialize control strategy with the ctrl arrays it will fill
         self._init_control(native_mjw_data, newton_control)
@@ -2336,8 +2527,9 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
 class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
@@ -2352,8 +2544,10 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
@@ -2452,14 +2646,15 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     # Together these give bit-identical results, so no tolerance overrides needed.
     backfill_model = True
     use_split_pipeline = True
+    fk_enabled = True
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2471,8 +2666,9 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
     """LEAP Hand."""
 
     robot_folder = "leap_hand"
-
-    skip_reason = "Not yet implemented"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
@@ -2487,8 +2683,7 @@ class TestMenagerie_Robotiq2f85V4(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper v4."""
 
     robot_folder = "robotiq_2f85_v4"
-
-    skip_reason = "Not yet verified"
+    skip_reason = "mujoco_warp: implicit integrators and fluid model not implemented"
 
 
 class TestMenagerie_ShadowDexee(TestMenagerieMJCF):
@@ -2503,8 +2698,11 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     """Shadow Hand."""
 
     robot_folder = "shadow_hand"
-
-    skip_reason = "Not yet verified"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
+    # tendon_invweight0 is compilation-dependent (derived from inertia)
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
 
 
 class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieMJCF):
@@ -2519,16 +2717,18 @@ class TestMenagerie_UmiGripper(TestMenagerieMJCF):
     """UMI Gripper."""
 
     robot_folder = "umi_gripper"
-
-    skip_reason = "Not yet implemented"
+    skip_reason = "mujoco_warp: implicit integrators and fluid model not implemented"
 
 
 class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     """Wonik Allegro Hand."""
 
     robot_folder = "wonik_allegro"
-
-    skip_reason = "Not yet verified"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
+    # TODO(#2170): body_mass differs — Newton computes different masses for visual geoms
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
@@ -2548,8 +2748,11 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2170)
+    # TODO(#2170): dof_damping, jnt_range, eq_, ngeom differ
+    # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
@@ -2630,6 +2833,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     use_cuda_graph = True
     # num_steps = 100  # Disabled to avoid CI flakiness
     num_steps = 0
+    fk_enabled = True
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
     parse_visuals = True
@@ -2656,17 +2860,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "actuator_length": 5e-4,
         "actuator_velocity": 2e-2,
     }
-    # Apollo has 44 mesh assets but many geoms share the same mesh. Without
-    # include_mesh_materials dedup, Newton creates 60 meshes (one per geom).
-    # Also, trimesh deduplicates vertices on load, changing per-mesh counts.
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "nmesh",
-        "nmeshvert",
-        "nmeshnormal",
-        "nmeshpoly",
-        "nmeshface",
-        "mesh_",
-    }
+    # Mesh fields already skipped globally in DEFAULT_MODEL_SKIP_FIELDS
 
 
 class TestMenagerie_BerkeleyHumanoid(TestMenagerieMJCF):
@@ -2681,8 +2875,8 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
@@ -2737,16 +2931,18 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
+    # TODO(#2170): actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
 
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2758,8 +2954,7 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-
-    skip_reason = "Not yet implemented"
+    skip_reason = "Closed-loop kinematic chains cause different DOF layout"
 
 
 # -----------------------------------------------------------------------------
@@ -2779,16 +2974,16 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
@@ -2827,8 +3022,8 @@ class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2882,8 +3077,10 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    # TODO(#2170): body_mass differs for some bodies
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
 # -----------------------------------------------------------------------------
