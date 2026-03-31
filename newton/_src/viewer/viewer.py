@@ -93,6 +93,7 @@ class ViewerBase(ABC):
 
         # World offset support
         self.world_offsets = None
+        self._user_spacing: tuple[float, float, float] | None = None
         self._visible_worlds: set[int] | None = None
         self._visible_worlds_mask: wp.array | None = None
 
@@ -222,7 +223,10 @@ class ViewerBase(ABC):
         self._shape_to_batch = None
 
         self._populate_shapes()
-        self._auto_compute_world_offsets()
+        if self._user_spacing is not None:
+            self.set_world_offsets(self._user_spacing)
+        else:
+            self._auto_compute_world_offsets()
         self.model_changed = True
 
     def _build_visible_worlds_mask(self) -> None:
@@ -314,6 +318,8 @@ class ViewerBase(ABC):
         # Convert to tuple if needed
         if isinstance(spacing, (list, wp.vec3)):
             spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
+
+        self._user_spacing = spacing
 
         # Compute compact grid offsets for the visible world count
         compact_offsets = compute_world_offsets(render_count, spacing, up_axis)

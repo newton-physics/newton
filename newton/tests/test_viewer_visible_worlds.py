@@ -149,6 +149,21 @@ class TestViewerVisibleWorlds(unittest.TestCase):
 
         self.assertEqual(cache_before, cache_after)
 
+    def test_user_spacing_preserved(self):
+        """User-provided spacing is reapplied when visible worlds change."""
+        model = _build_multi_world_model(4)
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+
+        viewer.set_world_offsets((10.0, 0.0, 0.0))
+        viewer.set_visible_worlds([0, 2])
+
+        # Only 2 visible worlds with spacing 10 -> compact 1D offsets
+        offsets = viewer.world_offsets.numpy()
+        visible_offsets = offsets[[0, 2]]
+        expected = np.array([[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
+        assert_np_equal(visible_offsets, expected, tol=1e-5)
+
 
 def test_visible_worlds_transforms(test: TestViewerVisibleWorlds, device):
     """Verify shape transforms are correct for visible world subset."""
