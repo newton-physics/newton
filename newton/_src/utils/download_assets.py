@@ -140,7 +140,7 @@ def _get_latest_commit_via_git(git_url: str, ref: str) -> str | None:
     If *ref* is already a 40-character commit SHA it is returned as-is.
     For annotated tags the dereferenced commit SHA is preferred.
     """
-    if re.fullmatch(r"[0-9a-f]{40}", ref):
+    if _SHA_RE.fullmatch(ref):
         return ref
     try:
         import git
