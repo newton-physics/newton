@@ -105,13 +105,14 @@ class SchemaResolverNewton(SchemaResolver):
             # Contact stiffness/damping
             "ke": SchemaAttribute("newton:contact_ke", None),
             "kd": SchemaAttribute("newton:contact_kd", None),
-            # SDF (Signed Distance Field) configuration
+            # SDF (Signed Distance Field) configuration — from NewtonSDFCollisionAPI
             "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", None),
             "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", None),
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", None),
             "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", None),
-            # Hydroelastic contacts
-            "is_hydroelastic": SchemaAttribute("newton:isHydroelastic", None),
+            "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", None),
+            # Hydroelastic contacts — from NewtonHydroelasticCollisionAPI
+            # Presence of newton:kh signals hydroelastic opt-in (no separate bool flag)
             "kh": SchemaAttribute("newton:kh", None),
         },
         PrimType.BODY: {},

@@ -184,7 +184,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             self.assertIsNotNone(mesh1.sdf, "Expected SDF built from default_shape_cfg")
 
     def test_usd_hydroelastic_attributes(self, device=None):
-        """USD newton:isHydroelastic and newton:kh are parsed into shape config."""
+        """Presence of newton:kh signals hydroelastic opt-in (NewtonHydroelasticCollisionAPI)."""
         if device is None or not wp.get_device(device).is_cuda:
             self.skipTest("SDF tests require CUDA device")
 
@@ -198,9 +198,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             _add_rigid_body(stage, "/World/Body1")
             m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
             p1 = m1.GetPrim()
-            # Set SDF + hydroelastic
+            # Set SDF + hydroelastic (kh presence = opt-in, no isHydroelastic bool)
             p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(128)
-            p1.CreateAttribute("newton:isHydroelastic", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
             p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
 
             # Body2: no hydroelastic

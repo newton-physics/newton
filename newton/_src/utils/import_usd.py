@@ -2600,12 +2600,15 @@ def parse_usd(
                     sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
                 )
 
-                # Hydroelastic parameters
-                is_hydroelastic = R.get_value(prim, prim_type=PrimType.SHAPE, key="is_hydroelastic", verbose=verbose)
-                if is_hydroelastic is None:
-                    is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
+                sdf_texture_format = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
+                )
+                if sdf_texture_format is None:
+                    sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
 
+                # Hydroelastic: presence of newton:kh signals NewtonHydroelasticCollisionAPI
                 kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                is_hydroelastic = kh is not None or builder.default_shape_cfg.is_hydroelastic
                 if kh is None:
                     kh = builder.default_shape_cfg.kh
 
@@ -2633,6 +2636,7 @@ def parse_usd(
                         sdf_max_resolution=sdf_max_resolution,
                         sdf_narrow_band_range=sdf_narrow_band_range,
                         sdf_target_voxel_size=sdf_target_voxel_size,
+                        sdf_texture_format=sdf_texture_format,
                         is_hydroelastic=is_hydroelastic,
                         kh=kh,
                     ),
@@ -2724,6 +2728,7 @@ def parse_usd(
                         if gap_val is not None and gap_val != float("-inf"):
                             sdf_kwargs["margin"] = gap_val
                         sdf_kwargs["scale"] = tuple(shape_spec.meshScale)
+                        sdf_kwargs["texture_format"] = sdf_texture_format
                         mesh.build_sdf(**sdf_kwargs)
                     # Mesh ShapeConfig must not have sdf_* fields
                     mesh_shape_params = dict(shape_params)
@@ -2732,6 +2737,7 @@ def parse_usd(
                         sdf_max_resolution=None,
                         sdf_target_voxel_size=None,
                         sdf_narrow_band_range=(-0.1, 0.1),
+                        sdf_texture_format="uint16",
                     )
                     shape_id = builder.add_shape_mesh(
                         scale=wp.vec3(*shape_spec.meshScale),
