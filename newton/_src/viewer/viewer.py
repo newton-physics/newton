@@ -208,7 +208,11 @@ class ViewerBase(ABC):
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_visible_worlds()")
 
-        self._visible_worlds = set(worlds) if worlds is not None else None
+        if worlds is not None:
+            wc = self.model.world_count
+            self._visible_worlds = {w for w in worlds if 0 <= w < wc}
+        else:
+            self._visible_worlds = None
         self._build_visible_worlds_mask()
 
         # Clear shape instance batches but preserve geometry cache

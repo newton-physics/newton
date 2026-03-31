@@ -198,7 +198,14 @@ class Picking:
                 d,
                 self.lock,
             ],
-            outputs=[self.min_dist, self.min_index, self.min_body_index, shape_world, world_offsets],
+            outputs=[
+                self.min_dist,
+                self.min_index,
+                self.min_body_index,
+                shape_world,
+                world_offsets,
+                self.visible_worlds_mask,
+            ],
             device=self.model.device,
         )
         wp.synchronize()
@@ -206,14 +213,6 @@ class Picking:
         dist = self.min_dist.numpy()[0]
         index = self.min_index.numpy()[0]
         body_index = self.min_body_index.numpy()[0]
-
-        # Reject hits on shapes from non-visible worlds
-        if dist < 1.0e10 and index >= 0 and self.visible_worlds_mask is not None:
-            sw = shape_world.numpy()[index] if shape_world.shape[0] > 0 else -1
-            mask_np = self.visible_worlds_mask.numpy()
-            if 0 <= sw < len(mask_np) and mask_np[sw] == 0:
-                dist = 1.0e10
-                body_index = -1
 
         if dist < 1.0e10 and body_index >= 0:
             self.pick_dist = dist

@@ -547,6 +547,16 @@ class ViewerGL(ViewerBase):
         if self.model is None:
             return
 
+        # Remove stale MeshInstancerGL objects from previous shape batches.
+        # Batch names are generated as /model/shapes/shape_N and may change
+        # when _populate_shapes() rebuilds the instance map.
+        from .gl.opengl import MeshInstancerGL  # noqa: PLC0415
+
+        current_names = {s.name for s in self._shape_instances.values()}
+        stale = [k for k, v in self.objects.items() if isinstance(v, MeshInstancerGL) and k not in current_names]
+        for k in stale:
+            del self.objects[k]
+
         shape_scale = self.model.shape_scale
         if shape_scale.device != self.device:
             shape_scale = wp.clone(shape_scale, device=self.device)
