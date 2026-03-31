@@ -1383,6 +1383,32 @@ venv</label><div class="sd-tab-content docutils">
 </div>
 </section>
 </section>
+<section id="asset-version-pinning">
+<h2>Asset version pinning<a class="headerlink" href="#asset-version-pinning" title="Link to this heading">#</a></h2>
+<p>Several Newton tests and examples rely on external assets hosted in separate Git
+repositories.  To ensure that any given Newton commit always downloads the same
+asset versions, each repository is pinned to a specific commit SHA.  The pinned
+revisions are defined as constants in <code class="docutils literal notranslate"><span class="pre">newton/_src/utils/download_assets.py</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">NEWTON_ASSETS_REF</span></code> — pinned SHA for the <code class="docutils literal notranslate"><span class="pre">newton-assets</span></code> repository</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MENAGERIE_REF</span></code> — pinned SHA for the <code class="docutils literal notranslate"><span class="pre">mujoco_menagerie</span></code> repository</p></li>
+</ul>
+<section id="updating-pinned-revisions">
+<h3>Updating pinned revisions<a class="headerlink" href="#updating-pinned-revisions" title="Link to this heading">#</a></h3>
+<p>When upstream assets change and the new versions need to be adopted:</p>
+<ol class="arabic simple">
+<li><p>Look up the new commit SHA from the asset repository.</p></li>
+<li><p>Update the corresponding <code class="docutils literal notranslate"><span class="pre">*_REF</span></code> constant in <code class="docutils literal notranslate"><span class="pre">download_assets.py</span></code>.</p></li>
+<li><p>Run the full test suite to verify that no tests break with the new assets.</p></li>
+<li><p>Commit the SHA update together with any test adjustments.</p></li>
+</ol>
+</section>
+<section id="overriding-the-pinned-revision">
+<h3>Overriding the pinned revision<a class="headerlink" href="#overriding-the-pinned-revision" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">download_asset()</span></code> function accepts a <code class="docutils literal notranslate"><span class="pre">ref</span></code> parameter that overrides the
+default pinned SHA.</p>
+</section>
+</section>
 <section id="roadmap-and-future-work">
 <h2>Roadmap and Future Work<a class="headerlink" href="#roadmap-and-future-work" title="Link to this heading">#</a></h2>
 <p>(Placeholder for future roadmap and planned features)</p>
@@ -1630,6 +1656,11 @@ to the other benchmarks.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#style-guide">Style Guide</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#writing-examples">Writing examples</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#discovery-and-registration">Discovery and registration</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#asset-version-pinning">Asset version pinning</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#updating-pinned-revisions">Updating pinned revisions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#overriding-the-pinned-revision">Overriding the pinned revision</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#roadmap-and-future-work">Roadmap and Future Work</a></li>

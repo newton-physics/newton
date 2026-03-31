@@ -670,6 +670,33 @@ New examples must also be registered in the examples ``README.md`` with a
             # run in headless test mode (used by CI)
             python -m newton.examples basic_pendulum --viewer null --test
 
+Asset version pinning
+---------------------
+
+Several Newton tests and examples rely on external assets hosted in separate Git
+repositories.  To ensure that any given Newton commit always downloads the same
+asset versions, each repository is pinned to a specific commit SHA.  The pinned
+revisions are defined as constants in ``newton/_src/utils/download_assets.py``:
+
+- ``NEWTON_ASSETS_REF`` — pinned SHA for the ``newton-assets`` repository
+- ``MENAGERIE_REF`` — pinned SHA for the ``mujoco_menagerie`` repository
+
+Updating pinned revisions
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When upstream assets change and the new versions need to be adopted:
+
+1. Look up the new commit SHA from the asset repository.
+2. Update the corresponding ``*_REF`` constant in ``download_assets.py``.
+3. Run the full test suite to verify that no tests break with the new assets.
+4. Commit the SHA update together with any test adjustments.
+
+Overriding the pinned revision
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``download_asset()`` function accepts a ``ref`` parameter that overrides the
+default pinned SHA.
+
 Roadmap and Future Work
 -----------------------
 
