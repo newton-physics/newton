@@ -127,7 +127,10 @@ class ViewerRTX(ViewerUSD):
         environment="default",
         vsync=False,
     ):
-        # Allow callers to override this (e.g. set to "0" for debugging).
+        # FIXME: Disable USD checks in OVRTX that refuse to load the library if `usd-core` is present.
+        # This is a temporary workaround until OVRTX is shipped with namespaced USD libs.
+        # Note that disabling the check may cause crashes when the version of `usd-core` is the same as
+        # as the version of the USD libs shipped with OVRTX.
         os.environ.setdefault("OVRTX_SKIP_USD_CHECK", "1")
 
         try:
