@@ -4272,6 +4272,7 @@ def Xform "Articulation" (
 
         # Import the USD
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage)
         model = builder.finalize()
 
@@ -4891,6 +4892,7 @@ def Xform "Articulation" (
         joint2_prim.GetAttribute("newton:mimicCoef1").Set(2.0)
 
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage)
         model = builder.finalize()
 
@@ -4960,6 +4962,7 @@ def Xform "Articulation" (
         joint2_prim.CreateAttribute("mjc:solimp", Sdf.ValueTypeNames.DoubleArray).Set([0.8, 0.9, 0.002, 0.6, 3.0])
 
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage)
         model = builder.finalize()
 
@@ -4973,6 +4976,11 @@ def Xform "Articulation" (
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
+        )
+        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[0], np.array([0.03, 0.8], dtype=np.float32))
+        np.testing.assert_allclose(
+            model.mujoco.eq_solimp.numpy()[0],
+            np.array([0.8, 0.9, 0.002, 0.6, 3.0], dtype=np.float32),
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -5018,6 +5026,7 @@ def Xform "Articulation" (
         connect_prim.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.04, 0.7])
 
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage, load_sites=False)
         model = builder.finalize()
 
@@ -5028,6 +5037,11 @@ def Xform "Articulation" (
         self.assertEqual(model.equality_constraint_body1.numpy()[0], body0_idx)
         self.assertEqual(model.equality_constraint_body2.numpy()[0], body1_idx)
         np.testing.assert_allclose(model.equality_constraint_anchor.numpy()[0], np.array([0.1, 0.0, 0.0]))
+        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[0], np.array([0.04, 0.7], dtype=np.float32))
+        np.testing.assert_allclose(
+            model.mujoco.eq_solimp.numpy()[0],
+            np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_weld_parsing(self):
@@ -5065,6 +5079,7 @@ def Xform "Articulation" (
         weld_prim.CreateAttribute("mjc:torqueScale", Sdf.ValueTypeNames.Float).Set(2.5)
 
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage)
         model = builder.finalize()
 
@@ -5077,6 +5092,11 @@ def Xform "Articulation" (
         np.testing.assert_allclose(model.equality_constraint_anchor.numpy()[0], np.array([0.1, 0.0, 0.0]))
         np.testing.assert_allclose(
             model.equality_constraint_torquescale.numpy()[0], np.array(2.5), rtol=1e-6, atol=1e-6
+        )
+        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[0], np.array([0.02, 1.0], dtype=np.float32))
+        np.testing.assert_allclose(
+            model.mujoco.eq_solimp.numpy()[0],
+            np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
