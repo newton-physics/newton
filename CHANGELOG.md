@@ -59,6 +59,7 @@
 
 ### Removed
 
+- Remove `Heightfield.finalize()` and stop storing raw pointers for heightfields in `Model.shape_source_ptr`; heightfield collision data is accessed via `Model.shape_heightfield_index` / `Model.heightfield_data` / `Model.heightfield_elevations`
 - Remove `robot_humanoid` example in favor of `basic_plotting` which uses the same humanoid model with diagnostics visualization
 
 ### Fixed
