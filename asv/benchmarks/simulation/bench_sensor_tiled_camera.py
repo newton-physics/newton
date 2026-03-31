@@ -70,7 +70,6 @@ class SensorTiledCameraBenchmark:
 
         self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
         self.tiled_camera_sensor.utils.create_default_light(enable_shadows=False)
-        self.tiled_camera_sensor.utils.assign_random_colors_per_shape()
         self.tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
         self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(

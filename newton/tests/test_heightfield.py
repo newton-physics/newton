@@ -317,22 +317,6 @@ class TestHeightfield(unittest.TestCase):
         expected_radius = np.sqrt(4.0**2 + 3.0**2 + max(abs(0.0), abs(2.0)) ** 2)
         self.assertAlmostEqual(radius, expected_radius, places=5)
 
-    def test_heightfield_finalize(self):
-        """Test heightfield finalization to Warp array."""
-        nrow, ncol = 5, 5
-        elevation_data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32)
-
-        hfield = Heightfield(data=elevation_data, nrow=nrow, ncol=ncol, hx=2.0, hy=2.0)
-
-        ptr = hfield.finalize()
-        self.assertIsInstance(ptr, int)
-        self.assertGreater(ptr, 0)
-        self.assertIsNotNone(hfield.warp_array)
-
-        # Finalized array should be 1D (flattened)
-        self.assertEqual(len(hfield.warp_array.shape), 1)
-        self.assertEqual(hfield.warp_array.shape[0], nrow * ncol)
-
     def test_heightfield_native_collision_flat(self):
         """Test native CollisionPipeline detects contact between sphere and flat heightfield."""
         builder = newton.ModelBuilder()

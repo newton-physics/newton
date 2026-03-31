@@ -93,10 +93,10 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         """.. deprecated:: Use ``render_config.enable_ambient_lighting`` instead."""
 
         colors_per_world: bool = False
-        """.. deprecated:: Use ``SensorTiledCamera.utils.assign_random_colors_per_world()`` instead."""
+        """.. deprecated:: Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``)."""
 
         colors_per_shape: bool = False
-        """.. deprecated:: Use ``SensorTiledCamera.utils.assign_random_colors_per_shape()`` instead."""
+        """.. deprecated:: Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``)."""
 
         backface_culling: bool = True
         """.. deprecated:: Use ``render_config.enable_backface_culling`` instead."""
@@ -329,13 +329,13 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         """Assign each world a random color, applied to all its shapes.
 
         .. deprecated::
-            Use ``SensorTiledCamera.utils.assign_random_colors_per_world`` instead.
+            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
 
         Args:
             seed: Random seed.
         """
         warnings.warn(
-            "Deprecated: SensorTiledCamera.assign_random_colors_per_world is deprecated, use SensorTiledCamera.utils.assign_random_colors_per_world instead.",
+            "``SensorTiledCamera.assign_random_colors_per_world`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
             category=DeprecationWarning,
             stacklevel=2,
         )
@@ -345,13 +345,13 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         """Assign a random color to each shape.
 
         .. deprecated::
-            Use ``SensorTiledCamera.utils.assign_random_colors_per_shape`` instead.
+            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
 
         Args:
             seed: Random seed.
         """
         warnings.warn(
-            "Deprecated: SensorTiledCamera.assign_random_colors_per_shape is deprecated, use SensorTiledCamera.utils.assign_random_colors_per_shape instead.",
+            "``SensorTiledCamera.assign_random_colors_per_shape`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
             category=DeprecationWarning,
             stacklevel=2,
         )
