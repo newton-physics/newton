@@ -68,23 +68,23 @@ class SensorTiledCameraBenchmark:
             dtype=wp.transformf,
         )
 
-        self.tiled_camera_sensor = SensorTiledCamera(
-            model=self.model,
-            config=SensorTiledCamera.Config(default_light=True, colors_per_shape=True, checkerboard_texture=True),
-        )
-        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
+        self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.tiled_camera_sensor.utils.create_default_light(enable_shadows=False)
+        self.tiled_camera_sensor.utils.assign_random_colors_per_shape()
+        self.tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
+
+        self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(
             resolution, resolution, math.radians(45.0)
         )
-        self.color_image = self.tiled_camera_sensor.create_color_image_output(resolution, resolution)
-        self.depth_image = self.tiled_camera_sensor.create_depth_image_output(resolution, resolution)
+        self.color_image = self.tiled_camera_sensor.utils.create_color_image_output(resolution, resolution)
+        self.depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(resolution, resolution)
 
         self.tiled_camera_sensor.sync_transforms(self.state)
-        self.tiled_camera_sensor.render_context.refit_bvh()
 
         # Warmup Kernels
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_context.config.tile_width = 8
-        self.tiled_camera_sensor.render_context.config.tile_height = 8
+        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
+        self.tiled_camera_sensor.render_config.tile_width = 8
+        self.tiled_camera_sensor.render_config.tile_height = 8
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
@@ -93,10 +93,9 @@ class SensorTiledCameraBenchmark:
                     self.camera_rays,
                     color_image=self.color_image if out_color else None,
                     depth_image=self.depth_image if out_depth else None,
-                    refit_bvh=False,
                 )
 
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
@@ -105,13 +104,12 @@ class SensorTiledCameraBenchmark:
                     self.camera_rays,
                     color_image=self.color_image if out_color else None,
                     depth_image=self.depth_image if out_depth else None,
-                    refit_bvh=False,
                 )
 
     @nice_name("Rendering (Pixel)")
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_pixel_priority_color_depth(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
                 None,
@@ -126,7 +124,7 @@ class SensorTiledCameraBenchmark:
     @nice_name("Rendering (Pixel) (Color Only)")
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_pixel_priority_color_only(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
                 None,
@@ -140,7 +138,7 @@ class SensorTiledCameraBenchmark:
     @nice_name("Rendering (Pixel) (Depth Only)")
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_pixel_priority_depth_only(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
                 None,
@@ -154,9 +152,9 @@ class SensorTiledCameraBenchmark:
     @nice_name("Rendering (Tiled)")
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_tiled_color_depth(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_context.config.tile_width = 8
-        self.tiled_camera_sensor.render_context.config.tile_height = 8
+        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
+        self.tiled_camera_sensor.render_config.tile_width = 8
+        self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
                 None,
@@ -171,9 +169,9 @@ class SensorTiledCameraBenchmark:
     @nice_name("Rendering (Tiled) (Color Only)")
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_tiled_color_only(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_context.config.tile_width = 8
-        self.tiled_camera_sensor.render_context.config.tile_height = 8
+        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
+        self.tiled_camera_sensor.render_config.tile_width = 8
+        self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
                 None,
@@ -187,9 +185,9 @@ class SensorTiledCameraBenchmark:
     @nice_name("Rendering (Tiled) (Depth Only)")
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_tiled_depth_only(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_context.config.tile_width = 8
-        self.tiled_camera_sensor.render_context.config.tile_height = 8
+        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
+        self.tiled_camera_sensor.render_config.tile_width = 8
+        self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
                 None,

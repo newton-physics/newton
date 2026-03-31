@@ -313,8 +313,8 @@ class TestHeightfield(unittest.TestCase):
         scale = (1.0, 1.0, 1.0)
         radius = compute_shape_radius(newton.GeoType.HFIELD, scale, hfield)
 
-        # Expected: sqrt(hx^2 + hy^2 + ((max_z - min_z)/2)^2)
-        expected_radius = np.sqrt(4.0**2 + 3.0**2 + ((2.0 - 0.0) / 2) ** 2)
+        # Expected: sqrt(hx^2 + hy^2 + max(|min_z|, |max_z|)^2)
+        expected_radius = np.sqrt(4.0**2 + 3.0**2 + max(abs(0.0), abs(2.0)) ** 2)
         self.assertAlmostEqual(radius, expected_radius, places=5)
 
     def test_heightfield_finalize(self):

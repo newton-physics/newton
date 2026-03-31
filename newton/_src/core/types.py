@@ -63,8 +63,6 @@ Mat33 = list[float] | wp.mat33
 Transform = tuple[Vec3, Quat] | wp.transform
 """A 3D transformation represented as a tuple of 3D translation and rotation quaternion (in XYZW order)."""
 
-# type alias for numpy arrays
-nparray = np.ndarray[Any, np.dtype[Any]]
 
 # Warp vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)

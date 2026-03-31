@@ -86,6 +86,7 @@ class Example:
                 hy=scale_filler,
                 hz=scale_filler,
                 cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0),
+                color=(0.1, 0.1, 0.1),
             )
             builder.add_shape_box(
                 body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200)
@@ -116,8 +117,6 @@ class Example:
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             self.viewer.camera.pos = type(self.viewer.camera.pos)(3.0, 0.0, 2.0)
             self.viewer.camera.pitch = type(self.viewer.camera.pitch)(-20)
-
-        self.viewer.update_shape_colors({cube: (0.1, 0.1, 0.1) for i, cube in enumerate(self.visual_fillers)})
 
         # Warm up: run one simulate() step before graph capture to ensure the collision
         # pipeline (and any D2H copies it needs) is initialized outside of capture.
@@ -158,7 +157,9 @@ class Example:
             self.simulate()
 
         self.sim_time += self.frame_dt
-        self.viewer.update_shape_colors({cube: self.colors.numpy()[i] for i, cube in enumerate(self.visual_cubes)})
+        cube_colors = self.colors.numpy()
+        for i, cube in enumerate(self.visual_cubes):
+            self.model.shape_color[cube : cube + 1].fill_(wp.vec3(cube_colors[i]))
 
     def test(self):
         pass

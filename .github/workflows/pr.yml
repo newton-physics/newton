@@ -61,6 +61,8 @@ jobs:
         uses: pandoc/actions/setup@86321b6dd4675f5014c611e05088e10d4939e09e  # v1.1.1
       - name: Build Sphinx documentation
         run: uv run --extra docs --extra sim sphinx-build -j auto -W -b html docs docs/_build/html
+        env:
+          NEWTON_REQUIRE_PANDOC: "1"
       - name: Verify API docs are up-to-date
         run: |
           git diff --exit-code docs/api/ || {

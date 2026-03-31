@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -92,10 +93,8 @@ class TestMuJoCoSolver(unittest.TestCase):
             print("Debug: SolverMuJoCo initialized successfully for trajectory test.")
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping trajectory rendering: {e}")
-            return
         except Exception as e:
             self.skipTest(f"Error initializing SolverMuJoCo for trajectory test: {e}")
-            return
 
         if self.debug_stage_path:
             try:
@@ -105,13 +104,10 @@ class TestMuJoCoSolver(unittest.TestCase):
                 print("Debug: ViewerGL initialized successfully for trajectory test.")
             except ImportError as e:
                 self.skipTest(f"ViewerGL dependencies not met. Skipping trajectory rendering: {e}")
-                return
             except Exception as e:
                 self.skipTest(f"Error initializing ViewerGL for trajectory test: {e}")
-                return
         else:
             self.skipTest("No debug_stage_path set. Skipping trajectory rendering.")
-            return
 
         num_frames = 200
         sim_substeps = 2
@@ -3906,7 +3902,6 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
-            return
 
         sim_dt = 1.0 / 240.0
         num_steps = 120  # Simulate for 0.5 seconds to ensure it settles
@@ -3975,6 +3970,417 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.assertGreater(inactive.sum(), 0, "No inactive contacts generated")
         n_stale = int((efc_address[inactive] >= 0).sum())
         self.assertEqual(n_stale, 0, f"{n_stale}/{inactive.sum()} inactive contacts have stale efc_address")
+
+
+class TestImmovableContactFiltering(unittest.TestCase):
+    """Verify that contacts between two immovable bodies are filtered out.
+
+    The MuJoCo solver produces degenerate efc_D values when both sides of a
+    contact have zero/near-zero invweight (both bodies are immovable).  The
+    contact conversion kernel must skip such pairs.  Immovable bodies include
+    static shapes (body < 0) and kinematic bodies (BodyFlags.KINEMATIC).
+    """
+
+    @staticmethod
+    def _build_kinematic_on_ground():
+        """Build a model with a kinematic free-joint body resting on a ground plane."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.05)
+        return builder.finalize(), body
+
+    @staticmethod
+    def _build_two_kinematic_bodies():
+        """Build a model with two kinematic free-joint bodies overlapping."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        b1 = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+        b2 = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        return builder.finalize(), b1, b2
+
+    @staticmethod
+    def _build_dynamic_on_ground():
+        """Build a model with a dynamic body on a ground plane (should keep contacts)."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.05)
+        return builder.finalize(), body
+
+    def _get_nacon(self, model):
+        """Run collision + one solver step and return the MuJoCo contact count."""
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed: {e}")
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        model.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+        return int(solver.mjw_data.nacon.numpy()[0])
+
+    def test_kinematic_on_ground_contacts_filtered(self):
+        """Contacts between a kinematic body and the static ground plane must be filtered."""
+        model, _ = self._build_kinematic_on_ground()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for kinematic-on-ground, got {nacon}")
+
+    def test_two_kinematic_bodies_contacts_filtered(self):
+        """Contacts between two kinematic bodies must be filtered."""
+        model, _, _ = self._build_two_kinematic_bodies()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for kinematic-kinematic, got {nacon}")
+
+    def test_dynamic_on_ground_contacts_preserved(self):
+        """Contacts between a dynamic body and the ground plane must be preserved."""
+        model, _ = self._build_dynamic_on_ground()
+        nacon = self._get_nacon(model)
+        self.assertGreater(nacon, 0, "Expected contacts for dynamic-on-ground, got 0")
+
+    def test_kinematic_vs_dynamic_contacts_preserved(self):
+        """Contacts between a kinematic body and a dynamic body must be preserved."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        kinematic_body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(kinematic_body, hx=0.5, hy=0.5, hz=0.05)
+
+        dynamic_body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(dynamic_body, hx=0.1, hy=0.1, hz=0.05)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertGreater(nacon, 0, "Expected contacts for kinematic-vs-dynamic, got 0")
+
+    def test_kinematic_vs_fixed_root_contacts_filtered(self):
+        """Contacts between a kinematic body and a fixed-root body must be filtered.
+
+        Both sides are immovable: the kinematic body via BodyFlags.KINEMATIC,
+        the fixed-root body via body_weldid == 0 (welded to world).
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        kinematic_body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(kinematic_body, hx=0.2, hy=0.2, hz=0.05)
+
+        fixed_root = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        j = builder.add_joint_fixed(parent=-1, child=fixed_root)
+        builder.add_articulation([j])
+        builder.add_shape_box(fixed_root, hx=0.2, hy=0.2, hz=0.05)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for kinematic-vs-fixed-root, got {nacon}")
+
+    def test_fixed_root_vs_ground_contacts_filtered(self):
+        """Contacts between a fixed-root body and the ground plane must be filtered."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        fixed_root = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        j = builder.add_joint_fixed(parent=-1, child=fixed_root)
+        builder.add_articulation([j])
+        builder.add_shape_box(fixed_root, hx=0.2, hy=0.2, hz=0.01)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for fixed-root-vs-ground, got {nacon}")
+
+    def test_dynamic_vs_fixed_root_contacts_preserved(self):
+        """Contacts between a dynamic body and a fixed-root body must be preserved."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        fixed_root = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        j = builder.add_joint_fixed(parent=-1, child=fixed_root)
+        builder.add_articulation([j])
+        builder.add_shape_box(fixed_root, hx=0.5, hy=0.5, hz=0.05)
+
+        dynamic_body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(dynamic_body, hx=0.1, hy=0.1, hz=0.05)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertGreater(nacon, 0, "Expected contacts for dynamic-vs-fixed-root, got 0")
+
+    def test_two_fixed_root_bodies_contacts_filtered(self):
+        """Contacts between two fixed-root bodies must be filtered.
+
+        Both bodies are welded to the world (body_weldid == 0), so both are
+        immovable and the contact should be skipped.
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        root_a = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        ja = builder.add_joint_fixed(parent=-1, child=root_a)
+        builder.add_articulation([ja])
+        builder.add_shape_box(root_a, hx=0.2, hy=0.2, hz=0.1)
+
+        root_b = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        jb = builder.add_joint_fixed(parent=-1, child=root_b)
+        builder.add_articulation([jb])
+        builder.add_shape_box(root_b, hx=0.2, hy=0.2, hz=0.1)
+
+        model = builder.finalize()
+        nacon = self._get_nacon(model)
+        self.assertEqual(nacon, 0, f"Expected 0 MuJoCo contacts for two-fixed-root-bodies, got {nacon}")
+
+    def test_solver_does_not_freeze_with_kinematic_free_joint_on_ground(self):
+        """A kinematic free-joint body on the ground must not freeze the solver.
+
+        This is the key scenario from the MR comment: kinematic bodies with
+        non-fixed joints (free joint + high armature) produce near-zero invweight
+        that was not caught by the old weld-based filter.
+        """
+        # Build a scene with a kinematic body and a dynamic body
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        kb = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=True,
+        )
+        builder.add_shape_box(kb, hx=0.1, hy=0.1, hz=0.05)
+
+        db = builder.add_body(
+            xform=wp.transform(wp.vec3(0.5, 0.0, 1.0), wp.quat_identity()),
+            mass=1.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_sphere(db, radius=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed: {e}")
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        for _ in range(60):
+            state_in.clear_forces()
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+            state_in, state_out = state_out, state_in
+
+        # The dynamic sphere should have fallen and settled on the ground
+        sphere_z = state_in.body_q.numpy()[db, 2]
+        self.assertGreater(sphere_z, 0.05, "Dynamic sphere fell through the ground")
+        self.assertLess(sphere_z, 1.5, "Dynamic sphere is not settling (solver may be frozen)")
+
+
+class TestMuJoCoContactForce(unittest.TestCase):
+    """Verify that contact forces from Newton's MuJoCo solver are physically correct."""
+
+    BOX_MASS = 8.0  # density=1000 kg/m³ * volume=(0.2*0.2*0.2) m³
+    GRAVITY = 9.81
+
+    def _build_box_on_ground(self, *, friction: float = 1.0):
+        """Create a box resting on a ground plane with the given friction."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.mu = friction
+        ground_shape = builder.add_ground_plane()
+        # Place the box so its bottom face touches the ground (hz=0.1 → center at z=0.1)
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+        model.request_contact_attributes("force")
+        return model, ground_shape
+
+    def _run_and_collect_forces(self, model, cone: str = "pyramidal", settle: int = 10, avg: int = 10):
+        """Run simulation, settle, then average total contact force over *avg* steps.
+
+        Returns:
+            force: Averaged total linear contact force, shape (3,).
+            shape0: Shape index of shape0 in the first contact.
+        """
+        try:
+            solver = SolverMuJoCo(model, cone=cone)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        dt = 0.002
+        for _ in range(settle):
+            state_in.clear_forces()
+            solver.step(state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
+
+        force_acc = np.zeros(3)
+        for _ in range(avg):
+            state_in.clear_forces()
+            solver.step(state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
+
+            solver.update_contacts(contacts, state_in)
+            nacon = int(solver.mjw_data.nacon.numpy()[0])
+            if nacon > 0:
+                f = contacts.force.numpy()[:nacon, :3]
+                force_acc += np.sum(f, axis=0)
+
+        total_force = force_acc / avg
+        shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
+        return total_force, shape0
+
+    def test_pyramidal_cone_weight(self):
+        """Box weight via pyramidal cone contacts must match mg."""
+        model, ground_shape = self._build_box_on_ground(friction=0.5)
+        force, shape0 = self._run_and_collect_forces(model, cone="pyramidal")
+        # Force on shape0: if ground is shape0 the box pushes it down (-Z), otherwise up (+Z).
+        expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else self.BOX_MASS * self.GRAVITY
+        np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
+        # Horizontal forces should be near zero for a resting box.
+        np.testing.assert_allclose(force[0], 0.0, atol=1.0)
+        np.testing.assert_allclose(force[1], 0.0, atol=1.0)
+
+    def test_elliptic_cone_weight(self):
+        """Box weight via elliptic cone contacts must match mg."""
+        model, ground_shape = self._build_box_on_ground(friction=0.5)
+        force, shape0 = self._run_and_collect_forces(model, cone="elliptic")
+        expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else self.BOX_MASS * self.GRAVITY
+        np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
+        # Horizontal forces should be near zero for a resting box.
+        np.testing.assert_allclose(force[0], 0.0, atol=1.0)
+        np.testing.assert_allclose(force[1], 0.0, atol=1.0)
+
+    def _build_incline_model(self, incline_angle: float):
+        """Create a box resting on an inclined ramp with mu=1.0 (static for angle < ~45°)."""
+        hz = 0.1  # box half-height
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.mu = 1.0
+        # Static box as inclined ground (add_ground_plane doesn't support rotation)
+        ramp_q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), incline_angle)
+        ramp_shape = builder.add_shape_box(
+            body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), ramp_q), hx=5.0, hy=5.0, hz=0.5
+        )
+        # Place box center exactly hz above the ramp surface to avoid bounce.
+        # The ramp top face is at ramp_center + 0.5 * normal (not at the origin).
+        ramp_center = np.array([0.0, 0.0, -0.5])
+        normal = np.array([0.0, -np.sin(incline_angle), np.cos(incline_angle)])
+        box_center = ramp_center + (0.5 + hz) * normal
+        body = builder.add_body(xform=wp.transform(wp.vec3(*box_center), ramp_q))
+        builder.add_shape_box(body=body, hx=hz, hy=hz, hz=hz)
+        model = builder.finalize()
+        model.request_contact_attributes("force")
+        return model, ramp_shape
+
+    @unittest.skipIf(sys.platform == "darwin", "Flaky on macOS, see GH-2239")
+    def test_contact_forces_on_incline(self):
+        """Contact force on an incline must balance gravity (tests rotated contact frame)."""
+        incline_angle = 0.25  # rad (~14°); mu=1.0 > tan(0.25)≈0.26 → static
+        model, ramp_shape = self._build_incline_model(incline_angle)
+        force, shape0 = self._run_and_collect_forces(model, cone="pyramidal", settle=300, avg=80)
+        expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ramp_shape else self.BOX_MASS * self.GRAVITY
+        np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
 
 
 class TestMuJoCoValidation(unittest.TestCase):
@@ -4435,7 +4841,6 @@ class TestMuJoCoConversion(unittest.TestCase):
             solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
-            return
 
         # Run forward kinematics using mujoco_warp
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
@@ -4516,7 +4921,6 @@ class TestMuJoCoConversion(unittest.TestCase):
             solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         except ImportError as e:
             self.skipTest(f"MuJoCo not installed: {e}")
-            return
         mjc_body_id = 1  # body 0 = world
         self.assertEqual(
             int(solver.mj_model.body_simple[mjc_body_id]),

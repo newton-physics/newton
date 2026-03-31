@@ -52,6 +52,12 @@ except Exception as e:
 
 release = project_version
 
+# -- Nitpicky mode -----------------------------------------------------------
+# Set nitpicky = True to warn about all broken cross-references (e.g. missing
+# intersphinx targets, typos in :class:/:func:/:attr: roles, etc.).  Useful for
+# auditing docs but noisy during regular development.
+nitpicky = False
+
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
@@ -105,8 +111,27 @@ exclude_patterns = [
     "sphinx-env",
     "**/site-packages/**",
     "**/lib/**",
-    "tutorials/**/*.ipynb",
 ]
+
+# nbsphinx requires pandoc to convert Jupyter notebooks.  When pandoc is not
+# installed we exclude the notebook tutorials so the rest of the docs can still
+# be built locally without a hard error.  CI workflows install pandoc explicitly
+# so published docs always include the tutorials.
+#
+# Set NEWTON_REQUIRE_PANDOC=1 to turn the missing-pandoc warning into an error
+# (used in CI to guarantee tutorials are never silently skipped).
+if shutil.which("pandoc") is None:
+    if os.environ.get("NEWTON_REQUIRE_PANDOC", "") == "1":
+        raise RuntimeError(
+            "pandoc is required but not found. Install pandoc "
+            "(https://pandoc.org/installing.html) or unset NEWTON_REQUIRE_PANDOC."
+        )
+    exclude_patterns.append("tutorials/**")
+    print(
+        "WARNING: pandoc not found - Jupyter notebook tutorials will be "
+        "skipped.  Install pandoc (https://pandoc.org/installing.html) to "
+        "build the complete documentation."
+    )
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
@@ -114,7 +139,21 @@ intersphinx_mapping = {
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://docs.pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp", None),
+    "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
 }
+
+# Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
+# ``pxr.*`` paths so intersphinx can resolve them against the USD inventory.
+# Note: this only affects annotations processed by autodoc, not autosummary stubs.
+autodoc_type_aliases = {
+    "Usd.Prim": "pxr.Usd.Prim",
+    "Usd.Stage": "pxr.Usd.Stage",
+    "UsdGeom.XformCache": "pxr.UsdGeom.XformCache",
+    "UsdGeom.Mesh": "pxr.UsdGeom.Mesh",
+    "UsdShade.Material": "pxr.UsdShade.Material",
+    "UsdShade.Shader": "pxr.UsdShade.Shader",
+}
+
 
 source_suffix = {
     ".rst": "restructuredtext",
