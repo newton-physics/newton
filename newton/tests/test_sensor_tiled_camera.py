@@ -19,27 +19,29 @@ class TestSensorTiledCamera(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # add ground plane
-        builder.add_ground_plane()
+        builder.add_ground_plane(color=(0.91749084, 0.798277, 0.64443165))
 
         # SPHERE
         sphere_pos = wp.vec3(0.0, -2.0, 0.5)
         body_sphere = builder.add_body(xform=wp.transform(p=sphere_pos, q=wp.quat_identity()), label="sphere")
-        builder.add_shape_sphere(body_sphere, radius=0.5)
+        builder.add_shape_sphere(body_sphere, radius=0.5, color=(0.5214758, 0.9868272, 0.79823583))
 
         # CAPSULE
         capsule_pos = wp.vec3(0.0, 0.0, 0.75)
         body_capsule = builder.add_body(xform=wp.transform(p=capsule_pos, q=wp.quat_identity()), label="capsule")
-        builder.add_shape_capsule(body_capsule, radius=0.25, half_height=0.5)
+        builder.add_shape_capsule(body_capsule, radius=0.25, half_height=0.5, color=(0.8951316, 0.9551697, 0.8440772))
 
         # CYLINDER
         cylinder_pos = wp.vec3(0.0, -4.0, 0.5)
         body_cylinder = builder.add_body(xform=wp.transform(p=cylinder_pos, q=wp.quat_identity()), label="cylinder")
-        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.5)
+        builder.add_shape_cylinder(
+            body_cylinder, radius=0.4, half_height=0.5, color=(0.59499574, 0.99073946, 0.64237005)
+        )
 
         # BOX
         box_pos = wp.vec3(0.0, 2.0, 0.5)
         body_box = builder.add_body(xform=wp.transform(p=box_pos, q=wp.quat_identity()), label="box")
-        builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5)
+        builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5, color=(0.8146366, 0.7905182, 0.79995614))
 
         # MESH (bunny)
         bunny_filename = os.path.join(os.path.dirname(__file__), "..", "examples", "assets", "bunny.usd")
@@ -54,7 +56,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         mesh_pos = wp.vec3(0.0, 4.0, 0.0)
         body_mesh = builder.add_body(xform=wp.transform(p=mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), label="mesh")
-        builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
+        builder.add_shape_mesh(body_mesh, mesh=demo_mesh, color=(0.7676241, 0.99788857, 0.75097305))
 
         return builder.finalize()
 
@@ -98,7 +100,6 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         tiled_camera_sensor = SensorTiledCamera(model=model)
         tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
-        tiled_camera_sensor.utils.assign_random_colors_per_shape()
         tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
         camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))

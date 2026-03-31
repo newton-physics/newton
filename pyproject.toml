@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.11.0"]
+build-backend = "uv_build"
 
 [project]
 name = "newton"
-dynamic = ["version"]
+version = "1.1.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -124,11 +124,9 @@ notebook = [
     "jupyterlab>=4.4.10",
 ]
 
-[tool.hatch.version]
-path = "newton/_version.py"
-
-[tool.hatch.build.targets.wheel]
-include = ["/newton", "/newton/licenses"]
+[tool.uv.build-backend]
+module-name = "newton"
+module-root = ""
 
 [[tool.uv.index]]
 url = "https://pypi.org/simple"

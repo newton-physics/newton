@@ -21,13 +21,15 @@ Test tiers (each robot can enable independently):
       (no forces/contacts). Gated by ``fk_enabled``.
     - ``test_dynamics()``: Multi-step simulation with controls. Gated by
       ``num_steps > 0``.
+    - ``test_step_response()``: Per-DOF step response — each world commands one
+      actuator to a target. Gated by ``step_response_enabled``.
 
 Each test:
     1. Downloads the robot from menagerie (cached).
     2. Creates a Newton model (via MJCF) and a native mujoco_warp model.
     3. Compares model fields with physics-equivalence checks for inertia, solref, etc.
-    4. Runs N steps with randomized controls across 34 parallel worlds.
-    5. Compares per-step dynamics fields within tolerance.
+    4. Optionally runs forward kinematics, comparing body poses.
+    5. Optionally runs dynamics or step-response, comparing per-step qpos/qvel.
 
 Comparison modes:
     - **Full pipeline**: Both sides run ``mujoco_warp.step()`` independently. Fast
@@ -66,7 +68,7 @@ import warp as wp
 
 import newton
 from newton._src.sim.enums import JointType
-from newton._src.utils.download_assets import download_git_folder
+from newton._src.utils.download_assets import MENAGERIE_REF, MENAGERIE_URL, download_git_folder
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf
 from newton.solvers import SolverMuJoCo
 
@@ -83,8 +85,6 @@ except ImportError:
 # =============================================================================
 # Asset Management
 # =============================================================================
-
-MENAGERIE_GIT_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 
 # If set, use this path as the root of an already-cloned mujoco_menagerie repo
 # instead of downloading. Example: export NEWTON_MENAGERIE_PATH=/path/to/mujoco_menagerie
@@ -117,9 +117,10 @@ def download_menagerie_asset(
             return path
 
     return download_git_folder(
-        MENAGERIE_GIT_URL,
+        MENAGERIE_URL,
         robot_folder,
         cache_dir=cache_dir,
+        ref=MENAGERIE_REF,
         force_refresh=force_refresh,
     )
 
@@ -478,6 +479,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
+    # Inertia frame offset: derived from inertia diagonalization. Differs when Newton
+    # produces different principal axes (e.g. for bodies with mesh-based visual geoms).
+    "body_ipos",
+    # Inertia frame orientation: derived from inertia diagonalization.
     "body_iquat",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
@@ -510,6 +515,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Timestep: not registered as custom attribute (conflicts with step() parameter).
     # Extracted from native model at runtime instead.
     "opt.timestep",
+    # Integrator: Newton may select a different integrator than the MJCF default.
+    # The solver forces the correct integrator at runtime regardless.
+    "opt.integrator",
     # Geom ordering: Newton's solver may order geoms differently (e.g. colliders before
     # visuals). Content is verified by compare_geom_fields_unordered() instead.
     "body_geomadr",
@@ -523,14 +531,27 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     # Derived from inertia and dof_armature by set_const_0. Backfilled.
     "dof_invweight0",
+    # Body frame position/orientation: compilation-dependent, derived from joint and inertia
+    # frames by mj_setConst. Differs due to inertia re-diagonalization. Backfilled.
     "body_pos",
     "body_quat",
+    # Subtree mass: sum of masses in subtree, differs when body_mass differs (visual geom mass).
     "body_subtreemass",
     # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
     # re-diagonalization. Backfilled instead.
     "actuator_acc0",
     "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
+    # Meshes: Newton / trimesh may create a different number of meshes (nmesh differs),
+    # so ALL per-mesh fields have incompatible shapes. Skip everything mesh-related.
+    "nmesh",
+    "nmeshvert",
+    "nmeshnormal",
+    "nmeshpoly",
+    "nmeshface",
+    "nmaxmeshdeg",
+    "nmaxpolygon",
+    "mesh_",
 }
 
 
@@ -2049,7 +2070,7 @@ class TestMenagerieBase(unittest.TestCase):
         assets: dict[str, bytes] = {}
         asset_dir = self.mjcf_path.parent
 
-        # Common mesh extensions
+        # Common mesh and texture extensions
         mesh_extensions = (".stl", ".obj", ".msh", ".STL", ".OBJ", ".MSH")
         texture_extensions = (".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG")
 
@@ -2506,8 +2527,9 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
 class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
@@ -2522,8 +2544,10 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
@@ -2629,8 +2653,8 @@ class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2642,8 +2666,9 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
     """LEAP Hand."""
 
     robot_folder = "leap_hand"
-
-    skip_reason = "Not yet implemented"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
@@ -2658,8 +2683,7 @@ class TestMenagerie_Robotiq2f85V4(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper v4."""
 
     robot_folder = "robotiq_2f85_v4"
-
-    skip_reason = "Not yet verified"
+    skip_reason = "mujoco_warp: implicit integrators and fluid model not implemented"
 
 
 class TestMenagerie_ShadowDexee(TestMenagerieMJCF):
@@ -2674,8 +2698,11 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     """Shadow Hand."""
 
     robot_folder = "shadow_hand"
-
-    skip_reason = "Not yet verified"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
+    # tendon_invweight0 is compilation-dependent (derived from inertia)
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
 
 
 class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieMJCF):
@@ -2690,16 +2717,18 @@ class TestMenagerie_UmiGripper(TestMenagerieMJCF):
     """UMI Gripper."""
 
     robot_folder = "umi_gripper"
-
-    skip_reason = "Not yet implemented"
+    skip_reason = "mujoco_warp: implicit integrators and fluid model not implemented"
 
 
 class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     """Wonik Allegro Hand."""
 
     robot_folder = "wonik_allegro"
-
-    skip_reason = "Not yet verified"
+    robot_xml = "scene_right.xml"
+    num_steps = 0
+    fk_enabled = True
+    # TODO(#2170): body_mass differs — Newton computes different masses for visual geoms
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
@@ -2719,8 +2748,11 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2170)
+    # TODO(#2170): dof_damping, jnt_range, eq_, ngeom differ
+    # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
@@ -2801,6 +2833,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     use_cuda_graph = True
     # num_steps = 100  # Disabled to avoid CI flakiness
     num_steps = 0
+    fk_enabled = True
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
     parse_visuals = True
@@ -2827,17 +2860,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "actuator_length": 5e-4,
         "actuator_velocity": 2e-2,
     }
-    # Apollo has 44 mesh assets but many geoms share the same mesh. Without
-    # include_mesh_materials dedup, Newton creates 60 meshes (one per geom).
-    # Also, trimesh deduplicates vertices on load, changing per-mesh counts.
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "nmesh",
-        "nmeshvert",
-        "nmeshnormal",
-        "nmeshpoly",
-        "nmeshface",
-        "mesh_",
-    }
+    # Mesh fields already skipped globally in DEFAULT_MODEL_SKIP_FIELDS
 
 
 class TestMenagerie_BerkeleyHumanoid(TestMenagerieMJCF):
@@ -2852,8 +2875,8 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
@@ -2908,16 +2931,18 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
+    # TODO(#2170): actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
 
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
-
-    skip_reason = "Not yet verified"
+    num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -2929,8 +2954,7 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-
-    skip_reason = "Not yet implemented"
+    skip_reason = "Closed-loop kinematic chains cause different DOF layout"
 
 
 # -----------------------------------------------------------------------------
@@ -2950,16 +2974,16 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
@@ -2998,8 +3022,8 @@ class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
 
 
 # -----------------------------------------------------------------------------
@@ -3053,8 +3077,10 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
-
-    skip_reason = "Not yet implemented"
+    num_steps = 0
+    fk_enabled = True
+    # TODO(#2170): body_mass differs for some bodies
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
 # -----------------------------------------------------------------------------

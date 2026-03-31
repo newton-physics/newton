@@ -70,7 +70,7 @@ class TestDownloadAssets(unittest.TestCase):
 
     def test_download_and_refresh(self):
         # Initial download
-        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
         self.assertTrue(p1.exists())
         self.assertEqual((p1 / "foo.txt").read_text(encoding="utf-8"), "v1\n")
         # Navigate up past folder_path segments to reach the SHA-named cache root
@@ -90,7 +90,7 @@ class TestDownloadAssets(unittest.TestCase):
         os.utime(cache_dir_1, (old_mtime, old_mtime))
 
         # Refresh — should get a NEW directory (different SHA)
-        p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+        p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
         self.assertTrue(p2.exists())
         self.assertEqual((p2 / "foo.txt").read_text(encoding="utf-8"), "v2\n")
         cache_dir_2 = p2
@@ -103,7 +103,7 @@ class TestDownloadAssets(unittest.TestCase):
 
         # Force refresh with same SHA — should return same directory
         p3 = download_git_folder(
-            self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main", force_refresh=True
+            self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main", force_refresh=True
         )
         cache_dir_3 = p3
         for _ in range(depth):
@@ -115,7 +115,7 @@ class TestDownloadAssets(unittest.TestCase):
         """Multiple threads downloading the same asset do not corrupt the cache."""
 
         def download():
-            p = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+            p = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
             self.assertTrue(p.exists())
             self.assertEqual((p / "foo.txt").read_text(encoding="utf-8"), "v1\n")
 
@@ -140,17 +140,17 @@ class TestDownloadAssets(unittest.TestCase):
 
     def test_within_ttl_skips_network(self):
         """Within TTL, return cached path without calling git ls-remote."""
-        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
         self.assertTrue(p1.exists())
 
         with mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git") as mock_ls:
-            p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+            p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
             mock_ls.assert_not_called()
         self.assertEqual(p1, p2)
 
     def test_offline_returns_cached(self):
         """When git ls-remote fails and cache exists, return cached version."""
-        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
         self.assertTrue(p1.exists())
         depth = len(Path(self.asset_rel).parts)
         cache_dir_1 = p1
@@ -163,21 +163,21 @@ class TestDownloadAssets(unittest.TestCase):
 
         # Simulate offline
         with mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", return_value=None):
-            p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+            p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
         self.assertEqual(p1, p2)
 
     def test_offline_no_cache_raises(self):
         """When git ls-remote fails and no cache exists, raise RuntimeError."""
         with mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", return_value=None):
             with self.assertRaises(RuntimeError):
-                download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="main")
+                download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
 
     def test_download_by_tag(self):
         """Downloading by tag name resolves correctly."""
         self.work.create_tag("v1.0", message="release v1.0")
         self.work.git.push("origin", "v1.0")
 
-        p = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, branch="v1.0")
+        p = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="v1.0")
         self.assertTrue(p.exists())
         self.assertEqual((p / "foo.txt").read_text(encoding="utf-8"), "v1\n")
 

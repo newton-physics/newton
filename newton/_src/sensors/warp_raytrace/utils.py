@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -408,28 +409,44 @@ class Utils:
     def assign_random_colors_per_world(self, seed: int = 100):
         """Assign each world a random color, applied to all its shapes.
 
+        .. deprecated::
+            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
+
         Args:
             seed: Random seed.
         """
+        warnings.warn(
+            "``SensorTiledCamera.utils.assign_random_colors_per_world`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+
         if not self.__render_context.shape_count_total:
             return
-        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 4)) * 0.5 + 0.5
-        colors[:, -1] = 1.0
+        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 3)) * 0.5 + 0.5
         self.__render_context.shape_colors = wp.array(
             colors[self.__render_context.shape_world_index.numpy() % len(colors)],
-            dtype=wp.vec4f,
+            dtype=wp.vec3f,
             device=self.__render_context.device,
         )
 
     def assign_random_colors_per_shape(self, seed: int = 100):
         """Assign a random color to each shape.
 
+        .. deprecated::
+            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
+
         Args:
             seed: Random seed.
         """
-        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 4)) * 0.5 + 0.5
-        colors[:, -1] = 1.0
-        self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.__render_context.device)
+        warnings.warn(
+            "``SensorTiledCamera.utils.assign_random_colors_per_shape`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+
+        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 3)) * 0.5 + 0.5
+        self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec3f, device=self.__render_context.device)
 
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
