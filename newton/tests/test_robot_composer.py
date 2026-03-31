@@ -110,7 +110,7 @@ class RobotComposerSim:
             ur5e_folder = download_git_folder(
                 git_url=MENAGERIE_URL,
                 folder_path="universal_robots_ur5e",
-                branch=MENAGERIE_REF,
+                ref=MENAGERIE_REF,
             )
             self.ur5e_path = ur5e_folder / "ur5e.xml"
             print(f"  UR5e: {self.ur5e_path.exists()}")
@@ -122,7 +122,7 @@ class RobotComposerSim:
             leap_folder = download_git_folder(
                 git_url=MENAGERIE_URL,
                 folder_path="leap_hand",
-                branch=MENAGERIE_REF,
+                ref=MENAGERIE_REF,
             )
             self.leap_path = leap_folder / "left_hand.xml"
             print(f"  LEAP hand left: {self.leap_path.exists()}")
@@ -134,7 +134,7 @@ class RobotComposerSim:
             allegro_folder = download_git_folder(
                 git_url=MENAGERIE_URL,
                 folder_path="wonik_allegro",
-                branch=MENAGERIE_REF,
+                ref=MENAGERIE_REF,
             )
             self.allegro_path = allegro_folder / "left_hand.xml"
             print(f"  Allegro hand: {self.allegro_path.exists()}")
@@ -156,7 +156,7 @@ class RobotComposerSim:
             robotiq_2f85_folder = download_git_folder(
                 git_url=MENAGERIE_URL,
                 folder_path="robotiq_2f85",
-                branch=MENAGERIE_REF,
+                ref=MENAGERIE_REF,
             )
             self.robotiq_2f85_path = robotiq_2f85_folder / "2f85.xml"
             print(f"  Robotiq 2F85 gripper: {self.robotiq_2f85_path.exists()}")

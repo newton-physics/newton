@@ -120,7 +120,7 @@ def download_menagerie_asset(
         MENAGERIE_URL,
         robot_folder,
         cache_dir=cache_dir,
-        branch=MENAGERIE_REF,
+        ref=MENAGERIE_REF,
         force_refresh=force_refresh,
     )
 

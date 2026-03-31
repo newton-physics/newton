@@ -168,7 +168,7 @@ def _find_parent_cache(
     cache_path: Path,
     repo_name: str,
     folder_path: str,
-    branch: str,
+    ref: str,
     git_url: str,
 ) -> tuple[Path, Path] | None:
     """Check if folder_path exists inside an already-cached parent folder.
@@ -180,7 +180,7 @@ def _find_parent_cache(
         cache_path: The base cache directory
         repo_name: Repository name (e.g., "newton-assets")
         folder_path: The requested folder path (e.g., "unitree_g1/usd")
-        branch: Git branch name
+        ref: Git branch, tag, or commit SHA.
         git_url: Full git URL for hash computation
 
     Returns:
@@ -195,7 +195,7 @@ def _find_parent_cache(
 
     for parent_path in parent_paths:
         # Generate the cache folder name for this parent
-        parent_hash = hashlib.md5(f"{git_url}#{parent_path}#{branch}".encode()).hexdigest()[:8]
+        parent_hash = hashlib.md5(f"{git_url}#{parent_path}#{ref}".encode()).hexdigest()[:8]
         parent_folder_name = parent_path.replace("/", "_").replace("\\", "_")
         base_prefix = f"{repo_name}_{parent_folder_name}_{parent_hash}"
 
@@ -236,7 +236,7 @@ def _cleanup_old_versions(cache_path: Path, base_prefix: str, current_dir: Path)
 
 
 def download_git_folder(
-    git_url: str, folder_path: str, cache_dir: str | None = None, branch: str = "main", force_refresh: bool = False
+    git_url: str, folder_path: str, cache_dir: str | None = None, ref: str = "main", force_refresh: bool = False
 ) -> Path:
     """Downloads a specific folder from a git repository into a local cache.
 
@@ -249,7 +249,7 @@ def download_git_folder(
         folder_path: Path to the folder within the repository.
         cache_dir: Directory to cache downloads.  If ``None``, determined by
             ``NEWTON_CACHE_PATH`` env-var or the system user cache directory.
-        branch: Git branch/tag/commit to checkout (default: ``"main"``).
+        ref: Git branch, tag, or commit SHA to checkout (default: ``"main"``).
         force_refresh: If ``True``, bypass TTL and verify the cached version
             against the remote.  Re-downloads only if the remote SHA differs.
 
@@ -271,7 +271,7 @@ def download_git_folder(
     cache_path.mkdir(parents=True, exist_ok=True)
 
     # Compute identity hash (stable across content changes)
-    identity_hash = hashlib.md5(f"{git_url}#{folder_path}#{branch}".encode()).hexdigest()[:8]
+    identity_hash = hashlib.md5(f"{git_url}#{folder_path}#{ref}".encode()).hexdigest()[:8]
     repo_name = Path(git_url.rstrip("/")).stem.replace(".git", "")
     folder_name = folder_path.replace("/", "_").replace("\\", "_")
     base_prefix = f"{repo_name}_{folder_name}_{identity_hash}"
@@ -281,7 +281,7 @@ def download_git_folder(
 
     # --- Parent folder optimization ---
     if not force_refresh:
-        parent_result = _find_parent_cache(cache_path, repo_name, folder_path, branch, git_url)
+        parent_result = _find_parent_cache(cache_path, repo_name, folder_path, ref, git_url)
         if parent_result is not None:
             parent_dir, target_in_parent = parent_result
             try:
@@ -293,7 +293,7 @@ def download_git_folder(
 
             # TTL expired — check remote
             parent_sha_suffix = parent_dir.name.rsplit("_", 1)[-1]
-            latest_commit = _get_latest_commit_via_git(git_url, branch)
+            latest_commit = _get_latest_commit_via_git(git_url, ref)
             if latest_commit is None:
                 # Offline — touch mtime and return cached
                 try:
@@ -321,7 +321,7 @@ def download_git_folder(
 
     # Check remote for current commit (reuse result from parent check if available)
     if latest_commit is None:
-        latest_commit = _get_latest_commit_via_git(git_url, branch)
+        latest_commit = _get_latest_commit_via_git(git_url, ref)
 
     if latest_commit is None:
         if cached is not None:
@@ -331,7 +331,7 @@ def download_git_folder(
                 pass
             return cached / folder_path
         raise RuntimeError(
-            f"Cannot determine remote commit for {git_url} (branch: {branch}) and no cached version exists."
+            f"Cannot determine remote commit SHA for {git_url} (ref: {ref}) and no cached version exists."
         )
 
     # Check if we already have this exact version
@@ -361,9 +361,9 @@ def download_git_folder(
                 f"(cached: {cached.name.rsplit('_', 1)[-1]}, "
                 f"latest: {latest_commit[:8]}). Refreshing..."
             )
-        print(f"Cloning {git_url} (branch: {branch})...")
+        print(f"Cloning {git_url} (ref: {ref})...")
 
-        is_sha = bool(_SHA_RE.fullmatch(branch))
+        is_sha = bool(_SHA_RE.fullmatch(ref))
         if is_sha:
             # Single fetch — skip the clone, which would download the
             # default-branch tip only to throw it away.
@@ -371,21 +371,21 @@ def download_git_folder(
             repo.create_remote("origin", git_url)
             repo.git.sparse_checkout("init")
             repo.git.sparse_checkout("set", folder_path)
-            repo.git.fetch("origin", branch, "--depth=1", "--filter=blob:none")
+            repo.git.fetch("origin", ref, "--depth=1", "--filter=blob:none")
             repo.git.checkout("FETCH_HEAD")
             repo.close()
         else:
             repo = gitpython.Repo.clone_from(
                 git_url,
                 temp_dir,
-                branch=branch,
+                branch=ref,
                 depth=1,
                 no_checkout=True,
                 multi_options=["--filter=blob:none", "--sparse"],
             )
             try:
                 repo.git.sparse_checkout("set", folder_path)
-                repo.git.checkout(branch)
+                repo.git.checkout(ref)
             finally:
                 repo.close()
 
@@ -471,6 +471,6 @@ def download_asset(
         NEWTON_ASSETS_URL,
         asset_folder,
         cache_dir=cache_dir,
-        branch=ref or NEWTON_ASSETS_REF,
+        ref=ref or NEWTON_ASSETS_REF,
         force_refresh=force_refresh,
     )
