@@ -5887,8 +5887,8 @@ class ModelBuilder:
             gaussian = xform
             xform = None
 
-        if gaussian is None and collision_proxy is not None:
-            raise ValueError("'gaussian' must be provided when 'collision_proxy' is set.")
+        if gaussian is None:
+            raise TypeError("'gaussian' is required when adding a Gaussian shape.")
 
         if cfg is None:
             cfg = self.default_shape_cfg.copy()
