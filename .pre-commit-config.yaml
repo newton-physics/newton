@@ -5,8 +5,9 @@ ci:
   autoupdate_branch: ""
   autoupdate_commit_msg: "[pre-commit.ci] pre-commit autoupdate"
   autoupdate_schedule: quarterly
-  # pre-commit.ci runs hooks without network access, but uv-lock needs to
-  # resolve hatchling for this dynamically-versioned project.
+  # pre-commit.ci has no network access, but uv-lock needs to resolve
+  # dependencies from remote indexes (PyPI, nvidia, pytorch).
+  # Lockfile freshness is checked by a separate CI workflow instead.
   skip:
     - uv-lock
   submodules: false

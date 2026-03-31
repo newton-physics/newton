@@ -44,7 +44,7 @@ def create_kernel(
         shape_enabled: wp.array(dtype=wp.uint32),
         shape_types: wp.array(dtype=wp.int32),
         shape_sizes: wp.array(dtype=wp.vec3f),
-        shape_colors: wp.array(dtype=wp.vec4f),
+        shape_colors: wp.array(dtype=wp.vec3f),
         shape_transforms: wp.array(dtype=wp.transformf),
         shape_source_ptr: wp.array(dtype=wp.uint64),
         shape_texture_ids: wp.array(dtype=wp.int32),
@@ -168,11 +168,9 @@ def create_kernel(
         if not is_gaussian:
             hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
-            color = wp.vec4f(1.0)
+            albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                color = shape_colors[closest_hit.shape_index]
-
-            albedo_color = wp.vec3f(color[0], color[1], color[2])
+                albedo_color = shape_colors[closest_hit.shape_index]
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]

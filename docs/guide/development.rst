@@ -736,7 +736,7 @@ benchmark code from the ``asv/benchmarks`` directory against the code state of t
 the benchmark definitions themselves are not checked out from different branches—only the code being
 benchmarked is.
 
-Benchmarks can also be run against a range of commits using the ``commit1...commit2`` syntax.
+Benchmarks can also be run against a range of commits using the ``commit1..commit2`` syntax.
 This is useful for comparing performance across several recent changes:
 
 .. tab-set::
@@ -756,6 +756,7 @@ This is useful for comparing performance across several recent changes:
 
             asv run --launch-method spawn HEAD~4..HEAD
 
+Note that the older commit has to come first.
 Commit hashes can be used instead of relative references:
 
 .. tab-set::

@@ -1,0 +1,41 @@
+name: Cancel workflows on PR close
+
+on:
+  pull_request_target:
+    types: [closed]
+
+jobs:
+  cancel-pr-workflows:
+    name: Cancel in-progress PR workflows
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    timeout-minutes: 3
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Cancel in-progress runs for this PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CURRENT_RUN: ${{ github.run_id }}
+        run: |
+          echo "PR #$PR_NUMBER closed, cancelling workflows for branch: $HEAD_BRANCH"
+
+          # Cancel all in-progress and queued runs on this PR's head branch (except this one)
+          for status in in_progress queued; do
+            gh run list --branch "$HEAD_BRANCH" --status "$status" --json databaseId --jq '.[].databaseId' \
+              | while read -r run_id; do
+                  if [ "$run_id" != "$CURRENT_RUN" ]; then
+                    echo "Cancelling run $run_id"
+                    if ! gh run cancel "$run_id"; then
+                      echo "Warning: failed to cancel run $run_id" >&2
+                    fi
+                  fi
+                done
+          done

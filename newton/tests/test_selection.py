@@ -244,6 +244,96 @@ class TestSelection(unittest.TestCase):
                     msg=f"world={w}, shape={s}",
                 )
 
+    def test_eval_fk_translated_joint_chain_uses_view_mask(self):
+        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+        def add_translated_chain(label: str, x_offset: float):
+            base = builder.add_link()
+            slider = builder.add_link()
+
+            builder.body_com[base] = wp.vec3(0.2, 0.0, 0.0)
+            builder.body_com[slider] = wp.vec3(0.35, 0.0, -0.1)
+
+            j0 = builder.add_joint_revolute(
+                parent=-1,
+                child=base,
+                axis=newton.Axis.Z,
+                parent_xform=wp.transform(wp.vec3(x_offset, 0.0, 0.0), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            )
+            j1 = builder.add_joint_prismatic(
+                parent=base,
+                child=slider,
+                axis=newton.Axis.X,
+                parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.4), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.2, 0.0, -0.15), wp.quat_identity()),
+            )
+            builder.add_articulation([j0, j1], label=label)
+            return base, slider, j0, j1
+
+        target_base, target_slider, target_j0, target_j1 = add_translated_chain("translated_target", 0.0)
+        other_base, other_slider, other_j0, other_j1 = add_translated_chain("translated_other", 5.0)
+
+        model = builder.finalize()
+        view = ArticulationView(model, "translated_target")
+
+        q_start = model.joint_q_start.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        q = model.joint_q.numpy().copy()
+        qd = model.joint_qd.numpy().copy()
+
+        q[q_start[target_j0]] = 0.55
+        q[q_start[target_j1]] = 0.8
+        qd[qd_start[target_j0]] = 1.1
+        qd[qd_start[target_j1]] = -0.35
+
+        q[q_start[other_j0]] = -0.3
+        q[q_start[other_j1]] = 0.25
+        qd[qd_start[other_j0]] = -0.7
+        qd[qd_start[other_j1]] = 0.45
+
+        dt = 1.0e-4
+        q_next = q.copy()
+        q_next[q_start[target_j0]] += qd[qd_start[target_j0]] * dt
+        q_next[q_start[target_j1]] += qd[qd_start[target_j1]] * dt
+        q_next[q_start[other_j0]] += qd[qd_start[other_j0]] * dt
+        q_next[q_start[other_j1]] += qd[qd_start[other_j1]] * dt
+
+        state = model.state()
+        state_next = model.state()
+
+        sentinel_q = state.body_q.numpy().copy()
+        sentinel_q[:, :3] = -99.0
+        sentinel_q[:, 3:7] = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        sentinel_qd = np.full_like(state.body_qd.numpy(), -77.0)
+
+        state.body_q.assign(sentinel_q)
+        state.body_qd.assign(sentinel_qd)
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        view.eval_fk(state)
+
+        state_next.body_q.assign(sentinel_q)
+        state_next.body_qd.assign(sentinel_qd)
+        state_next.joint_q.assign(q_next)
+        state_next.joint_qd.assign(qd)
+        view.eval_fk(state_next)
+
+        body_q = state.body_q.numpy().reshape(-1, 7)
+        body_q_next = state_next.body_q.numpy().reshape(-1, 7)
+        body_qd = state.body_qd.numpy().reshape(-1, 6)
+
+        origin_vel_fd = (body_q_next[target_slider, :3] - body_q[target_slider, :3]) / dt
+        origin_vel_from_body_qd = body_qd[target_slider, :3]
+
+        assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
+        self.assertFalse(np.array_equal(body_q[target_base], sentinel_q[target_base]))
+        assert_np_equal(body_q[other_base], sentinel_q[other_base], tol=0.0)
+        assert_np_equal(body_q[other_slider], sentinel_q[other_slider], tol=0.0)
+        assert_np_equal(body_qd[other_base], sentinel_qd[other_base], tol=0.0)
+        assert_np_equal(body_qd[other_slider], sentinel_qd[other_slider], tol=0.0)
+
     def test_selection_mask(self):
         # load articulation
         ant = newton.ModelBuilder()

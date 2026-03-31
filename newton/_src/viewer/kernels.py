@@ -167,6 +167,17 @@ def update_shape_xforms(
 
 
 @wp.kernel
+def repack_shape_colors(
+    shape_colors: wp.array(dtype=wp.vec3),
+    slot_to_shape: wp.array(dtype=wp.int32),
+    packed_shape_colors: wp.array(dtype=wp.vec3),
+):
+    """Repack model-order shape colors into viewer batch order."""
+    tid = wp.tid()
+    packed_shape_colors[tid] = shape_colors[slot_to_shape[tid]]
+
+
+@wp.kernel
 def estimate_world_extents(
     shape_transform: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),

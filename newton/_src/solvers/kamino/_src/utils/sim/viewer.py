@@ -12,10 +12,10 @@ from typing import ClassVar
 # Thirdparty
 import warp as wp
 
+from ......geometry.types import GeoType
 from ......viewer import ViewerGL
 from ...core.builder import ModelBuilderKamino
 from ...core.geometry import GeometryDescriptor
-from ...core.shapes import ShapeType
 from ...core.types import vec3f
 from ...core.world import WorldDescriptor
 from ...geometry.contacts import ContactMode
@@ -265,21 +265,13 @@ class ViewerKamino(ViewerGL):
         # Choose color based on body ID
         color = self.body_colors[geom.body % len(self.body_colors)]
 
-        # Convert shape parameters to Newton format w/ half-extents
+        # Shape params are already in Newton convention (half-extents, half-heights)
         params = geom.shape.params
-        if geom.shape.type == ShapeType.CYLINDER:
-            params = (params[0], 0.5 * params[1])
-        elif geom.shape.type == ShapeType.CONE:
-            params = (params[0], 0.5 * params[1])
-        elif geom.shape.type == ShapeType.CAPSULE:
-            params = (params[0], 0.5 * params[1])
-        elif geom.shape.type == ShapeType.BOX:
-            params = (0.5 * params[0], 0.5 * params[1], 0.5 * params[2])
 
         # Update the geometry data
         self.log_shapes(
             name=f"/world_{geom.wid}/body_{geom.body}/{scope}/{geom.gid}-{geom.name}",
-            geo_type=ShapeType.to_newton(shape_type=geom.shape.type)[0],
+            geo_type=geom.shape.type,
             geo_scale=params,
             xforms=wp.array([geom_transform], dtype=wp.transform),
             geo_is_solid=geom.shape.is_solid,
@@ -296,7 +288,7 @@ class ViewerKamino(ViewerGL):
 
         # Render each collision geom
         for geom in self._geometry:
-            if geom.shape.type == ShapeType.EMPTY:
+            if geom.shape.type == GeoType.NONE:
                 continue
             self.render_geometry(body_poses, geom, scope="geoms")
 
