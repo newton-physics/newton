@@ -383,6 +383,46 @@ def parse_usd(
         mesh_cache[key] = mesh
         return mesh
 
+    def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
+        return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
+
+    def _is_mjc_equality_joint_prim(prim: Usd.Prim) -> bool:
+        return _has_api_schema(prim, "MjcEqualityConnectAPI") or _has_api_schema(prim, "MjcEqualityWeldAPI")
+
+    def _get_rigid_body_ancestor_path(prim: Usd.Prim) -> str | None:
+        current = prim
+        while current and current.IsValid():
+            current_path = str(current.GetPath())
+            if current_path in path_body_map:
+                return current_path
+            current = current.GetParent()
+        return None
+
+    def _get_target_body_and_local_pos(target_path: str) -> tuple[int, wp.vec3] | None:
+        if target_path in ("", "/"):
+            return (-1, wp.vec3())
+
+        target_prim = stage.GetPrimAtPath(target_path)
+        if not target_prim or not target_prim.IsValid():
+            return None
+
+        body_path = _get_rigid_body_ancestor_path(target_prim)
+        if body_path is None:
+            return None
+
+        body_idx = path_body_map.get(body_path, -1)
+        if body_idx < 0:
+            return None
+
+        if target_path == body_path:
+            return (body_idx, wp.vec3())
+
+        body_prim = stage.GetPrimAtPath(body_path)
+        body_world = usd.get_transform(body_prim, local=False, xform_cache=xform_cache)
+        target_world = usd.get_transform(target_prim, local=False, xform_cache=xform_cache)
+        local_tf = wp.transform_inverse(body_world) * target_world
+        return (body_idx, local_tf.p)
+
     def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
@@ -1214,6 +1254,9 @@ def parse_usd(
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
+    builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [AttributeFrequency.EQUALITY_CONSTRAINT]
+    )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.ARTICULATION]
     )
@@ -1481,6 +1524,9 @@ def parse_usd(
             for p in desc.articulatedJoints:
                 joint_path = str(p)
                 joint_desc = joint_descriptions[joint_path]
+                joint_prim = stage.GetPrimAtPath(p)
+                if _is_mjc_equality_joint_prim(joint_prim):
+                    continue
                 # it may be possible that a joint is filtered out in the middle of
                 # a chain of joints, which results in a disconnected graph
                 # we should raise an error in this case
@@ -1564,9 +1610,17 @@ def parse_usd(
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")
-                    sorted_joints, reversed_joint_list = topological_sort_undirected(
-                        joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
-                    )
+                    try:
+                        sorted_joints, reversed_joint_list = topological_sort_undirected(
+                            joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
+                        )
+                    except ValueError as exc:
+                        warnings.warn(
+                            f"Falling back to source joint order for articulation '{articulation_path}': {exc}",
+                            stacklevel=2,
+                        )
+                        sorted_joints = np.arange(len(joint_names))
+                        reversed_joint_list = []
                     if reversed_joint_list:
                         reversed_joint_paths = [joint_names[joint_id] for joint_id in reversed_joint_list]
                         reversed_joint_names = ", ".join(reversed_joint_paths)
@@ -1799,6 +1853,9 @@ def parse_usd(
     for joint_path, joint_desc in joint_descriptions.items():
         # Skip joints that were already processed as part of an articulation
         if joint_path in processed_joints:
+            continue
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if _is_mjc_equality_joint_prim(joint_prim):
             continue
         # Skip disabled joints if only_load_enabled_joints is True
         if only_load_enabled_joints and not joint_desc.jointEnabled:
@@ -2517,7 +2574,7 @@ def parse_usd(
                     _, _, I_default = compute_inertia_sphere(density, radius)
 
                     # Apply parallel axis theorem if center of mass is offset
-                    com = builder.body_com[body_id]
+                    com = np.array(builder.body_com[body_id], dtype=np.float32)
                     if np.linalg.norm(com) > 1e-6:
                         # I = I_cm + m * d² where d is distance from COM to body origin
                         d_squared = np.sum(com**2)
@@ -2593,6 +2650,152 @@ def parse_usd(
 
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {label: idx for idx, label in enumerate(builder.joint_label)}
+
+    def _parse_mjc_equality_constraints():
+        for joint_path, joint_desc in joint_descriptions.items():
+            joint_prim = stage.GetPrimAtPath(joint_path)
+            if not joint_prim or not joint_prim.IsValid():
+                continue
+            if any(re.match(p, joint_path) for p in ignore_paths):
+                continue
+
+            eq_custom_attrs = usd.get_custom_attribute_values(
+                joint_prim, builder_custom_attr_eq, context={"builder": builder}
+            )
+            enabled = bool(joint_desc.jointEnabled)
+
+            if _has_api_schema(joint_prim, "MjcEqualityConnectAPI"):
+                body0_rel = joint_prim.GetRelationship("physics:body0")
+                body1_rel = joint_prim.GetRelationship("physics:body1")
+                targets0 = body0_rel.GetTargets() if body0_rel else []
+                targets1 = body1_rel.GetTargets() if body1_rel else []
+                if not targets0 or not targets1:
+                    warnings.warn(
+                        f"MjcEqualityConnectAPI on '{joint_path}' is missing physics:body0 or physics:body1 targets; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                target0 = str(targets0[0])
+                target1 = str(targets1[0])
+                body0_info = _get_target_body_and_local_pos(target0)
+                body1_info = _get_target_body_and_local_pos(target1)
+                if body0_info is None or body1_info is None:
+                    warnings.warn(
+                        f"MjcEqualityConnectAPI on '{joint_path}' references unresolved targets; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                body0_idx, site0_local_pos = body0_info
+                body1_idx, _ = body1_info
+                anchor = wp.vec3(*joint_desc.localPose0Position) if target0 in path_body_map else site0_local_pos
+
+                builder.add_equality_constraint_connect(
+                    body1=body0_idx,
+                    body2=body1_idx,
+                    anchor=anchor,
+                    label=joint_path,
+                    enabled=enabled,
+                    custom_attributes=eq_custom_attrs,
+                )
+                continue
+
+            if _has_api_schema(joint_prim, "MjcEqualityWeldAPI"):
+                body0_rel = joint_prim.GetRelationship("physics:body0")
+                body1_rel = joint_prim.GetRelationship("physics:body1")
+                targets0 = body0_rel.GetTargets() if body0_rel else []
+                targets1 = body1_rel.GetTargets() if body1_rel else []
+                if not targets0 or not targets1:
+                    warnings.warn(
+                        f"MjcEqualityWeldAPI on '{joint_path}' is missing physics:body0 or physics:body1 targets; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                target0 = str(targets0[0])
+                target1 = str(targets1[0])
+                body0_info = _get_target_body_and_local_pos(target0)
+                body1_info = _get_target_body_and_local_pos(target1)
+                if body0_info is None or body1_info is None:
+                    warnings.warn(
+                        f"MjcEqualityWeldAPI on '{joint_path}' references unresolved targets; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                body0_idx, _ = body0_info
+                body1_idx, site1_local_pos = body1_info
+                anchor = wp.vec3(*joint_desc.localPose1Position) if target1 in path_body_map else site1_local_pos
+                local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
+                local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
+                local_pos0 = wp.vec3(*joint_desc.localPose0Position)
+                local_pos1 = wp.vec3(*joint_desc.localPose1Position)
+                relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
+                relpose_pos = local_pos0 - wp.quat_rotate(relpose_rot, local_pos1)
+                torquescale_attr = joint_prim.GetAttribute("mjc:torqueScale")
+                torquescale = float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
+
+                builder.add_equality_constraint_weld(
+                    body1=body0_idx,
+                    body2=body1_idx,
+                    anchor=anchor,
+                    relpose=wp.transform(relpose_pos, relpose_rot),
+                    torquescale=torquescale,
+                    label=joint_path,
+                    enabled=enabled,
+                    custom_attributes=eq_custom_attrs,
+                )
+                continue
+
+            if _has_api_schema(joint_prim, "MjcEqualityJointAPI"):
+                joint1_idx = path_joint_map.get(joint_path)
+                if joint1_idx is None:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' was not found in path_joint_map; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                target_rel = joint_prim.GetRelationship("mjc:target")
+                targets = target_rel.GetTargets() if target_rel else []
+                if not targets:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' has no mjc:target relationship; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                target_path = str(targets[0])
+                joint2_idx = path_joint_map.get(target_path)
+                if joint2_idx is None:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' references '{target_path}' which was not found in path_joint_map; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                polycoef = []
+                for attr_name, default in (
+                    ("mjc:coef0", 0.0),
+                    ("mjc:coef1", 1.0),
+                    ("mjc:coef2", 0.0),
+                    ("mjc:coef3", 0.0),
+                    ("mjc:coef4", 0.0),
+                ):
+                    attr = joint_prim.GetAttribute(attr_name)
+                    polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
+
+                builder.add_equality_constraint_joint(
+                    joint1=joint1_idx,
+                    joint2=joint2_idx,
+                    polycoef=polycoef,
+                    label=joint_path,
+                    enabled=enabled,
+                    custom_attributes=eq_custom_attrs,
+                )
+
+    _parse_mjc_equality_constraints()
 
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
     # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
@@ -2675,6 +2878,8 @@ def parse_usd(
     for joint_path, joint_idx in path_joint_map.items():
         joint_prim = stage.GetPrimAtPath(joint_path)
         if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):
+            continue
+        if _has_api_schema(joint_prim, "MjcEqualityJointAPI"):
             continue
         mimic_enabled = usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True)
         if not mimic_enabled:
