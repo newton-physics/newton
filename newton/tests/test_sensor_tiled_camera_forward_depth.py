@@ -105,9 +105,7 @@ class TestConvertRayDepthToForwardDepth(unittest.TestCase):
 
         camera_rays = self._launch_pinhole_rays(width, height, fov_rad)
 
-        depth_image = wp.full(
-            (1, 1, height, width), value=uniform_depth, dtype=wp.float32, device=self.device
-        )
+        depth_image = wp.full((1, 1, height, width), value=uniform_depth, dtype=wp.float32, device=self.device)
         out_depth = wp.zeros_like(depth_image)
 
         camera_transforms = wp.array(
@@ -139,9 +137,7 @@ class TestConvertRayDepthToForwardDepth(unittest.TestCase):
 
         camera_rays = self._launch_pinhole_rays(width, height, fov_rad)
 
-        depth_image = wp.full(
-            (1, 1, height, width), value=uniform_depth, dtype=wp.float32, device=self.device
-        )
+        depth_image = wp.full((1, 1, height, width), value=uniform_depth, dtype=wp.float32, device=self.device)
         out_depth = wp.zeros_like(depth_image)
 
         camera_transforms = wp.array(
@@ -214,9 +210,7 @@ class TestConvertRayDepthToForwardDepth(unittest.TestCase):
 
         camera_rays = self._launch_pinhole_rays(width, height, fov_rad)
 
-        depth_image = wp.full(
-            (1, 1, height, width), value=uniform_depth, dtype=wp.float32, device=self.device
-        )
+        depth_image = wp.full((1, 1, height, width), value=uniform_depth, dtype=wp.float32, device=self.device)
         out_depth = wp.zeros_like(depth_image)
 
         camera_transforms = wp.array(
