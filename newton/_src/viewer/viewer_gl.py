@@ -236,9 +236,9 @@ class ViewerGL(ViewerBase):
         self.gizmo_is_using = False
 
         # Register GL-specific rendering options (sky, shadows, wireframe, colors)
-        self._ui_callbacks["rendering"].append(self._apply_rendering_options)
+        self._ui_callbacks["rendering"].append(self._ui_populate_rendering_panel)
         # Register wind panel (checks self.wind at render time, so safe to register early)
-        self._ui_callbacks["panel"].append(self._render_wind_panel)
+        self._ui_callbacks["panel"].append(self._ui_populate_wind_panel)
 
         # a low resolution sphere mesh for point rendering
         self._point_mesh = None
@@ -1617,7 +1617,7 @@ class ViewerGL(ViewerBase):
         if self.ui:
             self.ui.resize(width, height)
 
-    def _apply_rendering_options(self, imgui):
+    def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
         # Sky rendering
         _changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)
@@ -1644,7 +1644,7 @@ class ViewerGL(ViewerBase):
         # Ground color
         _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
-    def _render_wind_panel(self, imgui):
+    def _ui_populate_wind_panel(self, imgui):
         """Render the Wind Effects collapsing panel (no-op when wind is not active)."""
         if self.wind is None:
             return
