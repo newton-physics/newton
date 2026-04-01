@@ -1,14 +1,8 @@
-name: Newton + Warp Nightly Builds
+name: Warp Nightly Build Tests on AWS EC2 (Reusable)
 
-# This workflow runs daily to test Newton with the latest nightly warp-lang builds.
-# It uses machulav/ec2-github-runner to spin up GPU instances on AWS EC2.
-# Scheduled workflows automatically run on the default branch (main).
-#
-# The workflow first checks if there's a new warp-lang nightly build by running
-# 'uv lock -P warp-lang' on a standard GitHub runner. Only if a new version is detected
-# will it spin up an expensive EC2 GPU instance to run the full test suite.
+# Standalone workflow that tests Newton with the latest nightly warp-lang builds.
+# Called by scheduled_nightly.yml (only when a new warp-lang nightly is detected).
 
-# Workflow configuration variables
 env:
   AWS_REGION: us-east-2
   AWS_INSTANCE_TYPE: g7e.2xlarge
@@ -16,57 +10,22 @@ env:
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
-  AWS_ROLE_DURATION: 1800
-  PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+  AWS_ROLE_DURATION: 3600
+  HOME: /actions-runner
 
 on:
-  schedule:
-    - cron: '0 11 * * *'  # Daily at 11 AM UTC (3 AM PST)
-  workflow_dispatch:  # Allow manual triggers
+  workflow_call:
+    secrets:
+      GH_PERSONAL_ACCESS_TOKEN:
+        required: true
+      CODECOV_TOKEN:
+        required: true
+  workflow_dispatch:
 
 jobs:
-  check-warp-update:
-    name: Check for new warp-lang nightly build
-    if: github.repository == 'newton-physics/newton'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      warp-updated: ${{ steps.check-update.outputs.warp-updated }}
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
-        with:
-          version: "0.11.0"
-
-      - name: Update warp-lang in lock file
-        run: uv lock -P warp-lang --prerelease allow
-
-      - name: Check if warp-lang version changed
-        id: check-update
-        run: |
-          if git diff --quiet uv.lock; then
-            echo "No new warp-lang nightly build detected"
-            echo "warp-updated=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "New warp-lang nightly build detected!"
-            echo "warp-updated=true" >> "$GITHUB_OUTPUT"
-            echo "Current warp-lang dependency tree:"
-            uv tree --package warp-lang
-          fi
-
   start-runner:
     name: Start self-hosted EC2 runner
-    needs: check-warp-update
-    if: needs.check-warp-update.outputs.warp-updated == 'true'
+    if: github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -86,6 +45,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
+
       - name: Get the latest AWS Deep Learning Base GPU AMI
         run: |
           echo "Finding the latest AWS Deep Learning Base GPU AMI..."
@@ -100,6 +60,7 @@ jobs:
           fi
           echo "Latest AMI ID found: $LATEST_AMI_ID"
           echo "LATEST_AMI_ID=$LATEST_AMI_ID" >> "$GITHUB_ENV"
+
       - name: Start EC2 runner
         id: start-ec2-runner
         uses: machulav/ec2-github-runner@a00f575a87f3a96ec6de9413d16eeb828a3cc0a8  # v2.5.2
@@ -130,14 +91,16 @@ jobs:
               {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
             ]
 
-  nightly-warp-tests:
+  warp-nightly-tests:
     name: Run Tests with Warp Nightly Build
     needs: start-runner
+    if: ${{ !cancelled() && needs.start-runner.result == 'success' }}
     runs-on: ${{ needs.start-runner.outputs.label }}
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
-      HOME: /actions-runner
+      PYTHONFAULTHANDLER: "1"
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
@@ -175,6 +138,33 @@ jobs:
           paths: "rspec.xml"
           show: "fail"
 
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        with:
+          disable_search: true
+          files: ./rspec.xml
+          flags: warp-nightly
+          report_type: test_results
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Re-run instructions
+        if: failure()
+        run: |
+          echo "::error::DO NOT use 'Re-run failed jobs' - the EC2 runner no longer exists and your job will be queued forever."
+          echo "::error::USE 'Re-run all jobs' instead to start a fresh EC2 runner."
+          cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
+          ## ⚠️ How to Re-run This Workflow
+
+          This workflow uses **ephemeral EC2 runners** that are terminated after each run.
+
+          | | Option | Result |
+          |---|--------|--------|
+          | ❌ | **Re-run failed jobs** | Runner no longer exists → job queued forever |
+          | ✅ | **Re-run all jobs** | Starts new EC2 runner → tests re-run |
+          EOF
+
   stop-runner:
     name: Stop self-hosted EC2 runner
     runs-on: ubuntu-latest
@@ -183,7 +173,7 @@ jobs:
       contents: read
     needs:
       - start-runner
-      - nightly-warp-tests
+      - warp-nightly-tests
     if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
     steps:
       - name: Harden the runner (Audit all outbound calls)

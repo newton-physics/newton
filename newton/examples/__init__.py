@@ -26,6 +26,20 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
+def _enable_example_deprecation_warnings() -> None:
+    """Show Newton deprecations during example runs.
+
+    Skipped when ``PYTHONWARNINGS`` is already set so that
+    ``test_examples.py`` (or a user) can escalate warnings to errors
+    without this filter overriding their policy.
+    """
+    if "PYTHONWARNINGS" in os.environ or getattr(_enable_example_deprecation_warnings, "_installed", False):
+        return
+
+    warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
+    _enable_example_deprecation_warnings._installed = True
+
+
 def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
     from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
@@ -65,11 +79,11 @@ def test_body_state(
 
     @wp.kernel
     def test_fn_kernel(
-        body_q: wp.array(dtype=wp.transform),
-        body_qd: wp.array(dtype=wp.spatial_vector),
-        indices: wp.array(dtype=int),
+        body_q: wp.array[wp.transform],
+        body_qd: wp.array[wp.spatial_vector],
+        indices: wp.array[int],
         # output
-        failures: wp.array(dtype=bool),
+        failures: wp.array[bool],
     ):
         world_id = wp.tid()
         index = indices[world_id]
@@ -137,11 +151,11 @@ def test_particle_state(
 
     @wp.kernel
     def test_fn_kernel(
-        particle_q: wp.array(dtype=wp.vec3),
-        particle_qd: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=int),
+        particle_q: wp.array[wp.vec3],
+        particle_qd: wp.array[wp.vec3],
+        indices: wp.array[int],
         # output
-        failures: wp.array(dtype=bool),
+        failures: wp.array[bool],
     ):
         world_id = wp.tid()
         index = indices[world_id]
@@ -529,6 +543,8 @@ def init(parser=None):
 
     import newton.viewer  # noqa: PLC0415
 
+    _enable_example_deprecation_warnings()
+
     # parse args
     if parser is None:
         parser = create_parser()
@@ -595,6 +611,8 @@ def main():
     """Main entry point for running examples via 'python -m newton.examples <example_name>'."""
     import runpy  # noqa: PLC0415
     import sys  # noqa: PLC0415
+
+    _enable_example_deprecation_warnings()
 
     examples = get_examples()
 

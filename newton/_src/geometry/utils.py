@@ -22,11 +22,11 @@ from .types import (
 # Warp kernel for inertia-based OBB computation
 @wp.kernel(enable_backward=False)
 def compute_obb_candidates(
-    vertices: wp.array(dtype=wp.vec3),
+    vertices: wp.array[wp.vec3],
     base_quat: wp.quat,
-    volumes: wp.array2d(dtype=float),
-    transforms: wp.array2d(dtype=wp.transform),
-    extents: wp.array2d(dtype=wp.vec3),
+    volumes: wp.array2d[float],
+    transforms: wp.array2d[wp.transform],
+    extents: wp.array2d[wp.vec3],
 ):
     """Compute OBB candidates for different rotations around principal axes."""
     angle_idx, axis_idx = wp.tid()
@@ -93,13 +93,14 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         else:
             return 1.0e6
     elif geo_type == GeoType.HFIELD:
-        # Heightfield bounding sphere — hx/hy are already half-extents
+        # Heightfield bounding sphere centered at the shape origin.
+        # X/Y are symmetric ([-hx, +hx], [-hy, +hy]), but Z spans [min_z, max_z]
+        # which may not be symmetric around 0.
         if src is not None:
             half_x = src.hx * scale[0]
             half_y = src.hy * scale[1]
-            # Vertical range: from min_z to max_z, centered at midpoint
-            half_z = (src.max_z - src.min_z) / 2.0 * scale[2]
-            return np.sqrt(half_x**2 + half_y**2 + half_z**2)
+            max_abs_z = max(abs(src.min_z), abs(src.max_z)) * scale[2]
+            return np.sqrt(half_x**2 + half_y**2 + max_abs_z**2)
         else:
             return np.linalg.norm(scale)
     elif geo_type == GeoType.GAUSSIAN:
@@ -751,11 +752,11 @@ def transform_points(points: np.ndarray, transform: wp.transform, scale: Vec3 | 
 
 @wp.kernel(enable_backward=False)
 def get_total_kernel(
-    counts: wp.array(dtype=int),
-    prefix_sums: wp.array(dtype=int),
-    num_elements: wp.array(dtype=int),
+    counts: wp.array[int],
+    prefix_sums: wp.array[int],
+    num_elements: wp.array[int],
     max_elements: int,
-    total: wp.array(dtype=int),
+    total: wp.array[int],
 ):
     """
     Get the total of an array of counts and prefix sums.
@@ -771,10 +772,10 @@ def get_total_kernel(
 
 
 def scan_with_total(
-    counts: wp.array(dtype=int),
-    prefix_sums: wp.array(dtype=int),
-    num_elements: wp.array(dtype=int),
-    total: wp.array(dtype=int),
+    counts: wp.array[int],
+    prefix_sums: wp.array[int],
+    num_elements: wp.array[int],
+    total: wp.array[int],
 ):
     """
     Computes an exclusive prefix sum and total of a counts array.
@@ -791,6 +792,7 @@ def scan_with_total(
         dim=[1],
         inputs=[counts, prefix_sums, num_elements, counts.shape[0], total],
         device=counts.device,
+        record_tape=False,
     )
 
 

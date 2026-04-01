@@ -67,7 +67,7 @@ INERTIAL_URDF = """
 <robot name="inertial_test">
     <link name="base_link">
         <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <origin xyz="0 0 0" rpy="3 4 5"/>
             <mass value="1.0"/>
             <inertia ixx="1.0" ixy="0.0" ixz="0.0"
                      iyy="1.0" iyz="0.0"
@@ -266,7 +266,9 @@ class TestImportUrdfBasic(unittest.TestCase):
 
         # Check inertial parameters
         assert_np_equal(builder.body_mass[0], np.array([1.0]))
-        assert_np_equal(builder.body_inertia[0], np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]))
+        assert_np_equal(
+            np.array(builder.body_inertia[0]), np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]), 1e-6
+        )
         assert_np_equal(builder.body_com[0], np.array([0.0, 0.0, 0.0]))
 
     def test_cylinder_shapes_preserved(self):

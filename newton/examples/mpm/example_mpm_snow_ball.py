@@ -11,8 +11,8 @@ from newton.solvers import SolverImplicitMPM
 
 @wp.kernel
 def _compute_compression_colors(
-    Jp: wp.array(dtype=float),
-    colors: wp.array(dtype=wp.vec3),
+    Jp: wp.array[float],
+    colors: wp.array[wp.vec3],
     Jp_min: float,
     Jp_inv_range: float,
 ):
