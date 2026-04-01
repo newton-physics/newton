@@ -29,6 +29,7 @@
 - Add `total_friction_force` and `friction_force_matrix` to `SensorContact` for tangential (friction) force decomposition
 - Pin `newton-assets` and `mujoco_menagerie` downloads to specific commit SHAs for reproducible builds (`NEWTON_ASSETS_REF`, `MENAGERIE_REF`)
 - Add `ref` parameter to `download_asset()` to allow overriding the pinned revision
+- Add `total_force_friction` and `force_matrix_friction` to `SensorContact` for tangential (friction) force decomposition
 
 ### Changed
 

@@ -54,8 +54,8 @@ def accumulate_contact_forces_kernel(
     # output
     force_matrix: wp.array2d(dtype=wp.vec3),
     total_force: wp.array(dtype=wp.vec3),
-    friction_force_matrix: wp.array2d(dtype=wp.vec3),
-    total_friction_force: wp.array(dtype=wp.vec3),
+    force_matrix_friction: wp.array2d(dtype=wp.vec3),
+    total_force_friction: wp.array(dtype=wp.vec3),
 ):
     """Accumulate per-contact forces and friction into total and/or per-counterpart arrays. Parallelizes over contacts."""
     con_idx = wp.tid()
@@ -79,25 +79,25 @@ def accumulate_contact_forces_kernel(
 
     # total force and friction
     if total_force:
-        assert total_friction_force
+        assert total_force_friction
         if row0 >= 0:
             wp.atomic_add(total_force, row0, force)
-            wp.atomic_add(total_friction_force, row0, friction)
+            wp.atomic_add(total_force_friction, row0, friction)
         if row1 >= 0:
             wp.atomic_add(total_force, row1, -force)
-            wp.atomic_add(total_friction_force, row1, -friction)
+            wp.atomic_add(total_force_friction, row1, -friction)
 
     # per-counterpart forces and friction
     if force_matrix:
-        assert friction_force_matrix
+        assert force_matrix_friction
         col0 = counterpart_shape_to_col[shape0]
         col1 = counterpart_shape_to_col[shape1]
         if row0 >= 0 and col1 >= 0:
             wp.atomic_add(force_matrix, row0, col1, force)
-            wp.atomic_add(friction_force_matrix, row0, col1, friction)
+            wp.atomic_add(force_matrix_friction, row0, col1, friction)
         if row1 >= 0 and col0 >= 0:
             wp.atomic_add(force_matrix, row1, col0, -force)
-            wp.atomic_add(friction_force_matrix, row1, col0, -friction)
+            wp.atomic_add(force_matrix_friction, row1, col0, -friction)
 
 
 @wp.kernel(enable_backward=False)
@@ -216,7 +216,7 @@ class SensorContact:
 
     :attr:`total_force` and :attr:`force_matrix` are each nullable: ``total_force`` is ``None`` when
     ``measure_total=False``; ``force_matrix`` is ``None`` when no counterparts are specified. Their friction
-    counterparts :attr:`total_friction_force` and :attr:`friction_force_matrix` follow the same rules.
+    counterparts :attr:`total_force_friction` and :attr:`force_matrix_friction` follow the same rules.
 
     .. rubric:: Multi-world behavior
 
@@ -314,11 +314,11 @@ class SensorContact:
     Entry ``[i, j]`` is the force on sensing object ``i`` from counterpart ``counterpart_indices[i][j]``, in world
     frame. ``None`` when no counterparts are specified."""
 
-    total_friction_force: wp.array(dtype=wp.vec3) | None
+    total_force_friction: wp.array(dtype=wp.vec3) | None
     """Total friction (tangential) contact force [N] per sensing object, shape ``(n_sensing_objs,)``,
     dtype :class:`vec3`. ``None`` when ``measure_total=False``."""
 
-    friction_force_matrix: wp.array2d(dtype=wp.vec3) | None
+    force_matrix_friction: wp.array2d(dtype=wp.vec3) | None
     """Per-counterpart friction (tangential) contact forces [N], shape ``(n_sensing_objs, max_counterparts)``,
     dtype :class:`vec3`. Entry ``[i, j]`` is the friction force on sensing object ``i`` from counterpart
     ``counterpart_indices[i][j]``, in world frame. ``None`` when no counterparts are specified."""
@@ -345,7 +345,7 @@ class SensorContact:
 
         Exactly one of ``sensing_obj_bodies`` or ``sensing_obj_shapes`` must be specified to define the sensing
         objects. At most one of ``counterpart_bodies`` or ``counterpart_shapes`` may be specified. If neither is
-        specified, only :attr:`total_force` and :attr:`total_friction_force` are available (no per-counterpart breakdown).
+        specified, only :attr:`total_force` and :attr:`total_force_friction` are available (no per-counterpart breakdown).
 
         Args:
             model: The simulation model providing shape/body definitions and world layout.
@@ -357,7 +357,7 @@ class SensorContact:
                 against body labels, or list of patterns where any one matches.
             counterpart_shapes: List of shape indices, single pattern to match
                 against shape labels, or list of patterns where any one matches.
-            measure_total: If True (default), :attr:`total_force` and :attr:`total_friction_force` are allocated.
+            measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
             request_contact_attributes: If True (default), transparently request the extended contact attribute
@@ -508,17 +508,17 @@ class SensorContact:
 
         if measure_total:
             self.total_force = self._net_force[:, 0]
-            self.total_friction_force = self._net_friction_force[:, 0]
+            self.total_force_friction = self._net_friction_force[:, 0]
         else:
             self.total_force = None
-            self.total_friction_force = None
+            self.total_force_friction = None
 
         if max_readings > 0:
             self.force_matrix = self._net_force[:, int(measure_total) :]
-            self.friction_force_matrix = self._net_friction_force[:, int(measure_total) :]
+            self.force_matrix_friction = self._net_friction_force[:, int(measure_total) :]
         else:
             self.force_matrix = None
-            self.friction_force_matrix = None
+            self.force_matrix_friction = None
 
         self.sensing_obj_type = "body" if sensing_is_body else "shape"
         self.counterpart_type = "body" if counterpart_is_body else ("shape" if counterpart_indices else None)
@@ -708,8 +708,8 @@ class SensorContact:
             outputs=[
                 self.force_matrix,
                 self.total_force,
-                self.friction_force_matrix,
-                self.total_friction_force,
+                self.force_matrix_friction,
+                self.total_force_friction,
             ],
             device=self.device,
         )

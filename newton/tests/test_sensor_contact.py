@@ -384,7 +384,7 @@ class TestSensorContact(unittest.TestCase):
 
         sensor.update(None, contacts)
 
-        friction = sensor.total_friction_force.numpy()
+        friction = sensor.total_force_friction.numpy()
         # Friction on A should be (3, 0, 0) — the tangential part
         np.testing.assert_allclose(friction[0], [3.0, 0.0, 0.0], atol=1e-5)
         # Friction on B should be (-3, 0, 0) — Newton's third law
@@ -439,12 +439,12 @@ class TestSensorContact(unittest.TestCase):
 
         sensor.update(None, contacts)
 
-        friction = sensor.total_friction_force.numpy()
+        friction = sensor.total_force_friction.numpy()
         np.testing.assert_allclose(friction[0], [1.0, 2.0, 0.0], atol=1e-5)
         np.testing.assert_allclose(friction[1], [3.0, -2.0, 6.0], atol=1e-5)
 
-    def test_friction_force_matrix(self):
-        """friction_force_matrix mirrors force_matrix structure."""
+    def test_force_matrix_friction(self):
+        """force_matrix_friction mirrors force_matrix structure."""
         device = wp.get_device()
 
         builder = newton.ModelBuilder()
@@ -473,8 +473,8 @@ class TestSensorContact(unittest.TestCase):
 
         sensor.update(None, contacts)
 
-        self.assertIsNotNone(sensor.friction_force_matrix)
-        fmat = sensor.friction_force_matrix.numpy()
+        self.assertIsNotNone(sensor.force_matrix_friction)
+        fmat = sensor.force_matrix_friction.numpy()
         self.assertEqual(fmat.shape, sensor.force_matrix.numpy().shape)
         # A's friction from B: tangential part = (2, 3, 0)
         np.testing.assert_allclose(fmat[0, 1], [2.0, 3.0, 0.0], atol=1e-5)
@@ -482,18 +482,18 @@ class TestSensorContact(unittest.TestCase):
         np.testing.assert_allclose(fmat[1, 0], [-2.0, -3.0, 0.0], atol=1e-5)
 
     def test_friction_force_measure_total_false(self):
-        """measure_total=False produces total_friction_force=None."""
+        """measure_total=False produces total_force_friction=None."""
         model = _make_two_world_model(include_ground=True)
         sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_shapes="*", measure_total=False)
-        self.assertIsNone(sensor.total_friction_force)
-        self.assertIsNotNone(sensor.friction_force_matrix)
+        self.assertIsNone(sensor.total_force_friction)
+        self.assertIsNotNone(sensor.force_matrix_friction)
 
     def test_friction_force_no_counterparts(self):
-        """No counterparts produces friction_force_matrix=None."""
+        """No counterparts produces force_matrix_friction=None."""
         model = _make_two_world_model()
         sensor = SensorContact(model, sensing_obj_bodies="*")
-        self.assertIsNone(sensor.friction_force_matrix)
-        self.assertIsNotNone(sensor.total_friction_force)
+        self.assertIsNone(sensor.force_matrix_friction)
+        self.assertIsNotNone(sensor.total_force_friction)
 
     def test_purely_normal_force_has_zero_friction(self):
         """Purely normal contact forces produce zero friction."""
@@ -506,7 +506,7 @@ class TestSensorContact(unittest.TestCase):
         contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[5.0])
         sensor.update(None, contacts)
 
-        friction = sensor.total_friction_force.numpy()
+        friction = sensor.total_force_friction.numpy()
         np.testing.assert_allclose(friction[0], [0.0, 0.0, 0.0], atol=1e-5)
         np.testing.assert_allclose(friction[1], [0.0, 0.0, 0.0], atol=1e-5)
 
@@ -548,7 +548,7 @@ class TestSensorContact(unittest.TestCase):
 
         sensor.update(None, contacts)
 
-        friction = sensor.total_friction_force.numpy()
+        friction = sensor.total_force_friction.numpy()
         np.testing.assert_allclose(friction[0], expected_friction, atol=1e-5)
         # Verify orthogonality
         self.assertAlmostEqual(np.dot(friction[0], n), 0.0, places=5)
@@ -656,7 +656,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         sensor.update(state_in, contacts)
 
         total = sensor.total_force.numpy()
-        friction = sensor.total_friction_force.numpy()
+        friction = sensor.total_force_friction.numpy()
         g = 9.81
         # Normal force should match weight
         self.assertAlmostEqual(total[0, 2], mass_a * g, delta=mass_a * g * 0.02)
