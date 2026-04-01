@@ -4272,7 +4272,6 @@ def Xform "Articulation" (
 
         # Import the USD
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage)
         model = builder.finalize()
 
@@ -4892,7 +4891,6 @@ def Xform "Articulation" (
         joint2_prim.GetAttribute("newton:mimicCoef1").Set(2.0)
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage)
         model = builder.finalize()
 

@@ -386,7 +386,13 @@ def parse_usd(
     def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
 
-    def _is_mjc_equality_joint_prim(prim: Usd.Prim) -> bool:
+    def _is_mjc_equality_connect_or_weld(prim: Usd.Prim) -> bool:
+        """Check whether *prim* carries an MjcEqualityConnectAPI or MjcEqualityWeldAPI schema.
+
+        These prims are parsed as equality constraints, not as regular joints.
+        MjcEqualityJointAPI is deliberately excluded because those joints are
+        created as normal DOFs *and* as equality constraints.
+        """
         return _has_api_schema(prim, "MjcEqualityConnectAPI") or _has_api_schema(prim, "MjcEqualityWeldAPI")
 
     def _get_rigid_body_ancestor_path(prim: Usd.Prim) -> str | None:
@@ -422,6 +428,46 @@ def parse_usd(
         target_world = usd.get_transform(target_prim, local=False, xform_cache=xform_cache)
         local_tf = wp.transform_inverse(body_world) * target_world
         return (body_idx, local_tf.p)
+
+    def _get_first_target(prim: Usd.Prim, rel_name: str) -> str:
+        """Return the first target path of *rel_name* on *prim*, or ``""`` for world."""
+        rel = prim.GetRelationship(rel_name)
+        targets = rel.GetTargets() if rel else []
+        return str(targets[0]) if targets else ""
+
+    def _resolve_equality_bodies(
+        joint_prim: Usd.Prim,
+        joint_path: str,
+        schema_name: str,
+    ) -> tuple[tuple[int, wp.vec3] | None, tuple[int, wp.vec3] | None]:
+        """Resolve body0 and body1 for a Connect/Weld equality joint prim.
+
+        Returns ``(body0_info, body1_info)`` where each is
+        ``(body_index, local_position)`` or ``None`` on failure.
+        An empty target list is interpreted as the world body (index -1).
+        """
+        target0 = _get_first_target(joint_prim, "physics:body0")
+        target1 = _get_first_target(joint_prim, "physics:body1")
+
+        if target0 == "" and target1 == "":
+            warnings.warn(
+                f"{schema_name} on '{joint_path}' has no physics:body0 or physics:body1 targets; skipping.",
+                stacklevel=3,
+            )
+            return None, None
+
+        # Empty target → world body (index -1)
+        body0_info = _get_target_body_and_local_pos(target0) if target0 else (-1, wp.vec3())
+        body1_info = _get_target_body_and_local_pos(target1) if target1 else (-1, wp.vec3())
+
+        if body0_info is None or body1_info is None:
+            warnings.warn(
+                f"{schema_name} on '{joint_path}' references unresolved body targets; skipping.",
+                stacklevel=3,
+            )
+            return None, None
+
+        return body0_info, body1_info
 
     def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
@@ -1525,7 +1571,9 @@ def parse_usd(
                 joint_path = str(p)
                 joint_desc = joint_descriptions[joint_path]
                 joint_prim = stage.GetPrimAtPath(p)
-                if _is_mjc_equality_joint_prim(joint_prim):
+                if _is_mjc_equality_connect_or_weld(joint_prim):
+                    if verbose:
+                        print(f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph")
                     continue
                 # it may be possible that a joint is filtered out in the middle of
                 # a chain of joints, which results in a disconnected graph
@@ -1615,6 +1663,9 @@ def parse_usd(
                             joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
                         )
                     except ValueError as exc:
+                        exc_lower = str(exc).lower()
+                        if "cycle" not in exc_lower and "root" not in exc_lower:
+                            raise  # Re-raise unexpected ValueErrors
                         warnings.warn(
                             f"Falling back to source joint order for articulation '{articulation_path}': {exc}",
                             stacklevel=2,
@@ -1830,6 +1881,7 @@ def parse_usd(
             and not any(re.match(p, joint_path) for p in ignore_paths)
             and str(joint_desc.body0) not in ignored_body_paths
             and str(joint_desc.body1) not in ignored_body_paths
+            and not _is_mjc_equality_connect_or_weld(stage.GetPrimAtPath(joint_path))
         )
         for joint_path, joint_desc in joint_descriptions.items()
     )
@@ -1855,7 +1907,9 @@ def parse_usd(
         if joint_path in processed_joints:
             continue
         joint_prim = stage.GetPrimAtPath(joint_path)
-        if _is_mjc_equality_joint_prim(joint_prim):
+        if _is_mjc_equality_connect_or_weld(joint_prim):
+            if verbose:
+                print(f"Skipping equality connect/weld joint '{joint_path}' from orphan joint parsing")
             continue
         # Skip disabled joints if only_load_enabled_joints is True
         if only_load_enabled_joints and not joint_desc.jointEnabled:
@@ -2623,34 +2677,9 @@ def parse_usd(
         else:
             builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 
-    # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
-    collapse_results = None
-    path_body_relative_transform = {}
-    if scene_attributes.get("newton:collapse_fixed_joints", collapse_fixed_joints):
-        collapse_results = builder.collapse_fixed_joints()
-        body_merged_parent = collapse_results["body_merged_parent"]
-        body_merged_transform = collapse_results["body_merged_transform"]
-        body_remap = collapse_results["body_remap"]
-        # remap body ids in articulation bodies
-        for art_id, bodies in articulation_bodies.items():
-            articulation_bodies[art_id] = [body_remap[b] for b in bodies if b in body_remap]
-
-        for path, body_id in path_body_map.items():
-            if body_id in body_remap:
-                new_id = body_remap[body_id]
-            elif body_id in body_merged_parent:
-                # this body has been merged with another body
-                new_id = body_remap[body_merged_parent[body_id]]
-                path_body_relative_transform[path] = body_merged_transform[body_id]
-            else:
-                # this body has not been merged
-                new_id = body_id
-
-            path_body_map[path] = new_id
-
-        # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
-        path_joint_map = {label: idx for idx, label in enumerate(builder.joint_label)}
-
+    # Parse MjcEquality constraints *before* collapsing fixed joints so that the
+    # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
+    # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
         for joint_path, joint_desc in joint_descriptions.items():
             joint_prim = stage.GetPrimAtPath(joint_path)
@@ -2659,96 +2688,63 @@ def parse_usd(
             if any(re.match(p, joint_path) for p in ignore_paths):
                 continue
 
+            is_connect = _has_api_schema(joint_prim, "MjcEqualityConnectAPI")
+            is_weld = _has_api_schema(joint_prim, "MjcEqualityWeldAPI")
+            is_eq_joint = _has_api_schema(joint_prim, "MjcEqualityJointAPI")
+            if not (is_connect or is_weld or is_eq_joint):
+                continue
+
             eq_custom_attrs = usd.get_custom_attribute_values(
                 joint_prim, builder_custom_attr_eq, context={"builder": builder}
             )
             enabled = bool(joint_desc.jointEnabled)
 
-            if _has_api_schema(joint_prim, "MjcEqualityConnectAPI"):
-                body0_rel = joint_prim.GetRelationship("physics:body0")
-                body1_rel = joint_prim.GetRelationship("physics:body1")
-                targets0 = body0_rel.GetTargets() if body0_rel else []
-                targets1 = body1_rel.GetTargets() if body1_rel else []
-                if not targets0 or not targets1:
-                    warnings.warn(
-                        f"MjcEqualityConnectAPI on '{joint_path}' is missing physics:body0 or physics:body1 targets; skipping.",
-                        stacklevel=2,
-                    )
-                    continue
-
-                target0 = str(targets0[0])
-                target1 = str(targets1[0])
-                body0_info = _get_target_body_and_local_pos(target0)
-                body1_info = _get_target_body_and_local_pos(target1)
+            if is_connect or is_weld:
+                schema_name = "MjcEqualityConnectAPI" if is_connect else "MjcEqualityWeldAPI"
+                body0_info, body1_info = _resolve_equality_bodies(joint_prim, joint_path, schema_name)
                 if body0_info is None or body1_info is None:
-                    warnings.warn(
-                        f"MjcEqualityConnectAPI on '{joint_path}' references unresolved targets; skipping.",
-                        stacklevel=2,
-                    )
                     continue
 
                 body0_idx, site0_local_pos = body0_info
-                body1_idx, _ = body1_info
-                anchor = wp.vec3(*joint_desc.localPose0Position) if target0 in path_body_map else site0_local_pos
-
-                builder.add_equality_constraint_connect(
-                    body1=body0_idx,
-                    body2=body1_idx,
-                    anchor=anchor,
-                    label=joint_path,
-                    enabled=enabled,
-                    custom_attributes=eq_custom_attrs,
-                )
-                continue
-
-            if _has_api_schema(joint_prim, "MjcEqualityWeldAPI"):
-                body0_rel = joint_prim.GetRelationship("physics:body0")
-                body1_rel = joint_prim.GetRelationship("physics:body1")
-                targets0 = body0_rel.GetTargets() if body0_rel else []
-                targets1 = body1_rel.GetTargets() if body1_rel else []
-                if not targets0 or not targets1:
-                    warnings.warn(
-                        f"MjcEqualityWeldAPI on '{joint_path}' is missing physics:body0 or physics:body1 targets; skipping.",
-                        stacklevel=2,
-                    )
-                    continue
-
-                target0 = str(targets0[0])
-                target1 = str(targets1[0])
-                body0_info = _get_target_body_and_local_pos(target0)
-                body1_info = _get_target_body_and_local_pos(target1)
-                if body0_info is None or body1_info is None:
-                    warnings.warn(
-                        f"MjcEqualityWeldAPI on '{joint_path}' references unresolved targets; skipping.",
-                        stacklevel=2,
-                    )
-                    continue
-
-                body0_idx, _ = body0_info
                 body1_idx, site1_local_pos = body1_info
-                anchor = wp.vec3(*joint_desc.localPose1Position) if target1 in path_body_map else site1_local_pos
-                local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
-                local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
-                local_pos0 = wp.vec3(*joint_desc.localPose0Position)
-                local_pos1 = wp.vec3(*joint_desc.localPose1Position)
-                relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
-                relpose_pos = local_pos0 - wp.quat_rotate(relpose_rot, local_pos1)
-                torquescale_attr = joint_prim.GetAttribute("mjc:torqueScale")
-                torquescale = float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
+                target0 = _get_first_target(joint_prim, "physics:body0")
+                target1 = _get_first_target(joint_prim, "physics:body1")
 
-                builder.add_equality_constraint_weld(
-                    body1=body0_idx,
-                    body2=body1_idx,
-                    anchor=anchor,
-                    relpose=wp.transform(relpose_pos, relpose_rot),
-                    torquescale=torquescale,
-                    label=joint_path,
-                    enabled=enabled,
-                    custom_attributes=eq_custom_attrs,
-                )
+                if is_connect:
+                    anchor = wp.vec3(*joint_desc.localPose0Position) if target0 in path_body_map else site0_local_pos
+                    builder.add_equality_constraint_connect(
+                        body1=body0_idx,
+                        body2=body1_idx,
+                        anchor=anchor,
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=eq_custom_attrs,
+                    )
+                else:
+                    anchor = wp.vec3(*joint_desc.localPose1Position) if target1 in path_body_map else site1_local_pos
+                    local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
+                    local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
+                    local_pos0 = wp.vec3(*joint_desc.localPose0Position)
+                    local_pos1 = wp.vec3(*joint_desc.localPose1Position)
+                    relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
+                    relpose_pos = local_pos0 - wp.quat_rotate(relpose_rot, local_pos1)
+                    torquescale_attr = joint_prim.GetAttribute("mjc:torqueScale")
+                    torquescale = (
+                        float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
+                    )
+                    builder.add_equality_constraint_weld(
+                        body1=body0_idx,
+                        body2=body1_idx,
+                        anchor=anchor,
+                        relpose=wp.transform(relpose_pos, relpose_rot),
+                        torquescale=torquescale,
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=eq_custom_attrs,
+                    )
                 continue
 
-            if _has_api_schema(joint_prim, "MjcEqualityJointAPI"):
+            if is_eq_joint:
                 joint1_idx = path_joint_map.get(joint_path)
                 if joint1_idx is None:
                     warnings.warn(
@@ -2797,6 +2793,34 @@ def parse_usd(
 
     _parse_mjc_equality_constraints()
 
+    # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
+    collapse_results = None
+    path_body_relative_transform = {}
+    if scene_attributes.get("newton:collapse_fixed_joints", collapse_fixed_joints):
+        collapse_results = builder.collapse_fixed_joints()
+        body_merged_parent = collapse_results["body_merged_parent"]
+        body_merged_transform = collapse_results["body_merged_transform"]
+        body_remap = collapse_results["body_remap"]
+        # remap body ids in articulation bodies
+        for art_id, bodies in articulation_bodies.items():
+            articulation_bodies[art_id] = [body_remap[b] for b in bodies if b in body_remap]
+
+        for path, body_id in path_body_map.items():
+            if body_id in body_remap:
+                new_id = body_remap[body_id]
+            elif body_id in body_merged_parent:
+                # this body has been merged with another body
+                new_id = body_remap[body_merged_parent[body_id]]
+                path_body_relative_transform[path] = body_merged_transform[body_id]
+            else:
+                # this body has not been merged
+                new_id = body_id
+
+            path_body_map[path] = new_id
+
+        # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
+        path_joint_map = {label: idx for idx, label in enumerate(builder.joint_label)}
+
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
     # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
     # that couples a follower joint to a leader (reference) joint with a gearing ratio.
@@ -2810,6 +2834,9 @@ def parse_usd(
 
         # Skip if NewtonMimicAPI is present — it takes precedence over PhysxMimicJointAPI.
         if usd.has_applied_api_schema(joint_prim, "NewtonMimicAPI"):
+            continue
+        # Skip if MjcEqualityJointAPI is present — it creates equality constraints, not mimic.
+        if _has_api_schema(joint_prim, "MjcEqualityJointAPI"):
             continue
 
         schemas_listop = joint_prim.GetMetadata("apiSchemas")
