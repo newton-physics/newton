@@ -251,6 +251,69 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[extra_shape], shape_attr, places=6)
 
+    def test_approximate_meshes_shared_copies_after_replicate(self):
+        """After replicate + approximate_meshes, shapes from the same source mesh should share
+        a single Mesh.copy() rather than creating redundant copies per shape."""
+        builder = ModelBuilder()
+        mesh = newton.Mesh.create_box(
+            0.5, 0.5, 0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        robot = ModelBuilder()
+        body = robot.add_body()
+        robot.add_shape_mesh(body, mesh=mesh)
+
+        world_count = 4
+        builder.replicate(robot, world_count=world_count)
+
+        # Before approximate_meshes: all shapes share the same Mesh object
+        for i in range(world_count):
+            self.assertIs(builder.shape_source[i], mesh)
+
+        builder.approximate_meshes(method="convex_hull")
+
+        # After approximate_meshes: all shapes should share a SINGLE copy (not N separate copies)
+        for i in range(1, world_count):
+            self.assertIs(
+                builder.shape_source[i], builder.shape_source[0],
+                f"shape_source[{i}] should be the same object as shape_source[0]"
+            )
+
+        # The copy should NOT be the original mesh (it has new vertices from convex hull)
+        self.assertIsNot(builder.shape_source[0], mesh)
+
+        # The copy should be a valid Mesh with convex hull vertices
+        self.assertEqual(builder.shape_type[0], newton.GeoType.CONVEX_MESH)
+        self.assertGreater(len(builder.shape_source[0].vertices), 0)
+
+        # Finalize should still work correctly
+        model = builder.finalize(device="cpu")
+        self.assertIsNotNone(model)
+
+    def test_approximate_meshes_distinct_objects_same_hash_not_shared(self):
+        """Two distinct Mesh objects with identical geometry but different visual properties
+        (same hash, different id) must NOT share copies. This validates that the copy cache
+        uses id(mesh) rather than hash(mesh)."""
+        builder = ModelBuilder()
+        mesh_a = newton.Mesh.create_box(0.5, 0.5, 0.5, compute_inertia=False)
+        mesh_b = newton.Mesh.create_box(0.5, 0.5, 0.5, compute_inertia=False)
+        mesh_b.color = (1.0, 0.0, 0.0)
+
+        # Same geometry means same hash, but different Python objects with different color
+        self.assertEqual(hash(mesh_a), hash(mesh_b))
+        self.assertIsNot(mesh_a, mesh_b)
+
+        s0 = builder.add_shape_mesh(body=-1, mesh=mesh_a)
+        s1 = builder.add_shape_mesh(body=-1, mesh=mesh_b)
+
+        builder.approximate_meshes(method="convex_hull")
+
+        # Must NOT be shared -- they are different objects with different visual properties
+        self.assertIsNot(builder.shape_source[s0], builder.shape_source[s1])
+
     def test_approximate_meshes_collision_filter_child_bodies(self):
         def normalize_pair(a, b):
             return (min(a, b), max(a, b))
