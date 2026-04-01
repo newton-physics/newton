@@ -713,7 +713,10 @@ add_example_test(
     name="basic.example_basic_plotting",
     devices=test_devices,
     test_options={"num-frames": 200},
-    expected_output=["Diagnostics plot saved to|Simulation diagnostics summary"],
+    expected_output=[
+        "Diagnostics plot saved to|Simulation diagnostics summary",
+        r"^\s+(Iterations|Kinetic E|Potential E|Constraints):",
+    ],
 )
 
 
@@ -726,14 +729,14 @@ add_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
-    expected_output=["Downloading nut/bolt assets"],
+    expected_output=["Downloading nut/bolt assets", "Assets downloaded to"],
 )
 add_example_test(
     TestContactsExamples,
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
-    expected_output=["Downloading nut/bolt assets"],
+    expected_output=["Downloading nut/bolt assets", "Assets downloaded to"],
 )
 add_example_test(
     TestContactsExamples,
