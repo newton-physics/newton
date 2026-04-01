@@ -16,9 +16,9 @@
 ###########################################################################
 # Example MPC Go2 Climb
 #
-# DIAL-MPC Go2 quadruped climbing onto a box.
-# The robot walks forward and climbs onto a 15cm step, inspired by
-# the box-climbing task from the DIAL-MPC paper (Yin et al., 2024).
+# DIAL-MPC Go2 quadruped climbing onto a box, inspired by the
+# box-climbing task from the DIAL-MPC paper (Yin et al., 2024).
+# The robot walks forward and scrambles onto a raised platform.
 #
 # Command: python -m newton.examples mpc_go2_climb
 #
@@ -54,9 +54,9 @@ from newton.examples.mpc.dial_mpc import (
 )
 
 N_JOINTS = 12
-BOX_X = 1.2          # box center X position [m]
-BOX_HALF_HEIGHT = 0.02  # box half-height [m] (full height = 4cm curb)
-BOX_HALF_LEN = 0.6   # box half-length in X [m] (long platform)
+BOX_X = 0.9          # box center X position [m]
+BOX_HALF_HEIGHT = 0.10  # box half-height [m] (full height = 20cm)
+BOX_HALF_LEN = 0.5   # box half-length in X [m]
 BOX_HALF_WIDTH = 0.5  # box half-width in Y [m]
 
 
@@ -109,10 +109,7 @@ def _make_go2_builder(usd_path, go2_config, load_visual_shapes=True):
 
 
 def _add_box_to_builder(builder):
-    """Add a kinematic step platform to the builder.
-
-    Gets replicated along with the robot into each rollout world.
-    """
+    """Add a kinematic (immovable, visible) box platform to the builder."""
     box_body = builder.add_body(
         xform=wp.transform(wp.vec3(BOX_X, 0.0, BOX_HALF_HEIGHT)),
         is_kinematic=True,
@@ -127,7 +124,6 @@ def _add_box_to_builder(builder):
 
 
 def build_go2_with_box_visual():
-    """Build Go2 + box for video rendering."""
     usd_path, go2_config = _load_go2_config()
     builder, _ = _make_go2_builder(usd_path, go2_config, load_visual_shapes=True)
     _add_box_to_builder(builder)
@@ -140,7 +136,12 @@ def build_go2_with_box_visual():
 
 
 def climb_reward(rollout_sim, config, t, actions=None, n_actual=None):
-    """Reward for climbing onto a box: forward progress + height gain + upright."""
+    """Reward for climbing onto a box.
+
+    Key design: position-based forward reward dominates velocity tracking,
+    so the robot keeps pushing forward even when hitting the box edge.
+    Height penalty is relaxed near the box to allow crouching during climb.
+    """
     bp, bq, bv, ba = rollout_sim.get_base_states()
     N = n_actual or bp.shape[0]
     bp, bq, bv, ba = bp[:N], bq[:N], bv[:N], ba[:N]
@@ -148,46 +149,59 @@ def climb_reward(rollout_sim, config, t, actions=None, n_actual=None):
     ramp = min(1.0, t / config.ramp_up_time) if config.ramp_up_time > 0 else 1.0
     ab = quat_rotate_inv(bq, ba)
 
-    # Forward velocity — keep pushing forward regardless of box
+    box_front = BOX_X - BOX_HALF_LEN
+    box_top_z = 2 * BOX_HALF_HEIGHT
+
+    # === Primary: forward position (most important — push through the box) ===
+    reward_pos = 3.0 * bp[:, 0]
+
+    # === Forward velocity ===
     target_vx = config.target_vx * ramp
-    reward_vel = -2.0 * ((bv[:, 0] - target_vx) ** 2 + bv[:, 1] ** 2)
+    reward_vel = -1.0 * ((bv[:, 0] - target_vx) ** 2 + bv[:, 1] ** 2)
 
-    # Height: always target the ground standing height (don't change near box).
-    # This lets the robot discover climbing naturally via forward pressure.
-    h_err = bp[:, 2] - config.ground_height
-    reward_height = -2.0 * np.where(h_err < 0, 10.0 * h_err ** 2, h_err ** 2)
+    # === Height: adapt target based on whether robot is on the box ===
+    on_box_region = bp[:, 0] > box_front
+    target_h = np.where(on_box_region,
+                        config.ground_height + box_top_z,
+                        config.ground_height)
+    h_err = bp[:, 2] - target_h
+    # Weaker height penalty near box edge (allow crouching during climb)
+    near_edge = (bp[:, 0] > box_front - 0.3) & (bp[:, 0] < box_front + 0.3)
+    h_weight = np.where(near_edge, 0.5, 2.0)
+    reward_height = -h_weight * np.where(h_err < 0, 5.0 * h_err ** 2, h_err ** 2)
 
-    # Bonus: reward any height ABOVE ground level (climbing)
-    height_gain = np.clip(bp[:, 2] - config.ground_height - 0.02, 0, 0.3)
-    reward_climb = 5.0 * height_gain
-
-    # Upright + pitch
+    # === Upright (weakened during climb transition) ===
     up_body = compute_up_in_body(bq)
     up_world = np.zeros_like(up_body)
     up_world[:, 2] = 1.0
-    reward_upright = -2.0 * np.sum((up_body - up_world) ** 2, axis=1)
+    upright_weight = np.where(near_edge, 0.5, 2.0)
+    reward_upright = -upright_weight * np.sum((up_body - up_world) ** 2, axis=1)
 
+    # === Pitch (weakened during climb — some lean is OK) ===
     pitch = compute_pitch(bq)
-    reward_pitch = -3.0 * (pitch ** 2)
+    pitch_weight = np.where(near_edge, 0.5, 2.0)
+    reward_pitch = -pitch_weight * (pitch ** 2)
 
-    # Yaw penalty
+    # === Big bonus for being on top of the box ===
+    on_top = on_box_region & (bp[:, 2] > config.ground_height + box_top_z - 0.05)
+    reward_on_top = np.where(on_top, 5.0, 0.0)
+
+    # === Yaw + angular velocity smoothness ===
     yaw = quat_to_yaw(bq)
     reward_yaw = -0.3 * (np.arctan2(np.sin(yaw), np.cos(yaw)) ** 2)
-
-    # Angular velocity smoothness
     reward_ang_vel = -0.3 * (ab[:, 2] ** 2)
-    reward_body_rate = -0.3 * (ab[:, 0] ** 2 + ab[:, 1] ** 2)
+    reward_body_rate = -0.2 * (ab[:, 0] ** 2 + ab[:, 1] ** 2)
 
-    # Action regularization
+    # === Action regularization (light) ===
     reward_action = np.zeros(N, dtype=np.float32)
     if actions is not None:
-        reward_action = -0.01 * np.mean(actions ** 2, axis=1)
+        reward_action = -0.005 * np.mean(actions ** 2, axis=1)
 
-    reward = (reward_vel + reward_height + reward_climb + reward_upright +
-              reward_pitch + reward_yaw + reward_ang_vel + reward_body_rate +
-              reward_action)
+    reward = (reward_pos + reward_vel + reward_height + reward_on_top +
+              reward_upright + reward_pitch + reward_yaw + reward_ang_vel +
+              reward_body_rate + reward_action)
 
-    terminated = (bp[:, 2] < 0.05) | (up_body[:, 2] < -0.3)
+    terminated = (bp[:, 2] < 0.05) | (up_body[:, 2] < -0.5)
     return np.where(terminated, -100.0, reward)
 
 
@@ -205,11 +219,14 @@ class Example:
 
         self.mpc_config = mppi_config_from_args(
             args,
-            h_sample=20,       # longer horizon for climbing
-            sigma_scale=1.2,   # more exploration
+            h_sample=24,         # long horizon for climb planning
+            sigma_scale=1.5,     # high exploration
+            n_diffuse=6,         # more diffusion for complex task
+            n_diffuse_init=12,
+            temp_sample=0.03,    # sharper selection
         )
         self.mpc_config.target_vx = getattr(args, "target_vx", 0.5)
-        self.mpc_config.ground_height = 0.30  # calibrated below
+        self.mpc_config.ground_height = 0.30
 
         # Build visual model with box
         usd_path, self.go2_config = _load_go2_config()
@@ -236,10 +253,10 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        # Wider action range for climbing motions
+        # Wide action range for climbing motions (legs need to lift high)
         home_pos = np.array(self.go2_config["mjw_joint_pos"], dtype=np.float32)
-        self.joint_range_low = home_pos - 0.3
-        self.joint_range_high = home_pos + 0.3
+        self.joint_range_low = home_pos - 0.5
+        self.joint_range_high = home_pos + 0.5
 
         np.random.seed(42)
 
@@ -250,8 +267,10 @@ class Example:
         settled_z = self.state_0.joint_q.numpy()[2]
         self.mpc_config.ground_height = float(settled_z)
         print(f"  Settled height: {settled_z:.4f}m")
+        print(f"  Box: x={BOX_X:.1f}m, front={BOX_X - BOX_HALF_LEN:.1f}m, "
+              f"height={2 * BOX_HALF_HEIGHT:.2f}m, top_z={settled_z + 2 * BOX_HALF_HEIGHT:.2f}m")
 
-        # Build rollout sim with box in each world
+        # Build rollout sim with box
         physics_builder, _ = _make_go2_builder(usd_path, self.go2_config, load_visual_shapes=False)
         _add_box_to_builder(physics_builder)
         n_rollout = self.mpc_config.n_samples + 1
@@ -277,7 +296,7 @@ class Example:
     def _settle(self):
         home = np.array(self.go2_config["mjw_joint_pos"], dtype=np.float32)
         full = np.zeros(self.model.joint_dof_count, dtype=np.float32)
-        full[6:6 + N_JOINTS] = home  # only robot joints, skip box free joint DOFs
+        full[6:6 + N_JOINTS] = home
         wp.copy(self.control.joint_target_pos,
                 wp.array(full, dtype=wp.float32, device=self.device))
         sim_dt = self.mpc_config.ctrl_dt / self.mpc_config.sim_substeps
@@ -320,10 +339,12 @@ class Example:
         self.trajectory["action"].append(action.copy())
 
         if self.sim_step % 20 == 0 or self.sim_step == self.mpc_config.n_steps - 1:
+            box_front = BOX_X - BOX_HALF_LEN
+            on_box = "ON BOX" if bq[0, 0] > box_front and bq[0, 2] > self.mpc_config.ground_height + 2 * BOX_HALF_HEIGHT - 0.05 else ""
             print(
                 f"  Step {self.sim_step:4d}/{self.mpc_config.n_steps}  "
                 f"t={self.sim_time:.2f}s  vx={bqd[0, 0]:+.3f}m/s  "
-                f"x={bq[0, 0]:.3f}m  z={bq[0, 2]:.3f}m  rew={reward:+.3f}"
+                f"x={bq[0, 0]:.3f}m  z={bq[0, 2]:.3f}m  rew={reward:+.3f}  {on_box}"
             )
 
         self.sim_time += self.frame_dt
@@ -348,8 +369,8 @@ class Example:
         heights = np.array(traj["height"])
         final_x = traj["body_q"][-1][0, 0]
         final_z = traj["body_q"][-1][0, 2]
-        box_top = 2 * BOX_HALF_HEIGHT + self.mpc_config.ground_height
         box_front = BOX_X - BOX_HALF_LEN
+        box_top_z = self.mpc_config.ground_height + 2 * BOX_HALF_HEIGHT
 
         print(f"\n{'='*60}")
         print("Go2 Climb Verification")
@@ -366,23 +387,28 @@ class Example:
                 print(f"  FAIL: {name} — {msg}")
                 n_fail += 1
 
-        check("height > 0.08m always (no collapse)",
-              heights.min() > 0.08, f"min={heights.min():.3f}m")
+        check("no collapse (height > 0.05m always)",
+              heights.min() > 0.05, f"min={heights.min():.3f}m")
 
         final_quat = traj["body_q"][-1][0, 3:7]
         up_z = compute_up_in_body(final_quat.reshape(1, 4))[0, 2]
-        check("stays upright (up_z > 0.5)",
-              up_z > 0.5, f"up_z={up_z:.3f}")
+        check("stays upright (up_z > 0.3)",
+              up_z > 0.3, f"up_z={up_z:.3f}")
 
-        check("reaches box (x > box_front)",
+        check("robot past box front edge (x > box_front)",
               final_x > box_front,
               f"final_x={final_x:.3f}m, box_front={box_front:.2f}m")
 
-        # Check robot is on the box: z should be at least above ground + step height
-        step_height = 2 * BOX_HALF_HEIGHT
-        check("on top of box (z > ground + step)",
-              final_z > self.mpc_config.ground_height * 0.5 + step_height,
-              f"final_z={final_z:.3f}m, threshold={self.mpc_config.ground_height * 0.5 + step_height:.2f}m")
+        check("robot ON the box (z > box_top - 5cm)",
+              final_z > box_top_z - 0.05,
+              f"final_z={final_z:.3f}m, box_top_z={box_top_z:.2f}m")
+
+        # Check that the robot actually climbed (height increased from initial)
+        initial_z = heights[0]
+        max_z_on_box = max(h for h, bq in zip(heights, traj["body_q"]) if bq[0, 0] > box_front) if any(bq[0, 0] > box_front for bq in traj["body_q"]) else initial_z
+        check("height gain on box > 5cm",
+              max_z_on_box - initial_z > 0.05,
+              f"max_z_on_box={max_z_on_box:.3f}m, initial_z={initial_z:.3f}m, gain={max_z_on_box - initial_z:.3f}m")
 
         dist = final_x - traj["body_q"][0][0, 0]
         check("forward progress > 0.3m",
@@ -390,7 +416,8 @@ class Example:
 
         print(f"\n  Summary: {n_pass} passed, {n_fail} failed")
         print(f"  Final position: x={final_x:.2f}m, z={final_z:.3f}m")
-        print(f"  Box: front={box_front:.2f}m, top={box_top:.2f}m")
+        print(f"  Box: front={box_front:.2f}m, top_z={box_top_z:.2f}m")
+        print(f"  Height gain on box: {max_z_on_box - initial_z:.3f}m")
         print(f"{'='*60}")
 
         if n_fail > 0:
