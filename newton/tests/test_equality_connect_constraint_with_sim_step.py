@@ -311,6 +311,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         initial_qd = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
         connect_anchor_body2 = [[1.0, 2.0, 3.0], [1.3, 2.4, 2.6]]
         changed_connect_anchor_body2 = [[-1.5, -2.5, -3.5], [-1.8, -2.2, -3.1]]
+        changed_joint_dof_refs = [[0.5, -1.0, 2.0], [0.3, -0.8, 1.5]]
 
         # Ball joint identity quaternion coords (x, y, z, w)
         ball_q_identity = [0.0, 0.0, 0.0, 1.0]
@@ -320,6 +321,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         flat_initial_q = []
         flat_initial_qd = []
         flat_changed_connect_anchor_body2 = []
+        flat_changed_dof_ref = []
+        flat_changed_ref_q = []
         num_bodies = 5
         # Ball joint adds 4 coords (quaternion) before the 3 joint coords
         ball_q_offset = 4
@@ -337,6 +340,14 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                 flat_initial_qd.append(initial_qd[w][k])
             for k in range(3):
                 flat_changed_connect_anchor_body2.append(changed_connect_anchor_body2[w][k])
+            # Ball joint has 3 DOFs, all with ref = 0
+            for _ in range(3):
+                flat_changed_dof_ref.append(0.0)
+            for v in ball_q_identity:
+                flat_changed_ref_q.append(v)
+            for k in range(3):
+                flat_changed_dof_ref.append(changed_joint_dof_refs[w][k])
+                flat_changed_ref_q.append(changed_joint_dof_refs[w][k])
 
         for i in range(0, num_joint_0_joint_types):
             for j in range(0, num_connect_joint_types_and_axes):
@@ -531,6 +542,83 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     ]
                     residual = connect_residual(
                         measured_body_poses, world_body_indices, changed_measured_a2, changed_measured_a3
+                    )
+                    self.assertAlmostEqual(residual, 0.0, places=3)
+
+                ##############
+                # TEST 4
+                # Change dof_ref at runtime via JOINT_DOF_PROPERTIES and verify
+                # the connect constraint anchors are recomputed for the new
+                # reference pose.
+                # This test would FAIL without the fix that adds
+                # SolverNotifyFlags.JOINT_DOF_PROPERTIES to the flags that
+                # trigger recomputation of connect constraint anchors.
+                ##############
+
+                sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
+                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+                # Verify that mjw_model.eq_data was updated with anchors computed
+                # from the new reference poses.
+                for w in range(num_worlds):
+                    changed_ref_expected_a3 = self.compute_expected_body3_anchor(
+                        joint_axes, changed_joint_dof_refs[w], joint_types, changed_connect_anchor_body2[w]
+                    )
+                    measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
+                    changed_ref_measured_a2 = wp.vec3(
+                        measured_eq_data[w][0][0], measured_eq_data[w][0][1], measured_eq_data[w][0][2]
+                    )
+                    changed_ref_measured_a3 = wp.vec3(
+                        measured_eq_data[w][0][3], measured_eq_data[w][0][4], measured_eq_data[w][0][5]
+                    )
+                    # The 1st anchor is unaffected by the change to reference joint positions.
+                    for k in range(3):
+                        self.assertAlmostEqual(
+                            float(changed_connect_anchor_body2[w][k]), float(changed_ref_measured_a2[k]), places=4
+                        )
+                        self.assertAlmostEqual(
+                            float(changed_ref_expected_a3[k]), float(changed_ref_measured_a3[k]), places=4
+                        )
+
+                # Also verify qpos0 was updated with the new dof_ref values.
+                for w in range(num_worlds):
+                    measured_dof_refs = sim.solver.mjw_model.qpos0.numpy()[w]
+                    for k in range(3):
+                        self.assertAlmostEqual(
+                            float(measured_dof_refs[ball_q_offset + k]),
+                            changed_joint_dof_refs[w][k],
+                            places=4,
+                        )
+
+                sim.state_in.joint_q.assign(flat_changed_ref_q)
+                sim.state_in.joint_qd.assign(flat_initial_qd)
+
+                for _ in range(num_steps):
+                    sim.solver.step(
+                        state_in=sim.state_in,
+                        state_out=sim.state_out,
+                        control=sim.control,
+                        dt=dt,
+                        contacts=None,
+                    )
+                    sim.state_in, sim.state_out = sim.state_out, sim.state_in
+
+                # After N steps, the residual should be close to 0.
+                for w in range(num_worlds):
+                    measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
+                    changed_ref_measured_a2 = wp.vec3(
+                        measured_eq_data[w][0][0], measured_eq_data[w][0][1], measured_eq_data[w][0][2]
+                    )
+                    changed_ref_measured_a3 = wp.vec3(
+                        measured_eq_data[w][0][3], measured_eq_data[w][0][4], measured_eq_data[w][0][5]
+                    )
+                    measured_body_poses = sim.state_in.body_q.numpy()
+                    world_body_indices = [
+                        w * num_bodies + connect_body_indices[0],
+                        w * num_bodies + connect_body_indices[1],
+                    ]
+                    residual = connect_residual(
+                        measured_body_poses, world_body_indices, changed_ref_measured_a2, changed_ref_measured_a3
                     )
                     self.assertAlmostEqual(residual, 0.0, places=3)
 

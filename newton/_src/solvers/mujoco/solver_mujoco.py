@@ -3099,7 +3099,7 @@ class SolverMuJoCo(SolverBase):
             need_length_range = True
 
         update_connect_constraint_anchor_rel_xform_at_ref_pose = self.has_connect_constraints and bool(
-            flags & SolverNotifyFlags.JOINT_PROPERTIES
+            flags & (SolverNotifyFlags.JOINT_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         )
         update_connect_constraint_anchors = self.has_connect_constraints and bool(
             flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES
