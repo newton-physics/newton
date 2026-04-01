@@ -1,6 +1,8 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 Installation
 ============
 
@@ -93,7 +95,7 @@ CPU-Only Limitations
 Newton can run on CPU (including macOS), but the following features require an
 NVIDIA GPU and are unavailable in CPU-only mode:
 
-- **SDF collision** — signed-distance-field computation (:func:`compute_sdf_from_shape`) requires CUDA
+- **SDF collision** — signed-distance-field computation requires CUDA
   (``wp.Volume`` is GPU-only).
 - **Mesh-mesh contacts** — SDF-based mesh-mesh collision is silently skipped on CPU.
 - **Hydroelastic contacts** — depends on the SDF system.
@@ -255,7 +257,7 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``importers``
      - Asset import and mesh processing dependencies
    * - ``remesh``
-     - Remeshing dependencies (Open3D, pyfqmr) for :class:`~newton.SurfaceReconstructor`
+     - Remeshing dependencies (Open3D, pyfqmr) for :func:`newton.utils.remesh_mesh`
    * - ``examples``
      - Dependencies for running examples, including visualization (includes ``sim`` + ``importers``)
    * - ``torch-cu12``

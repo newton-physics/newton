@@ -4,6 +4,7 @@
 newton.geometry
 ===============
 
+.. py:module:: newton.geometry
 .. currentmodule:: newton.geometry
 
 .. rubric:: Classes
