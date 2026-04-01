@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.geometry.types import GeoType
 from newton._src.solvers.kamino._src.core.bodies import RigidBodyDescriptor
 from newton._src.solvers.kamino._src.core.geometry import GeometryDescriptor
 from newton._src.solvers.kamino._src.core.gravity import (
@@ -32,7 +33,7 @@ from newton._src.solvers.kamino._src.core.materials import (
     DEFAULT_RESTITUTION,
     MaterialDescriptor,
 )
-from newton._src.solvers.kamino._src.core.shapes import ShapeType, SphereShape
+from newton._src.solvers.kamino._src.core.shapes import SphereShape
 from newton._src.solvers.kamino._src.core.world import WorldDescriptor
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
@@ -301,7 +302,7 @@ class TestGeometryDescriptor(unittest.TestCase):
         self.assertIsInstance(cgeom, GeometryDescriptor)
         self.assertEqual(cgeom.name, "test_geom")
         self.assertEqual(cgeom.body, 0)
-        self.assertEqual(cgeom.shape.type, ShapeType.SPHERE)
+        self.assertEqual(cgeom.shape.type, GeoType.SPHERE)
         self.assertEqual(cgeom.shape.radius, 1.0)
         self.assertEqual(cgeom.wid, -1)
         self.assertEqual(cgeom.gid, -1)
@@ -325,7 +326,7 @@ class TestGeometryDescriptor(unittest.TestCase):
         self.assertIsInstance(cgeom, GeometryDescriptor)
         self.assertEqual(cgeom.name, "test_geom")
         self.assertEqual(cgeom.body, 0)
-        self.assertEqual(cgeom.shape.type, ShapeType.SPHERE)
+        self.assertEqual(cgeom.shape.type, GeoType.SPHERE)
         self.assertEqual(cgeom.shape.radius, 1.0)
         self.assertEqual(cgeom.wid, -1)
         self.assertEqual(cgeom.gid, -1)
@@ -343,7 +344,7 @@ class TestGeometryDescriptor(unittest.TestCase):
         self.assertIsInstance(geom, GeometryDescriptor)
         self.assertEqual(geom.name, "test_geom")
         self.assertEqual(geom.body, 0)
-        self.assertEqual(geom.shape.type, ShapeType.SPHERE)
+        self.assertEqual(geom.shape.type, GeoType.SPHERE)
         self.assertEqual(geom.shape.radius, 1.0)
         self.assertEqual(geom.wid, -1)
         self.assertEqual(geom.gid, -1)
@@ -589,7 +590,7 @@ class TestWorldDescriptor(unittest.TestCase):
         msg.info(f"geom: {geom}")
         self.assertEqual(geom.name, "test_geom")
         self.assertEqual(geom.body, body_0.bid)
-        self.assertEqual(geom.shape.type, ShapeType.SPHERE)
+        self.assertEqual(geom.shape.type, GeoType.SPHERE)
         self.assertEqual(geom.shape.radius, 1.0)
         self.assertEqual(geom.wid, world.wid)
         self.assertEqual(geom.gid, 0)

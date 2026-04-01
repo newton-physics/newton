@@ -1,6 +1,8 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 Visualization
 =============
 
@@ -316,7 +318,7 @@ Constructor parameters:
     viewer.log_state(state)
     viewer.end_frame()
 
-By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
+By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via :meth:`~newton.viewer.ViewerBase.log_state`.
 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
 If you want to keep the historical state data in the viewer, you can set the ``keep_historical_data`` flag to ``True``.
 
@@ -340,7 +342,7 @@ You can use ``uv`` to start Jupyter lab with the required dependencies (or insta
 
   uv run --extra notebook jupyter lab
 
-Then, you can use the rerun SDK in a Jupyter notebook by importing the :mod:`rerun` module and creating a viewer instance.
+Then, you can use the rerun SDK in a Jupyter notebook by importing the ``rerun`` module and creating a viewer instance.
 
 .. code-block:: python
 

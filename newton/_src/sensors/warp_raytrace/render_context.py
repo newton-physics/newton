@@ -6,7 +6,6 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import warp as wp
@@ -145,53 +144,53 @@ class RenderContext:
             device: Warp device string (e.g. ``"cuda:0"``). If ``None``,
                 the default Warp device is used.
         """
-        self.device = device
+        self.device: str | None = device
         self.utils = Utils(self)
         self.config = config if config else RenderContext.Config()
         self.state = RenderContext.State()
 
-        self.kernel_cache: dict[int, wp.kernel] = {}
+        self.kernel_cache: dict[int, wp.Kernel] = {}
 
-        self.world_count = world_count
+        self.world_count: int = world_count
 
-        self.bvh_shapes: wp.Bvh = None
-        self.bvh_shapes_group_roots: wp.array(dtype=wp.int32) = None
+        self.bvh_shapes: wp.Bvh | None = None
+        self.bvh_shapes_group_roots: wp.array(dtype=wp.int32) | None = None
 
-        self.bvh_particles: wp.Bvh = None
-        self.bvh_particles_group_roots: wp.array(dtype=wp.int32) = None
+        self.bvh_particles: wp.Bvh | None = None
+        self.bvh_particles_group_roots: wp.array(dtype=wp.int32) | None = None
 
-        self.triangle_mesh: wp.Mesh = None
-        self.shape_count_enabled = 0
-        self.shape_count_total = 0
+        self.triangle_mesh: wp.Mesh | None = None
+        self.shape_count_enabled: int = 0
+        self.shape_count_total: int = 0
 
-        self.__triangle_points: wp.array(dtype=wp.vec3f) = None
-        self.__triangle_indices: wp.array(dtype=wp.int32) = None
+        self.__triangle_points: wp.array(dtype=wp.vec3f) | None = None
+        self.__triangle_indices: wp.array(dtype=wp.int32) | None = None
 
-        self.__particles_position: wp.array(dtype=wp.vec3f) = None
-        self.__particles_radius: wp.array(dtype=wp.float32) = None
-        self.__particles_world_index: wp.array(dtype=wp.int32) = None
+        self.__particles_position: wp.array(dtype=wp.vec3f) | None = None
+        self.__particles_radius: wp.array(dtype=wp.float32) | None = None
+        self.__particles_world_index: wp.array(dtype=wp.int32) | None = None
 
-        self.__gaussians_data: wp.array(dtype=Gaussian.Data) = None
+        self.__gaussians_data: wp.array(dtype=Gaussian.Data) | None = None
 
-        self.shape_enabled: wp.array(dtype=wp.uint32) = None
-        self.shape_types: wp.array(dtype=wp.int32) = None
-        self.shape_sizes: wp.array(dtype=wp.vec3f) = None
-        self.shape_transforms: wp.array(dtype=wp.transformf) = None
-        self.shape_colors: wp.array(dtype=wp.vec4f) = None
-        self.shape_world_index: wp.array(dtype=wp.int32) = None
-        self.shape_source_ptr: wp.array(dtype=wp.uint64) = None
-        self.shape_bounds: wp.array2d(dtype=wp.vec3f) = None
-        self.shape_texture_ids: wp.array(dtype=wp.int32) = None
-        self.shape_mesh_data_ids: wp.array(dtype=wp.int32) = None
+        self.shape_enabled: wp.array(dtype=wp.uint32) | None = None
+        self.shape_types: wp.array(dtype=wp.int32) | None = None
+        self.shape_sizes: wp.array(dtype=wp.vec3f) | None = None
+        self.shape_transforms: wp.array(dtype=wp.transformf) | None = None
+        self.shape_colors: wp.array(dtype=wp.vec3f) | None = None
+        self.shape_world_index: wp.array(dtype=wp.int32) | None = None
+        self.shape_source_ptr: wp.array(dtype=wp.uint64) | None = None
+        self.shape_bounds: wp.array2d(dtype=wp.vec3f) | None = None
+        self.shape_texture_ids: wp.array(dtype=wp.int32) | None = None
+        self.shape_mesh_data_ids: wp.array(dtype=wp.int32) | None = None
 
-        self.mesh_data: wp.array(dtype=MeshData) = None
-        self.texture_data: wp.array(dtype=TextureData) = None
+        self.mesh_data: wp.array(dtype=MeshData) | None = None
+        self.texture_data: wp.array(dtype=TextureData) | None = None
 
-        self.lights_active: wp.array(dtype=wp.bool) = None
-        self.lights_type: wp.array(dtype=wp.int32) = None
-        self.lights_cast_shadow: wp.array(dtype=wp.bool) = None
-        self.lights_position: wp.array(dtype=wp.vec3f) = None
-        self.lights_orientation: wp.array(dtype=wp.vec3f) = None
+        self.lights_active: wp.array(dtype=wp.bool) | None = None
+        self.lights_type: wp.array(dtype=wp.int32) | None = None
+        self.lights_cast_shadow: wp.array(dtype=wp.bool) | None = None
+        self.lights_position: wp.array(dtype=wp.vec3f) | None = None
+        self.lights_orientation: wp.array(dtype=wp.vec3f) | None = None
 
     def init_from_model(self, model: Model, load_textures: bool = True):
         """Initialize render context state from a Newton simulation model.
@@ -234,13 +233,11 @@ class RenderContext:
         self.shape_sizes = wp.empty(model.shape_count, dtype=wp.vec3f, device=self.device)
         self.shape_transforms = wp.empty(model.shape_count, dtype=wp.transformf, device=self.device)
 
+        self.shape_colors = model.shape_color
         self.shape_world_index = model.shape_world
         self.gaussians_data = model.gaussians_data
 
         self.__load_texture_and_mesh_data(model, load_textures)
-
-        colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(model.shape_source)]
-        self.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.device)
 
         num_enabled_shapes = wp.zeros(1, dtype=wp.int32, device=self.device)
         wp.launch(
@@ -675,36 +672,6 @@ class RenderContext:
             ],
             device=self.device,
         )
-
-    def __get_shape_color(self, index: int, shape: Any):
-        """Return the RGB color tuple for a shape.
-
-        Uses the shape's own ``color`` attribute when available,
-        otherwise cycles through a predefined color palette.
-
-        Args:
-            index: Shape index used to cycle the palette.
-            shape: Shape source object, optionally carrying a ``color``
-                attribute.
-
-        Returns:
-            RGB color as a 3-tuple of floats in ``[0, 1]``.
-        """
-        SHAPE_COLOR_MAP = [
-            (68 / 255.0, 119 / 255.0, 170 / 255.0),  # blue
-            (102 / 255.0, 204 / 255.0, 238 / 255.0),  # cyan
-            (34 / 255.0, 136 / 255.0, 51 / 255.0),  # green
-            (204 / 255.0, 187 / 255.0, 68 / 255.0),  # yellow
-            (238 / 255.0, 102 / 255.0, 119 / 255.0),  # red
-            (170 / 255.0, 51 / 255.0, 119 / 255.0),  # magenta
-            (187 / 255.0, 187 / 255.0, 187 / 255.0),  # grey
-            (238 / 255.0, 153 / 255.0, 51 / 255.0),  # orange
-            (0 / 255.0, 153 / 255.0, 136 / 255.0),  # teal
-        ]
-
-        if color := getattr(shape, "color", None):
-            return color
-        return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
 
     def __load_texture_and_mesh_data(self, model: Model, load_textures: bool):
         """Load mesh UV/normal data and textures from *model*.

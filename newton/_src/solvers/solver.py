@@ -319,7 +319,7 @@ class SolverBase:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
-        ``SolverNotifyFlags`` enums defined in :mod:`newton.solvers`.
+        :class:`~newton.solvers.SolverNotifyFlags` enums defined in :mod:`newton.solvers`.
         Each flag represents a category of model data that may have been
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its
@@ -344,13 +344,14 @@ class SolverBase:
         """
         pass
 
-    def update_contacts(self, contacts: Contacts) -> None:
+    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """
         Update a Contacts object with forces from the solver state. Where the solver state contains
         other contact data, convert that data to the Contacts format.
 
         Args:
             contacts: The object to update from the solver state.
+            state: Optional simulation state, used by some solvers.
         """
         raise NotImplementedError()
 

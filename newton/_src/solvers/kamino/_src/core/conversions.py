@@ -9,7 +9,7 @@ import warp as wp
 from .....sim.model import Model
 from ..utils import logger as msg
 from .joints import JointDoFType, JointsModel
-from .shapes import ShapeType, max_contacts_for_shape_pair
+from .shapes import max_contacts_for_shape_pair
 
 ###
 # Module interface
@@ -235,8 +235,8 @@ def compute_required_contact_capacity(
     for shape_pair in shape_contact_pairs:
         s1 = int(shape_pair[0])
         s2 = int(shape_pair[1])
-        type1, _ = ShapeType.from_newton(shape_type_np[s1])
-        type2, _ = ShapeType.from_newton(shape_type_np[s2])
+        type1 = int(shape_type_np[s1])
+        type2 = int(shape_type_np[s2])
         if type1 > type2:
             s1, s2 = s2, s1
             type1, type2 = type2, type1

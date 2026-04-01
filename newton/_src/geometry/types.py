@@ -548,6 +548,8 @@ class Mesh:
         terrain_params: dict | None = None,
         seed: int | None = None,
         *,
+        compute_normals: bool = False,
+        compute_uvs: bool = False,
         compute_inertia: bool = True,
     ) -> "Mesh":
         """Create a procedural terrain mesh from terrain blocks.
@@ -558,6 +560,8 @@ class Mesh:
             terrain_types: Terrain type name(s) or callable generator(s).
             terrain_params: Optional per-terrain parameter dictionary.
             seed: Optional random seed for deterministic terrain generation.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
@@ -572,7 +576,22 @@ class Mesh:
             terrain_params=terrain_params,
             seed=seed,
         )
-        return Mesh(vertices, indices, compute_inertia=compute_inertia)
+        normals = None
+        uvs = None
+        if compute_normals:
+            from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+            normals = compute_vertex_normals(vertices, indices).astype(np.float32)
+        if compute_uvs:
+            total_x = grid_size[1] * block_size[0]
+            total_y = grid_size[0] * block_size[1]
+            uvs = np.column_stack(
+                [
+                    vertices[:, 0] / total_x if total_x > 0 else np.zeros(len(vertices)),
+                    vertices[:, 1] / total_y if total_y > 0 else np.zeros(len(vertices)),
+                ]
+            ).astype(np.float32)
+        return Mesh(vertices, indices, normals=normals, uvs=uvs, compute_inertia=compute_inertia)
 
     @staticmethod
     def create_heightfield(
@@ -583,6 +602,8 @@ class Mesh:
         center_y: float = 0.0,
         ground_z: float = 0.0,
         *,
+        compute_normals: bool = False,
+        compute_uvs: bool = False,
         compute_inertia: bool = True,
     ) -> "Mesh":
         """Create a watertight mesh from a 2D heightfield.
@@ -595,6 +616,8 @@ class Mesh:
             center_x [m]: Heightfield center position along X.
             center_y [m]: Heightfield center position along Y.
             ground_z [m]: Bottom surface Z value for watertight side walls.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
@@ -610,7 +633,19 @@ class Mesh:
             center_y=center_y,
             ground_z=ground_z,
         )
-        return Mesh(vertices, indices, compute_inertia=compute_inertia)
+        normals = None
+        uvs = None
+        if compute_normals:
+            from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+            normals = compute_vertex_normals(vertices, indices).astype(np.float32)
+        if compute_uvs:
+            num_top = len(vertices) // 2
+            u = (vertices[:, 0] - (center_x - extent_x / 2)) / extent_x
+            v = (vertices[:, 1] - (center_y - extent_y / 2)) / extent_y
+            uvs = np.column_stack([u, v]).astype(np.float32)
+            uvs[:num_top] = np.clip(uvs[:num_top], 0.0, 1.0)
+        return Mesh(vertices, indices, normals=normals, uvs=uvs, compute_inertia=compute_inertia)
 
     def copy(
         self,
@@ -761,6 +796,7 @@ class Mesh:
 
     @property
     def color(self) -> Vec3 | None:
+        """Optional display RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
@@ -769,6 +805,7 @@ class Mesh:
 
     @property
     def texture(self) -> str | np.ndarray | None:
+        """Optional texture as a file path or a normalized RGBA array."""
         return self._texture
 
     @texture.setter
@@ -783,7 +820,7 @@ class Mesh:
         """Content-based hash of the assigned texture.
 
         Returns a stable integer hash derived from the texture data.
-        The value is lazily computed and cached until :attr:`texture`
+        The value is lazily computed and cached until :attr:`~newton.Mesh.texture`
         is reassigned.
         """
         return self._compute_texture_hash()
@@ -1522,7 +1559,6 @@ class Heightfield:
 
         self.is_solid = True
         self.has_inertia = False
-        self.warp_array = None  # Will be set by finalize()
         self._cached_hash = None
 
         # Heightfields are always static
@@ -1547,21 +1583,6 @@ class Heightfield:
         self.min_z = d_min
         self.max_z = d_max
         self._cached_hash = None
-
-    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
-        """
-        Construct a simulation-ready Warp array from the heightfield data and return its ID.
-
-        Args:
-            device: Device on which to allocate heightfield buffers.
-            requires_grad: If True, data is allocated with gradient tracking.
-
-        Returns:
-            The ID (pointer) of the simulation-ready Warp array.
-        """
-        with wp.ScopedDevice(device):
-            self.warp_array = wp.array(self._data.flatten(), requires_grad=requires_grad, dtype=wp.float32)
-            return self.warp_array.ptr
 
     @override
     def __hash__(self) -> int:

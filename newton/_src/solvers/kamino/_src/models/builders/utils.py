@@ -110,7 +110,7 @@ def add_ground_box(
         int: The ID of the added ground geometry.
     """
     return builder.add_geometry(
-        shape=BoxShape(20.0, 20.0, 1.0),
+        shape=BoxShape(10.0, 10.0, 0.5),
         offset=transformf(0.0, 0.0, -0.5 + z_offset, 0.0, 0.0, 0.0, 1.0),
         name="ground",
         group=group,

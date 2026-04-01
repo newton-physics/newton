@@ -745,3 +745,127 @@ class ShaderLine(ShaderGL):
         with self:
             self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
             self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+
+
+wireframe_vertex_shader = """
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aColor;
+
+uniform mat4 view;
+uniform mat4 projection;
+uniform mat4 world;
+
+out vec3 vertexColor;
+
+void main()
+{
+    vec4 worldPos = world * vec4(aPos, 1.0);
+    vertexColor = aColor;
+    gl_Position = projection * view * worldPos;
+}
+"""
+
+wireframe_geometry_shader = """
+#version 330 core
+layout (lines) in;
+layout (triangle_strip, max_vertices = 6) out;
+
+in vec3 vertexColor[2];
+
+out vec3 lineColor;
+
+uniform float inv_asp_ratio;
+uniform float line_width;
+
+void main()
+{
+    vec4 s = gl_in[0].gl_Position;
+    vec4 e = gl_in[1].gl_Position;
+
+    if (s.w <= 0.0 || e.w <= 0.0) return;
+
+    vec2 s_ndc = s.xy / s.w;
+    vec2 e_ndc = e.xy / e.w;
+    float s_depth = s.z / s.w;
+    float e_depth = e.z / e.w;
+
+    vec2 dir = e_ndc - s_ndc;
+    vec2 right = normalize(vec2(dir.y, -dir.x));
+    right.x = right.x * inv_asp_ratio;
+
+    vec3 color = 0.5 * (vertexColor[0] + vertexColor[1]);
+    vec2 xy = 0.5 * line_width * right;
+
+    gl_Position = vec4(s_ndc - xy, s_depth, 1); lineColor = color;
+    EmitVertex();
+    gl_Position = vec4(e_ndc + xy, e_depth, 1); lineColor = color;
+    EmitVertex();
+    gl_Position = vec4(s_ndc + xy, s_depth, 1); lineColor = color;
+    EmitVertex();
+    EndPrimitive();
+
+    gl_Position = vec4(s_ndc - xy, s_depth, 1); lineColor = color;
+    EmitVertex();
+    gl_Position = vec4(e_ndc - xy, e_depth, 1); lineColor = color;
+    EmitVertex();
+    gl_Position = vec4(e_ndc + xy, e_depth, 1); lineColor = color;
+    EmitVertex();
+    EndPrimitive();
+}
+"""
+
+wireframe_fragment_shader = """
+#version 330 core
+in vec3 lineColor;
+out vec4 FragColor;
+
+uniform float alpha;
+
+void main()
+{
+    FragColor = vec4(lineColor, alpha);
+}
+"""
+
+
+class ShaderLineWireframe(ShaderGL):
+    """Geometry-shader-based line renderer that expands GL_LINES into screen-space quads."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(wireframe_vertex_shader, "vertex"),
+            Shader(wireframe_geometry_shader, "geometry"),
+            Shader(wireframe_fragment_shader, "fragment"),
+        )
+
+        with self:
+            self.loc_view = self._get_uniform_location("view")
+            self.loc_projection = self._get_uniform_location("projection")
+            self.loc_world = self._get_uniform_location("world")
+            self.loc_inv_asp_ratio = self._get_uniform_location("inv_asp_ratio")
+            self.loc_line_width = self._get_uniform_location("line_width")
+            self.loc_alpha = self._get_uniform_location("alpha")
+
+    def update_frame(
+        self,
+        view_matrix: np.ndarray,
+        projection_matrix: np.ndarray,
+        inv_asp_ratio: float,
+        line_width: float = 0.003,
+        alpha: float = 0.7,
+    ):
+        """Set per-frame uniforms (call once before rendering all wireframe shapes)."""
+        self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
+        self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+        self._gl.glUniform1f(self.loc_inv_asp_ratio, float(inv_asp_ratio))
+        self._gl.glUniform1f(self.loc_line_width, float(line_width))
+        self._gl.glUniform1f(self.loc_alpha, float(alpha))
+
+    def set_world(self, world: np.ndarray):
+        """Set the per-shape world matrix uniform."""
+        self._gl.glUniformMatrix4fv(self.loc_world, 1, self._gl.GL_FALSE, arr_pointer(world))

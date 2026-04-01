@@ -23,9 +23,9 @@ from ...core.shapes import (
     ConeShape,
     CylinderShape,
     EllipsoidShape,
+    GeoType,
     PlaneShape,
     ShapeDescriptorType,
-    ShapeType,
     SphereShape,
 )
 from ...core.types import Axis, mat33f, transformf, vec3f, vec6f
@@ -123,7 +123,7 @@ def build_free_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(1.0, 1.0, 1.0),
+        shape=BoxShape(0.5, 0.5, 0.5),
         world_index=world_index,
     )
 
@@ -131,7 +131,7 @@ def build_free_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -208,7 +208,7 @@ def build_unary_revolute_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=-1,
-        shape=BoxShape(0.3, 0.3, 0.3),
+        shape=BoxShape(0.15, 0.15, 0.15),
         world_index=world_index,
         group=2,
         collides=2,
@@ -216,7 +216,7 @@ def build_unary_revolute_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(1.0, 0.2, 0.2),
+        shape=BoxShape(0.5, 0.1, 0.1),
         world_index=world_index,
     )
 
@@ -224,7 +224,7 @@ def build_unary_revolute_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -320,13 +320,13 @@ def build_binary_revolute_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=bid_B,
-        shape=BoxShape(0.3, 0.3, 0.3),
+        shape=BoxShape(0.15, 0.15, 0.15),
         world_index=world_index,
     )
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(1.0, 0.2, 0.2),
+        shape=BoxShape(0.5, 0.1, 0.1),
         world_index=world_index,
     )
 
@@ -334,7 +334,7 @@ def build_binary_revolute_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -409,7 +409,7 @@ def build_unary_prismatic_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=-1,
-        shape=BoxShape(0.05, 0.05, 1.0),
+        shape=BoxShape(0.025, 0.025, 0.5),
         world_index=world_index,
         group=2,
         collides=2,
@@ -417,7 +417,7 @@ def build_unary_prismatic_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.1, 0.1, 0.1),
+        shape=BoxShape(0.05, 0.05, 0.05),
         world_index=world_index,
     )
 
@@ -425,7 +425,7 @@ def build_unary_prismatic_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -519,7 +519,7 @@ def build_binary_prismatic_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=bid_B,
-        shape=BoxShape(0.05, 0.05, 1.0),
+        shape=BoxShape(0.025, 0.025, 0.5),
         world_index=world_index,
         group=2,
         collides=2,
@@ -527,7 +527,7 @@ def build_binary_prismatic_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.1, 0.1, 0.1),
+        shape=BoxShape(0.05, 0.05, 0.05),
         world_index=world_index,
     )
 
@@ -535,7 +535,7 @@ def build_binary_prismatic_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -612,7 +612,7 @@ def build_unary_cylindrical_joint_test(
     _builder.add_geometry(
         name="base/cylinder",
         body=-1,
-        shape=CylinderShape(0.025, 1.0),
+        shape=CylinderShape(0.025, 0.5),
         world_index=world_index,
         group=2,
         collides=2,
@@ -620,7 +620,7 @@ def build_unary_cylindrical_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.1, 0.1, 0.1),
+        shape=BoxShape(0.05, 0.05, 0.05),
         world_index=world_index,
     )
 
@@ -628,7 +628,7 @@ def build_unary_cylindrical_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -724,13 +724,13 @@ def build_binary_cylindrical_joint_test(
     _builder.add_geometry(
         name="base/cylinder",
         body=bid_B,
-        shape=CylinderShape(0.025, 1.0),
+        shape=CylinderShape(0.025, 0.5),
         world_index=world_index,
     )
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.1, 0.1, 0.1),
+        shape=BoxShape(0.05, 0.05, 0.05),
         world_index=world_index,
     )
 
@@ -738,7 +738,7 @@ def build_binary_cylindrical_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -807,7 +807,7 @@ def build_unary_universal_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=-1,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
         group=2,
         collides=2,
@@ -815,7 +815,7 @@ def build_unary_universal_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
 
@@ -823,7 +823,7 @@ def build_unary_universal_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -911,13 +911,13 @@ def build_binary_universal_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=bid_B,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
 
@@ -925,7 +925,7 @@ def build_binary_universal_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -994,7 +994,7 @@ def build_unary_spherical_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=-1,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
         group=2,
         collides=2,
@@ -1002,7 +1002,7 @@ def build_unary_spherical_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
 
@@ -1010,7 +1010,7 @@ def build_unary_spherical_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -1098,13 +1098,13 @@ def build_binary_spherical_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=bid_B,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
 
@@ -1112,7 +1112,7 @@ def build_binary_spherical_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -1181,7 +1181,7 @@ def build_unary_gimbal_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=-1,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
         group=2,
         collides=2,
@@ -1189,7 +1189,7 @@ def build_unary_gimbal_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
 
@@ -1197,7 +1197,7 @@ def build_unary_gimbal_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -1285,13 +1285,13 @@ def build_binary_gimbal_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=bid_B,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
 
@@ -1299,7 +1299,7 @@ def build_binary_gimbal_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -1376,7 +1376,7 @@ def build_unary_cartesian_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=-1,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
         group=2,
         collides=2,
@@ -1384,7 +1384,7 @@ def build_unary_cartesian_joint_test(
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
 
@@ -1392,7 +1392,7 @@ def build_unary_cartesian_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -1488,13 +1488,13 @@ def build_binary_cartesian_joint_test(
     _builder.add_geometry(
         name="base/box",
         body=bid_B,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
     _builder.add_geometry(
         name="follower/box",
         body=bid_F,
-        shape=BoxShape(0.5, 0.5, 0.5),
+        shape=BoxShape(0.25, 0.25, 0.25),
         world_index=world_index,
     )
 
@@ -1502,7 +1502,7 @@ def build_binary_cartesian_joint_test(
     if ground:
         _builder.add_geometry(
             body=-1,
-            shape=BoxShape(20.0, 20.0, 1.0),
+            shape=BoxShape(10.0, 10.0, 0.5),
             offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
@@ -1554,40 +1554,40 @@ def build_all_joints_test_model(
 ###
 
 
-shape_name_to_type: dict[str, ShapeType] = {
-    "sphere": ShapeType.SPHERE,
-    "cylinder": ShapeType.CYLINDER,
-    "cone": ShapeType.CONE,
-    "capsule": ShapeType.CAPSULE,
-    "box": ShapeType.BOX,
-    "ellipsoid": ShapeType.ELLIPSOID,
-    "plane": ShapeType.PLANE,
+shape_name_to_type: dict[str, GeoType] = {
+    "sphere": GeoType.SPHERE,
+    "cylinder": GeoType.CYLINDER,
+    "cone": GeoType.CONE,
+    "capsule": GeoType.CAPSULE,
+    "box": GeoType.BOX,
+    "ellipsoid": GeoType.ELLIPSOID,
+    "plane": GeoType.PLANE,
 }
-"""Mapping from shape name to ShapeType enum."""
+"""Mapping from shape name to GeoType enum."""
 
 
-shape_type_to_descriptor: dict[ShapeType, ShapeDescriptorType] = {
-    ShapeType.SPHERE: SphereShape,
-    ShapeType.CYLINDER: CylinderShape,
-    ShapeType.CONE: ConeShape,
-    ShapeType.CAPSULE: CapsuleShape,
-    ShapeType.BOX: BoxShape,
-    ShapeType.ELLIPSOID: EllipsoidShape,
-    ShapeType.PLANE: PlaneShape,
+shape_type_to_descriptor: dict[GeoType, ShapeDescriptorType] = {
+    GeoType.SPHERE: SphereShape,
+    GeoType.CYLINDER: CylinderShape,
+    GeoType.CONE: ConeShape,
+    GeoType.CAPSULE: CapsuleShape,
+    GeoType.BOX: BoxShape,
+    GeoType.ELLIPSOID: EllipsoidShape,
+    GeoType.PLANE: PlaneShape,
 }
-"""Mapping from ShapeType enum to corresponding ShapeDescriptorType."""
+"""Mapping from GeoType enum to corresponding ShapeDescriptorType."""
 
 
-shape_default_dims: dict[ShapeType, tuple] = {
-    ShapeType.SPHERE: (0.5,),
-    ShapeType.CYLINDER: (0.5, 1.0),
-    ShapeType.CONE: (0.5, 1.0),
-    ShapeType.CAPSULE: (0.5, 1.0),
-    ShapeType.BOX: (1.0, 1.0, 1.0),
-    ShapeType.ELLIPSOID: (1.0, 1.0, 0.5),
-    ShapeType.PLANE: (0.0, 0.0, 1.0, 0.0),
+shape_default_dims: dict[GeoType, tuple] = {
+    GeoType.SPHERE: (0.5,),
+    GeoType.CYLINDER: (0.5, 0.5),
+    GeoType.CONE: (0.5, 0.5),
+    GeoType.CAPSULE: (0.5, 0.5),
+    GeoType.BOX: (0.5, 0.5, 0.5),
+    GeoType.ELLIPSOID: (1.0, 1.0, 0.5),
+    GeoType.PLANE: (0.0, 0.0, 1.0, 0.0),
 }
-"""Mapping from ShapeType enum to default dimensions."""
+"""Mapping from GeoType enum to default dimensions (Newton convention: half-extents)."""
 
 
 def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> vec3f:
@@ -1615,24 +1615,33 @@ def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> 
     if shape_type is None:
         raise ValueError(f"Unsupported shape name: {name}")
 
-    # Check dimensions length
-    if len(dims) != shape_type.num_params:
-        raise ValueError(f"Invalid dimensions for shape '{name}': expected {shape_type.num_params}, got {len(dims)}")
+    expected_len = {
+        GeoType.SPHERE: 1,
+        GeoType.CYLINDER: 2,
+        GeoType.CONE: 2,
+        GeoType.CAPSULE: 2,
+        GeoType.BOX: 3,
+        GeoType.ELLIPSOID: 3,
+        GeoType.PLANE: 4,
+    }.get(shape_type)
+    if expected_len is not None and len(dims) != expected_len:
+        raise ValueError(f"Invalid dimensions for shape '{name}': expected {expected_len} values, got {len(dims)}")
 
-    # Compute the initial position along z-axis that places the shape just above
-    if shape_type == ShapeType.SPHERE:
+    # Compute the initial position along z-axis that places the shape just above.
+    # Dimensions use Newton convention (half-extents, half-heights).
+    if shape_type == GeoType.SPHERE:
         r = vec3f(0.0, 0.0, dims[0])
-    elif shape_type == ShapeType.BOX:
-        r = vec3f(0.0, 0.0, 0.5 * dims[2])
-    elif shape_type == ShapeType.CAPSULE:
-        r = vec3f(0.0, 0.0, 0.5 * dims[1] + dims[0])
-    elif shape_type == ShapeType.CYLINDER:
-        r = vec3f(0.0, 0.0, 0.5 * dims[1])
-    elif shape_type == ShapeType.CONE:
-        r = vec3f(0.0, 0.0, 0.5 * dims[1])
-    elif shape_type == ShapeType.ELLIPSOID:
+    elif shape_type == GeoType.BOX:
         r = vec3f(0.0, 0.0, dims[2])
-    elif shape_type == ShapeType.PLANE:
+    elif shape_type == GeoType.CAPSULE:
+        r = vec3f(0.0, 0.0, dims[1] + dims[0])
+    elif shape_type == GeoType.CYLINDER:
+        r = vec3f(0.0, 0.0, dims[1])
+    elif shape_type == GeoType.CONE:
+        r = vec3f(0.0, 0.0, dims[1])
+    elif shape_type == GeoType.ELLIPSOID:
+        r = vec3f(0.0, 0.0, dims[2])
+    elif shape_type == GeoType.PLANE:
         r = vec3f(0.0, 0.0, dims[3])
     else:
         raise ValueError(f"Unsupported shape type: {shape_type}")
@@ -1659,21 +1668,22 @@ def get_shape_bottom_position(center: vec3f, shape: ShapeDescriptorType) -> vec3
         vec3f:
             The computed bottom position of the shape along the z-axis.
     """
-    # Compute and return the initial position along z-axis that places the shape just above
+    # Compute and return the bottom position along z-axis.
+    # Shape params use Newton convention (half-extents, half-heights).
     r_bottom = vec3f(0.0)
-    if shape.type == ShapeType.SPHERE:
+    if shape.type == GeoType.SPHERE:
         r_bottom = center - vec3f(0.0, 0.0, shape.params)
-    elif shape.type == ShapeType.BOX:
-        r_bottom = center - vec3f(0.0, 0.0, 0.5 * shape.params[2])
-    elif shape.type == ShapeType.CAPSULE:
-        r_bottom = center - vec3f(0.0, 0.0, 0.5 * shape.params[1] + shape.params[0])
-    elif shape.type == ShapeType.CYLINDER:
-        r_bottom = center - vec3f(0.0, 0.0, 0.5 * shape.params[1])
-    elif shape.type == ShapeType.CONE:
-        r_bottom = center - vec3f(0.0, 0.0, 0.5 * shape.params[1])
-    elif shape.type == ShapeType.ELLIPSOID:
+    elif shape.type == GeoType.BOX:
         r_bottom = center - vec3f(0.0, 0.0, shape.params[2])
-    elif shape.type == ShapeType.PLANE:
+    elif shape.type == GeoType.CAPSULE:
+        r_bottom = center - vec3f(0.0, 0.0, shape.params[1] + shape.params[0])
+    elif shape.type == GeoType.CYLINDER:
+        r_bottom = center - vec3f(0.0, 0.0, shape.params[1])
+    elif shape.type == GeoType.CONE:
+        r_bottom = center - vec3f(0.0, 0.0, shape.params[1])
+    elif shape.type == GeoType.ELLIPSOID:
+        r_bottom = center - vec3f(0.0, 0.0, shape.params[2])
+    elif shape.type == GeoType.PLANE:
         r_bottom = center - vec3f(0.0, 0.0, shape.params[3])
     else:
         raise ValueError(f"Unsupported shape type: {shape.type}")
@@ -1774,11 +1784,11 @@ def make_single_shape_pair_builder(
 
     # Create the shape descriptors for bottom and top shapes
     # with special handling for PlaneShape
-    if bottom_type == ShapeType.PLANE:
+    if bottom_type == GeoType.PLANE:
         bottom_shape = bottom_descriptor(vec3f(*bottom_dims[0:3]), bottom_dims[3])
     else:
         bottom_shape = bottom_descriptor(*bottom_dims)
-    if top_type == ShapeType.PLANE:
+    if top_type == GeoType.PLANE:
         top_shape = top_descriptor(vec3f(*top_dims[0:3]), top_dims[3])
     else:
         top_shape = top_descriptor(*top_dims)

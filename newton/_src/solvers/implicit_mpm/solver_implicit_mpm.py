@@ -5,6 +5,7 @@
 
 import warnings
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -615,26 +616,32 @@ class SolverImplicitMPM(SolverBase):
         """Maximum number of iterations for the rheology solver."""
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
-        solver: str = "gauss-seidel"
-        """Solver to use for the rheology solver. May be one of gauss-seidel, jacobi, cg."""
-        warmstart_mode: str = "auto"
-        """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid, smoothed."""
-        collider_velocity_mode: str = "forward"
-        """Collider velocity computation mode, may be one of 'forward' or 'backward'. 'forward' uses the current velocity, 'backward' uses the previous timestep position. Deprecated aliases 'instantaneous' (='forward') and 'finite_difference' (='backward') are also accepted."""
+        solver: Literal["gauss-seidel", "jacobi", "cg"] = "gauss-seidel"
+        """Solver to use for the rheology solver."""
+        warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
+        """Warmstart mode to use for the rheology solver."""
+        collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
+        """Collider velocity computation mode. ``'forward'`` uses the current velocity,
+        ``'backward'`` uses the previous timestep position.
+
+        .. deprecated::
+            Aliases ``'instantaneous'`` (= ``'forward'``) and ``'finite_difference'``
+            (= ``'backward'``) are deprecated and will be removed in a future release.
+        """
 
         # grid
         voxel_size: float = 0.1
         """Size of the grid voxels."""
-        grid_type: str = "sparse"
-        """Type of grid to use. May be one of sparse, dense, fixed."""
+        grid_type: Literal["sparse", "dense", "fixed"] = "sparse"
+        """Type of grid to use."""
         grid_padding: int = 0
         """Number of empty cells to add around particles when allocating the grid."""
         max_active_cell_count: int = -1
         """Maximum number of active cells to use for active subsets of dense grids. -1 means unlimited."""
-        transfer_scheme: str = "apic"
-        """Transfer scheme to use for particle-grid transfers. May be one of apic, pic."""
-        integration_scheme: str = "pic"
-        """Integration scheme controlling shape-function support. May be one of pic, gimp."""
+        transfer_scheme: Literal["apic", "pic"] = "apic"
+        """Transfer scheme to use for particle-grid transfers."""
+        integration_scheme: Literal["pic", "gimp"] = "pic"
+        """Integration scheme controlling shape-function support."""
 
         # material / background
         critical_fraction: float = 0.0

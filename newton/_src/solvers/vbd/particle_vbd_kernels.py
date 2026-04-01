@@ -1207,10 +1207,19 @@ def evaluate_self_contact_force_norm(dis: float, collision_radius: float, k: flo
 
     # C2 continuity calculation
     tau = collision_radius * 0.5
-    if tau > dis > 1e-5:
-        k2 = 0.5 * tau * tau * k
+    d_min = 1.0e-5
+    if tau > dis > d_min:
+        # Log-barrier region: E ∝ -ln(dis)
+        k2 = tau * tau * k
         dEdD = -k2 / dis
         d2E_dDdD = k2 / (dis * dis)
+    elif dis <= d_min:
+        # Quadratic extension below d_min (Taylor of the log-barrier at d_min)
+        # preserving C2 continuity: constant Hessian, linear gradient
+        k2 = tau * tau * k
+        d_min_sq = d_min * d_min
+        dEdD = k2 * (dis - 2.0 * d_min) / d_min_sq
+        d2E_dDdD = k2 / d_min_sq
     else:
         dEdD = -k * penetration_depth
         d2E_dDdD = k

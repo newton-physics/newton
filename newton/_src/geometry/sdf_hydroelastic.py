@@ -188,8 +188,10 @@ class HydroelasticSDF:
         writer_func: Callback for writing decoded contact data.
 
     Note:
-        Use :meth:`_from_model` to construct from a simulation :class:`Model`,
-        which automatically extracts the required SDF data and shape information.
+        Instances are typically created internally by the collision pipeline
+        (via :meth:`~newton.Model.collide`) rather than constructed directly.
+        The pipeline automatically extracts the required SDF data and shape
+        information from the simulation :class:`~newton.Model`.
 
         Contact IDs are packed into 32-bit integers using 9 bits per voxel axis coordinate.
         For SDF grids larger than 512 voxels per axis, contact ID collisions may occur,
@@ -503,7 +505,7 @@ class HydroelasticSDF:
 
         Returns:
             A :class:`ContactSurfaceData` instance containing vertex arrays and metadata for rendering,
-            or None if :attr:`config.output_contact_surface` is False.
+            or None if :attr:`~newton.geometry.HydroelasticSDF.Config.output_contact_surface` is False.
         """
         if not self.config.output_contact_surface:
             return None
