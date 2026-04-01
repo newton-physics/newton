@@ -98,6 +98,13 @@ def Xform "Root" (
         self.assertIn("/World/Body", message)
         self.assertNotIn("add_link(..., armature=...)", message)
 
+        # Verify the armature was applied to body inertia (default cube: half-extents
+        # (1,1,1), density 1000 → mass 8000, diagonal = 16000/3; plus armature 0.125)
+        inertia = builder.body_inertia[0]
+        expected_diag = 16000.0 / 3.0 + 0.125
+        for j in range(3):
+            self.assertAlmostEqual(float(inertia[j, j]), expected_diag, places=2)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_non_articulated_joints(self):
         builder = newton.ModelBuilder()
