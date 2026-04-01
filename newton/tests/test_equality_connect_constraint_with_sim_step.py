@@ -427,16 +427,12 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     self.assertAlmostEqual(residual, 0.0, places=4)
                     measured_joint_q = sim.state_in.joint_q.numpy()
                     nq_per_world = ball_q_offset + 3
-                    self.assertAlmostEqual(
-                        measured_joint_q[w * nq_per_world + ball_q_offset + 1],
-                        flat_joint_dof_refs[w * nq_per_world + ball_q_offset + 1],
-                        places=4,
-                    )
-                    self.assertAlmostEqual(
-                        measured_joint_q[w * nq_per_world + ball_q_offset + 2],
-                        flat_joint_dof_refs[w * nq_per_world + ball_q_offset + 2],
-                        places=4,
-                    )
+                    for k in range(3):
+                        self.assertAlmostEqual(
+                            measured_joint_q[w * nq_per_world + ball_q_offset + k],
+                            flat_joint_dof_refs[w * nq_per_world + ball_q_offset + k],
+                            places=4,
+                        )
 
                 ##############
                 # TEST 2
