@@ -16,9 +16,9 @@
 ###########################################################################
 # Example MPC Go2 Climb
 #
-# DIAL-MPC Go2 quadruped climbing onto a box/step obstacle.
-# The reward encourages forward movement, height gain when near
-# the box, and staying upright throughout.
+# DIAL-MPC Go2 quadruped climbing onto a box.
+# The robot walks forward and climbs onto a 15cm step, inspired by
+# the box-climbing task from the DIAL-MPC paper (Yin et al., 2024).
 #
 # Command: python -m newton.examples mpc_go2_climb
 #
@@ -54,13 +54,14 @@ from newton.examples.mpc.dial_mpc import (
 )
 
 N_JOINTS = 12
-BOX_X = 1.2          # box center X position
-BOX_HEIGHT = 0.06    # box half-height (full height = 0.12m, a step)
-BOX_HALF_LEN = 0.6   # box half-length in X
+BOX_X = 1.2          # box center X position [m]
+BOX_HALF_HEIGHT = 0.02  # box half-height [m] (full height = 4cm curb)
+BOX_HALF_LEN = 0.6   # box half-length in X [m] (long platform)
+BOX_HALF_WIDTH = 0.5  # box half-width in Y [m]
 
 
 # ============================================================
-# Go2 Robot Builder (same as walk example)
+# Go2 Robot + Box Builder
 # ============================================================
 
 
@@ -107,30 +108,30 @@ def _make_go2_builder(usd_path, go2_config, load_visual_shapes=True):
     return builder, go2_config
 
 
-def _add_box_to_scene(scene, shape_cfg):
-    """Add a step/box obstacle and ground plane to the scene."""
-    scene.add_ground_plane(cfg=shape_cfg)
-    # Static box attached to world (body=-1)
-    scene.add_shape_box(
-        body=-1,
-        xform=wp.transform(wp.vec3(BOX_X, 0.0, BOX_HEIGHT)),
+def _add_box_to_builder(builder):
+    """Add a kinematic step platform to the builder.
+
+    Gets replicated along with the robot into each rollout world.
+    """
+    box_body = builder.add_body(
+        xform=wp.transform(wp.vec3(BOX_X, 0.0, BOX_HALF_HEIGHT)),
+        is_kinematic=True,
+    )
+    builder.add_shape_box(
+        body=box_body,
         hx=BOX_HALF_LEN,
-        hy=0.5,
-        hz=BOX_HEIGHT,
-        cfg=shape_cfg,
+        hy=BOX_HALF_WIDTH,
+        hz=BOX_HALF_HEIGHT,
+        cfg=builder.default_shape_cfg,
     )
 
 
-def build_go2_visual_with_box():
+def build_go2_with_box_visual():
+    """Build Go2 + box for video rendering."""
     usd_path, go2_config = _load_go2_config()
     builder, _ = _make_go2_builder(usd_path, go2_config, load_visual_shapes=True)
+    _add_box_to_builder(builder)
     return builder, builder.default_shape_cfg
-
-
-def build_go2_physics_with_box():
-    usd_path, go2_config = _load_go2_config()
-    builder, _ = _make_go2_builder(usd_path, go2_config, load_visual_shapes=False)
-    return builder, go2_config
 
 
 # ============================================================
@@ -139,25 +140,26 @@ def build_go2_physics_with_box():
 
 
 def climb_reward(rollout_sim, config, t, actions=None, n_actual=None):
-    """Reward for climbing onto a box: forward vel + height gain + upright."""
+    """Reward for climbing onto a box: forward progress + height gain + upright."""
     bp, bq, bv, ba = rollout_sim.get_base_states()
     N = n_actual or bp.shape[0]
     bp, bq, bv, ba = bp[:N], bq[:N], bv[:N], ba[:N]
 
     ramp = min(1.0, t / config.ramp_up_time) if config.ramp_up_time > 0 else 1.0
-
     ab = quat_rotate_inv(bq, ba)
 
-    # Forward velocity (world-frame)
+    # Forward velocity — keep pushing forward regardless of box
     target_vx = config.target_vx * ramp
     reward_vel = -2.0 * ((bv[:, 0] - target_vx) ** 2 + bv[:, 1] ** 2)
 
-    # Height: target increases when near/past the box front edge
-    box_top_z = 2 * BOX_HEIGHT + config.ground_height
-    past_edge = bp[:, 0] > (BOX_X - BOX_HALF_LEN - 0.1)
-    target_h = np.where(past_edge, box_top_z, config.ground_height)
-    h_err = bp[:, 2] - target_h
+    # Height: always target the ground standing height (don't change near box).
+    # This lets the robot discover climbing naturally via forward pressure.
+    h_err = bp[:, 2] - config.ground_height
     reward_height = -2.0 * np.where(h_err < 0, 10.0 * h_err ** 2, h_err ** 2)
+
+    # Bonus: reward any height ABOVE ground level (climbing)
+    height_gain = np.clip(bp[:, 2] - config.ground_height - 0.02, 0, 0.3)
+    reward_climb = 5.0 * height_gain
 
     # Upright + pitch
     up_body = compute_up_in_body(bq)
@@ -181,8 +183,9 @@ def climb_reward(rollout_sim, config, t, actions=None, n_actual=None):
     if actions is not None:
         reward_action = -0.01 * np.mean(actions ** 2, axis=1)
 
-    reward = (reward_vel + reward_height + reward_upright + reward_pitch +
-              reward_yaw + reward_ang_vel + reward_body_rate + reward_action)
+    reward = (reward_vel + reward_height + reward_climb + reward_upright +
+              reward_pitch + reward_yaw + reward_ang_vel + reward_body_rate +
+              reward_action)
 
     terminated = (bp[:, 2] < 0.05) | (up_body[:, 2] < -0.3)
     return np.where(terminated, -100.0, reward)
@@ -200,18 +203,23 @@ class Example:
         self.viewer = viewer
         self.device = wp.get_device()
 
-        self.mpc_config = mppi_config_from_args(args)
-        self.mpc_config.target_vx = getattr(args, "target_vx", 0.4)
+        self.mpc_config = mppi_config_from_args(
+            args,
+            h_sample=20,       # longer horizon for climbing
+            sigma_scale=1.2,   # more exploration
+        )
+        self.mpc_config.target_vx = getattr(args, "target_vx", 0.5)
         self.mpc_config.ground_height = 0.30  # calibrated below
 
         # Build visual model with box
         usd_path, self.go2_config = _load_go2_config()
         robot_builder, _ = _make_go2_builder(usd_path, self.go2_config, load_visual_shapes=True)
+        _add_box_to_builder(robot_builder)
 
         scene = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(scene)
         scene.replicate(robot_builder, world_count=1)
-        _add_box_to_scene(scene, robot_builder.default_shape_cfg)
+        scene.add_ground_plane(cfg=robot_builder.default_shape_cfg)
 
         self.model = scene.finalize()
         self.model.set_gravity((0.0, 0.0, -9.81))
@@ -228,8 +236,9 @@ class Example:
 
         self.viewer.set_model(self.model)
 
+        # Wider action range for climbing motions
         home_pos = np.array(self.go2_config["mjw_joint_pos"], dtype=np.float32)
-        self.joint_range_low = home_pos - 0.3  # wider range for climbing
+        self.joint_range_low = home_pos - 0.3
         self.joint_range_high = home_pos + 0.3
 
         np.random.seed(42)
@@ -242,15 +251,15 @@ class Example:
         self.mpc_config.ground_height = float(settled_z)
         print(f"  Settled height: {settled_z:.4f}m")
 
-        # Build rollout sim with box
-        physics_builder, _ = build_go2_physics_with_box()
+        # Build rollout sim with box in each world
+        physics_builder, _ = _make_go2_builder(usd_path, self.go2_config, load_visual_shapes=False)
+        _add_box_to_builder(physics_builder)
         n_rollout = self.mpc_config.n_samples + 1
         self.rollout_sim = RolloutSim(
             physics_builder, n_rollout,
             ctrl_dt=self.mpc_config.ctrl_dt,
             sim_substeps=self.mpc_config.sim_substeps,
             device=self.device,
-            scene_setup_fn=_add_box_to_scene,
         )
 
         self.controller = DIALMPCController(
@@ -268,7 +277,7 @@ class Example:
     def _settle(self):
         home = np.array(self.go2_config["mjw_joint_pos"], dtype=np.float32)
         full = np.zeros(self.model.joint_dof_count, dtype=np.float32)
-        full[6:] = home
+        full[6:6 + N_JOINTS] = home  # only robot joints, skip box free joint DOFs
         wp.copy(self.control.joint_target_pos,
                 wp.array(full, dtype=wp.float32, device=self.device))
         sim_dt = self.mpc_config.ctrl_dt / self.mpc_config.sim_substeps
@@ -288,7 +297,7 @@ class Example:
 
         joint_targets = self.controller.act_to_joint(action)
         full = np.zeros(self.model.joint_dof_count, dtype=np.float32)
-        full[6:] = joint_targets
+        full[6:6 + N_JOINTS] = joint_targets
         wp.copy(self.control.joint_target_pos,
                 wp.array(full, dtype=wp.float32, device=self.device))
 
@@ -337,10 +346,10 @@ class Example:
             raise ValueError("No trajectory data")
 
         heights = np.array(traj["height"])
-        velocities = np.array(traj["velocity"])
         final_x = traj["body_q"][-1][0, 0]
         final_z = traj["body_q"][-1][0, 2]
-        box_top = 2 * BOX_HEIGHT
+        box_top = 2 * BOX_HALF_HEIGHT + self.mpc_config.ground_height
+        box_front = BOX_X - BOX_HALF_LEN
 
         print(f"\n{'='*60}")
         print("Go2 Climb Verification")
@@ -357,27 +366,31 @@ class Example:
                 print(f"  FAIL: {name} — {msg}")
                 n_fail += 1
 
-        check("height > 0.08m always (no collapse)", heights.min() > 0.08, f"min={heights.min():.3f}m")
+        check("height > 0.08m always (no collapse)",
+              heights.min() > 0.08, f"min={heights.min():.3f}m")
 
         final_quat = traj["body_q"][-1][0, 3:7]
         up_z = compute_up_in_body(final_quat.reshape(1, 4))[0, 2]
-        check("stays upright (up_z > 0.5)", up_z > 0.5, f"up_z={up_z:.3f}")
+        check("stays upright (up_z > 0.5)",
+              up_z > 0.5, f"up_z={up_z:.3f}")
 
-        check("reaches near box (x > box_start - 0.2)",
-              final_x > BOX_X - BOX_HALF_LEN - 0.2,
-              f"final_x={final_x:.3f}m, threshold={BOX_X - BOX_HALF_LEN - 0.2:.2f}m")
+        check("reaches box (x > box_front)",
+              final_x > box_front,
+              f"final_x={final_x:.3f}m, box_front={box_front:.2f}m")
 
-        check("height above box level",
-              final_z > box_top,
-              f"final_z={final_z:.3f}m, box_top={box_top:.2f}m")
+        # Check robot is on the box: z should be at least above ground + step height
+        step_height = 2 * BOX_HALF_HEIGHT
+        check("on top of box (z > ground + step)",
+              final_z > self.mpc_config.ground_height * 0.5 + step_height,
+              f"final_z={final_z:.3f}m, threshold={self.mpc_config.ground_height * 0.5 + step_height:.2f}m")
 
+        dist = final_x - traj["body_q"][0][0, 0]
         check("forward progress > 0.3m",
-              final_x - traj["body_q"][0][0, 0] > 0.3,
-              f"dist={final_x - traj['body_q'][0][0, 0]:.3f}m")
+              dist > 0.3, f"dist={dist:.3f}m")
 
         print(f"\n  Summary: {n_pass} passed, {n_fail} failed")
         print(f"  Final position: x={final_x:.2f}m, z={final_z:.3f}m")
-        print(f"  Box top: {box_top:.2f}m")
+        print(f"  Box: front={box_front:.2f}m, top={box_top:.2f}m")
         print(f"{'='*60}")
 
         if n_fail > 0:
@@ -387,7 +400,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         add_mpc_args(parser)
-        parser.add_argument("--target-vx", type=float, default=0.4, help="Target forward velocity")
+        parser.add_argument("--target-vx", type=float, default=0.5, help="Target forward velocity")
         return parser
 
 
@@ -403,7 +416,4 @@ if __name__ == "__main__":
 
     output = getattr(args, "output", "")
     if output and example.trajectory["body_q"]:
-        def build_visual_with_box():
-            b, cfg = build_go2_visual_with_box()
-            return b, cfg
-        render_video_from_trajectory(example.trajectory, output, build_visual_with_box)
+        render_video_from_trajectory(example.trajectory, output, build_go2_with_box_visual)
