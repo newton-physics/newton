@@ -40,6 +40,19 @@ so patch releases are safe to pick up automatically.  ``main`` uses a
 version floor like other dependencies.
 
 
+.. _deprecation-timeline:
+
+Deprecation timeline
+^^^^^^^^^^^^^^^^^^^^
+
+Following `Warp's deprecation policy
+<https://nvidia.github.io/warp/user_guide/compatibility.html#deprecation-timeline>`__,
+a deprecated feature is maintained for **two full minor release cycles**
+after deprecation (e.g. deprecated in 1.2.0 → removed in 1.4.0).
+Deprecations and removals only happen in minor releases, never in patch
+releases.
+
+
 Pre-release planning
 --------------------
 
@@ -60,7 +73,7 @@ Pre-release planning
        - Review all new/changed symbols since the last release for unintended
          breaking changes.
        - Verify deprecated symbols carry proper deprecation warnings and
-         migration guidance.
+         migration guidance (see :ref:`deprecation-timeline`).
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``docs/generate_api.py``).
    * - ☐
