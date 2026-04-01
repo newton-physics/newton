@@ -20,8 +20,10 @@ from pathlib import Path
 
 # Order matters: most specific patterns first.
 _TRANSFORMS: list[tuple[re.Pattern[str], str]] = [
-    # wp.array(dtype=X, ndim=2) -> wp.array2d[X]  (handles ndim 1..4)
-    (re.compile(r"wp\.array\(dtype=([\w.]+),\s*ndim=([1-4])\)"), r"wp.array\2d[\1]"),
+    # wp.array(dtype=X, ndim=1) -> wp.array[X]
+    (re.compile(r"wp\.array\(dtype=([\w.]+),\s*ndim=1\)"), r"wp.array[\1]"),
+    # wp.array(dtype=X, ndim=2) -> wp.array2d[X]  (handles ndim 2..4)
+    (re.compile(r"wp\.array\(dtype=([\w.]+),\s*ndim=([2-4])\)"), r"wp.array\2d[\1]"),
     # wp.array2d(dtype=X) -> wp.array2d[X]  (handles 1d..4d)
     (re.compile(r"wp\.array([1-4])d\(dtype=([\w.]+)\)"), r"wp.array\1d[\2]"),
     # wp.array(dtype=X) -> wp.array[X]
