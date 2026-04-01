@@ -975,6 +975,17 @@ class RendererGL:
 
         self._set_icon()
 
+        # Pyglet on Windows 8+ (where _always_dwm=True) disables the GL
+        # swap interval to avoid double-syncing with DWM, but then also
+        # skips calling DwmFlush() in flip() due to a condition bug.
+        # We call DwmFlush() ourselves in present() to work around this.
+        self._dwm_flush = None
+        if sys.platform == "win32" and getattr(self.window, "_always_dwm", False):
+            try:
+                self._dwm_flush = ctypes.windll.dwmapi.DwmFlush
+            except (AttributeError, OSError):
+                pass
+
         if headless is None:
             self.headless = pyglet.options.get("headless", False)
         else:
@@ -1230,8 +1241,9 @@ class RendererGL:
 
     def present(self):
         if not self.headless:
+            if self._dwm_flush is not None and self.window._interval:
+                self._dwm_flush()
             self.window.flip()
-        #    self.app.event_loop._redraw_windows(1.0 / 60.0)
 
     def resize(self, width, height):
         self._screen_width, self._screen_height = self.window.get_framebuffer_size()

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
+from dataclasses import dataclass
 
 import warp as wp
 
@@ -35,6 +36,61 @@ class GaussianRenderMode(enum.IntEnum):
 
     QUALITY = 1
     """Quality Render Mode, collect hits until minimum transmittance is reached"""
+
+
+@dataclass(unsafe_hash=True)
+class RenderConfig:
+    """Raytrace render settings shared across all worlds."""
+
+    enable_global_world: bool = True
+    """Include shapes that belong to no specific world."""
+
+    enable_textures: bool = False
+    """Enable texture-mapped rendering for meshes."""
+
+    enable_shadows: bool = False
+    """Enable shadow rays for directional lights."""
+
+    enable_ambient_lighting: bool = True
+    """Enable ambient lighting for the scene."""
+
+    enable_particles: bool = True
+    """Enable particle rendering."""
+
+    enable_backface_culling: bool = True
+    """Cull back-facing triangles."""
+
+    render_order: int = RenderOrder.PIXEL_PRIORITY
+    """Render traversal order (see :class:`RenderOrder`)."""
+
+    tile_width: int = 16
+    """Tile width [px] for :attr:`RenderOrder.TILED` traversal."""
+
+    tile_height: int = 8
+    """Tile height [px] for :attr:`RenderOrder.TILED` traversal."""
+
+    max_distance: float = 1000.0
+    """Maximum ray distance [m]."""
+
+    gaussians_mode: int = GaussianRenderMode.FAST
+    """Gaussian splatting render mode (see :class:`GaussianRenderMode`)."""
+
+    gaussians_min_transmittance: float = 0.49
+    """Minimum transmittance before early-out during Gaussian rendering."""
+
+    gaussians_max_num_hits: int = 20
+    """Maximum Gaussian hits accumulated per ray."""
+
+
+@dataclass(unsafe_hash=True)
+class ClearData:
+    """Default values written to output images before rendering."""
+
+    clear_color: int = 0
+    clear_depth: float = 0.0
+    clear_shape_index: int = 0xFFFFFFFF
+    clear_normal: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    clear_albedo: int = 0
 
 
 @wp.struct

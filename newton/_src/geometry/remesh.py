@@ -1378,6 +1378,9 @@ class SurfaceReconstructor:
         fast_simplification: If True (default), use pyfqmr for fast mesh simplification.
             If False, use Open3D's simplify_quadric_decimation which may produce
             slightly higher quality results but is significantly slower.
+        n_threads: Number of threads for Poisson reconstruction. Defaults to ``1``
+            to avoid an `Open3D bug <https://github.com/isl-org/Open3D/issues/7229>`_.
+            Set to ``-1`` for automatic.
 
     Example:
         >>> extractor = PointCloudExtractor(edge_segments=4, resolution=1000)
@@ -1397,6 +1400,7 @@ class SurfaceReconstructor:
         target_triangles: int | None = None,
         simplify_tolerance: float | None = None,
         fast_simplification: bool = True,
+        n_threads: int = 1,
     ):
         # Validate parameters
         if depth < 1:
@@ -1420,6 +1424,7 @@ class SurfaceReconstructor:
         self.target_triangles = target_triangles
         self.simplify_tolerance = simplify_tolerance
         self.fast_simplification = fast_simplification
+        self.n_threads = n_threads
 
     def reconstruct(
         self,
@@ -1460,6 +1465,7 @@ class SurfaceReconstructor:
             depth=self.depth,
             scale=self.scale,
             linear_fit=self.linear_fit,
+            n_threads=self.n_threads,
         )
 
         # Remove low-density vertices (boundary artifacts)
@@ -1706,6 +1712,7 @@ def remesh_poisson(
     simplify_ratio: float | None = None,
     target_triangles: int | None = None,
     fast_simplification: bool = True,
+    n_threads: int = 1,
     # Post-processing parameters
     keep_largest_island: bool = True,
     # Control parameters
@@ -1750,6 +1757,9 @@ def remesh_poisson(
             Only used if simplify_tolerance and simplify_ratio are None.
         fast_simplification: If True (default), use pyfqmr for fast mesh simplification.
             If False, use Open3D (slower but potentially higher quality).
+        n_threads: Number of threads for Poisson reconstruction. Defaults to ``1``
+            to avoid an `Open3D bug <https://github.com/isl-org/Open3D/issues/7229>`_.
+            Set to ``-1`` for automatic.
         keep_largest_island: If True (default), keep only the largest connected component
             after reconstruction. This removes small floating fragments that can occur
             in areas with sparse point coverage.
@@ -1792,6 +1802,7 @@ def remesh_poisson(
         simplify_ratio=simplify_ratio,
         target_triangles=target_triangles,
         fast_simplification=fast_simplification,
+        n_threads=n_threads,
     )
     mesh = reconstructor.reconstruct(points, normals, verbose=verbose)
 

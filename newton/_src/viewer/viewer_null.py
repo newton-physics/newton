@@ -11,7 +11,7 @@ import warp as wp
 
 import newton
 
-from ..core.types import nparray, override
+from ..core.types import override
 from .viewer import ViewerBase
 
 
@@ -226,7 +226,7 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """
         No-op implementation for logging a generic array.
 

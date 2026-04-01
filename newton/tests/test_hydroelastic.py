@@ -303,7 +303,6 @@ def test_buffer_fraction_no_crash(test, device):
 
     contacts_reduced = pipeline_reduced.contacts()
     pipeline_reduced.collide(state, contacts_reduced)
-    wp.synchronize()
     reduced_count = int(contacts_reduced.rigid_contact_count.numpy()[0])
     test.assertGreater(reduced_count, 0, "Expected non-zero contacts with reduced buffer_fraction")
 
@@ -317,7 +316,6 @@ def test_buffer_fraction_no_crash(test, device):
     )
     contacts_full = pipeline_full.contacts()
     pipeline_full.collide(state, contacts_full)
-    wp.synchronize()
     full_count = int(contacts_full.rigid_contact_count.numpy()[0])
 
     tolerance = max(2, int(0.05 * reduced_count))
@@ -381,7 +379,6 @@ def test_reduce_contacts_with_pre_prune_disabled_no_crash(test, device):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     contacts = pipeline.contacts()
     pipeline.collide(state_0, contacts)
-    wp.synchronize()
 
     rigid_count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(rigid_count, 0, "Expected non-zero contacts with pre_prune_contacts=False")
