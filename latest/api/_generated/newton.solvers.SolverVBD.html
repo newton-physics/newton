@@ -1042,7 +1042,7 @@ wp.array(dtype=wp.int32),</p>
 quality. In these cases, rebuilding the entire tree is necessary to achieve better querying efficiency.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>newton.State</em></a>) – The state whose particle positions (<code class="xref py py-attr docutils literal notranslate"><span class="pre">State.particle_q</span></code>) will be used for rebuilding the BVHs.</p>
+<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>newton.State</em></a>) – The state whose particle positions (<a class="reference internal" href="newton.State.html#newton.State.particle_q" title="newton.State.particle_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_q</span></code></a>) will be used for rebuilding the BVHs.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -1078,7 +1078,7 @@ before calling this method. It defaults to <code class="docutils literal notrans
 <li><p><strong>state_in</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Input state.</p></li>
 <li><p><strong>state_out</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Output state.</p></li>
 <li><p><strong>control</strong> (<a class="reference internal" href="newton.Control.html#newton.Control" title="newton._src.sim.control.Control"><em>Control</em></a>) – Control inputs.</p></li>
-<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a><em> | </em><em>None</em>) – Contact data produced by <code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.collide()</span></code> (rigid-rigid and rigid-particle contacts).
+<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a><em> | </em><em>None</em>) – Contact data produced by <a class="reference internal" href="newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> (rigid-rigid and rigid-particle contacts).
 If None, rigid contact handling is skipped. Note that particle self-contact (if enabled) does not
 depend on this argument.</p></li>
 <li><p><strong>dt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Time step size.</p></li>

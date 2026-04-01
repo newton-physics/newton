@@ -917,7 +917,7 @@ X11 development libraries to build <code class="docutils literal notranslate"><s
 <p>Newton can run on CPU (including macOS), but the following features require an
 NVIDIA GPU and are unavailable in CPU-only mode:</p>
 <ul class="simple">
-<li><p><strong>SDF collision</strong> — signed-distance-field computation (<code class="xref py py-func docutils literal notranslate"><span class="pre">compute_sdf_from_shape()</span></code>) requires CUDA
+<li><p><strong>SDF collision</strong> — signed-distance-field computation requires CUDA
 (<code class="docutils literal notranslate"><span class="pre">wp.Volume</span></code> is GPU-only).</p></li>
 <li><p><strong>Mesh-mesh contacts</strong> — SDF-based mesh-mesh collision is silently skipped on CPU.</p></li>
 <li><p><strong>Hydroelastic contacts</strong> — depends on the SDF system.</p></li>
@@ -1067,7 +1067,7 @@ Additional optional dependency sets are defined in <code class="docutils literal
 <td><p>Asset import and mesh processing dependencies</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">remesh</span></code></p></td>
-<td><p>Remeshing dependencies (Open3D, pyfqmr) for <code class="xref py py-class docutils literal notranslate"><span class="pre">SurfaceReconstructor</span></code></p></td>
+<td><p>Remeshing dependencies (Open3D, pyfqmr) for <a class="reference internal" href="../api/_generated/newton.utils.remesh_mesh.html#newton.utils.remesh_mesh" title="newton.utils.remesh_mesh"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.utils.remesh_mesh()</span></code></a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">examples</span></code></p></td>
 <td><p>Dependencies for running examples, including visualization (includes <code class="docutils literal notranslate"><span class="pre">sim</span></code> + <code class="docutils literal notranslate"><span class="pre">importers</span></code>)</p></td>

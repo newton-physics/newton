@@ -1322,7 +1322,7 @@ relative transform from the parent and child body to the respective anchor frame
 <a class="reference internal image-reference" href="../_images/joint_transforms.png"><img alt="../_images/joint_transforms.png" class="align-center" src="../_images/joint_transforms.png" style="width: 400px;" />
 </a>
 <div class="pst-scrollable-table-container"><table class="table" id="id5">
-<caption><span class="caption-text">Variable names in the kernels from <code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.core.articulation</span></code></span><a class="headerlink" href="#id5" title="Link to this table">#</a></caption>
+<caption><span class="caption-text">Variable names in the articulation kernels</span><a class="headerlink" href="#id5" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 10.0%" />
 <col style="width: 90.0%" />
@@ -1334,16 +1334,16 @@ relative transform from the parent and child body to the respective anchor frame
 </thead>
 <tbody>
 <tr class="row-even"><td><p>x_wp</p></td>
-<td><p>World transform of the parent body (stored at <code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code>)</p></td>
+<td><p>World transform of the parent body (stored at <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>x_wc</p></td>
-<td><p>World transform of the child body (stored at <code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code>)</p></td>
+<td><p>World transform of the child body (stored at <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>x_pj</p></td>
-<td><p>Transform from the parent body to the joint parent anchor frame (defined by <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code>)</p></td>
+<td><p>Transform from the parent body to the joint parent anchor frame (defined by <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_X_p" title="newton.Model.joint_X_p"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>x_cj</p></td>
-<td><p>Transform from the child body to the joint child anchor frame (defined by <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code>)</p></td>
+<td><p>Transform from the child body to the joint child anchor frame (defined by <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_X_c" title="newton.Model.joint_X_c"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>x_j</p></td>
 <td><p>Joint transform from the joint parent anchor frame to the joint child anchor frame</p></td>
@@ -1351,7 +1351,7 @@ relative transform from the parent and child body to the respective anchor frame
 </tbody>
 </table>
 </div>
-<p>In the forward kinematics, the joint transform is determined by the joint coordinates (generalized joint positions <code class="xref py py-attr docutils literal notranslate"><span class="pre">State.joint_q</span></code> and velocities <code class="xref py py-attr docutils literal notranslate"><span class="pre">State.joint_qd</span></code>).
+<p>In the forward kinematics, the joint transform is determined by the joint coordinates (generalized joint positions <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_q" title="newton.State.joint_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.joint_q</span></code></a> and velocities <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_qd" title="newton.State.joint_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.joint_qd</span></code></a>).
 Given the parent body’s world transform <span class="math notranslate nohighlight">\(x_{wp}\)</span> and the joint transform <span class="math notranslate nohighlight">\(x_{j}\)</span>, the child body’s world transform <span class="math notranslate nohighlight">\(x_{wc}\)</span> is computed as:</p>
 <div class="math notranslate nohighlight">
 \[x_{wc} = x_{wp} \cdot x_{pj} \cdot x_{j} \cdot x_{cj}^{-1}.\]</div>

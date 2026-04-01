@@ -1061,7 +1061,7 @@ Call <a class="reference internal" href="#newton.Model.collide" title="newton.Mo
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Rigid contact gaps are controlled per-shape via <a class="reference internal" href="#newton.Model.shape_gap" title="newton.Model.shape_gap"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_gap</span></code></a>, which is populated
-from <code class="docutils literal notranslate"><span class="pre">ShapeConfig.gap</span></code> [m] during model building. If a shape doesn’t specify a gap [m],
+from <code class="docutils literal notranslate"><span class="pre">ModelBuilder.ShapeConfig.gap</span></code> [m] during model building. If a shape doesn’t specify a gap [m],
 it defaults to <code class="docutils literal notranslate"><span class="pre">builder.rigid_gap</span></code> [m]. To adjust contact gaps [m], set them before calling
 <a class="reference internal" href="newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.finalize()</span></code></a>.</p>
 </div>

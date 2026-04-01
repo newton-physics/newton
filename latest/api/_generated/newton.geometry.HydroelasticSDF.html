@@ -849,8 +849,10 @@ and other behavior. Defaults to <a class="reference internal" href="#newton.geom
 </dl>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Use <code class="xref py py-meth docutils literal notranslate"><span class="pre">_from_model()</span></code> to construct from a simulation <code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code>,
-which automatically extracts the required SDF data and shape information.</p>
+<p>Instances are typically created internally by the collision pipeline
+(via <a class="reference internal" href="newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a>) rather than constructed directly.
+The pipeline automatically extracts the required SDF data and shape
+information from the simulation <a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>.</p>
 <p>Contact IDs are packed into 32-bit integers using 9 bits per voxel axis coordinate.
 For SDF grids larger than 512 voxels per axis, contact ID collisions may occur,
 which can affect contact matching accuracy for warm-starting physics solvers.</p>
@@ -1039,7 +1041,7 @@ the contact surface triangles from hydroelastic collision detection.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
 <dd class="field-odd"><p>A <a class="reference internal" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData" title="newton.geometry.HydroelasticSDF.ContactSurfaceData"><code class="xref py py-class docutils literal notranslate"><span class="pre">ContactSurfaceData</span></code></a> instance containing vertex arrays and metadata for rendering,
-or None if <code class="xref py py-attr docutils literal notranslate"><span class="pre">config.output_contact_surface</span></code> is False.</p>
+or None if <a class="reference internal" href="#newton.geometry.HydroelasticSDF.Config.output_contact_surface" title="newton.geometry.HydroelasticSDF.Config.output_contact_surface"><code class="xref py py-attr docutils literal notranslate"><span class="pre">output_contact_surface</span></code></a> is False.</p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
 <dd class="field-even"><p><a class="reference internal" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData" title="newton.geometry.HydroelasticSDF.ContactSurfaceData">ContactSurfaceData</a> | None</p>

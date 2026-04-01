@@ -1079,7 +1079,7 @@ enabling real-time or offline visualization with advanced features like time scr
 <span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
 </pre></div>
 </div>
-<p>By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via <code class="xref py py-meth docutils literal notranslate"><span class="pre">ViewerRerun.log_state()</span></code>.
+<p>By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via <a class="reference internal" href="../api/_generated/newton.viewer.ViewerBase.html#newton.viewer.ViewerBase.log_state" title="newton.viewer.ViewerBase.log_state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_state()</span></code></a>.
 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer’s memory if the historical data was kept.
 If you want to keep the historical state data in the viewer, you can set the <code class="docutils literal notranslate"><span class="pre">keep_historical_data</span></code> flag to <code class="docutils literal notranslate"><span class="pre">True</span></code>.</p>
 <p>The rerun viewer provides a web-based interface with features like:</p>
@@ -1097,7 +1097,7 @@ during the construction of <a class="reference internal" href="../api/_generated
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>--extra<span class="w"> </span>notebook<span class="w"> </span>jupyter<span class="w"> </span>lab
 </pre></div>
 </div>
-<p>Then, you can use the rerun SDK in a Jupyter notebook by importing the <code class="xref py py-mod docutils literal notranslate"><span class="pre">rerun</span></code> module and creating a viewer instance.</p>
+<p>Then, you can use the rerun SDK in a Jupyter notebook by importing the <code class="docutils literal notranslate"><span class="pre">rerun</span></code> module and creating a viewer instance.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerRerun</span><span class="p">(</span><span class="n">keep_historical_data</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 

@@ -1540,7 +1540,7 @@ out many copies of a template environment builder into separate worlds in one ca
 <p class="admonition-title">Note</p>
 <p>MJWarp does not currently support heterogeneous environments (different models per world).</p>
 </div>
-<p>World indices are stored in <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_world</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.body_world</span></code>, etc.</p>
+<p>World indices are stored in <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_world" title="newton.Model.shape_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_world</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world" title="newton.Model.body_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world</span></code></a>, etc.</p>
 </section>
 <section id="collision-groups">
 <span id="id7"></span><h3>Collision Groups<a class="headerlink" href="#collision-groups" title="Link to this heading">#</a></h3>
@@ -1675,14 +1675,14 @@ collision groups.</p>
 </pre></div>
 </div>
 <p>Newton reads these relationships during USD import and converts them to
-<code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelBuilder.shape_collision_filter_pairs</span></code>.</p>
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.shape_collision_filter_pairs" title="newton.ModelBuilder.shape_collision_filter_pairs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_collision_filter_pairs</span></code></a>.</p>
 <p><strong>Collision Enabled Flag</strong></p>
 <p>Shapes with <code class="docutils literal notranslate"><span class="pre">physics:collisionEnabled=false</span></code> are excluded from all collisions by adding filter
 pairs against all other shapes in the scene.</p>
 </section>
 <section id="shape-collision-filter-pairs">
 <h3>Shape Collision Filter Pairs<a class="headerlink" href="#shape-collision-filter-pairs" title="Link to this heading">#</a></h3>
-<p>The <code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelBuilder.shape_collision_filter_pairs</span></code> list stores explicit shape pair exclusions.
+<p>The <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.shape_collision_filter_pairs" title="newton.ModelBuilder.shape_collision_filter_pairs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_collision_filter_pairs</span></code></a> list stores explicit shape pair exclusions.
 This is Newton’s internal representation for pairwise filtering (including pairs imported from
 UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:filteredPairs</span></code> relationships).</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
