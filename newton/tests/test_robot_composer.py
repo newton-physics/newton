@@ -9,7 +9,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton import JointTargetMode
-from newton._src.utils.download_assets import download_git_folder
+from newton._src.utils.download_assets import MENAGERIE_REF, MENAGERIE_URL, download_git_folder
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import add_function_test, find_nan_members, get_cuda_test_devices
 
@@ -108,8 +108,9 @@ class RobotComposerSim:
         # Download from MuJoCo Menagerie
         try:
             ur5e_folder = download_git_folder(
-                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                git_url=MENAGERIE_URL,
                 folder_path="universal_robots_ur5e",
+                ref=MENAGERIE_REF,
             )
             self.ur5e_path = ur5e_folder / "ur5e.xml"
             print(f"  UR5e: {self.ur5e_path.exists()}")
@@ -119,8 +120,9 @@ class RobotComposerSim:
 
         try:
             leap_folder = download_git_folder(
-                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                git_url=MENAGERIE_URL,
                 folder_path="leap_hand",
+                ref=MENAGERIE_REF,
             )
             self.leap_path = leap_folder / "left_hand.xml"
             print(f"  LEAP hand left: {self.leap_path.exists()}")
@@ -130,8 +132,9 @@ class RobotComposerSim:
 
         try:
             allegro_folder = download_git_folder(
-                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                git_url=MENAGERIE_URL,
                 folder_path="wonik_allegro",
+                ref=MENAGERIE_REF,
             )
             self.allegro_path = allegro_folder / "left_hand.xml"
             print(f"  Allegro hand: {self.allegro_path.exists()}")
@@ -151,8 +154,9 @@ class RobotComposerSim:
         # Download Robotiq 2F85 gripper
         try:
             robotiq_2f85_folder = download_git_folder(
-                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                git_url=MENAGERIE_URL,
                 folder_path="robotiq_2f85",
+                ref=MENAGERIE_REF,
             )
             self.robotiq_2f85_path = robotiq_2f85_folder / "2f85.xml"
             print(f"  Robotiq 2F85 gripper: {self.robotiq_2f85_path.exists()}")

@@ -30,7 +30,7 @@ Kamino is being developed and maintained by [Disney Research](https://www.disney
 
 ### Installing
 
-For plain users, the official [installation instructions](https://newton-physics.github.io/newton/guide/installation.html) of Newton are recommended.
+For plain users, the official [installation instructions](https://newton-physics.github.io/newton/latest/guide/installation.html) of Newton are recommended.
 
 For developers, please refer to the [Development](#development) section below.
 
@@ -66,7 +66,7 @@ Development of Kamino requires the installation of [Newton](https://github.com/n
 The first step involves setting-up a python environment.
 
 The simplest is to create a new `virtualenv`. Alternatively one could
-follow the [instructions](https://newton-physics.github.io/newton/guide/installation.html) from Newton.
+follow the [instructions](https://newton-physics.github.io/newton/latest/guide/installation.html) from Newton.
 
 ### Virtual environments using `pyenv`
 Because we're working on a fork of the main Newton repository, it can be useful to create two `virtualenv|conda|uv` environments.

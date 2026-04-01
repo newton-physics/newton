@@ -244,6 +244,96 @@ class TestSelection(unittest.TestCase):
                     msg=f"world={w}, shape={s}",
                 )
 
+    def test_eval_fk_translated_joint_chain_uses_view_mask(self):
+        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+        def add_translated_chain(label: str, x_offset: float):
+            base = builder.add_link()
+            slider = builder.add_link()
+
+            builder.body_com[base] = wp.vec3(0.2, 0.0, 0.0)
+            builder.body_com[slider] = wp.vec3(0.35, 0.0, -0.1)
+
+            j0 = builder.add_joint_revolute(
+                parent=-1,
+                child=base,
+                axis=newton.Axis.Z,
+                parent_xform=wp.transform(wp.vec3(x_offset, 0.0, 0.0), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            )
+            j1 = builder.add_joint_prismatic(
+                parent=base,
+                child=slider,
+                axis=newton.Axis.X,
+                parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.4), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.2, 0.0, -0.15), wp.quat_identity()),
+            )
+            builder.add_articulation([j0, j1], label=label)
+            return base, slider, j0, j1
+
+        target_base, target_slider, target_j0, target_j1 = add_translated_chain("translated_target", 0.0)
+        other_base, other_slider, other_j0, other_j1 = add_translated_chain("translated_other", 5.0)
+
+        model = builder.finalize()
+        view = ArticulationView(model, "translated_target")
+
+        q_start = model.joint_q_start.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        q = model.joint_q.numpy().copy()
+        qd = model.joint_qd.numpy().copy()
+
+        q[q_start[target_j0]] = 0.55
+        q[q_start[target_j1]] = 0.8
+        qd[qd_start[target_j0]] = 1.1
+        qd[qd_start[target_j1]] = -0.35
+
+        q[q_start[other_j0]] = -0.3
+        q[q_start[other_j1]] = 0.25
+        qd[qd_start[other_j0]] = -0.7
+        qd[qd_start[other_j1]] = 0.45
+
+        dt = 1.0e-4
+        q_next = q.copy()
+        q_next[q_start[target_j0]] += qd[qd_start[target_j0]] * dt
+        q_next[q_start[target_j1]] += qd[qd_start[target_j1]] * dt
+        q_next[q_start[other_j0]] += qd[qd_start[other_j0]] * dt
+        q_next[q_start[other_j1]] += qd[qd_start[other_j1]] * dt
+
+        state = model.state()
+        state_next = model.state()
+
+        sentinel_q = state.body_q.numpy().copy()
+        sentinel_q[:, :3] = -99.0
+        sentinel_q[:, 3:7] = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        sentinel_qd = np.full_like(state.body_qd.numpy(), -77.0)
+
+        state.body_q.assign(sentinel_q)
+        state.body_qd.assign(sentinel_qd)
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        view.eval_fk(state)
+
+        state_next.body_q.assign(sentinel_q)
+        state_next.body_qd.assign(sentinel_qd)
+        state_next.joint_q.assign(q_next)
+        state_next.joint_qd.assign(qd)
+        view.eval_fk(state_next)
+
+        body_q = state.body_q.numpy().reshape(-1, 7)
+        body_q_next = state_next.body_q.numpy().reshape(-1, 7)
+        body_qd = state.body_qd.numpy().reshape(-1, 6)
+
+        origin_vel_fd = (body_q_next[target_slider, :3] - body_q[target_slider, :3]) / dt
+        origin_vel_from_body_qd = body_qd[target_slider, :3]
+
+        assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
+        self.assertFalse(np.array_equal(body_q[target_base], sentinel_q[target_base]))
+        assert_np_equal(body_q[other_base], sentinel_q[other_base], tol=0.0)
+        assert_np_equal(body_q[other_slider], sentinel_q[other_slider], tol=0.0)
+        assert_np_equal(body_qd[other_base], sentinel_qd[other_base], tol=0.0)
+        assert_np_equal(body_qd[other_slider], sentinel_qd[other_slider], tol=0.0)
+
     def test_selection_mask(self):
         # load articulation
         ant = newton.ModelBuilder()
@@ -1333,6 +1423,150 @@ class TestSelectionFixedTendons(unittest.TestCase):
         # All stiffness values should be 2.0 (from TENDON_MJCF)
         expected = np.full((W, A, 1), 2.0)
         assert_np_equal(stiffness.numpy(), expected)
+
+
+@wp.kernel
+def _sum_float_3d_kernel(src: wp.array3d(dtype=float), out: wp.array(dtype=float)):
+    i, j, k = wp.tid()
+    wp.atomic_add(out, 0, src[i, j, k])
+
+
+class TestArticulationViewRequiresGrad(unittest.TestCase):
+    """ArticulationView getters must preserve requires_grad and gradient connectivity.
+
+    The articulation has joints [FREE, REVOLUTE, PRISMATIC, REVOLUTE] giving
+    velocity DOF layout: FREE(0-5), REVOLUTE(6), PRISMATIC(7), REVOLUTE(8).
+
+    Two views exercise both code paths:
+      contig_view  — excludes FREE → contiguous DOFs [6,7,8] (grad via pointer aliasing)
+      indexed_view — excludes FREE+PRISMATIC → non-contiguous DOFs [6,8] (grad via gather kernel)
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+
+        b0 = builder.add_link(xform=wp.transform_identity())
+        builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+        b1 = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        b2 = builder.add_link(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
+        builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        b3 = builder.add_link(xform=wp.transform((0.0, 0.0, 3.0), wp.quat_identity()))
+        builder.add_shape_box(b3, hx=0.1, hy=0.1, hz=0.1)
+
+        j0 = builder.add_joint_free(b0)
+        j1 = builder.add_joint_revolute(
+            parent=b0,
+            child=b1,
+            axis=newton.Axis.X,
+            parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
+            child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
+        )
+        j2 = builder.add_joint_prismatic(
+            parent=b1,
+            child=b2,
+            axis=newton.Axis.Z,
+            parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
+            child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
+        )
+        j3 = builder.add_joint_revolute(
+            parent=b2,
+            child=b3,
+            axis=newton.Axis.X,
+            parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
+            child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
+        )
+        builder.add_articulation([j0, j1, j2, j3])
+
+        cls.model = builder.finalize(requires_grad=True)
+        cls.contig_view = ArticulationView(
+            cls.model,
+            "*",
+            exclude_joint_types=[newton.JointType.FREE],
+        )
+        cls.indexed_view = ArticulationView(
+            cls.model,
+            "*",
+            exclude_joint_types=[newton.JointType.FREE, newton.JointType.PRISMATIC],
+        )
+
+    def test_no_grad_state_returns_no_grad(self):
+        state = self.model.state(requires_grad=False)
+        result = self.contig_view.get_dof_velocities(state)
+        self.assertFalse(result.requires_grad)
+
+    def test_contiguous_selected_grad_matches_source(self):
+        """Set non-zero grad on state.joint_qd; the contiguous view must expose the same values."""
+        state = self.model.state(requires_grad=True)
+
+        # Write known gradient pattern into the source
+        grad_np = np.arange(1, 10, dtype=np.float32)  # [1..9] for 9 velocity DOFs
+        state.joint_qd.grad.assign(wp.array(grad_np, dtype=float, device=state.joint_qd.device))
+
+        result = self.contig_view.get_dof_velocities(state)
+        self.assertTrue(result.requires_grad)
+
+        # contig_view selects DOFs [6,7,8] → grads should be [7,8,9]
+        result_grad = result.grad.numpy().flatten()
+        np.testing.assert_allclose(result_grad, [7.0, 8.0, 9.0], atol=1e-6)
+
+    def test_contiguous_backward_updates_source_grad(self):
+        """tape.backward() through a contiguous view writes to the correct source grad positions."""
+        state = self.model.state(requires_grad=True)
+        loss = wp.zeros(1, dtype=float, requires_grad=True, device=state.joint_qd.device)
+
+        tape = wp.Tape()
+        with tape:
+            result = self.contig_view.get_dof_velocities(state)
+            wp.launch(
+                _sum_float_3d_kernel, dim=result.shape, inputs=[result], outputs=[loss], device=state.joint_qd.device
+            )
+
+        tape.backward(loss=loss)
+        grad_np = state.joint_qd.grad.numpy().flatten()
+
+        # d(sum)/d(input) = 1.0 for each selected DOF, 0.0 elsewhere
+        expected = np.zeros(9, dtype=np.float32)
+        expected[6:9] = 1.0
+        np.testing.assert_allclose(grad_np, expected, atol=1e-6)
+
+    def test_indexed_selected_grad_matches_source(self):
+        """Set non-zero grad on state.joint_qd; the indexed view must expose the correct subset."""
+        state = self.model.state(requires_grad=True)
+
+        grad_np = np.arange(1, 10, dtype=np.float32)  # [1..9] for 9 velocity DOFs
+        state.joint_qd.grad.assign(wp.array(grad_np, dtype=float, device=state.joint_qd.device))
+
+        result = self.indexed_view.get_dof_velocities(state)
+        self.assertTrue(result.requires_grad)
+
+        # indexed_view selects DOFs [6, 8] → grads should be [7, 9]
+        result_grad = result.grad.numpy().flatten()
+        np.testing.assert_allclose(result_grad, [7.0, 9.0], atol=1e-6)
+
+    def test_indexed_backward_scatters_to_source_grad(self):
+        """tape.backward() through an indexed view scatters grads to non-contiguous positions."""
+        state = self.model.state(requires_grad=True)
+        loss = wp.zeros(1, dtype=float, requires_grad=True, device=state.joint_qd.device)
+
+        tape = wp.Tape()
+        with tape:
+            result = self.indexed_view.get_dof_velocities(state)
+            wp.launch(
+                _sum_float_3d_kernel, dim=result.shape, inputs=[result], outputs=[loss], device=state.joint_qd.device
+            )
+
+        self.assertIsInstance(result, wp.array)
+        self.assertTrue(result.requires_grad)
+
+        tape.backward(loss=loss)
+        grad_np = state.joint_qd.grad.numpy().flatten()
+
+        expected = np.zeros(9, dtype=np.float32)
+        expected[6] = 1.0
+        expected[8] = 1.0
+        np.testing.assert_allclose(grad_np, expected, atol=1e-6)
 
 
 if __name__ == "__main__":

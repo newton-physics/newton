@@ -20,6 +20,7 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
+from newton.sensors import SensorContact
 from newton.utils import EventTracer
 
 ROBOT_CONFIGS = {
@@ -30,6 +31,7 @@ ROBOT_CONFIGS = {
         "nconmax": 25,
         "ls_parallel": False,
         "cone": "pyramidal",
+        "sensing_bodies": ["*thigh*", "*shin*", "*foot*", "*arm*"],
     },
     "g1": {
         "solver": "newton",
@@ -334,6 +336,17 @@ class Example:
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
+        self.sensor_contact = None
+        sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
+        if sensing_bodies is not None:
+            self.sensor_contact = SensorContact(self.model, sensing_obj_bodies=sensing_bodies, counterpart_bodies="*")
+            self.contacts = newton.Contacts(
+                self.solver.get_max_contact_count(),
+                0,
+                device=self.model.device,
+                requested_attributes=self.model.get_requested_contact_attributes(),
+            )
+
         self.graph = None
         if self.use_cuda_graph:
             # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
@@ -350,6 +363,9 @@ class Example:
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
+        if self.sensor_contact is not None:
+            self.solver.update_contacts(self.contacts, self.state_0)
+            self.sensor_contact.update(self.state_0, self.contacts)
 
     def step(self):
         if self.actuation == "random":

@@ -472,7 +472,7 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
 
     def test_heterogenous_model_FK_random_poses(self):
         # Initialize RNG
-        test_name = "Heterogenous model (test mechanism + dr_legs) FK random poses check"
+        test_name = "Heterogeneous model (test mechanism + dr_legs) FK random poses check"
         seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
         rng = np.random.default_rng(seed)
 
@@ -514,7 +514,7 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
 
     def test_heterogenous_model_FK_random_poses(self):
         # Initialize RNG
-        test_name = "Heterogenous model (test mechanism + dr_legs) sparse Jacobian assembly check"
+        test_name = "Heterogeneous model (test mechanism + dr_legs) sparse Jacobian assembly check"
         seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
         rng = np.random.default_rng(seed)
 

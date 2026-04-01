@@ -1,11 +1,8 @@
-name: Newton + MuJoCo Warp Nightly Builds
+name: Warp Nightly Build Tests on AWS EC2 (Reusable)
 
-# This workflow runs daily to test Newton with the latest mujoco-warp from source.
-# It installs mujoco-warp directly from the google-deepmind/mujoco_warp repository,
-# which pulls in whatever mujoco version it depends on.
-# Scheduled workflows automatically run on the default branch (main).
+# Standalone workflow that tests Newton with the latest nightly warp-lang builds.
+# Called by scheduled_nightly.yml (only when a new warp-lang nightly is detected).
 
-# Workflow configuration variables
 env:
   AWS_REGION: us-east-2
   AWS_INSTANCE_TYPE: g7e.2xlarge
@@ -13,13 +10,17 @@ env:
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
-  AWS_ROLE_DURATION: 7200
-  PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+  AWS_ROLE_DURATION: 3600
+  HOME: /actions-runner
 
 on:
-  schedule:
-    - cron: '0 12 * * *'  # Daily at 12 PM UTC (4 AM PST)
-  workflow_dispatch:  # Allow manual triggers
+  workflow_call:
+    secrets:
+      GH_PERSONAL_ACCESS_TOKEN:
+        required: true
+      CODECOV_TOKEN:
+        required: true
+  workflow_dispatch:
 
 jobs:
   start-runner:
@@ -44,6 +45,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
+
       - name: Get the latest AWS Deep Learning Base GPU AMI
         run: |
           echo "Finding the latest AWS Deep Learning Base GPU AMI..."
@@ -58,6 +60,7 @@ jobs:
           fi
           echo "Latest AMI ID found: $LATEST_AMI_ID"
           echo "LATEST_AMI_ID=$LATEST_AMI_ID" >> "$GITHUB_ENV"
+
       - name: Start EC2 runner
         id: start-ec2-runner
         uses: machulav/ec2-github-runner@a00f575a87f3a96ec6de9413d16eeb828a3cc0a8  # v2.5.2
@@ -88,14 +91,16 @@ jobs:
               {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
             ]
 
-  nightly-mujoco-warp-tests:
-    name: Run Tests with MuJoCo Warp from Source
+  warp-nightly-tests:
+    name: Run Tests with Warp Nightly Build
     needs: start-runner
+    if: ${{ !cancelled() && needs.start-runner.result == 'success' }}
     runs-on: ${{ needs.start-runner.outputs.label }}
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
-      HOME: /actions-runner
+      PYTHONFAULTHANDLER: "1"
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
@@ -108,24 +113,19 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.9.0"
+          version: "0.11.0"
 
       - name: Set up Python
         run: uv python install
 
-      - name: Install Newton and override mujoco-warp with source build
-        run: |
-          uv sync --extra dev --extra torch-cu13
-          uv pip install --reinstall-package mujoco-warp "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp.git"
-
-      - name: Print mujoco-warp version info
-        run: uv run --no-sync python -c "import mujoco_warp; print('mujoco_warp version:', getattr(mujoco_warp, '__version__', 'unknown'))"
+      - name: Update lock file with latest warp-lang nightly build
+        run: uv lock -P warp-lang --prerelease allow
 
       - name: Check disk space
         run: df -h
 
       - name: Run Tests
-        run: uv run --no-sync -m newton.tests --junit-report-xml rspec.xml
+        run: uv run --extra dev --extra torch-cu13 -m newton.tests --junit-report-xml rspec.xml
 
       - name: Check disk space (post-test)
         if: always()
@@ -138,6 +138,33 @@ jobs:
           paths: "rspec.xml"
           show: "fail"
 
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        with:
+          disable_search: true
+          files: ./rspec.xml
+          flags: warp-nightly
+          report_type: test_results
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Re-run instructions
+        if: failure()
+        run: |
+          echo "::error::DO NOT use 'Re-run failed jobs' - the EC2 runner no longer exists and your job will be queued forever."
+          echo "::error::USE 'Re-run all jobs' instead to start a fresh EC2 runner."
+          cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
+          ## ⚠️ How to Re-run This Workflow
+
+          This workflow uses **ephemeral EC2 runners** that are terminated after each run.
+
+          | | Option | Result |
+          |---|--------|--------|
+          | ❌ | **Re-run failed jobs** | Runner no longer exists → job queued forever |
+          | ✅ | **Re-run all jobs** | Starts new EC2 runner → tests re-run |
+          EOF
+
   stop-runner:
     name: Stop self-hosted EC2 runner
     runs-on: ubuntu-latest
@@ -146,7 +173,7 @@ jobs:
       contents: read
     needs:
       - start-runner
-      - nightly-mujoco-warp-tests
+      - warp-nightly-tests
     if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
     steps:
       - name: Harden the runner (Audit all outbound calls)
