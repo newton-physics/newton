@@ -201,6 +201,8 @@ def is_noise_line(line: str) -> bool:
         return True
     if stripped.startswith("Warp DeprecationWarning:") or stripped.startswith("Warp UserWarning:"):
         return True
+    if stripped.startswith("Cloning ") or stripped.startswith("Successfully downloaded "):
+        return True
     return False
 
 

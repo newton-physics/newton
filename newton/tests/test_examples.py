@@ -430,7 +430,7 @@ add_example_test(
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num-frames": 10},
     test_suffix="G1_29dof",
-    expected_output=["\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -438,7 +438,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
     test_suffix="G1_23dof",
-    expected_output=["\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -446,7 +446,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
     test_suffix="G1_23dof_Physx",
-    expected_output=["\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -454,7 +454,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
     test_suffix="Anymal",
-    expected_output=["\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -462,7 +462,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
     test_suffix="Anymal_Physx",
-    expected_output=["\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -471,7 +471,7 @@ add_example_test(
     test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2"},
     test_suffix="Go2",
-    expected_output=["\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -480,7 +480,7 @@ add_example_test(
     test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
     test_suffix="Go2_Physx",
-    expected_output=["\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]"],
 )
 
 
@@ -726,14 +726,14 @@ add_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
-    expected_output=["Downloading nut/bolt assets|Assets downloaded to"],
+    expected_output=["Downloading nut/bolt assets"],
 )
 add_example_test(
     TestContactsExamples,
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
-    expected_output=["Downloading nut/bolt assets|Assets downloaded to"],
+    expected_output=["Downloading nut/bolt assets"],
 )
 add_example_test(
     TestContactsExamples,
