@@ -1853,6 +1853,7 @@ class SolverImplicitMPM(SolverBase):
                 fields={"phi": scratch.divergence_test},
                 values={"inv_cell_volume": inv_cell_volume},
                 output=scratch.strain_node_particle_volume,
+                temporary_store=self.temporary_store,
             )
 
         # Void fraction (unilateral incompressibility offset)
@@ -1935,11 +1936,11 @@ class SolverImplicitMPM(SolverBase):
     ):
         if self.strain_basis in ("Q1", "S2"):
             scratch.strain_node_particle_volume += EPSILON
-            return None
+            return None, None
         elif self.strain_basis[:3] == "pic":
             M_diag = scratch.strain_node_particle_volume
             M_diag.assign(self._mpm_model.particle_volume * inv_cell_volume)
-            return None
+            return None, None
 
         # build mass matrix of PIC integration
         M = fem.integrate(
@@ -1961,6 +1962,7 @@ class SolverImplicitMPM(SolverBase):
 
         M_ev = wp.empty(shape=(M_elt_wise.nrow, *M_elt_wise.block_shape), dtype=M_elt_wise.scalar_type)
         M_diag = scratch.strain_node_particle_volume.reshape((-1, nodes_per_elt))
+        rotated_volume = wp.empty_like(M_diag)
 
         wp.launch(
             compute_eigenvalues,
@@ -1969,20 +1971,23 @@ class SolverImplicitMPM(SolverBase):
                 M_elt_wise.offsets,
                 M_elt_wise.columns,
                 M_values,
+                M_diag,
                 scratch.strain_yield_parameters_field.dof_values,
             ],
             outputs=[
                 M_diag,
                 M_ev,
+                rotated_volume,
             ],
         )
 
-        return M_ev
+        return M_ev, rotated_volume.reshape((-1,))
 
     def _apply_strain_eigenbasis(
         self,
         scratch: ImplicitMPMScratchpad,
         M_ev: wp.array3d[float],
+        rotated_volume=None,
     ):
         node_count = scratch.strain_node_count
 
@@ -2032,11 +2037,13 @@ class SolverImplicitMPM(SolverBase):
                 inputs=[M_diag, scratch.stress_field.dof_values],
             )
 
-        # Yield parameters are integrated, need scale with inverse node volume
+        # Yield parameters are integrated, scale with inverse rotated volume
+        # to correctly recover uniform parameters after eigenbasis rotation
+        yield_volume = rotated_volume if rotated_volume is not None else M_diag
         wp.launch(
             inverse_scale_vector,
             dim=node_count,
-            inputs=[M_diag, scratch.strain_yield_parameters_field.dof_values],
+            inputs=[yield_volume, scratch.strain_yield_parameters_field.dof_values],
         )
 
     def _unapply_strain_eigenbasis(
@@ -2088,9 +2095,9 @@ class SolverImplicitMPM(SolverBase):
         last_step_data: LastStepData,
         inv_cell_volume: float,
     ):
-        M_ev = self._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
+        M_ev, rotated_volume = self._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
 
-        self._apply_strain_eigenbasis(scratch, M_ev)
+        self._apply_strain_eigenbasis(scratch, M_ev, rotated_volume)
 
         with self._timer("Strain solve"):
             momentum_data = MomentumData(

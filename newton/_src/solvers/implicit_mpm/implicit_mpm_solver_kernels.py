@@ -548,12 +548,23 @@ def mass_form(
 
 @wp.kernel(module="unique")
 def compute_eigenvalues(
+<<<<<<< HEAD
     offsets: wp.array[int],
     columns: wp.array[int],
     values: wp.array[Any],
     yield_parameters: wp.array[YieldParamVec],
     eigenvalues: wp.array2d[float],
     eigenvectors: wp.array3d[float],
+=======
+    offsets: wp.array(dtype=int),
+    columns: wp.array(dtype=int),
+    values: wp.array(dtype=Any),
+    ones: wp.array2d(dtype=float),
+    yield_parameters: wp.array(dtype=YieldParamVec),
+    eigenvalues: wp.array2d(dtype=float),
+    eigenvectors: wp.array3d(dtype=float),
+    rotated_volume: wp.array2d(dtype=float),
+>>>>>>> e35a4a80 (More accurate interpolation of yiel dparameters for P1d/Q1d basis)
 ):
     row = wp.tid()
 
@@ -562,6 +573,7 @@ def compute_eigenvalues(
     if diag_index == -1:
         ev = values.dtype(0.0)
         scales = type(ev[0])(0.0)
+        rv = type(ev[0])(0.0)
 
     else:
         diag_block = values[diag_index]
@@ -572,21 +584,25 @@ def compute_eigenvalues(
             scales = wp.get_diag(diag_block)
             ev = wp.identity(n=scales.length, dtype=float)
 
+        rv = type(scales)(0.0)
         nodes_per_elt = eigenvectors.shape[1]
         for k in range(scales.length):
+            s = float(0.0)
             if scales[k] <= _EIGENVALUE_FLOOR:
                 scales[k] = 1.0
+                rv[k] = 1.0
                 ev_s = 0.0
             else:
-                s = float(0.0)
                 ys = float(0.0)
 
                 for j in range(scales.length):
                     node_index = row * nodes_per_elt + j
-                    s += ev[k, j] * eigenvalues[row, j]
+                    s += ev[k, j] * ones[row, j]
                     ys += ev[k, j] * yield_parameters[node_index][0]
 
-                ev_s = wp.where(s < 0.0, -1.0, 1.0)
+                ev_s = wp.sign(s)
+                rv[k] = ev_s * s
+
                 if ys * ev_s < 0.0:
                     ev_s = 0.0
 
@@ -596,6 +612,7 @@ def compute_eigenvalues(
     size = int(scales.length)
     for k in range(size):
         eigenvalues[row, k] = scales[k]
+        rotated_volume[row, k] = rv[k]
         for j in range(scales.length):
             eigenvectors[row, k, j] = ev[k, j]
 
