@@ -65,7 +65,6 @@
 - Deprecate `Viewer.update_shape_colors()` in favor of writing directly to `Model.shape_color`
 - Deprecate `ModelBuilder.add_shape_ellipsoid()` parameters `a`, `b`, `c` in favor of `rx`, `ry`, `rz`
 - Deprecate passing a `Gaussian` as the second positional argument to `ModelBuilder.add_shape_gaussian()`; use the `gaussian=` keyword argument instead
-- Deprecate `collide_plane_cylinder()` parameter `cylinder_center` in favor of `cylinder_pos`
 - Deprecate `SensorTiledCamera.utils.assign_random_colors_per_world()` and `assign_random_colors_per_shape()` in favor of per-shape colors via `ModelBuilder.add_shape_*(color=...)`
 
 ### Removed
