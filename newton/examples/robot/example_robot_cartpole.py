@@ -155,25 +155,27 @@ class Example:
         world0_cart_vel = wp.spatial_vector(*qd[0])
         world0_pole1_vel = wp.spatial_vector(*qd[1])
         world0_pole2_vel = wp.spatial_vector(*qd[2])
+        # Replicated GPU worlds can drift by a few ulps in body twists.
+        world_velocity_atol = 1e-6
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cart velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_cart_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_cart_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole1 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole1_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole1_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world + 1 for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole2 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel, atol=1e-6),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
 

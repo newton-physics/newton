@@ -1,53 +1,26 @@
-name: GPU Unit Tests on AWS EC2 (Reusable)
+name: MuJoCo Warp Tests on AWS EC2 (Reusable)
 
-# This is a reusable workflow that uses machulav/ec2-github-runner to run GPU tests.
-# Called by:
-#   - pr_target_aws_gpu_tests.yml (for pull requests)
-#   - merge_queue_aws_gpu.yml (for merge groups)
-#   - push_aws_gpu.yml (for pushes to main/release branches)
-#   - scheduled_nightly.yml (for nightly multi-GPU tests)
+# Standalone workflow that tests Newton with the latest mujoco-warp from source.
+# Not currently dispatched by scheduled_nightly.yml; kept available for manual dispatch/reuse.
 
-# Workflow configuration variables
 env:
   AWS_REGION: us-east-2
-  AWS_INSTANCE_TYPE: ${{ inputs.instance-type || 'g7e.2xlarge' }}
-  AWS_VOLUME_SIZE: ${{ inputs.volume-size || '92' }}
+  AWS_INSTANCE_TYPE: g7e.2xlarge
+  AWS_VOLUME_SIZE: 92
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
-  AWS_ROLE_DURATION: 7200
+  AWS_ROLE_DURATION: 3600
   HOME: /actions-runner
 
 on:
   workflow_call:
-    inputs:
-      ref:
-        description: 'Git ref to checkout'
-        required: false
-        type: string
-        default: ''
-      instance-type:
-        description: 'EC2 instance type'
-        required: false
-        type: string
-        default: 'g7e.2xlarge'
-      volume-size:
-        description: 'EBS volume size in GB'
-        required: false
-        type: string
-        default: '92'
     secrets:
       GH_PERSONAL_ACCESS_TOKEN:
         required: true
       CODECOV_TOKEN:
         required: true
   workflow_dispatch:
-    inputs:
-      instance-type:
-        description: 'EC2 instance type'
-        required: false
-        type: string
-        default: 'g7e.2xlarge'
 
 jobs:
   start-runner:
@@ -72,6 +45,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
+
       - name: Get the latest AWS Deep Learning Base GPU AMI
         run: |
           echo "Finding the latest AWS Deep Learning Base GPU AMI..."
@@ -86,6 +60,7 @@ jobs:
           fi
           echo "Latest AMI ID found: $LATEST_AMI_ID"
           echo "LATEST_AMI_ID=$LATEST_AMI_ID" >> "$GITHUB_ENV"
+
       - name: Start EC2 runner
         id: start-ec2-runner
         uses: machulav/ec2-github-runner@a00f575a87f3a96ec6de9413d16eeb828a3cc0a8  # v2.5.2
@@ -116,19 +91,24 @@ jobs:
               {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
             ]
 
-  gpu-unit-tests:
-    name: Run GPU Unit Tests on AWS EC2
-    needs: start-runner # required to start the main job when the runner is ready
-    runs-on: ${{ needs.start-runner.outputs.label }} # run the job on the newly created runner
+  mujoco-warp-tests:
+    name: Run Tests with MuJoCo Warp from Source
+    needs: start-runner
+    if: ${{ !cancelled() && needs.start-runner.result == 'success' }}
+    runs-on: ${{ needs.start-runner.outputs.label }}
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
-      PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+      PYTHONFAULTHANDLER: "1"
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-        with:
-          ref: ${{ inputs.ref || github.sha }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
@@ -138,20 +118,19 @@ jobs:
       - name: Set up Python
         run: uv python install
 
-      - name: Restore Warp kernel cache
-        if: github.event_name != 'merge_group'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
-        with:
-          path: /actions-runner/.cache/warp
-          key: warp-kernels-gpu-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
-          restore-keys: |
-            warp-kernels-gpu-
+      - name: Install Newton and override mujoco-warp with source build
+        run: |
+          uv sync --extra dev --extra torch-cu13
+          uv pip install --reinstall-package mujoco-warp "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp.git"
+
+      - name: Print mujoco-warp version info
+        run: uv run --no-sync python -c "import mujoco_warp; print('mujoco_warp version:', getattr(mujoco_warp, '__version__', 'unknown'))"
 
       - name: Check disk space
         run: df -h
 
       - name: Run Tests
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --no-sync -m newton.tests --junit-report-xml rspec.xml
 
       - name: Check disk space (post-test)
         if: always()
@@ -164,24 +143,22 @@ jobs:
           paths: "rspec.xml"
           show: "fail"
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
+        continue-on-error: true
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
         with:
           disable_search: true
-          env_vars: AWS_INSTANCE_TYPE
-          files: ./coverage.xml
-          flags: unittests
+          files: ./rspec.xml
+          flags: mujoco-warp-nightly
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Re-run instructions
         if: failure()
         run: |
-          # Create error annotations (appear at top of job summary)
           echo "::error::DO NOT use 'Re-run failed jobs' - the EC2 runner no longer exists and your job will be queued forever."
           echo "::error::USE 'Re-run all jobs' instead to start a fresh EC2 runner."
-
-          # Write to job summary (appears in Summary tab)
           cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
           ## ⚠️ How to Re-run This Workflow
 
@@ -193,25 +170,6 @@ jobs:
           | ✅ | **Re-run all jobs** | Starts new EC2 runner → tests re-run |
           EOF
 
-          # Also print to log for completeness
-          cat << 'EOF'
-
-          ================================================================================
-          ⚠️  IMPORTANT: HOW TO RE-RUN THIS WORKFLOW
-          ================================================================================
-
-          This workflow uses ephemeral EC2 runners that are terminated after each run.
-
-          ❌ DO NOT select "Re-run failed jobs"
-             → The runner no longer exists and your job will be queued forever.
-
-          ✅ DO select "Re-run all jobs"
-             → This will start a new EC2 runner and re-run the tests.
-
-          ================================================================================
-
-          EOF
-
   stop-runner:
     name: Stop self-hosted EC2 runner
     runs-on: ubuntu-latest
@@ -220,7 +178,7 @@ jobs:
       contents: read
     needs:
       - start-runner
-      - gpu-unit-tests
+      - mujoco-warp-tests
     if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
     steps:
       - name: Harden the runner (Audit all outbound calls)

@@ -842,13 +842,6 @@ class ModelBuilder:
         all principal moments of inertia are at least this value. Set to None to disable inertia
         eigenvalue clamping. Default: None."""
 
-        self.inertia_tolerance: float = 1e-6
-        """Tolerance for inertia eigenvalue positivity checks and triangle inequality
-        validation [kg*m^2]. Lower this for models with lightweight components (< ~50g).
-        Values below ~1e-7 may not behave identically across the detailed (float64) and
-        fast (float32) validation paths due to float32 precision limits.
-        Default: 1e-6."""
-
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
@@ -9449,7 +9442,7 @@ class ModelBuilder:
             gaussians = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
-                if geo:
+                if geo and not isinstance(geo, Heightfield):
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
@@ -9558,24 +9551,18 @@ class ModelBuilder:
                     if shape_type == GeoType.MESH and shape_src is not None:
                         # Compute local AABB from mesh vertices
                         vertices = shape_src.vertices
-                        aabb_lower = vertices.min(axis=0)
-                        aabb_upper = vertices.max(axis=0)
-
-                        # Apply scale to get the actual local-space bounds
-                        aabb_lower = aabb_lower * np.array(shape_scale)
-                        aabb_upper = aabb_upper * np.array(shape_scale)
+                        lo = vertices.min(axis=0) * np.array(shape_scale)
+                        hi = vertices.max(axis=0) * np.array(shape_scale)
+                        aabb_lower = np.minimum(lo, hi)
+                        aabb_upper = np.maximum(lo, hi)
 
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
-                        # Compute local AABB from convex mesh vertices (similar to MESH)
-                        vertices = shape_src.vertices
-                        aabb_lower = vertices.min(axis=0)
-                        aabb_upper = vertices.max(axis=0)
-
-                        # Apply scale to get the actual local-space bounds
-                        aabb_lower = aabb_lower * np.array(shape_scale)
-                        aabb_upper = aabb_upper * np.array(shape_scale)
+                        lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
+                        hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
+                        aabb_lower = np.minimum(lo, hi)
+                        aabb_upper = np.maximum(lo, hi)
 
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
@@ -9624,8 +9611,17 @@ class ModelBuilder:
                         aabb_upper = np.array([r, r, half_height])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
+                    elif shape_type == GeoType.HFIELD and shape_src is not None:
+                        hx = abs(shape_src.hx * shape_scale[0])
+                        hy = abs(shape_src.hy * shape_scale[1])
+                        z_lo = shape_src.min_z * shape_scale[2]
+                        z_hi = shape_src.max_z * shape_scale[2]
+                        aabb_lower = np.array([-hx, -hy, min(z_lo, z_hi)])
+                        aabb_upper = np.array([hx, hy, max(z_lo, z_hi)])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
                     else:
-                        # Other shapes (PLANE, HFIELD, etc.): use default unit cube with 1x1x1 voxel grid
+                        # Other shapes (PLANE, etc.): use default unit cube with 1x1x1 voxel grid
                         aabb_lower = np.array([-1.0, -1.0, -1.0])
                         aabb_upper = np.array([1.0, 1.0, 1.0])
                         nx, ny, nz = 1, 1, 1
@@ -9942,11 +9938,6 @@ class ModelBuilder:
             # This catches negative masses/inertias and other critical issues.
             # Neither path mutates the builder — corrected values only appear
             # on the returned Model so that finalize() is side-effect-free.
-            if not math.isfinite(self.inertia_tolerance) or self.inertia_tolerance < 0.0:
-                raise ValueError(
-                    f"inertia_tolerance must be a finite, non-negative value, got {self.inertia_tolerance!r}."
-                )
-
             if len(self.body_mass) > 0:
                 if self.validate_inertia_detailed:
                     # Use detailed Python validation with per-body warnings.
@@ -9968,7 +9959,6 @@ class ModelBuilder:
                             self.bound_mass,
                             self.bound_inertia,
                             body_label,
-                            self.inertia_tolerance,
                         )
 
                         if was_corrected:
@@ -10011,7 +10001,6 @@ class ModelBuilder:
                             self.balance_inertia,
                             self.bound_mass if self.bound_mass is not None else 0.0,
                             self.bound_inertia if self.bound_inertia is not None else 0.0,
-                            self.inertia_tolerance,
                             correction_count,
                         ],
                     )

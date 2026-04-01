@@ -317,7 +317,7 @@ def _build_sphere_on_ground(
     builder.add_geometry(
         body=-1,
         name="ground",
-        shape=BoxShape(4.0, 4.0, GROUND_HALF_H * 2.0),
+        shape=BoxShape(2.0, 2.0, GROUND_HALF_H),
         offset=transformf(vec3f(0.0, 0.0, 0.0), wp.quat_identity()),
         margin=margin,
         gap=gap,
