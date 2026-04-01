@@ -75,9 +75,8 @@ def add_example_test(
     Args:
         expected_output: Regex patterns expected in Python warnings or
             stdout on all devices.  Each pattern must match at least once
-            in the combined output.  Any warning not matched by at least
-            one pattern fails the test; unmatched stdout is printed but
-            does not fail.
+            in the combined output.  Any warning or stdout line not
+            matched by at least one pattern fails the test.
         expected_output_cpu: Like *expected_output* but only asserted on
             CPU devices.
     """
@@ -155,18 +154,21 @@ def add_example_test(
 
         # Create viewer and run example in-process, capturing warnings + stdout
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
+        factory = getattr(mod, "create_example", None) or mod.Example
         capture = StdOutCapture()
         capture.begin()
         try:
             with wp.ScopedDevice(device), warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                example = mod.Example(viewer, args)
+                example = factory(viewer, args)
                 newton.examples.run(example, args)
                 wp.synchronize()
 
             stdout = capture.end()
         except BaseException:
-            capture.end()
+            error_stdout = capture.end()
+            if error_stdout.strip():
+                print(f"Captured stdout before crash:\n{error_stdout.rstrip()}")
             raise
 
         # Build expected pattern list
@@ -175,6 +177,8 @@ def add_example_test(
         if is_cpu:
             expected_patterns.extend(expected_output_cpu or [])
 
+        compiled_patterns = [re.compile(p) for p in expected_patterns] if expected_patterns else []
+
         # Combine warnings and stdout for expected-pattern matching
         warning_messages = [str(w.message) for w in caught]
         all_text = "\n".join(warning_messages)
@@ -182,18 +186,16 @@ def add_example_test(
             all_text += "\n" + stdout
 
         # Assert each expected pattern appears at least once
-        for pattern in expected_patterns:
-            test.assertRegex(all_text, pattern, f"Expected output pattern not found: {pattern}")
+        for pattern in compiled_patterns:
+            test.assertRegex(all_text, pattern, f"Expected output pattern not found: {pattern.pattern}")
 
         # Fail on unexpected warnings
-        compiled_patterns = [re.compile(p) for p in expected_patterns] if expected_patterns else []
         for w in caught:
             msg = str(w.message)
             if not any(p.search(msg) for p in compiled_patterns):
                 test.fail(f"Unexpected warning: {msg}")
 
-        # Print remaining stdout for visibility (don't fail — examples
-        # legitimately print status messages, download progress, etc.)
+        # Fail on unexpected stdout (same strictness as warnings above)
         if stdout.strip():
             filtered = [
                 line
@@ -201,7 +203,7 @@ def add_example_test(
                 if not is_noise_line(line) and not any(p.search(line) for p in compiled_patterns)
             ]
             if filtered:
-                print("\n".join(filtered))
+                test.fail("Unexpected stdout:\n" + "\n".join(filtered))
 
     test_name = f"test_{name}_{test_suffix}" if test_suffix else f"test_{name}"
     add_function_test(cls, test_name, run, devices=devices, check_output=False)
@@ -316,7 +318,11 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={},
     test_options_cuda={"num-frames": 32},
-    expected_output=["texture inputs are not yet supported"],
+    expected_output=[
+        "texture inputs are not yet supported",
+        "2-dimensional vectors are deprecated",
+        "SolverStyle3D::precompute",
+    ],
 )
 add_example_test(
     TestClothExamples,
@@ -324,7 +330,12 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={},
     test_options_cuda={"num-frames": 32},
-    expected_output=["Inertia validation corrected", "texture inputs are not yet supported"],
+    expected_output=[
+        "Inertia validation corrected",
+        "texture inputs are not yet supported",
+        "2-dimensional vectors are deprecated",
+        "SolverStyle3D::precompute",
+    ],
 )
 add_example_test(
     TestClothExamples,
@@ -426,7 +437,7 @@ add_example_test(
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num-frames": 10},
     test_suffix="G1_29dof",
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -434,7 +445,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
     test_suffix="G1_23dof",
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -442,7 +453,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
     test_suffix="G1_23dof_Physx",
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -450,7 +461,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
     test_suffix="Anymal",
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -458,7 +469,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
     test_suffix="Anymal_Physx",
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -467,7 +478,7 @@ add_example_test(
     test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2"},
     test_suffix="Go2",
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -476,7 +487,7 @@ add_example_test(
     test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
     test_suffix="Go2_Physx",
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
 )
 
 
@@ -523,7 +534,7 @@ add_example_test(
     name="ik.example_ik_cube_stacking",
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "World success rate"],
 )
 
 
@@ -537,7 +548,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -545,6 +556,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
+    expected_output=["Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -552,7 +564,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -560,7 +572,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 
 
@@ -574,6 +586,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 36},
+    expected_output=["numeric grad:", "analytic grad:"],
 )
 
 add_example_test(
@@ -590,6 +603,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 180},  # sim_steps
     test_options_cpu={"num-frames": 10},
+    expected_output=["loss=", "flight target"],
 )
 
 add_example_test(
@@ -628,6 +642,9 @@ add_example_test(
     test_options={"num-frames": 160},  # required for ball to reach plate
     expected_output=[
         "zero mass and zero inertia",
+        "SensorContact initialized",
+        "Sensing objects|Counterpart|total_force|force_matrix",
+        "Resetting",
     ],
 )
 
@@ -670,6 +687,7 @@ add_example_test(
     name="mpm.example_mpm_grain_rendering",
     devices=cuda_test_devices,
     test_options={"num-frames": 10},
+    expected_output=["quadrature.*deprecated|Please use.*instead"],
 )
 
 add_example_test(
@@ -691,6 +709,7 @@ add_example_test(
     name="mpm.example_mpm_snow_ball",
     devices=cuda_test_devices,
     test_options={"num-frames": 30, "voxel-size": 0.2},
+    expected_output=["Generating.*particles"],
 )
 
 add_example_test(
@@ -706,7 +725,7 @@ add_example_test(
     name="basic.example_basic_plotting",
     devices=test_devices,
     test_options={"num-frames": 200},
-    expected_output=["Inertia validation corrected"],
+    expected_output=["Inertia validation corrected", "Diagnostics plot saved to"],
 )
 
 
@@ -719,12 +738,14 @@ add_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
+    expected_output=["Downloading nut/bolt assets|Assets downloaded to"],
 )
 add_example_test(
     TestContactsExamples,
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
+    expected_output=["Downloading nut/bolt assets|Assets downloaded to"],
 )
 add_example_test(
     TestContactsExamples,
@@ -738,6 +759,7 @@ add_example_test(
     name="contacts.example_pyramid",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
+    expected_output=["Built.*pyramids"],
 )
 
 

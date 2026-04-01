@@ -194,13 +194,12 @@ class StdOutCapture(StreamCapture):
 
 def is_noise_line(line: str) -> bool:
     """Return True if *line* is a known noisy framework message that should be ignored."""
-    if line.startswith("Module") and "load on device" in line:
+    stripped = line.lstrip()
+    if stripped.startswith("Module") and "load on device" in stripped:
         return True
-    if line.startswith("#") and "PXR_WORK_THREAD_LIMIT" in line:
+    if stripped.startswith("Matplotlib is building the font cache"):
         return True
-    if line == "##################################################################":
-        return True
-    if line.startswith("Matplotlib is building the font cache"):
+    if stripped.startswith("Warp DeprecationWarning:") or stripped.startswith("Warp UserWarning:"):
         return True
     return False
 
