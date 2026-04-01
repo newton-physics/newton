@@ -1045,7 +1045,7 @@ class SolverImplicitMPM(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        self._mpm_model.notify_particle_material_changed()
+        self._mpm_model.setup_particle_material()
 
     def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
