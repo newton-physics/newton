@@ -16,11 +16,11 @@ devices = get_test_devices(mode="basic")
 
 @wp.kernel
 def _eval_self_contact_norm_kernel(
-    distances: wp.array(dtype=float),
+    distances: wp.array[float],
     collision_radius: float,
     k: float,
-    dEdD_out: wp.array(dtype=float),
-    d2E_out: wp.array(dtype=float),
+    dEdD_out: wp.array[float],
+    d2E_out: wp.array[float],
 ):
     i = wp.tid()
     dEdD, d2E = evaluate_self_contact_force_norm(distances[i], collision_radius, k)

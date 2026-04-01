@@ -1267,7 +1267,7 @@ def _populate_dense_sdf_kernel(
     ny: wp.int32,
     nz: wp.int32,
     shape_offset: wp.float32,
-    sdf_values: wp.array(dtype=wp.float32),
+    sdf_values: wp.array[wp.float32],
 ):
     """Evaluate analytical SDF at every point of a dense regular grid."""
     x, y, z = wp.tid()
@@ -1294,12 +1294,12 @@ def _populate_dense_sdf_kernel(
 
 @wp.kernel(enable_backward=False)
 def _count_dense_mc_faces_kernel(
-    sdf_values: wp.array(dtype=wp.float32),
+    sdf_values: wp.array[wp.float32],
     ny: wp.int32,
     nz: wp.int32,
-    tri_range_table: wp.array(dtype=wp.int32),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
-    face_count: wp.array(dtype=int),
+    tri_range_table: wp.array[wp.int32],
+    corner_offsets_table: wp.array[wp.vec3ub],
+    face_count: wp.array[int],
 ):
     """Count marching-cubes faces on a dense SDF grid (first MC pass)."""
     x, y, z = wp.tid()
@@ -1318,17 +1318,17 @@ def _count_dense_mc_faces_kernel(
 
 @wp.kernel(enable_backward=False)
 def _generate_dense_mc_kernel(
-    sdf_values: wp.array(dtype=wp.float32),
+    sdf_values: wp.array[wp.float32],
     ny: wp.int32,
     nz: wp.int32,
     origin: wp.vec3,
     voxel_size: wp.vec3,
-    tri_range_table: wp.array(dtype=wp.int32),
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
-    face_count: wp.array(dtype=int),
-    vertices: wp.array(dtype=wp.vec3),
-    face_normals: wp.array(dtype=wp.vec3),
+    tri_range_table: wp.array[wp.int32],
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
+    face_count: wp.array[int],
+    vertices: wp.array[wp.vec3],
+    face_normals: wp.array[wp.vec3],
 ):
     """Generate marching-cubes vertices on a dense SDF grid (second MC pass)."""
     x, y, z = wp.tid()
