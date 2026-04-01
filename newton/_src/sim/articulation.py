@@ -204,12 +204,6 @@ def eval_single_articulation_fk(
         X_pj = joint_X_p[joint_index]
         X_cj = joint_X_c[joint_index]
 
-        # parent anchor frame in world space
-        X_wpj = X_pj
-        if parent >= 0:
-            X_wp = body_q[parent]
-            X_wpj = X_wp * X_wpj
-
         q_start = joint_q_start[joint_index]
         qd_start = joint_qd_start[joint_index]
         lin_axis_count = joint_dof_dim[joint_index, 0]
