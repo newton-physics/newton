@@ -223,8 +223,8 @@ Post-release
    * - ☐
      - Merge back the changelog from ``release-X.Y`` to ``main``: move
        entries included in the release from ``[Unreleased]`` to a new
-       ``[X.Y.Z]`` section.  (The ``[Unreleased]`` header already exists
-       on ``main`` from the post-branch-creation bump.)
+       ``[X.Y.Z]`` section.  (``[Unreleased]`` is a permanent header in
+       the changelog that always exists on ``main``.)
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐
