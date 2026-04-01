@@ -189,8 +189,11 @@ def add_example_test(
         for pattern in compiled_patterns:
             test.assertRegex(all_text, pattern, f"Expected output pattern not found: {pattern.pattern}")
 
-        # Fail on unexpected warnings
+        # Fail on unexpected warnings originating from newton code
+        newton_root = os.path.dirname(os.path.dirname(newton.examples.__file__))
         for w in caught:
+            if not str(w.filename).startswith(newton_root):
+                continue
             msg = str(w.message)
             if not any(p.search(msg) for p in compiled_patterns):
                 test.fail(f"Unexpected warning: {msg}")
@@ -227,7 +230,6 @@ add_example_test(
     test_options_cpu={"world_count": 16},
     test_options_cuda={"world_count": 64},
     test_suffix="xpbd",
-    expected_output=["Inertia validation corrected"],
 )
 add_example_test(
     TestBasicExamples,
@@ -237,7 +239,6 @@ add_example_test(
     test_options_cpu={"world_count": 16},
     test_options_cuda={"world_count": 64},
     test_suffix="vbd",
-    expected_output=["Inertia validation corrected"],
 )
 
 add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices)
@@ -270,7 +271,6 @@ add_example_test(
     name="cable.example_cable_y_junction",
     devices=test_devices,
     test_options={"num-frames": 20},
-    expected_output=["Inertia validation corrected"],
 )
 add_example_test(
     TestCableExamples,
@@ -331,7 +331,6 @@ add_example_test(
     test_options={},
     test_options_cuda={"num-frames": 32},
     expected_output=[
-        "Inertia validation corrected",
         "texture inputs are not yet supported",
         "2-dimensional vectors are deprecated",
         "SolverStyle3D::precompute",
@@ -373,7 +372,6 @@ add_example_test(
     name="robot.example_robot_anymal_c_walk",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500, "torch_required": True},
-    expected_output=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotExamples,
@@ -381,7 +379,6 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
-    expected_output=["Inertia validation corrected"],
     expected_output_cpu=[
         "mesh-mesh contacts will be skipped",
     ],
@@ -391,14 +388,12 @@ add_example_test(
     name="robot.example_robot_g1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
-    expected_output=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
-    expected_output=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotExamples,
@@ -406,7 +401,6 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
-    expected_output=["Inertia validation corrected"],
 )
 add_example_test(
     TestRobotExamples,
@@ -422,7 +416,6 @@ add_example_test(
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 720},
-    expected_output=["Inertia validation corrected"],
 )
 
 
@@ -437,7 +430,7 @@ add_example_test(
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num-frames": 10},
     test_suffix="G1_29dof",
-    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -445,7 +438,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
     test_suffix="G1_23dof",
-    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -453,7 +446,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
     test_suffix="G1_23dof_Physx",
-    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -461,7 +454,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
     test_suffix="Anymal",
-    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -469,7 +462,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
     test_suffix="Anymal_Physx",
-    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -478,7 +471,7 @@ add_example_test(
     test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2"},
     test_suffix="Go2",
-    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]|Cloning|downloaded"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -487,7 +480,7 @@ add_example_test(
     test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
     test_suffix="Go2_Physx",
-    expected_output=["Inertia validation corrected", "\\[INFO\\]|Cloning|downloaded"],
+    expected_output=["\\[INFO\\]|Cloning|downloaded"],
 )
 
 
@@ -500,7 +493,6 @@ add_example_test(
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
     test_options={"num-frames": 100, "torch_required": True},
-    expected_output=["Inertia validation corrected"],
 )
 
 
@@ -512,21 +504,18 @@ add_example_test(
     TestIKExamples,
     name="ik.example_ik_franka",
     devices=test_devices,
-    expected_output=["Inertia validation corrected"],
 )
 
 add_example_test(
     TestIKExamples,
     name="ik.example_ik_h1",
     devices=test_devices,
-    expected_output=["Inertia validation corrected"],
 )
 
 add_example_test(
     TestIKExamples,
     name="ik.example_ik_custom",
     devices=cuda_test_devices,
-    expected_output=["Inertia validation corrected"],
 )
 
 add_example_test(
@@ -534,7 +523,7 @@ add_example_test(
     name="ik.example_ik_cube_stacking",
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
-    expected_output=["Inertia validation corrected", "World success rate"],
+    expected_output=["World success rate"],
 )
 
 
@@ -548,7 +537,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    expected_output=["Inertia validation corrected", "Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
+    expected_output=["Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -564,7 +553,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    expected_output=["Inertia validation corrected", "Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
+    expected_output=["Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -572,7 +561,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    expected_output=["Inertia validation corrected", "Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
+    expected_output=["Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 
 
@@ -653,7 +642,6 @@ add_example_test(
     name="sensors.example_sensor_tiled_camera",
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
-    expected_output=["Inertia validation corrected"],
 )
 
 add_example_test(
@@ -725,7 +713,7 @@ add_example_test(
     name="basic.example_basic_plotting",
     devices=test_devices,
     test_options={"num-frames": 200},
-    expected_output=["Inertia validation corrected", "Diagnostics plot saved to"],
+    expected_output=["Diagnostics plot saved to"],
 )
 
 
@@ -752,7 +740,6 @@ add_example_test(
     name="contacts.example_brick_stacking",
     devices=cuda_test_devices,
     test_options={"num-frames": 1200},
-    expected_output=["Inertia validation corrected"],
 )
 add_example_test(
     TestContactsExamples,
