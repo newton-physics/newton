@@ -21,6 +21,7 @@ import warp as wp
 import newton as nt
 from newton.selection import ArticulationView
 
+from ..core.types import Axis
 from .gl.gui import UI
 
 
@@ -35,6 +36,9 @@ class ViewerGui:
         self._cam_vel = np.zeros(3, dtype=np.float32)
         self._cam_speed = 4.0
         self._cam_damp_tau = 0.083
+
+        # Gizmo active-frame tracking (handles snap_to on release)
+        self._gizmo_active = {}
 
         # Selection panel state (UI-local, not simulation state).
         self._selection_ui_state = {
@@ -228,11 +232,15 @@ class ViewerGui:
         self._viewer.register_ui_callback(callback, position=position)
 
     def _render_gizmos(self):
+        viewer = self._viewer
         if not self.is_available:
             return
-        if not hasattr(self._viewer, "_gizmo_log") or not self._viewer._gizmo_log:
+        if not hasattr(viewer, "_gizmo_log") or not viewer._gizmo_log:
+            self._gizmo_active.clear()
+            if hasattr(viewer, "gizmo_is_using"):
+                viewer.gizmo_is_using = False
             return
-        if not hasattr(self._viewer, "camera") or self._viewer.camera is None:
+        if not hasattr(viewer, "camera") or viewer.camera is None:
             return
 
         giz = self.ui.giz
@@ -244,33 +252,108 @@ class ViewerGui:
         giz.set_gizmo_size_clip_space(0.07)
         giz.set_axis_limit(0.0)
         giz.set_plane_limit(0.0)
+        try:
+            giz.allow_axis_flip(False)
+        except AttributeError:
+            pass
 
         # Camera matrices
-        view = self._viewer.camera.get_view_matrix().reshape(4, 4).transpose()
-        proj = self._viewer.camera.get_projection_matrix().reshape(4, 4).transpose()
+        view = viewer.camera.get_view_matrix().reshape(4, 4).transpose()
+        proj = viewer.camera.get_projection_matrix().reshape(4, 4).transpose()
 
-        # Draw & mutate each gizmo
-        for gid, transform in self._viewer._gizmo_log.items():
+        axis_translate = {
+            Axis.X: giz.OPERATION.translate_x,
+            Axis.Y: giz.OPERATION.translate_y,
+            Axis.Z: giz.OPERATION.translate_z,
+        }
+        axis_rotate = {
+            Axis.X: giz.OPERATION.rotate_x,
+            Axis.Y: giz.OPERATION.rotate_y,
+            Axis.Z: giz.OPERATION.rotate_z,
+        }
+
+        def m44_to_mat16(m):
+            """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
+            m = np.asarray(m, dtype=np.float32).reshape(4, 4)
+            return giz.Matrix16(m.flatten(order="F").tolist())
+
+        def safe_bool(value) -> bool:
+            try:
+                return bool(value)
+            except Exception:
+                return False
+
+        view_ = m44_to_mat16(view)
+        proj_ = m44_to_mat16(proj)
+
+        logged_ids = set()
+        for gid, entry in viewer._gizmo_log.items():
+            logged_ids.add(gid)
+
+            # Support both the rich dict format {transform, snap_to, translate, rotate}
+            # and the legacy raw-transform format used by ViewerRTX.
+            if isinstance(entry, dict):
+                transform = entry["transform"]
+                snap_to = entry.get("snap_to")
+                translate = entry.get("translate", (Axis.X, Axis.Y, Axis.Z))
+                rotate = entry.get("rotate", (Axis.X, Axis.Y, Axis.Z))
+            else:
+                transform = entry
+                snap_to = None
+                translate = (Axis.X, Axis.Y, Axis.Z)
+                rotate = (Axis.X, Axis.Y, Axis.Z)
+
+            # Build combined operation list
+            if len(translate) == 3:
+                t_ops = (giz.OPERATION.translate,)
+            else:
+                t_ops = tuple(axis_translate[a] for a in translate)
+
+            if len(rotate) == 3:
+                r_ops = (giz.OPERATION.rotate,)
+            else:
+                r_ops = tuple(axis_rotate[a] for a in rotate)
+
+            ops = t_ops + r_ops
+            was_active = self._gizmo_active.get(gid, False)
+            if not ops:
+                if was_active and snap_to is not None:
+                    transform[:] = snap_to
+                self._gizmo_active[gid] = False
+                continue
+
             giz.push_id(str(gid))
 
             M = wp.transform_to_matrix(transform)
-
-            def m44_to_mat16(m):
-                """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
-                m = np.asarray(m, dtype=np.float32).reshape(4, 4)
-                return giz.Matrix16(m.flatten(order="F").tolist())
-
-            view_ = m44_to_mat16(view)
-            proj_ = m44_to_mat16(proj)
             M_ = m44_to_mat16(M)
 
-            giz.manipulate(view_, proj_, giz.OPERATION.rotate, giz.MODE.world, M_, None, None)
-            giz.manipulate(view_, proj_, giz.OPERATION.translate, giz.MODE.world, M_, None, None)
+            op_modified = False
+            for op in ops:
+                op_modified = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_modified
 
-            M[:] = M_.values.reshape(4, 4, order="F")
-            transform[:] = wp.transform_from_matrix(M)
+            any_gizmo_is_using = safe_bool(giz.is_using_any())
+            if hasattr(giz, "is_using"):
+                is_active = safe_bool(giz.is_using()) and any_gizmo_is_using
+            else:
+                is_active = op_modified or (was_active and any_gizmo_is_using)
+
+            if was_active and not is_active and snap_to is not None:
+                transform[:] = snap_to
+            else:
+                M[:] = M_.values.reshape(4, 4, order="F")
+                transform[:] = wp.transform_from_matrix(M)
+
+            self._gizmo_active[gid] = is_active
 
             giz.pop_id()
+
+        # Drop stale interaction state for gizmos that are no longer logged.
+        for gid in tuple(self._gizmo_active):
+            if gid not in logged_ids:
+                del self._gizmo_active[gid]
+
+        if hasattr(viewer, "gizmo_is_using"):
+            viewer.gizmo_is_using = giz.is_using_any()
 
     def _render_ui(self):
         """Render the complete ImGui interface."""
@@ -304,6 +387,10 @@ class ViewerGui:
             imgui.separator()
             header_flags = 0
 
+            # Top-level collapsing headers injected by the viewer (e.g. example browser)
+            for callback in viewer._ui_callbacks.get("panel", []):
+                callback(self.ui.imgui)
+
             if viewer.model is not None:
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
@@ -334,6 +421,9 @@ class ViewerGui:
             if imgui.collapsing_header("Rendering Options"):
                 imgui.separator()
                 _changed, viewer.vsync = imgui.checkbox("VSync", viewer.vsync)
+                # Viewer-specific rendering options (e.g. GL sky/shadows/wireframe)
+                for callback in viewer._ui_callbacks.get("rendering", []):
+                    callback(self.ui.imgui)
 
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):

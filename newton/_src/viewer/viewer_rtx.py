@@ -152,7 +152,7 @@ class ViewerRTX(ViewerUSD):
         self._tmp_usd_path = self._tmp_usd_file.name
 
         # Pre-initialize fields that clear_model() (called from super().__init__) touches
-        self._ui_callbacks: dict[str, list] = {"side": [], "stats": [], "free": [], "panel": []}
+        self._ui_callbacks: dict[str, list] = {"side": [], "stats": [], "free": [], "panel": [], "rendering": []}
         self._paused = paused
         self._rtx = None
         self._pending_line_batches: dict[str, tuple[Any, Any, Any, float, bool]] = {}
