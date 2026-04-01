@@ -406,6 +406,38 @@ class TestInertiaValidationParity(unittest.TestCase):
         inertia = results["detailed"]["model_inertia"]
         np.testing.assert_allclose(inertia, inertia.T, atol=1e-6)
 
+    def test_parity_near_symmetric_inertia_within_allclose_tolerance(self):
+        """Tiny asymmetry within np.allclose defaults should pass unchanged in both paths."""
+        inertia = np.array(
+            [
+                [1.0152890e-02, 0.0, 0.0],
+                [0.0, 1.0201062e-02, 2.8712206e-12],
+                [0.0, 2.8712208e-12, 1.0152890e-02],
+            ],
+            dtype=np.float32,
+        )
+        results = {}
+
+        for detailed in [True, False]:
+            builder = ModelBuilder()
+            builder.validate_inertia_detailed = detailed
+            idx = builder.add_body(mass=1.0, inertia=wp.mat33(inertia), label="near_symmetric")
+
+            with warnings.catch_warnings(record=True) as w:
+                model = builder.finalize()
+
+            self.assertEqual(len(w), 0, f"Unexpected warnings: {[str(x.message) for x in w]}")
+            mode = "detailed" if detailed else "fast"
+            results[mode] = {
+                "model_mass": float(model.body_mass.numpy()[idx]),
+                "model_inertia": np.array(model.body_inertia.numpy()[idx]),
+            }
+
+        np.testing.assert_allclose(
+            results["detailed"]["model_inertia"], results["fast"]["model_inertia"], rtol=0.0, atol=0.0
+        )
+        np.testing.assert_allclose(results["fast"]["model_inertia"], inertia, rtol=0.0, atol=0.0)
+
     def test_parity_exact_triangle_boundary(self):
         """Exact triangle equality diag(1,1,2) should be a no-op in both paths."""
         results = self._finalize_both_paths(mass=1.0, inertia=np.diag([1.0, 1.0, 2.0]))

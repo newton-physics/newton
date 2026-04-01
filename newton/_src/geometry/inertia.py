@@ -33,6 +33,11 @@ _INERTIA_ABS_FLOOR = 1.0e-10
 # becomes [1e-6, 1e-6, 1e-6]).
 _INERTIA_ABS_ADJUSTMENT = 1.0e-6
 
+# Match numpy's default np.allclose() tolerances when deciding whether a
+# nearly-symmetric tensor should be treated as unchanged.
+_INERTIA_SYMMETRY_RTOL = 1.0e-5
+_INERTIA_SYMMETRY_ATOL = 1.0e-8
+
 
 def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid sphere
@@ -671,7 +676,12 @@ def verify_and_correct_inertia(
 
     # Unconditionally symmetrize inertia matrix (idempotent for symmetric tensors)
     symmetrized = (inertia_array + inertia_array.T) / 2
-    if not np.allclose(inertia_array, symmetrized):
+    if not np.allclose(
+        inertia_array,
+        symmetrized,
+        rtol=_INERTIA_SYMMETRY_RTOL,
+        atol=_INERTIA_SYMMETRY_ATOL,
+    ):
         warnings.warn(f"Inertia matrix{body_id} is not symmetric, making it symmetric", stacklevel=2)
         was_corrected = True
     corrected_inertia = symmetrized
@@ -813,6 +823,7 @@ def validate_and_correct_inertia_kernel(
 
     mass = body_mass[tid]
     inertia = body_inertia[tid]
+    original_inertia = inertia
     was_corrected = False
 
     # Detect NaN/Inf in mass or any inertia coefficient and zero out
@@ -848,18 +859,32 @@ def validate_and_correct_inertia_kernel(
         inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     else:
         # Symmetrize inertia matrix: (I + I^T) / 2
+        sym01 = (inertia[0, 1] + inertia[1, 0]) * 0.5
+        sym02 = (inertia[0, 2] + inertia[2, 0]) * 0.5
+        sym12 = (inertia[1, 2] + inertia[2, 1]) * 0.5
         sym = wp.mat33(
             inertia[0, 0],
-            (inertia[0, 1] + inertia[1, 0]) * 0.5,
-            (inertia[0, 2] + inertia[2, 0]) * 0.5,
-            (inertia[0, 1] + inertia[1, 0]) * 0.5,
+            sym01,
+            sym02,
+            sym01,
             inertia[1, 1],
-            (inertia[1, 2] + inertia[2, 1]) * 0.5,
-            (inertia[0, 2] + inertia[2, 0]) * 0.5,
-            (inertia[1, 2] + inertia[2, 1]) * 0.5,
+            sym12,
+            sym02,
+            sym12,
             inertia[2, 2],
         )
-        if wp.ddot(inertia - sym, inertia - sym) > 0.0:
+
+        tol01 = _INERTIA_SYMMETRY_ATOL + _INERTIA_SYMMETRY_RTOL * wp.abs(sym01)
+        tol02 = _INERTIA_SYMMETRY_ATOL + _INERTIA_SYMMETRY_RTOL * wp.abs(sym02)
+        tol12 = _INERTIA_SYMMETRY_ATOL + _INERTIA_SYMMETRY_RTOL * wp.abs(sym12)
+        if (
+            wp.abs(inertia[0, 1] - sym01) > tol01
+            or wp.abs(inertia[1, 0] - sym01) > tol01
+            or wp.abs(inertia[0, 2] - sym02) > tol02
+            or wp.abs(inertia[2, 0] - sym02) > tol02
+            or wp.abs(inertia[1, 2] - sym12) > tol12
+            or wp.abs(inertia[2, 1] - sym12) > tol12
+        ):
             was_corrected = True
         inertia = sym
 
@@ -905,9 +930,11 @@ def validate_and_correct_inertia_kernel(
             inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
             was_corrected = True
 
+    output_inertia = inertia if was_corrected else original_inertia
+
     # Write back corrected values
     body_mass[tid] = mass
-    body_inertia[tid] = inertia
+    body_inertia[tid] = output_inertia
 
     # Update inverse mass
     if mass > 0.0:
@@ -917,7 +944,7 @@ def validate_and_correct_inertia_kernel(
 
     # Update inverse inertia
     if mass > 0.0:
-        body_inv_inertia[tid] = wp.inverse(inertia)
+        body_inv_inertia[tid] = wp.inverse(output_inertia)
     else:
         body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
