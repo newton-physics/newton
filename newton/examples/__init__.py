@@ -6,7 +6,6 @@ import os
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
-from functools import lru_cache
 
 import numpy as np
 import warp as wp
@@ -27,7 +26,6 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
-@lru_cache(maxsize=1)
 def _enable_example_deprecation_warnings() -> None:
     """Show Newton deprecations during example runs.
 
@@ -35,8 +33,11 @@ def _enable_example_deprecation_warnings() -> None:
     ``test_examples.py`` (or a user) can escalate warnings to errors
     without this filter overriding their policy.
     """
-    if "PYTHONWARNINGS" not in os.environ:
-        warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
+    if "PYTHONWARNINGS" in os.environ or getattr(_enable_example_deprecation_warnings, "_installed", False):
+        return
+
+    warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
+    _enable_example_deprecation_warnings._installed = True
 
 
 def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
