@@ -94,8 +94,6 @@ def add_example_test(
     if test_options_cuda is None:
         test_options_cuda = {}
 
-    newton_root = os.path.dirname(os.path.dirname(newton.examples.__file__))
-
     def run(test, device):
         if wp.get_device(device).is_cuda:
             options = _merge_options(test_options, test_options_cuda)
@@ -170,7 +168,6 @@ def add_example_test(
         expected_patterns=expected_output,
         expected_patterns_cpu=expected_output_cpu,
         allowed_patterns=allowed_output,
-        warning_source_root=newton_root,
     )
 
 

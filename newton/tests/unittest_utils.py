@@ -21,6 +21,10 @@ import warp as wp
 pxr = importlib.util.find_spec("pxr")
 USD_AVAILABLE = pxr is not None
 
+# Root of the newton package — used as the default warning_source_root so
+# CheckOutput catches unexpected warnings from newton code in all tests.
+_NEWTON_ROOT = os.path.dirname(os.path.dirname(__file__))
+
 # default test mode (see get_test_devices())
 #   "basic" - only run on CPU and first GPU device
 #   "unique" - run on CPU and all unique GPU arches
@@ -216,17 +220,20 @@ class CheckOutput:
             the combined stdout + warning text.  Also used as an allow-list.
         allowed_patterns: Regex strings that suppress unexpected-output failures
             but are not required to appear.
-        warning_source_root: If set, warnings whose ``filename`` starts with
-            this path are checked against the allow-list.  Warnings from
-            other paths are silently ignored.
+        warning_source_root: Warnings whose ``filename`` starts with this path
+            are checked against the allow-list; warnings from other paths are
+            silently ignored.  Defaults to the newton package root.  Pass
+            ``None`` to disable warning capture entirely.
     """
+
+    _DEFAULT_WARNING_ROOT = _NEWTON_ROOT
 
     def __init__(
         self,
         test,
         expected_patterns: list[str] | None = None,
         allowed_patterns: list[str] | None = None,
-        warning_source_root: str | None = None,
+        warning_source_root: str | None = _DEFAULT_WARNING_ROOT,
     ):
         self.test = test
         self.output = ""
@@ -237,13 +244,18 @@ class CheckOutput:
     def __enter__(self):
         self.capture = StdOutCapture()
         self.capture.begin()
-        self._warning_ctx = warnings.catch_warnings(record=True)
-        self._caught = self._warning_ctx.__enter__()
-        warnings.simplefilter("always")
+        if self._warning_source_root is not None:
+            self._warning_ctx = warnings.catch_warnings(record=True)
+            self._caught = self._warning_ctx.__enter__()
+            warnings.simplefilter("always")
+        else:
+            self._warning_ctx = None
+            self._caught = []
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._warning_ctx.__exit__(exc_type, exc_value, traceback)
+        if self._warning_ctx is not None:
+            self._warning_ctx.__exit__(exc_type, exc_value, traceback)
         # ensure any stdout output is flushed
         wp.synchronize()
 
@@ -277,13 +289,12 @@ class CheckOutput:
                 self.test.fail(f"Unexpected output:\n'{self.output.rstrip()}'")
 
         # Fail on unexpected warnings from the specified source
-        if self._warning_source_root:
-            for w in self._caught:
-                if not str(w.filename).startswith(self._warning_source_root):
-                    continue
-                msg = str(w.message)
-                if not any(p.search(msg) for p in self._all):
-                    self.test.fail(f"Unexpected warning: {msg}")
+        for w in self._caught:
+            if not str(w.filename).startswith(self._warning_source_root):
+                continue
+            msg = str(w.message)
+            if not any(p.search(msg) for p in self._all):
+                self.test.fail(f"Unexpected warning: {msg}")
 
 
 def assert_array_equal(result: wp.array, expect: wp.array):
@@ -338,6 +349,9 @@ def find_nonfinite_members(obj: Any | None) -> list[str]:
     return nonfinite_members
 
 
+_UNSET = object()
+
+
 def create_test_func(
     func,
     device,
@@ -345,7 +359,7 @@ def create_test_func(
     expected_patterns=None,
     expected_patterns_cpu=None,
     allowed_patterns=None,
-    warning_source_root=None,
+    warning_source_root=_UNSET,
     **kwargs,
 ):
     # Resolve per-device patterns at registration time
@@ -353,14 +367,19 @@ def create_test_func(
     if device is not None and str(device).startswith("cpu"):
         patterns.extend(expected_patterns_cpu or [])
 
+    # Build CheckOutput kwargs — omit warning_source_root when not explicitly
+    # provided so the CheckOutput default (_NEWTON_ROOT) applies.
+    co_kwargs = {}
+    if patterns:
+        co_kwargs["expected_patterns"] = patterns
+    if allowed_patterns:
+        co_kwargs["allowed_patterns"] = allowed_patterns
+    if warning_source_root is not _UNSET:
+        co_kwargs["warning_source_root"] = warning_source_root
+
     def test_func(self):
         if check_output:
-            with CheckOutput(
-                self,
-                expected_patterns=patterns or None,
-                allowed_patterns=allowed_patterns,
-                warning_source_root=warning_source_root,
-            ):
+            with CheckOutput(self, **co_kwargs):
                 func(self, device, **kwargs)
         else:
             func(self, device, **kwargs)
@@ -396,7 +415,7 @@ def add_function_test(
     expected_patterns=None,
     expected_patterns_cpu=None,
     allowed_patterns=None,
-    warning_source_root=None,
+    warning_source_root=_UNSET,
     **kwargs,
 ):
     co_kwargs = {
