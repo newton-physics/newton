@@ -512,7 +512,7 @@ class SolverKamino(SolverBase):
         """
         Simulate the model for a given time step using the given control input.
 
-        When ``contacts`` is not ``None`` (i.e. produced by :meth:`Model.collide`),
+        When ``contacts`` is not ``None`` (i.e. produced by :meth:`~newton.Model.collide`),
         those contacts are converted to Kamino's internal format and used directly,
         bypassing Kamino's own collision detector.  When ``contacts`` is ``None``,
         Kamino's internal collision pipeline runs as a fallback.

@@ -10,7 +10,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.shapes import ShapeType
+from newton._src.solvers.kamino._src.core.shapes import GeoType
 from newton._src.solvers.kamino._src.geometry.primitive.broadphase import PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES
 from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS
 from newton._src.solvers.kamino._src.models.builders import testing
@@ -49,27 +49,28 @@ class Example:
 
         # Define excluded shape types for broadphase / narrowphase (temporary)
         excluded_types = [
-            ShapeType.EMPTY,  # NOTE: Need to skip empty shapes
-            ShapeType.PLANE,  # NOTE: Currently not supported well by the viewer
-            ShapeType.ELLIPSOID,  # NOTE: Currently not supported well by the viewer
-            ShapeType.MESH,  # NOTE: Currently not supported any pipeline
-            ShapeType.CONVEX,  # NOTE: Currently not supported any pipeline
-            ShapeType.HFIELD,  # NOTE: Currently not supported any pipeline
+            GeoType.NONE,  # NOTE: Need to skip empty shapes
+            GeoType.PLANE,  # NOTE: Currently not supported well by the viewer
+            GeoType.ELLIPSOID,  # NOTE: Currently not supported well by the viewer
+            GeoType.MESH,  # NOTE: Currently not supported any pipeline
+            GeoType.CONVEX_MESH,  # NOTE: Currently not supported any pipeline
+            GeoType.HFIELD,  # NOTE: Currently not supported any pipeline
+            GeoType.GAUSSIAN,  # NOTE: Render-only, no collision shape pairs
         ]
 
         # Generate a list of all supported shape-pair combinations for the configured pipeline
         supported_shape_pairs: list[tuple[str, str]] = []
         if pipeline_name == "unified":
-            supported_shape_types = [st.value for st in ShapeType]
+            supported_shape_types = [st.value for st in GeoType]
             for shape_bottom in supported_shape_types:
-                shape_bottom_name = ShapeType(shape_bottom).name.lower()
+                shape_bottom_name = GeoType(shape_bottom).name.lower()
                 for shape_top in supported_shape_types:
-                    shape_top_name = ShapeType(shape_top).name.lower()
+                    shape_top_name = GeoType(shape_top).name.lower()
                     if shape_top in excluded_types or shape_bottom in excluded_types:
                         continue
                     supported_shape_pairs.append((shape_top_name, shape_bottom_name))
         elif pipeline_name == "primitive":
-            excluded_types.extend([ShapeType.CYLINDER])
+            excluded_types.extend([GeoType.CYLINDER])
             supported_shape_types = list(PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES)
             supported_type_pairs = list(PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS)
             supported_type_pairs_reversed = [(b, a) for (a, b) in supported_type_pairs]

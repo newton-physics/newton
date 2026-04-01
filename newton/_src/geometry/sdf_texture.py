@@ -1789,6 +1789,7 @@ def _count_isomesh_faces_texture_kernel(
     subgrid_size: int,
     tri_range_table: wp.array(dtype=wp.int32),
     corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    isovalue: wp.float32,
     face_count: wp.array(dtype=int),
 ):
     cell_idx, local_x, local_y, local_z = wp.tid()
@@ -1798,7 +1799,6 @@ def _count_isomesh_faces_texture_kernel(
     y_id = coarse[1] * subgrid_size + local_y
     z_id = coarse[2] * subgrid_size + local_z
 
-    isovalue = 0.0
     cube_idx = wp.int32(0)
     for i in range(8):
         co = wp.vec3i(corner_offsets_table[i])
@@ -1823,6 +1823,7 @@ def _generate_isomesh_texture_kernel(
     tri_range_table: wp.array(dtype=wp.int32),
     flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
     corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    isovalue: wp.float32,
     face_count: wp.array(dtype=int),
     vertices: wp.array(dtype=wp.vec3),
 ):
@@ -1833,7 +1834,6 @@ def _generate_isomesh_texture_kernel(
     y_id = coarse[1] * subgrid_size + local_y
     z_id = coarse[2] * subgrid_size + local_z
 
-    isovalue = 0.0
     cube_idx = wp.int32(0)
     corner_vals = vec8f()
     for i in range(8):
@@ -1869,7 +1869,7 @@ def _generate_isomesh_texture_kernel(
             if wp.abs(val_diff) < 1e-8:
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = (0.0 - val_0) / val_diff
+                t = (isovalue - val_0) / val_diff
                 p = p_0 + t * (p_1 - p_0)
             vol_idx = p + wp.vec3(float(x_id), float(y_id), float(z_id))
             local_pos = sdf.sdf_box_lower + wp.cw_mul(vol_idx, sdf.voxel_size)
@@ -1882,6 +1882,7 @@ def compute_isomesh_from_texture_sdf(
     subgrid_start_slots: wp.array,
     coarse_dims: tuple[int, int, int],
     device=None,
+    isovalue: float = 0.0,
 ) -> Mesh | None:
     """Extract an isosurface mesh from a texture SDF via marching cubes.
 
@@ -1895,9 +1896,11 @@ def compute_isomesh_from_texture_sdf(
             entry (used to determine which coarse cells are active).
         coarse_dims: ``(cx, cy, cz)`` number of coarse cells per axis.
         device: Warp device.
+        isovalue: Surface level to extract [m].  ``0.0`` gives the
+            zero-isosurface; positive values extract an outward offset surface.
 
     Returns:
-        :class:`~newton.Mesh` with the zero-isosurface, or ``None`` if empty.
+        :class:`~newton.Mesh` with the isosurface, or ``None`` if empty.
     """
     from .sdf_mc import get_mc_tables  # noqa: PLC0415
     from .types import Mesh  # noqa: PLC0415
@@ -1941,7 +1944,7 @@ def compute_isomesh_from_texture_sdf(
     wp.launch(
         _count_isomesh_faces_texture_kernel,
         dim=(num_active, subgrid_size, subgrid_size, subgrid_size),
-        inputs=[single, active_coarse_cells, subgrid_size, tri_range_table, corner_offsets_table],
+        inputs=[single, active_coarse_cells, subgrid_size, tri_range_table, corner_offsets_table, float(isovalue)],
         outputs=[face_count],
         device=device,
     )
@@ -1964,6 +1967,7 @@ def compute_isomesh_from_texture_sdf(
             tri_range_table,
             flat_edge_verts_table,
             corner_offsets_table,
+            float(isovalue),
         ],
         outputs=[face_count, verts],
         device=device,

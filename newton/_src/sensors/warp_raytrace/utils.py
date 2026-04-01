@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -135,7 +136,7 @@ class Utils:
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
-        """Create a color output array for :meth:`update`.
+        """Create a color output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -154,7 +155,7 @@ class Utils:
     def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.float32, ndim=4
     ):
-        """Create a depth output array for :meth:`update`.
+        """Create a depth output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -173,7 +174,7 @@ class Utils:
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
-        """Create a shape-index output array for :meth:`update`.
+        """Create a shape-index output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -192,7 +193,7 @@ class Utils:
     def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.vec3f, ndim=4
     ):
-        """Create a normal output array for :meth:`update`.
+        """Create a normal output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -211,7 +212,7 @@ class Utils:
     def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
-        """Create an albedo output array for :meth:`update`.
+        """Create an albedo output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -279,7 +280,7 @@ class Utils:
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
         Args:
-            image: Color output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Color output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
@@ -322,7 +323,7 @@ class Utils:
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
         Args:
-            image: Normal output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Normal output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
@@ -367,7 +368,7 @@ class Utils:
         range. Background pixels (no hit) remain black.
 
         Args:
-            image: Depth output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Depth output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
             depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
@@ -408,28 +409,44 @@ class Utils:
     def assign_random_colors_per_world(self, seed: int = 100):
         """Assign each world a random color, applied to all its shapes.
 
+        .. deprecated::
+            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
+
         Args:
             seed: Random seed.
         """
+        warnings.warn(
+            "``SensorTiledCamera.utils.assign_random_colors_per_world`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+
         if not self.__render_context.shape_count_total:
             return
-        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 4)) * 0.5 + 0.5
-        colors[:, -1] = 1.0
+        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 3)) * 0.5 + 0.5
         self.__render_context.shape_colors = wp.array(
             colors[self.__render_context.shape_world_index.numpy() % len(colors)],
-            dtype=wp.vec4f,
+            dtype=wp.vec3f,
             device=self.__render_context.device,
         )
 
     def assign_random_colors_per_shape(self, seed: int = 100):
         """Assign a random color to each shape.
 
+        .. deprecated::
+            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
+
         Args:
             seed: Random seed.
         """
-        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 4)) * 0.5 + 0.5
-        colors[:, -1] = 1.0
-        self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.__render_context.device)
+        warnings.warn(
+            "``SensorTiledCamera.utils.assign_random_colors_per_shape`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+
+        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 3)) * 0.5 + 0.5
+        self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec3f, device=self.__render_context.device)
 
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
         """Create a default directional light oriented at ``(-1, 1, -1)``.

@@ -10,6 +10,7 @@ import datetime
 import importlib
 import inspect
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -32,22 +33,24 @@ project = "Newton Physics"
 copyright = f"{datetime.date.today().year}, The Newton Developers. Documentation licensed under CC-BY-4.0"
 author = "The Newton Developers"
 
-# Read version from _version.py
+# Read version from pyproject.toml
+# TODO: When minimum Python version is >=3.11, replace with:
+#   import tomllib
+#   with open(project_root / "pyproject.toml", "rb") as f:
+#       project_version = tomllib.load(f)["project"]["version"]
 project_root = Path(__file__).parent.parent
-version_file_path = project_root / "newton" / "_version.py"
 try:
-    # Get version from _version.py
-    version_globals: dict[str, str] = {}
-    with open(version_file_path, encoding="utf-8") as f:
-        exec(f.read(), version_globals)
-    project_version = version_globals["__version__"]
-    if not project_version:
-        raise ValueError("__version__ in _version.py is empty.")
-except FileNotFoundError:
-    print(f"Error: _version.py not found at {version_file_path}", file=sys.stderr)
-    sys.exit(1)
+    with open(project_root / "pyproject.toml", encoding="utf-8") as f:
+        content = f.read()
+    project_section = re.search(r"^\[project\]\s*\n(.*?)(?=^\[|\Z)", content, re.MULTILINE | re.DOTALL)
+    if not project_section:
+        raise ValueError("Could not find [project] section in pyproject.toml")
+    match = re.search(r'^version\s*=\s*"([^"]+)"', project_section.group(1), re.MULTILINE)
+    if not match:
+        raise ValueError("Could not find version in [project] section of pyproject.toml")
+    project_version = match.group(1)
 except Exception as e:
-    print(f"Error reading or parsing {version_file_path}: {e}", file=sys.stderr)
+    print(f"Error reading version from pyproject.toml: {e}", file=sys.stderr)
     sys.exit(1)
 
 release = project_version

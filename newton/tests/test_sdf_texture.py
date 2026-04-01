@@ -750,6 +750,60 @@ def test_texture_sdf_isomesh_extraction(test, device):
     test.assertGreater(len(iso_mesh.indices), 0, "Isomesh should have faces")
 
 
+def test_texture_sdf_isomesh_with_isovalue(test, device):
+    """Extract offset isosurface from texture SDF and validate vertex positions.
+
+    Every vertex of the offset mesh should sit at approximately ``isovalue``
+    signed distance from the original box surface, measured with the analytical
+    box SDF as ground truth.
+    """
+    half = 0.3
+    mesh = _create_box_mesh(half_extents=(half, half, half))
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    tex_sdf, _coarse_tex, _subgrid_tex, _block_coords = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=32,
+        device=device,
+    )
+
+    tex_array = wp.array([tex_sdf], dtype=TextureSDFData, device=device)
+    coarse_dims = (_coarse_tex.width - 1, _coarse_tex.height - 1, _coarse_tex.depth - 1)
+
+    offset = 0.03
+    iso_mesh = compute_isomesh_from_texture_sdf(
+        tex_array,
+        0,
+        tex_sdf.subgrid_start_slots,
+        coarse_dims,
+        device=device,
+        isovalue=offset,
+    )
+
+    test.assertIsNotNone(iso_mesh, "Offset isomesh should not be None")
+    test.assertGreater(len(iso_mesh.vertices), 0, "Offset isomesh should have vertices")
+
+    def box_sdf(v):
+        q = np.abs(v) - np.array([half, half, half])
+        return float(np.linalg.norm(np.maximum(q, 0.0)) + min(max(q[0], q[1], q[2]), 0.0))
+
+    errors = np.array([abs(box_sdf(v) - offset) for v in iso_mesh.vertices])
+    max_err = float(errors.max())
+    atol = 0.04
+    test.assertLess(
+        max_err,
+        atol,
+        f"Max vertex SDF error {max_err:.4f} exceeds {atol} for isovalue={offset} "
+        f"(mean {errors.mean():.4f}, {len(iso_mesh.vertices)} verts)",
+    )
+
+
 def test_block_coords_from_subgrid_required(test, device):
     """Verify block_coords_from_subgrid_required produces correct coordinates."""
     coarse_dims = (3, 2, 2)
@@ -1185,6 +1239,9 @@ add_function_test(
 )
 add_function_test(
     TestTextureSDF, "test_texture_sdf_isomesh_extraction", test_texture_sdf_isomesh_extraction, devices=devices
+)
+add_function_test(
+    TestTextureSDF, "test_texture_sdf_isomesh_with_isovalue", test_texture_sdf_isomesh_with_isovalue, devices=devices
 )
 add_function_test(
     TestTextureSDF,
