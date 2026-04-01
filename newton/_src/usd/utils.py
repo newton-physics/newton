@@ -1866,12 +1866,16 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     if positions is None:
         raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
 
-    sorting_mode = Gaussian.SortingMode.DEFAULT
+    sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
     if usd_sorting_mode := get_attribute(prim, "sortingModeHint"):
         if usd_sorting_mode == "zDepth":
             sorting_mode = Gaussian.SortingMode.Z_DEPTH
-        if usd_sorting_mode == "cameraDistance":
+        elif usd_sorting_mode == "cameraDistance":
             sorting_mode = Gaussian.SortingMode.CAMERA_DISTANCE
+        elif usd_sorting_mode == "rayHitDistance":
+            sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
+        else:
+            raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
 
     return Gaussian(
         positions=positions,

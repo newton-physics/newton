@@ -1596,7 +1596,7 @@ class Gaussian:
         front-to-back alpha compositing.
         """
 
-        DEFAULT = 0
+        RAY_HIT_DISTANCE = 0
         """Sort by closest-approach distance in the Gaussian's canonical space."""
 
         CAMERA_DISTANCE = 1
@@ -1625,7 +1625,7 @@ class Gaussian:
         sh_coeffs: np.ndarray | None = None,
         sh_degree: int | None = None,
         min_response: float = 0.1,
-        sorting_mode: SortingMode = SortingMode.DEFAULT,
+        sorting_mode: SortingMode = SortingMode.RAY_HIT_DISTANCE,
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -1644,7 +1644,7 @@ class Gaussian:
             min_response: Minimum response required for alpha testing.
             sorting_mode: Sorting strategy for depth-ordering Gaussian
                 intersections along each ray before alpha compositing
-                (default: :attr:`SortingMode.DEFAULT`).
+                (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2001,6 +2001,7 @@ class Gaussian:
                     self._opacities.data.tobytes(),
                     self._sh_coeffs.data.tobytes(),
                     float(self._min_response),
+                    int(self._sorting_mode),
                 )
             )
         return self._cached_hash
@@ -2016,4 +2017,5 @@ class Gaussian:
             and np.array_equal(self._opacities, other._opacities)
             and np.array_equal(self._sh_coeffs, other._sh_coeffs)
             and self._min_response == other._min_response
+            and self._sorting_mode == other._sorting_mode
         )
