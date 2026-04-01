@@ -61,6 +61,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         gaussians_data: wp.array(dtype=Gaussian.Data),
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
+        camera_forward: wp.vec3f,
     ) -> ClosestHit:
         if bvh_shapes_size:
             for i in range(wp.static(2 if config.enable_global_world else 1)):
@@ -187,6 +188,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             shape_sizes[si],
                             ray_origin_world,
                             ray_dir_world,
+                            camera_forward,
                             gaussians_data[gaussian_id],
                             closest_hit.distance,
                         )
@@ -286,6 +288,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         gaussians_data: wp.array(dtype=Gaussian.Data),
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
+        camera_forward: wp.vec3f,
     ) -> ClosestHit:
         closest_hit = ClosestHit()
         closest_hit.distance = max_distance
@@ -310,6 +313,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
+            camera_forward,
         )
 
         if wp.static(config.enable_particles):
@@ -350,6 +354,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         gaussians_data: wp.array(dtype=Gaussian.Data),
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
+        camera_forward: wp.vec3f,
     ) -> ClosestHit:
         if bvh_shapes_size:
             for i in range(wp.static(2 if config.enable_global_world else 1)):
@@ -442,6 +447,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                             shape_sizes[si],
                             ray_origin_world,
                             ray_dir_world,
+                            camera_forward,
                             gaussians_data[gaussian_id],
                             closest_hit.distance,
                         )
@@ -531,6 +537,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         gaussians_data: wp.array(dtype=Gaussian.Data),
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
+        camera_forward: wp.vec3f,
     ) -> ClosestHit:
         closest_hit = ClosestHit()
         closest_hit.distance = max_distance
@@ -556,6 +563,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
+            camera_forward,
         )
 
         if wp.static(config.enable_particles):

@@ -46,9 +46,34 @@ def compute_gaussian_bvh_bounds(
 
 
 @wp.func
-def canonical_ray_hit_distance(ray_origin: wp.vec3f, ray_direction: wp.vec3f) -> wp.float32:
+def sorting_mode_ray_hit_distance(ray_origin: wp.vec3f, ray_direction: wp.vec3f) -> wp.float32:
     numerator = -wp.dot(ray_origin, ray_direction)
     return safe_div(numerator, wp.dot(ray_direction, ray_direction))
+
+
+@wp.func
+def sorting_mode_camera_distance(
+    gaussian_center: wp.vec3f,
+    ray_origin: wp.vec3f,
+    ray_direction: wp.vec3f,
+) -> wp.float32:
+    """Parametric *t* where the Gaussian center projects onto the ray."""
+    to_center = gaussian_center - ray_origin
+    return safe_div(wp.dot(to_center, ray_direction), wp.dot(ray_direction, ray_direction))
+
+
+@wp.func
+def sorting_mode_z_depth(
+    gaussian_center_world: wp.vec3f,
+    camera_forward: wp.vec3f,
+    ray_origin_world: wp.vec3f,
+    ray_direction_world: wp.vec3f,
+) -> wp.float32:
+    """Parametric *t* at which the ray reaches the Gaussian center's depth plane."""
+    return safe_div(
+        wp.dot(camera_forward, gaussian_center_world - ray_origin_world),
+        wp.dot(camera_forward, ray_direction_world),
+    )
 
 
 @wp.func
@@ -68,15 +93,28 @@ def ray_gsplat_hit_response(
     scale: wp.vec3f,
     opacity: wp.float32,
     min_response: wp.float32,
+    sorting_mode: wp.int32,
     ray_origin_world: wp.vec3f,
     ray_direction_world: wp.vec3f,
+    camera_forward: wp.vec3f,
     max_distance: wp.float32,
 ) -> tuple[wp.float32, wp.float32]:
     ray_origin_local, ray_direction_local = map_ray_to_local_scaled(
         transform, scale, ray_origin_world, ray_direction_world
     )
 
-    hit_distance = canonical_ray_hit_distance(ray_origin_local, ray_direction_local)
+    hit_distance = 0.0
+    if sorting_mode == wp.static(Gaussian.SortingMode.CAMERA_DISTANCE):
+        gaussian_center = wp.transform_get_translation(transform)
+        hit_distance = sorting_mode_camera_distance(gaussian_center, ray_origin_local, ray_direction_local)
+    elif sorting_mode == wp.static(Gaussian.SortingMode.Z_DEPTH):
+        gaussian_center = wp.transform_get_translation(transform)
+        gaussian_center_world = wp.transform_point(transform, wp.cw_mul(gaussian_center, scale))
+        hit_distance = sorting_mode_z_depth(
+            gaussian_center_world, camera_forward, ray_origin_world, ray_direction_world
+        )
+    else:
+        hit_distance = sorting_mode_ray_hit_distance(ray_origin_local, ray_direction_local)
 
     if hit_distance > 0.0 and hit_distance < max_distance:
         max_response = canonical_ray_max_kernel_response(ray_origin_local, wp.normalize(ray_direction_local))
@@ -94,6 +132,7 @@ def create_shade_function(config: RenderContext.Config, state: RenderContext.Sta
         scale: wp.vec3f,
         ray_origin: wp.vec3f,
         ray_direction: wp.vec3f,
+        camera_forward: wp.vec3f,
         gaussian_data: Gaussian.Data,
         max_distance: wp.float32,
     ) -> tuple[GeomHit, wp.vec3f]:
@@ -129,8 +168,10 @@ def create_shade_function(config: RenderContext.Config, state: RenderContext.Sta
                     gaussian_data.scales[hit_index],
                     gaussian_data.opacities[hit_index],
                     gaussian_data.min_response,
+                    gaussian_data.sorting_mode,
                     ray_origin_local,
                     ray_direction_local,
+                    camera_forward,
                     hit_distances[-1],
                 )
 
