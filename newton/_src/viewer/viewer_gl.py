@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -238,6 +239,21 @@ class ViewerGL(ViewerBase):
         self.renderer.register_mouse_drag(self.on_mouse_drag)
         self.renderer.register_mouse_scroll(self.on_mouse_scroll)
         self.renderer.register_resize(self.on_resize)
+        self.renderer.register_file_drop(self._on_file_drop)
+
+        # Standalone viewer callbacks
+        self.on_file_drop: Callable[[str], None] | None = None
+        self.on_reset: Callable[[], None] | None = None
+        self.on_solver_change: Callable[[str], None] | None = None
+        self.on_ground_toggle: Callable[[bool], None] | None = None
+        self.solver_names: list[str] = []
+        self._solver_idx: int = 0
+        self._ground_enabled: bool = False
+        self._file_info: dict | None = None
+        self._step_requested: bool = False
+        self._error_message: str | None = None
+        self._error_popup_pending = False
+        self._status_message: str | None = None
 
         # Camera movement settings
         self._camera_speed = 0.04
@@ -473,7 +489,12 @@ class ViewerGL(ViewerBase):
                 wp.load_module(module=_raycast_module, device=model.device)
                 wp.load_module(module="newton._src.viewer.kernels", device=model.device)
             except Exception:
-                pass
+                import warnings  # noqa: PLC0415
+
+                warnings.warn(
+                    "Failed to precompile picking kernels; picking may be slow or unavailable",
+                    stacklevel=1,
+                )
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
@@ -1214,12 +1235,13 @@ class ViewerGL(ViewerBase):
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
 
-        if self.ui and self.ui.is_available and self.show_ui:
+        has_overlay = self._error_message is not None or self._status_message is not None
+        if self.ui and self.ui.is_available and (self.show_ui or has_overlay):
             self.ui.begin_frame()
-
-            # Render the UI
-            self._render_ui()
-
+            if self.show_ui:
+                self._render_ui()
+            self._render_error_popup()
+            self._render_status_overlay()
             self.ui.end_frame()
             self.ui.render()
 
@@ -1329,6 +1351,45 @@ class ViewerGL(ViewerBase):
             bool: True if paused, False otherwise.
         """
         return self._paused
+
+    def step_once(self) -> bool:
+        """Request a single simulation step.
+
+        If the viewer is paused, sets a flag that the caller's simulation
+        loop can check via ``consume_step_request()``.
+        """
+        if self._paused:
+            self._step_requested = True
+            return True
+        return False
+
+    def consume_step_request(self) -> bool:
+        """Return True and clear if a single-step was requested."""
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    def show_error(self, message: str):
+        """Display a dismissible error popup in the viewer.
+
+        Args:
+            message: Error message to display.
+        """
+        self._error_message = message
+        self._error_popup_pending = True
+
+    def show_status(self, message: str):
+        """Show a centered status overlay (e.g. "Loading...").
+
+        Call :meth:`clear_status` to remove it.  Rendering a frame while
+        the status is set will display the message as a centered overlay.
+        """
+        self._status_message = message
+
+    def clear_status(self):
+        """Remove the status overlay set by :meth:`show_status`."""
+        self._status_message = None
 
     @override
     def close(self):
@@ -1586,6 +1647,11 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.ESCAPE:
             # Exit with Escape key
             self.renderer.close()
+        elif symbol == pyglet.window.key.R:
+            if self.on_reset is not None:
+                self.on_reset()
+        elif symbol in (pyglet.window.key.PERIOD, pyglet.window.key.RIGHT):
+            self.step_once()
 
     def on_key_release(self, symbol: int, modifiers: int):
         """
@@ -1596,6 +1662,11 @@ class ViewerGL(ViewerBase):
             modifiers: Active modifier bitmask for this event.
         """
         pass
+
+    def _on_file_drop(self, x: int, y: int, paths: list[str]):
+        """Handle file drop events from pyglet."""
+        if self.on_file_drop is not None and paths:
+            self.on_file_drop(paths[0])
 
     def _frame_camera_on_model(self):
         """
@@ -1853,6 +1924,45 @@ class ViewerGL(ViewerBase):
 
         self.gizmo_is_using = giz.is_using_any()
 
+    def _render_error_popup(self):
+        """Render the error popup if an error message is pending."""
+        if self._error_message is None or not self.ui:
+            return
+        imgui = self.ui.imgui
+        if self._error_popup_pending:
+            imgui.open_popup("Error")
+            self._error_popup_pending = False
+        if imgui.begin_popup_modal("Error", True)[0]:
+            imgui.text_wrapped(self._error_message)
+            if imgui.button("OK"):
+                self._error_message = None
+                imgui.close_current_popup()
+            imgui.end_popup()
+        else:
+            self._error_message = None  # closed via X
+
+    def _render_status_overlay(self):
+        """Render a centered status message overlay."""
+        if self._status_message is None or not self.ui:
+            return
+        imgui = self.ui.imgui
+        viewport = imgui.get_main_viewport()
+        text_size = imgui.calc_text_size(self._status_message)
+        pos_x = viewport.pos.x + (viewport.size.x - text_size.x) * 0.5
+        pos_y = viewport.pos.y + (viewport.size.y - text_size.y) * 0.5
+        imgui.set_next_window_pos(imgui.ImVec2(pos_x, pos_y))
+        imgui.set_next_window_bg_alpha(0.7)
+        flags = (
+            imgui.WindowFlags_.no_decoration
+            | imgui.WindowFlags_.always_auto_resize
+            | imgui.WindowFlags_.no_saved_settings
+            | imgui.WindowFlags_.no_focus_on_appearing
+            | imgui.WindowFlags_.no_nav
+        )
+        if imgui.begin("##status_overlay", None, flags)[0]:
+            imgui.text(self._status_message)
+        imgui.end()
+
     def _render_ui(self):
         """
         Render the complete ImGui interface (left panel, stats overlay, and custom UI).
@@ -1913,6 +2023,39 @@ class ViewerGL(ViewerBase):
 
                     # Pause simulation checkbox
                     changed, self._paused = imgui.checkbox("Pause", self._paused)
+
+                    # Simulation time
+                    imgui.text(f"Time: {self.time:.2f}s")
+
+                    # Solver dropdown
+                    if self.on_solver_change is not None and self.solver_names:
+                        changed, self._solver_idx = imgui.combo("Solver", self._solver_idx, self.solver_names)
+                        if changed:
+                            self.on_solver_change(self.solver_names[self._solver_idx])
+
+                    # Single-step and reset buttons
+                    if self._paused:
+                        if imgui.button("Step"):
+                            self.step_once()
+                    if self.on_reset is not None:
+                        if self._paused:
+                            imgui.same_line()
+                        if imgui.button("Reset"):
+                            self.on_reset()
+
+                    # Ground plane toggle
+                    if self.on_ground_toggle is not None:
+                        changed, self._ground_enabled = imgui.checkbox("Ground Plane", self._ground_enabled)
+                        if changed:
+                            self.on_ground_toggle(self._ground_enabled)
+
+                    # File info
+                    if self._file_info is not None:
+                        imgui.separator()
+                        imgui.text(f"File: {os.path.basename(self._file_info['path'])}")
+                        imgui.text(f"Bodies: {self._file_info['body_count']}")
+                        imgui.text(f"Joints: {self._file_info['joint_count']}")
+                        imgui.text(f"Shapes: {self._file_info['shape_count']}")
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)

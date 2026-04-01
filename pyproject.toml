@@ -31,6 +31,9 @@ dependencies = [
     "warp-lang>=1.12.0",
 ]
 
+[project.scripts]
+newton-viewer = "newton.viewer:main"
+
 [project.optional-dependencies]
 
 # Core simulation dependencies

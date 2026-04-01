@@ -1,0 +1,310 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Standalone viewer entry point for loading and simulating physics assets."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import traceback
+from dataclasses import dataclass
+
+import warp as wp
+
+import newton
+
+SOLVER_MAP = {
+    "mujoco": "SolverMuJoCo",
+    "xpbd": "SolverXPBD",
+    "featherstone": "SolverFeatherstone",
+    "semi-implicit": "SolverSemiImplicit",
+}
+
+
+@dataclass
+class SimState:
+    """Holds all simulation state for the standalone viewer."""
+
+    model: newton.Model
+    solver: object
+    control: newton.Control
+    state_0: newton.State
+    state_1: newton.State
+    initial_state: newton.State
+    contacts: newton.Contacts
+    graph: object | None
+    path: str
+    dt: float
+    sim_substeps: int
+    sim_dt: float
+    sim_time: float = 0.0
+
+
+def _create_solver(solver_name: str, model: newton.Model):
+    """Create a solver instance from a string name."""
+    cls_name = SOLVER_MAP[solver_name]
+    cls = getattr(newton.solvers, cls_name)
+    return cls(model)
+
+
+def load_file(
+    path: str,
+    solver_name: str = "mujoco",
+    device: str | None = None,
+    ground: bool = True,
+) -> SimState:
+    """Load a USD/URDF/MJCF file and build a ready-to-simulate SimState.
+
+    Args:
+        path: Path to asset file.
+        solver_name: Key into SOLVER_MAP.
+        device: Warp device string, or None for default.
+        ground: Whether to add a ground plane.
+
+    Returns:
+        A fully initialized SimState.
+    """
+    builder = newton.ModelBuilder()
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext in (".usd", ".usda", ".usdc"):
+        builder.add_usd(path)
+    elif ext == ".urdf":
+        builder.add_urdf(path)
+    elif ext in (".xml", ".mjcf"):
+        builder.add_mjcf(path)
+    else:
+        raise ValueError(f"Unsupported file format: '{ext}'. Expected .usd, .usda, .usdc, .urdf, .xml, or .mjcf")
+
+    if ground:
+        # Place ground plane below the lowest shape in the asset.
+        # For each shape, estimate its world-space lower Z bound from
+        # the body position, shape offset, and the shape's largest scale
+        # dimension (conservative bounding sphere radius).
+        ground_z = 0.0
+        for i in range(len(builder.shape_transform)):
+            body = builder.shape_body[i]
+            body_z = float(builder.body_q[body][2]) if body >= 0 else 0.0
+            shape_z = float(builder.shape_transform[i][2])
+            scale = builder.shape_scale[i]
+            radius = max(abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
+            lower_z = body_z + shape_z - radius
+            if lower_z < ground_z:
+                ground_z = lower_z
+        # plane equation (0,0,1,-h) defines z = h
+        builder.add_shape_plane(plane=(0.0, 0.0, 1.0, -ground_z))
+
+    model = builder.finalize(device=device)
+    solver = _create_solver(solver_name, model)
+    control = model.control()
+    state_0 = model.state()
+    state_1 = model.state()
+    initial_state = model.state()
+    contacts = model.contacts()
+
+    # Determine timestep and substeps
+    dt = getattr(model, "dt", 1.0 / 60.0) or 1.0 / 60.0
+    sim_substeps = max(1, round(dt * 120.0))
+    sim_dt = dt / sim_substeps
+
+    sim = SimState(
+        model=model,
+        solver=solver,
+        control=control,
+        state_0=state_0,
+        state_1=state_1,
+        initial_state=initial_state,
+        contacts=contacts,
+        graph=None,
+        path=path,
+        dt=dt,
+        sim_substeps=sim_substeps,
+        sim_dt=sim_dt,
+    )
+
+    # Capture CUDA graph
+    if model.device.is_cuda:
+        sim.graph = _capture_graph(sim)
+
+    return sim
+
+
+def _simulate(sim: SimState, viewer=None):
+    """Run one frame of simulation (sim_substeps steps).
+
+    Used both for direct execution (CPU) and inside wp.ScopedCapture()
+    for CUDA graph recording.  During graph capture, Python executes
+    normally (including attribute swaps on sim) while CUDA records kernel
+    launches -- so the swapped attribute references correctly resolve to
+    alternating GPU buffers in the captured graph.
+
+    Args:
+        sim: Simulation state to advance.
+        viewer: Optional viewer for applying interactive forces (picking,
+            wind).  Ignored during CUDA graph capture.
+    """
+    for _ in range(sim.sim_substeps):
+        sim.state_0.clear_forces()
+        if viewer is not None:
+            viewer.apply_forces(sim.state_0)
+        sim.model.collide(sim.state_0, sim.contacts)
+        sim.solver.step(sim.state_0, sim.state_1, sim.control, sim.contacts, sim.sim_dt)
+        sim.state_0, sim.state_1 = sim.state_1, sim.state_0
+
+
+def _capture_graph(sim: SimState):
+    """Capture a CUDA graph for the simulation step."""
+    with wp.ScopedCapture() as capture:
+        _simulate(sim)
+    return capture.graph
+
+
+def _create_parser() -> argparse.ArgumentParser:
+    """Create argument parser for the standalone viewer."""
+    parser = argparse.ArgumentParser(
+        prog="newton-viewer",
+        description="Newton standalone viewer — load and simulate physics assets.",
+    )
+    parser.add_argument(
+        "file",
+        nargs="?",
+        default=None,
+        help="Path to a USD, URDF, or MJCF file to load.",
+    )
+    parser.add_argument(
+        "--solver",
+        type=str,
+        default="mujoco",
+        choices=list(SOLVER_MAP.keys()),
+        help="Solver backend (default: mujoco).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Warp device (default: best available).",
+    )
+    parser.add_argument(
+        "--no-ground",
+        action="store_true",
+        default=False,
+        help="Do not add a ground plane.",
+    )
+    return parser
+
+
+def main():
+    """Main entry point for the standalone viewer."""
+    from newton.viewer import ViewerGL  # noqa: PLC0415
+
+    args = _create_parser().parse_args()
+
+    if args.device:
+        wp.set_device(args.device)
+
+    viewer = ViewerGL()
+    viewer.solver_names = list(SOLVER_MAP.keys())
+    sim = None
+    solver_name = args.solver
+    ground = not args.no_ground
+
+    def _flush_status():
+        """Render two frames so the status overlay is visible (double-buffered)."""
+        for _ in range(2):
+            viewer.begin_frame(sim.sim_time if sim else 0.0)
+            viewer.end_frame()
+
+    def load_and_setup(path: str):
+        nonlocal sim
+        basename = os.path.basename(path)
+        viewer.show_status(f"Loading {basename}...")
+        viewer.renderer.set_title(f"Newton Viewer — Loading {basename}...")
+        _flush_status()
+        new_sim = load_file(path, solver_name=solver_name, device=args.device, ground=ground)
+        viewer.clear_status()
+        viewer.renderer.set_title(f"Newton Viewer — {basename}")
+        viewer.set_model(new_sim.model)
+        viewer._file_info = {
+            "path": path,
+            "body_count": new_sim.model.body_count,
+            "joint_count": new_sim.model.joint_count,
+            "shape_count": new_sim.model.shape_count,
+        }
+        viewer._ground_enabled = ground
+        sim = new_sim
+
+    def _reload_current():
+        """Reload the current file, showing errors in the viewer."""
+        if sim is not None:
+            try:
+                load_and_setup(sim.path)
+            except Exception as e:
+                traceback.print_exc()
+                viewer.clear_status()
+                viewer.show_error(str(e))
+
+    def on_drop(path: str):
+        try:
+            load_and_setup(path)
+        except Exception as e:
+            traceback.print_exc()
+            viewer.clear_status()
+            viewer.show_error(str(e))
+
+    def on_reset():
+        if sim is not None:
+            sim.state_0.assign(sim.initial_state)
+            sim.sim_time = 0.0
+            if sim.model.device.is_cuda:
+                sim.graph = _capture_graph(sim)
+
+    def on_solver_change(new_solver: str):
+        nonlocal solver_name
+        solver_name = new_solver
+        _reload_current()
+
+    def on_ground_toggle(enabled: bool):
+        nonlocal ground
+        ground = enabled
+        _reload_current()
+
+    viewer.on_file_drop = on_drop
+    viewer.on_reset = on_reset
+    viewer.on_solver_change = on_solver_change
+    viewer.on_ground_toggle = on_ground_toggle
+
+    # Load initial file if provided
+    if args.file:
+        try:
+            load_and_setup(args.file)
+        except Exception as e:
+            traceback.print_exc()
+            viewer.clear_status()
+            viewer.show_error(str(e))
+
+    # Main loop
+    while viewer.is_running():
+        should_step = sim is not None and (not viewer.is_paused() or viewer.consume_step_request())
+
+        if should_step:
+            try:
+                # Fall back to direct simulation when interactive forces are
+                # active (picking, wind) since those can't be baked into a graph.
+                use_graph = sim.graph and not (
+                    viewer.picking_enabled and viewer.picking is not None and viewer.picking.is_picking()
+                )
+                if use_graph:
+                    wp.capture_launch(sim.graph)
+                else:
+                    _simulate(sim, viewer)
+                sim.sim_time += sim.dt
+            except Exception as e:
+                traceback.print_exc()
+                viewer.show_error(f"Simulation error: {e}")
+                viewer._paused = True
+
+        viewer.begin_frame(sim.sim_time if sim else 0.0)
+        if sim:
+            viewer.log_state(sim.state_0)
+        viewer.end_frame()
