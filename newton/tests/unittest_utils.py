@@ -207,30 +207,50 @@ def is_noise_line(line: str) -> bool:
 
 
 class CheckOutput:
-    def __init__(self, test):
+    """Context manager that captures stdout and fails on unexpected output.
+
+    Args:
+        test: The ``unittest.TestCase`` instance used for assertions.
+        expected_patterns: Optional regex strings.  Lines matching any pattern
+            are considered expected and will not trigger an unexpected-output
+            failure.  The captured text is available as ``self.output`` after
+            the context exits.
+    """
+
+    def __init__(self, test, expected_patterns: list[str] | None = None):
         self.test = test
+        self.output = ""
+        self._compiled = [re.compile(p) for p in expected_patterns] if expected_patterns else []
 
     def __enter__(self):
-        # wp.force_load()
-
         self.capture = StdOutCapture()
         self.capture.begin()
+        return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         # ensure any stdout output is flushed
         wp.synchronize()
 
-        s = self.capture.end()
-        if s != "":
-            print(s.rstrip())
+        self.output = self.capture.end()
+        if exc_type is not None:
+            # An exception is propagating — print captured output for
+            # debugging but skip the unexpected-output assertion.
+            if self.output.strip():
+                print(f"Captured stdout before crash:\n{self.output.rstrip()}")
+            return
 
-            # fail if test produces unexpected output (e.g.: from wp.expect_eq() builtins)
-            # we allow strings starting of the form "Module xxx load on device xxx"
-            # for lazy loaded modules
-            filtered_s = "\n".join(line for line in s.splitlines() if not is_noise_line(line))
+        if self.output != "":
+            print(self.output.rstrip())
+
+            # Fail on unexpected output — filter noise and expected patterns
+            filtered_s = "\n".join(
+                line
+                for line in self.output.splitlines()
+                if not is_noise_line(line) and not any(p.search(line) for p in self._compiled)
+            )
 
             if filtered_s.strip():
-                self.test.fail(f"Unexpected output:\n'{s.rstrip()}'")
+                self.test.fail(f"Unexpected output:\n'{self.output.rstrip()}'")
 
 
 def assert_array_equal(result: wp.array, expect: wp.array):
@@ -285,12 +305,10 @@ def find_nonfinite_members(obj: Any | None) -> list[str]:
     return nonfinite_members
 
 
-# if check_output is True any output to stdout will be treated as an error
-def create_test_func(func, device, check_output, **kwargs):
-    # pass args to func
+def create_test_func(func, device, check_output, expected_patterns=None, **kwargs):
     def test_func(self):
         if check_output:
-            with CheckOutput(self):
+            with CheckOutput(self, expected_patterns=expected_patterns):
                 func(self, device, **kwargs)
         else:
             func(self, device, **kwargs)
@@ -317,9 +335,9 @@ def sanitize_identifier(s):
         return re.sub(r"\W|^(?=\d)", "_", s)
 
 
-def add_function_test(cls, name, func, devices=None, check_output=True, **kwargs):
+def add_function_test(cls, name, func, devices=None, check_output=True, expected_patterns=None, **kwargs):
     if devices is None:
-        setattr(cls, name, create_test_func(func, None, check_output, **kwargs))
+        setattr(cls, name, create_test_func(func, None, check_output, expected_patterns=expected_patterns, **kwargs))
     elif isinstance(devices, list):
         if not devices:
             # No devices to run this test
@@ -329,13 +347,13 @@ def add_function_test(cls, name, func, devices=None, check_output=True, **kwargs
                 setattr(
                     cls,
                     name + "_" + sanitize_identifier(device),
-                    create_test_func(func, device, check_output, **kwargs),
+                    create_test_func(func, device, check_output, expected_patterns=expected_patterns, **kwargs),
                 )
     else:
         setattr(
             cls,
             name + "_" + sanitize_identifier(devices),
-            create_test_func(func, devices, check_output, **kwargs),
+            create_test_func(func, devices, check_output, expected_patterns=expected_patterns, **kwargs),
         )
 
 

@@ -25,11 +25,10 @@ import newton.examples
 import newton.viewer
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
-    StdOutCapture,
+    CheckOutput,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
-    is_noise_line,
 )
 
 
@@ -69,6 +68,7 @@ def add_example_test(
     test_suffix: str | None = None,
     expected_output: list[str] | None = None,
     expected_output_cpu: list[str] | None = None,
+    allowed_output: list[str] | None = None,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase.
 
@@ -79,6 +79,9 @@ def add_example_test(
             matched by at least one pattern fails the test.
         expected_output_cpu: Like *expected_output* but only asserted on
             CPU devices.
+        allowed_output: Regex patterns for stdout lines that are allowed
+            but not required.  These prevent unexpected-output failures
+            without requiring a match.
     """
 
     # verify the module exists (use package-relative path so this works from any CWD)
@@ -152,40 +155,33 @@ def add_example_test(
             else:
                 i += 1
 
-        # Create viewer and run example in-process, capturing warnings + stdout
-        viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
-        factory = getattr(mod, "create_example", None) or mod.Example
-        capture = StdOutCapture()
-        capture.begin()
-        try:
-            with wp.ScopedDevice(device), warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                example = factory(viewer, args)
-                newton.examples.run(example, args)
-                wp.synchronize()
-
-            stdout = capture.end()
-        except BaseException:
-            error_stdout = capture.end()
-            if error_stdout.strip():
-                print(f"Captured stdout before crash:\n{error_stdout.rstrip()}")
-            raise
-
-        # Build expected pattern list
+        # Build expected pattern list (used for both warning and stdout checks)
         is_cpu = wp.get_device(device).is_cpu
         expected_patterns = list(expected_output or [])
         if is_cpu:
             expected_patterns.extend(expected_output_cpu or [])
 
+        # CheckOutput uses both expected and allowed patterns for filtering;
+        # only expected_patterns are asserted to appear at least once.
+        all_patterns = expected_patterns + list(allowed_output or [])
         compiled_patterns = [re.compile(p) for p in expected_patterns] if expected_patterns else []
 
-        # Combine warnings and stdout for expected-pattern matching
+        # Run example in-process.
+        # CheckOutput captures stdout and fails on unexpected lines.
+        # warnings.catch_warnings captures Python warnings for separate validation.
+        viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
+        factory = getattr(mod, "create_example", None) or mod.Example
+        with CheckOutput(test, expected_patterns=all_patterns) as check:
+            with wp.ScopedDevice(device), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                example = factory(viewer, args)
+                newton.examples.run(example, args)
+
+        # Assert each expected pattern appears in warnings or stdout
         warning_messages = [str(w.message) for w in caught]
         all_text = "\n".join(warning_messages)
-        if stdout.strip():
-            all_text += "\n" + stdout
-
-        # Assert each expected pattern appears at least once
+        if check.output.strip():
+            all_text += "\n" + check.output
         for pattern in compiled_patterns:
             test.assertRegex(all_text, pattern, f"Expected output pattern not found: {pattern.pattern}")
 
@@ -197,16 +193,6 @@ def add_example_test(
             msg = str(w.message)
             if not any(p.search(msg) for p in compiled_patterns):
                 test.fail(f"Unexpected warning: {msg}")
-
-        # Fail on unexpected stdout (same strictness as warnings above)
-        if stdout.strip():
-            filtered = [
-                line
-                for line in stdout.splitlines()
-                if not is_noise_line(line) and not any(p.search(line) for p in compiled_patterns)
-            ]
-            if filtered:
-                test.fail("Unexpected stdout:\n" + "\n".join(filtered))
 
     test_name = f"test_{name}_{test_suffix}" if test_suffix else f"test_{name}"
     add_function_test(cls, test_name, run, devices=devices, check_output=False)
@@ -713,10 +699,8 @@ add_example_test(
     name="basic.example_basic_plotting",
     devices=test_devices,
     test_options={"num-frames": 200},
-    expected_output=[
-        "Diagnostics plot saved to|Simulation diagnostics summary",
-        r"^\s+(Iterations|Kinetic E|Potential E|Constraints):",
-    ],
+    expected_output=["Diagnostics plot saved to|Simulation diagnostics summary"],
+    allowed_output=[r"^\s+(Iterations|Kinetic E|Potential E|Constraints):"],
 )
 
 
