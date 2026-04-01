@@ -476,6 +476,13 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
 
 .. note::
 
+   Newton's ``margin`` is computed as ``mjc:margin − mjc:gap`` (not a
+   direct copy of ``mjc:margin``).  MuJoCo uses ``margin`` as the full
+   contact-detection envelope and ``gap`` as a sub-threshold that
+   suppresses constraint activation; Newton stores them separately.
+
+.. note::
+
    The ``solref`` → ``ke``/``kd`` direct mapping has the same
    mass-normalization issue as the joint mapping.  See
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
