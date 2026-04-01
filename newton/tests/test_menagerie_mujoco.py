@@ -10,8 +10,8 @@ Architecture::
 
     TestMenagerieBase           Abstract base with all test infrastructure
     ├── TestMenagerieMJCF       Load Newton model from MJCF
-    │   ├── TestMenagerie_UniversalRobotsUr5e   (enabled, split pipeline)
-    │   ├── TestMenagerie_ApptronikApollo       (enabled, full pipeline)
+    │   ├── TestMenagerie_UniversalRobotsUr5e   (enabled)
+    │   ├── TestMenagerie_ApptronikApollo       (enabled)
     │   └── ...                                 (61 robots total, most skipped)
     └── TestMenagerieUSD        Load Newton model from USD (all skipped)
 
@@ -20,8 +20,8 @@ Test tiers (each robot can enable independently):
     - ``test_forward_kinematics()``: Compares body poses from joint positions
       (no forces/contacts). Gated by ``fk_enabled``.
     - ``test_dynamics()``: Per-DOF step response — each world commands one actuator
-      to a target position. Collisions disabled, split pipeline for deterministic
-      comparison. Gated by ``num_steps > 0``.
+      to a target position. Collisions disabled, both sides run full
+      ``mujoco_warp.step()`` independently. Gated by ``num_steps > 0``.
 
 Each test:
     1. Downloads the robot from menagerie (cached).
@@ -240,81 +240,6 @@ class StepResponseControlStrategy(ControlStrategy):
                 self._num_actuators,
             ],
         )
-
-
-@wp.kernel
-def generate_random_control_kernel_dual(
-    prev_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    native_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    newton_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    seed: int,
-    step: int,
-    noise_scale: wp.float32,
-    smoothing: wp.float32,
-):
-    """Generate random control with smoothing, writing to both arrays."""
-    i = wp.tid()
-    state = wp.rand_init(seed, i + step * 1000000)  # type: ignore[arg-type, operator]
-    rand_val = wp.randf(state) * 2.0 - 1.0
-    noise = rand_val * noise_scale
-    one_minus_smooth = 1.0 - smoothing
-    val = smoothing * prev_ctrl[i] + one_minus_smooth * noise
-    clamped = wp.clamp(val, -1.0, 1.0)
-    native_ctrl[i] = clamped
-    newton_ctrl[i] = clamped
-    prev_ctrl[i] = clamped
-
-
-class RandomControlStrategy(ControlStrategy):
-    """
-    Generate random control values with configurable noise.
-
-    Uses a Warp kernel to generate smoothed random controls on GPU.
-    Each world gets independent random controls.
-    """
-
-    def __init__(
-        self,
-        seed: int = 42,
-        noise_scale: float = 0.5,
-        smoothing: float = 0.9,
-    ):
-        super().__init__(seed)
-        self.noise_scale = noise_scale
-        self.smoothing = smoothing
-        self._prev_ctrl: wp.array | None = None
-        self._native_ctrl: wp.array | None = None
-        self._newton_ctrl: wp.array | None = None
-        self._n: int = 0
-        self._step: int = 0
-
-    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
-        """Initialize with the ctrl arrays to fill."""
-        n = native_ctrl.shape[0] * native_ctrl.shape[1]
-        self._prev_ctrl = wp.zeros(n, dtype=wp.float32)
-        self._native_ctrl = native_ctrl.flatten()
-        self._newton_ctrl = newton_ctrl
-        self._n = n
-        self._step = 0
-
-    def fill_control(self, t: float):
-        """Fill control values into both arrays with single kernel launch."""
-        if self._prev_ctrl is None:
-            raise RuntimeError("Call init() first")
-        wp.launch(
-            generate_random_control_kernel_dual,
-            dim=self._n,
-            inputs=[
-                self._prev_ctrl,
-                self._native_ctrl,
-                self._newton_ctrl,
-                self.rng.integers(0, 2**31),
-                self._step,
-                self.noise_scale,
-                self.smoothing,
-            ],
-        )
-        self._step += 1
 
 
 # =============================================================================
@@ -1014,6 +939,9 @@ def compare_mjdata_field(
     else:
         diff = np.abs(newton_np - native_np)
     max_diff = float(np.max(diff))
+
+    if np.isnan(max_diff):
+        raise AssertionError(f"Step {step}, field '{field_name}': diff contains NaN")
 
     if max_diff > tol:
         max_idx = np.unravel_index(np.argmax(diff), diff.shape)
@@ -1791,7 +1719,7 @@ class TestMenagerieBase(unittest.TestCase):
             strategy.fill_control(0.0)
 
             # Step loop — both sides run full mujoco_warp.step() independently.
-            # No split pipeline needed since collisions are disabled.
+            # Both sides run full mujoco_warp.step() — no contacts with collisions disabled.
             for step in range(self.num_steps):
                 strategy.fill_control(step * dt)
                 newton_solver.step(newton_state, newton_state, newton_control, None, dt)
