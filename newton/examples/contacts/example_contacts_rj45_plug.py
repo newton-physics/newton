@@ -59,14 +59,14 @@ LATCH_LIMIT_KD = 1.0e-4  # dimensionless limit damping (VBD: D = kd * limit_ke)
 
 @wp.kernel
 def _apply_gizmo_force(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_mass: wp.array(dtype=float),
-    pick_target: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    body_mass: wp.array[float],
+    pick_target: wp.array[wp.vec3],
     stiffness: float,
     damping: float,
-    pick_body: wp.array(dtype=int),
+    pick_body: wp.array[int],
     plug_idx: int,
     latch_idx: int,
     gravity: wp.vec3,
@@ -118,12 +118,12 @@ def _apply_gizmo_force(
 
 @wp.kernel
 def _sync_cable_anchors(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
     plug_idx: int,
-    anchor_indices: wp.array(dtype=int),
-    anchor_offsets: wp.array(dtype=wp.vec3),
-    anchor_rotations: wp.array(dtype=wp.quat),
+    anchor_indices: wp.array[int],
+    anchor_offsets: wp.array[wp.vec3],
+    anchor_rotations: wp.array[wp.quat],
 ):
     """Copy the plug transform into kinematic cable bodies."""
     tid = wp.tid()
@@ -139,9 +139,9 @@ def _sync_cable_anchors(
 
 @wp.kernel
 def _align_cable_orientations(
-    body_q: wp.array(dtype=wp.transform),
-    cable_body_idx: wp.array(dtype=int),
-    cable_next_idx: wp.array(dtype=int),
+    body_q: wp.array[wp.transform],
+    cable_body_idx: wp.array[int],
+    cable_next_idx: wp.array[int],
 ):
     """Swing-correct each dynamic cable capsule to its deformed segment direction.
 
