@@ -1,6 +1,8 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 ``warp.sim`` Migration Guide
 ============================
 
@@ -159,7 +161,7 @@ Analogously, the geometry types plane, capsule, cylinder, and cone now have thei
 +--------------------------------------------------------+------------------------------------------------------------------------+
 
 It is now possible to set the up axis of the builder using the :attr:`~newton.ModelBuilder.up_axis` attribute,
-which can be defined from any value compatible with the :obj:`~newton.core.types.AxisType` alias.
+which can be defined from any value compatible with the :obj:`~newton.AxisType` alias.
 :attr:`newton.ModelBuilder.up_vector` is now a read-only property computed from :attr:`newton.ModelBuilder.up_axis`.
 
 The ``ModelBuilder.add_joint_*()`` functions now use ``None`` defaults that are filled in from

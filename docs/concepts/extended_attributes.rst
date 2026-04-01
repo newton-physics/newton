@@ -1,6 +1,8 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 .. _extended_attributes:
 
 Extended Attributes
@@ -108,7 +110,7 @@ The canonical list is :attr:`State.EXTENDED_ATTRIBUTES <newton.State.EXTENDED_AT
      - Rigid-body spatial accelerations (used by :class:`~newton.sensors.SensorIMU`)
    * - :attr:`~newton.State.body_parent_f`
      - Rigid-body parent interaction wrenches
-   * - :attr:`~newton.State.mujoco.qfrc_actuator`
+   * - ``State.mujoco.qfrc_actuator``
      - Actuator forces in generalized (joint DOF) coordinates, namespaced under ``state.mujoco.qfrc_actuator``.
        Only populated by :class:`~newton.solvers.SolverMuJoCo`.
 

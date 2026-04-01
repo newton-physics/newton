@@ -168,10 +168,10 @@ class SolverMuJoCo(SolverBase):
         For :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode, determines which target array to read from:
 
         - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_pos`, syncs gains from
-          :attr:`~newton.Control.joint_target_ke`. For :attr:`~newton.JointTargetMode.POSITION`-only actuators,
-          also syncs damping from :attr:`~newton.Control.joint_target_kd`. For
+          :attr:`~newton.Model.joint_target_ke`. For :attr:`~newton.JointTargetMode.POSITION`-only actuators,
+          also syncs damping from :attr:`~newton.Model.joint_target_kd`. For
           :attr:`~newton.JointTargetMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
-        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_vel`, syncs gains from :attr:`~newton.Control.joint_target_kd`
+        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_vel`, syncs gains from :attr:`~newton.Model.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         """
 
@@ -396,8 +396,8 @@ class SolverMuJoCo(SolverBase):
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """
         Declare custom attributes to be allocated on the Model object within the ``mujoco`` namespace.
-        Note that we declare all custom attributes with the :attr:`newton.ModelBuilder.CustomAttribute.usd_attribute_name` set to ``"mjc"`` here to leverage the MuJoCo USD schema
-        where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
+        Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
+        to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
         # Register custom frequencies before adding attributes that use them
         # This is required as custom frequencies must be registered before use
@@ -6220,8 +6220,8 @@ class SolverMuJoCo(SolverBase):
         .. note::
 
             The MuJoCo viewer only supports rendering Newton models with a single world,
-            unless :attr:`use_mujoco_cpu` is :obj:`True` or the solver was initialized with
-            :attr:`separate_worlds` set to :obj:`False`.
+            unless ``use_mujoco_cpu`` is ``True`` or the solver was initialized with
+            ``separate_worlds`` set to ``False``.
 
             The MuJoCo viewer is only meant as a debugging tool.
 

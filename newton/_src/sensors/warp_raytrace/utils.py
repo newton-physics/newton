@@ -136,7 +136,7 @@ class Utils:
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
-        """Create a color output array for :meth:`update`.
+        """Create a color output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -155,7 +155,7 @@ class Utils:
     def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.float32, ndim=4
     ):
-        """Create a depth output array for :meth:`update`.
+        """Create a depth output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -174,7 +174,7 @@ class Utils:
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
-        """Create a shape-index output array for :meth:`update`.
+        """Create a shape-index output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -193,7 +193,7 @@ class Utils:
     def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.vec3f, ndim=4
     ):
-        """Create a normal output array for :meth:`update`.
+        """Create a normal output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -212,7 +212,7 @@ class Utils:
     def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
         dtype=wp.uint32, ndim=4
     ):
-        """Create an albedo output array for :meth:`update`.
+        """Create an albedo output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -280,7 +280,7 @@ class Utils:
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
         Args:
-            image: Color output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Color output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
@@ -323,7 +323,7 @@ class Utils:
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
         Args:
-            image: Normal output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Normal output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
@@ -368,7 +368,7 @@ class Utils:
         range. Background pixels (no hit) remain black.
 
         Args:
-            image: Depth output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Depth output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
             depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
