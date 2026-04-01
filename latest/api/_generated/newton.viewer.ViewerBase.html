@@ -811,8 +811,33 @@
 <h1>newton.viewer.ViewerBase<a class="headerlink" href="#newton-viewer-viewerbase" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.viewer.ViewerBase">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerBase</span></span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer.py#L23"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerBase" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerBase</span></span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer.py#L24"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerBase" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a></p>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.viewer.ViewerBase.SDFMarginMode">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">SDFMarginMode</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerBase.SDFMarginMode" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
+<p>Controls which offset surface is visualized for SDF debug wireframes.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.viewer.ViewerBase.SDFMarginMode.MARGIN">
+<span class="sig-name descname"><span class="pre">MARGIN</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.viewer.ViewerBase.SDFMarginMode.MARGIN" title="Link to this definition">#</a></dt>
+<dd><p>Wireframe at <code class="docutils literal notranslate"><span class="pre">shape_margin</span></code> only.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.viewer.ViewerBase.SDFMarginMode.MARGIN_GAP">
+<span class="sig-name descname"><span class="pre">MARGIN_GAP</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">2</span></em><a class="headerlink" href="#newton.viewer.ViewerBase.SDFMarginMode.MARGIN_GAP" title="Link to this definition">#</a></dt>
+<dd><p>Wireframe at <code class="docutils literal notranslate"><span class="pre">shape_margin</span></code> + <code class="docutils literal notranslate"><span class="pre">shape_gap</span></code> (outer contact threshold), not gap alone.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.viewer.ViewerBase.SDFMarginMode.OFF">
+<span class="sig-name descname"><span class="pre">OFF</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.viewer.ViewerBase.SDFMarginMode.OFF" title="Link to this definition">#</a></dt>
+<dd><p>Do not draw SDF margin debug wireframes.</p>
+</dd></dl>
+
+</dd></dl>
+
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.viewer.ViewerBase.ShapeInstances">
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ShapeInstances</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">static</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">flags</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerBase.ShapeInstances" title="Link to this definition">#</a></dt>
@@ -926,6 +951,12 @@ current model needs to be discarded (e.g. before <a class="reference internal" h
 when switching examples).</p>
 <dl class="field-list simple">
 </dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.viewer.ViewerBase.clear_wireframe_vbo_cache">
+<span class="sig-name descname"><span class="pre">clear_wireframe_vbo_cache</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerBase.clear_wireframe_vbo_cache" title="Link to this definition">#</a></dt>
+<dd><p>Clear the shared wireframe VBO cache (overridden by GL viewer).</p>
 </dd></dl>
 
 <dl class="py method">
@@ -1245,6 +1276,25 @@ render a batch of instances with the provided transforms/colors/materials.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.viewer.ViewerBase.log_wireframe_shape">
+<span class="sig-name descname"><span class="pre">log_wireframe_shape</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vertex_data</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">world_matrix</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hidden</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerBase.log_wireframe_shape" title="Link to this definition">#</a></dt>
+<dd><p>Log a wireframe shape for rendering via the geometry-shader line pipeline.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the wireframe shape.</p></li>
+<li><p><strong>vertex_data</strong> (<a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.4)"><em>ndarray</em></a><em> | </em><em>None</em>) – <code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">6)</span></code> float32 array of interleaved <code class="docutils literal notranslate"><span class="pre">[px,py,pz,</span> <span class="pre">cr,cg,cb]</span></code>
+line-segment vertices (pairs).  Pass <code class="docutils literal notranslate"><span class="pre">None</span></code> to keep existing
+geometry and only update the transform.</p></li>
+<li><p><strong>world_matrix</strong> (<a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.4)"><em>ndarray</em></a><em> | </em><em>None</em>) – 4x4 float32 model-to-world matrix, or <code class="docutils literal notranslate"><span class="pre">None</span></code> to
+keep the current matrix.</p></li>
+<li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the wireframe shape should be hidden.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerBase.set_camera">
 <span class="sig-name descname"><span class="pre">set_camera</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pitch</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">yaw</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerBase.set_camera" title="Link to this definition">#</a></dt>
 <dd><p>Set the camera position and orientation.</p>
@@ -1326,6 +1376,12 @@ Example: (5.0, 5.0, 0.0) for 5 units spacing in X and Y.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase"><code class="docutils literal notranslate"><span class="pre">ViewerBase</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.SDFMarginMode"><code class="docutils literal notranslate"><span class="pre">SDFMarginMode</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.SDFMarginMode.MARGIN"><code class="docutils literal notranslate"><span class="pre">MARGIN</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.SDFMarginMode.MARGIN_GAP"><code class="docutils literal notranslate"><span class="pre">MARGIN_GAP</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.SDFMarginMode.OFF"><code class="docutils literal notranslate"><span class="pre">OFF</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.ShapeInstances"><code class="docutils literal notranslate"><span class="pre">ShapeInstances</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.ShapeInstances.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.ShapeInstances.add"><code class="docutils literal notranslate"><span class="pre">add()</span></code></a></li>
@@ -1339,6 +1395,7 @@ Example: (5.0, 5.0, 0.0) for 5 units spacing in X and Y.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.apply_forces"><code class="docutils literal notranslate"><span class="pre">apply_forces()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.begin_frame"><code class="docutils literal notranslate"><span class="pre">begin_frame()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.clear_model"><code class="docutils literal notranslate"><span class="pre">clear_model()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.clear_wireframe_vbo_cache"><code class="docutils literal notranslate"><span class="pre">clear_wireframe_vbo_cache()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.close"><code class="docutils literal notranslate"><span class="pre">close()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.end_frame"><code class="docutils literal notranslate"><span class="pre">end_frame()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.is_key_down"><code class="docutils literal notranslate"><span class="pre">is_key_down()</span></code></a></li>
@@ -1358,6 +1415,7 @@ Example: (5.0, 5.0, 0.0) for 5 units spacing in X and Y.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.log_scalar"><code class="docutils literal notranslate"><span class="pre">log_scalar()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.log_shapes"><code class="docutils literal notranslate"><span class="pre">log_shapes()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.log_state"><code class="docutils literal notranslate"><span class="pre">log_state()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.log_wireframe_shape"><code class="docutils literal notranslate"><span class="pre">log_wireframe_shape()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.set_camera"><code class="docutils literal notranslate"><span class="pre">set_camera()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.set_model"><code class="docutils literal notranslate"><span class="pre">set_model()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerBase.set_world_offsets"><code class="docutils literal notranslate"><span class="pre">set_world_offsets()</span></code></a></li>

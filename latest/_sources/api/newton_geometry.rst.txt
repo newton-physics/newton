@@ -38,6 +38,7 @@ newton.geometry
    collide_sphere_cylinder
    collide_sphere_sphere
    compute_inertia_shape
+   compute_offset_mesh
    create_empty_sdf_data
    sdf_box
    sdf_capsule
