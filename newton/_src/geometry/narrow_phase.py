@@ -2063,9 +2063,7 @@ class NarrowPhase:
         # Outputs
         contact_pair: wp.array[wp.vec2i],
         contact_position: wp.array[wp.vec3],
-        contact_normal: wp.array(
-            dtype=wp.vec3
-        ),  # Pointing from pairId.x to pairId.y, represents z axis of local contact frame
+        contact_normal: wp.array[wp.vec3],  # Pointing from pairId.x to pairId.y, represents z axis of local contact frame
         contact_penetration: wp.array[float],  # negative if bodies overlap
         contact_count: wp.array[int],  # Number of active contacts after narrow
         contact_tangent: wp.array[wp.vec3] | None = None,  # Represents x axis of local contact frame (None to disable)

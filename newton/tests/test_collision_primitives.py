@@ -182,7 +182,7 @@ def test_capsule_capsule_kernel(
     cap2_radii: wp.array[float],
     cap2_half_lengths: wp.array[float],
     distances: wp.array[wp.vec2],
-    contact_positions: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
+    contact_positions: wp.array[wp.types.matrix((2, 3), wp.float32)],
     contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
@@ -280,7 +280,7 @@ def test_plane_capsule_kernel(
     capsule_radii: wp.array[float],
     capsule_half_lengths: wp.array[float],
     distances: wp.array[wp.vec2],
-    contact_positions: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
+    contact_positions: wp.array[wp.types.matrix((2, 3), wp.float32)],
     contact_frames: wp.array[wp.mat33],
 ):
     tid = wp.tid()
@@ -305,7 +305,7 @@ def test_plane_box_kernel(
     box_rotations: wp.array[wp.mat33],
     box_sizes: wp.array[wp.vec3],
     distances: wp.array[wp.vec4],
-    contact_positions: wp.array(dtype=wp.types.matrix((4, 3), wp.float32)),
+    contact_positions: wp.array[wp.types.matrix((4, 3), wp.float32)],
     contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
@@ -326,7 +326,7 @@ def test_plane_cylinder_kernel(
     cylinder_radii: wp.array[float],
     cylinder_half_heights: wp.array[float],
     distances: wp.array[wp.vec4],
-    contact_positions: wp.array(dtype=wp.types.matrix((4, 3), wp.float32)),
+    contact_positions: wp.array[wp.types.matrix((4, 3), wp.float32)],
     contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
@@ -351,9 +351,9 @@ def test_box_box_kernel(
     box2_positions: wp.array[wp.vec3],
     box2_rotations: wp.array[wp.mat33],
     box2_sizes: wp.array[wp.vec3],
-    distances: wp.array(dtype=wp.types.vector(8, wp.float32)),
-    contact_positions: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
+    distances: wp.array[wp.types.vector(8, wp.float32)],
+    contact_positions: wp.array[wp.types.matrix((8, 3), wp.float32)],
+    contact_normals: wp.array[wp.types.matrix((8, 3), wp.float32)],
 ):
     tid = wp.tid()
     dist, pos, normals = geometry.collide_box_box(
@@ -378,9 +378,9 @@ def test_box_box_with_margin_kernel(
     box2_rotations: wp.array[wp.mat33],
     box2_sizes: wp.array[wp.vec3],
     margins: wp.array[float],
-    distances: wp.array(dtype=wp.types.vector(8, wp.float32)),
-    contact_positions: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
+    distances: wp.array[wp.types.vector(8, wp.float32)],
+    contact_positions: wp.array[wp.types.matrix((8, 3), wp.float32)],
+    contact_normals: wp.array[wp.types.matrix((8, 3), wp.float32)],
 ):
     tid = wp.tid()
     dist, pos, normals = geometry.collide_box_box(
@@ -407,8 +407,8 @@ def test_capsule_box_kernel(
     box_rotations: wp.array[wp.mat33],
     box_sizes: wp.array[wp.vec3],
     distances: wp.array[wp.vec2],
-    contact_positions: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
+    contact_positions: wp.array[wp.types.matrix((2, 3), wp.float32)],
+    contact_normals: wp.array[wp.types.matrix((2, 3), wp.float32)],
 ):
     tid = wp.tid()
     dist, pos, normals = geometry.collide_capsule_box(

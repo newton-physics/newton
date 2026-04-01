@@ -1643,9 +1643,7 @@ def convert_articulation_free_distance_body_qd(
 def eval_articulation_fk_with_velocity_conversion(
     articulation_start: wp.array[int],
     articulation_count: int,  # total number of articulations
-    articulation_mask: wp.array(
-        dtype=bool
-    ),  # used to enable / disable FK for an articulation, if None then treat all as enabled
+    articulation_mask: wp.array[bool],  # used to enable / disable FK for an articulation, if None then treat all as enabled
     articulation_indices: wp.array[int],  # can be None, articulation indices to process
     joint_q: wp.array[float],
     joint_qd: wp.array[float],

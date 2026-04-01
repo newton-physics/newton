@@ -133,9 +133,7 @@ class Utils:
     def __init__(self, render_context: RenderContext):
         self.__render_context = render_context
 
-    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
+    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a color output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
@@ -152,9 +150,7 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.float32, ndim=4
-    ):
+    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
         """Create a depth output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
@@ -171,9 +167,7 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
+    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a shape-index output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
@@ -190,9 +184,7 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.vec3f, ndim=4
-    ):
+    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
         """Create a normal output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
@@ -209,9 +201,7 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
+    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an albedo output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
