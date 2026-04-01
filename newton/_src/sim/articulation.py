@@ -345,7 +345,9 @@ def eval_single_articulation_fk(
 def eval_articulation_fk(
     articulation_start: wp.array[int],
     articulation_count: int,  # total number of articulations
-    articulation_mask: wp.array[bool],  # used to enable / disable FK for an articulation, if None then treat all as enabled
+    articulation_mask: wp.array[
+        bool
+    ],  # used to enable / disable FK for an articulation, if None then treat all as enabled
     articulation_indices: wp.array[int],  # can be None, articulation indices to process
     joint_articulation: wp.array[int],
     joint_q: wp.array[float],

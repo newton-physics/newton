@@ -97,12 +97,12 @@ def fix_content(content: str) -> str:
             continue
 
         dtype_expr, ndim = parsed
-        # Determine the ndim suffix: explicit ndim= wins, then the Nd in arrayNd.
-        explicit_nd = m.group(1)  # '' or '1'..'4' from wp.array<N>d(
+        # Determine dimensionality: explicit ndim= wins, then the digit in array2d/array3d/etc.
+        dim_suffix = m.group(1)  # '' or '1'..'4' from wp.array<N>d(
         if ndim is not None:
             effective_ndim = ndim
-        elif explicit_nd:
-            effective_ndim = int(explicit_nd)
+        elif dim_suffix:
+            effective_ndim = int(dim_suffix)
         else:
             effective_ndim = 1
 
