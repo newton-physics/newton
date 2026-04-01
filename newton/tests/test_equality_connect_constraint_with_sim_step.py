@@ -406,7 +406,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     )
                     sim.state_in, sim.state_out = sim.state_out, sim.state_in
 
-                # After N steps, tTestConnectConstraintMuJoCo.test_connect_constraint_prismatic_xe residual should be close to 0
+                # After N steps, residual should be close to 0
                 # and the joint positions should be unchanged from the
                 # start state because the start state was deliberately
                 # chosen to satisfy the connect constraint.
@@ -460,7 +460,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
                 # After N steps, the residual should be close to 0.
                 # The anchors have not changed so it is correct to continue using measured_a2, measured_a3
-                # as the anchords.
+                # as the anchors.
                 for w in range(num_worlds):
                     measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
                     measured_a2 = wp.vec3(
