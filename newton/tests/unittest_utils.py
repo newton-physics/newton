@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -207,50 +208,82 @@ def is_noise_line(line: str) -> bool:
 
 
 class CheckOutput:
-    """Context manager that captures stdout and fails on unexpected output.
+    """Context manager that captures stdout and warnings, failing on unexpected output.
 
     Args:
         test: The ``unittest.TestCase`` instance used for assertions.
-        expected_patterns: Optional regex strings.  Lines matching any pattern
-            are considered expected and will not trigger an unexpected-output
-            failure.  The captured text is available as ``self.output`` after
-            the context exits.
+        expected_patterns: Regex strings that must each match at least once in
+            the combined stdout + warning text.  Also used as an allow-list.
+        allowed_patterns: Regex strings that suppress unexpected-output failures
+            but are not required to appear.
+        warning_source_root: If set, warnings whose ``filename`` starts with
+            this path are checked against the allow-list.  Warnings from
+            other paths are silently ignored.
     """
 
-    def __init__(self, test, expected_patterns: list[str] | None = None):
+    def __init__(
+        self,
+        test,
+        expected_patterns: list[str] | None = None,
+        allowed_patterns: list[str] | None = None,
+        warning_source_root: str | None = None,
+    ):
         self.test = test
         self.output = ""
-        self._compiled = [re.compile(p) for p in expected_patterns] if expected_patterns else []
+        self._expected = [re.compile(p) for p in expected_patterns] if expected_patterns else []
+        self._all = self._expected + ([re.compile(p) for p in allowed_patterns] if allowed_patterns else [])
+        self._warning_source_root = warning_source_root
 
     def __enter__(self):
         self.capture = StdOutCapture()
         self.capture.begin()
+        self._warning_ctx = warnings.catch_warnings(record=True)
+        self._caught = self._warning_ctx.__enter__()
+        warnings.simplefilter("always")
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        self._warning_ctx.__exit__(exc_type, exc_value, traceback)
         # ensure any stdout output is flushed
         wp.synchronize()
 
         self.output = self.capture.end()
         if exc_type is not None:
-            # An exception is propagating — print captured output for
-            # debugging but skip the unexpected-output assertion.
             if self.output.strip():
                 print(f"Captured stdout before crash:\n{self.output.rstrip()}")
             return
 
-        if self.output != "":
+        if self.output:
             print(self.output.rstrip())
 
-            # Fail on unexpected output — filter noise and expected patterns
-            filtered_s = "\n".join(
+        # Assert each expected pattern appears in combined stdout + warnings
+        if self._expected:
+            warning_messages = [str(w.message) for w in self._caught]
+            combined = "\n".join(warning_messages)
+            if self.output.strip():
+                combined += "\n" + self.output
+            for pat in self._expected:
+                if not pat.search(combined):
+                    self.test.fail(f"Expected output pattern not found: {pat.pattern}")
+
+        # Fail on unexpected stdout
+        if self.output:
+            filtered = "\n".join(
                 line
                 for line in self.output.splitlines()
-                if not is_noise_line(line) and not any(p.search(line) for p in self._compiled)
+                if not is_noise_line(line) and not any(p.search(line) for p in self._all)
             )
-
-            if filtered_s.strip():
+            if filtered.strip():
                 self.test.fail(f"Unexpected output:\n'{self.output.rstrip()}'")
+
+        # Fail on unexpected warnings from the specified source
+        if self._warning_source_root:
+            for w in self._caught:
+                if not str(w.filename).startswith(self._warning_source_root):
+                    continue
+                msg = str(w.message)
+                if not any(p.search(msg) for p in self._all):
+                    self.test.fail(f"Unexpected warning: {msg}")
 
 
 def assert_array_equal(result: wp.array, expect: wp.array):
@@ -305,10 +338,29 @@ def find_nonfinite_members(obj: Any | None) -> list[str]:
     return nonfinite_members
 
 
-def create_test_func(func, device, check_output, expected_patterns=None, **kwargs):
+def create_test_func(
+    func,
+    device,
+    check_output,
+    expected_patterns=None,
+    expected_patterns_cpu=None,
+    allowed_patterns=None,
+    warning_source_root=None,
+    **kwargs,
+):
+    # Resolve per-device patterns at registration time
+    patterns = list(expected_patterns or [])
+    if device is not None and str(device).startswith("cpu"):
+        patterns.extend(expected_patterns_cpu or [])
+
     def test_func(self):
         if check_output:
-            with CheckOutput(self, expected_patterns=expected_patterns):
+            with CheckOutput(
+                self,
+                expected_patterns=patterns or None,
+                allowed_patterns=allowed_patterns,
+                warning_source_root=warning_source_root,
+            ):
                 func(self, device, **kwargs)
         else:
             func(self, device, **kwargs)
@@ -335,9 +387,26 @@ def sanitize_identifier(s):
         return re.sub(r"\W|^(?=\d)", "_", s)
 
 
-def add_function_test(cls, name, func, devices=None, check_output=True, expected_patterns=None, **kwargs):
+def add_function_test(
+    cls,
+    name,
+    func,
+    devices=None,
+    check_output=True,
+    expected_patterns=None,
+    expected_patterns_cpu=None,
+    allowed_patterns=None,
+    warning_source_root=None,
+    **kwargs,
+):
+    co_kwargs = {
+        "expected_patterns": expected_patterns,
+        "expected_patterns_cpu": expected_patterns_cpu,
+        "allowed_patterns": allowed_patterns,
+        "warning_source_root": warning_source_root,
+    }
     if devices is None:
-        setattr(cls, name, create_test_func(func, None, check_output, expected_patterns=expected_patterns, **kwargs))
+        setattr(cls, name, create_test_func(func, None, check_output, **co_kwargs, **kwargs))
     elif isinstance(devices, list):
         if not devices:
             # No devices to run this test
@@ -347,13 +416,13 @@ def add_function_test(cls, name, func, devices=None, check_output=True, expected
                 setattr(
                     cls,
                     name + "_" + sanitize_identifier(device),
-                    create_test_func(func, device, check_output, expected_patterns=expected_patterns, **kwargs),
+                    create_test_func(func, device, check_output, **co_kwargs, **kwargs),
                 )
     else:
         setattr(
             cls,
             name + "_" + sanitize_identifier(devices),
-            create_test_func(func, devices, check_output, expected_patterns=expected_patterns, **kwargs),
+            create_test_func(func, devices, check_output, **co_kwargs, **kwargs),
         )
 
 

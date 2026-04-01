@@ -14,9 +14,7 @@ CUDA device.
 
 import importlib
 import os
-import re
 import unittest
-import warnings
 from typing import Any
 
 import warp as wp
@@ -25,7 +23,6 @@ import newton.examples
 import newton.viewer
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
-    CheckOutput,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
@@ -72,16 +69,17 @@ def add_example_test(
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase.
 
+    Stdout and warnings are captured by :class:`CheckOutput` and validated
+    against the pattern lists.
+
     Args:
-        expected_output: Regex patterns expected in Python warnings or
-            stdout on all devices.  Each pattern must match at least once
-            in the combined output.  Any warning or stdout line not
-            matched by at least one pattern fails the test.
-        expected_output_cpu: Like *expected_output* but only asserted on
-            CPU devices.
-        allowed_output: Regex patterns for stdout lines that are allowed
-            but not required.  These prevent unexpected-output failures
-            without requiring a match.
+        expected_output: Regex patterns that must each match at least once
+            in the combined stdout + warning text.  Also act as an
+            allow-list so matching lines are not flagged as unexpected.
+        expected_output_cpu: Like *expected_output* but only required (and
+            allowed) on CPU devices.
+        allowed_output: Regex patterns that suppress unexpected-output
+            failures without requiring a match.
     """
 
     # verify the module exists (use package-relative path so this works from any CWD)
@@ -95,6 +93,8 @@ def add_example_test(
         test_options_cpu = {}
     if test_options_cuda is None:
         test_options_cuda = {}
+
+    newton_root = os.path.dirname(os.path.dirname(newton.examples.__file__))
 
     def run(test, device):
         if wp.get_device(device).is_cuda:
@@ -155,47 +155,23 @@ def add_example_test(
             else:
                 i += 1
 
-        # Build expected pattern list (used for both warning and stdout checks)
-        is_cpu = wp.get_device(device).is_cpu
-        expected_patterns = list(expected_output or [])
-        if is_cpu:
-            expected_patterns.extend(expected_output_cpu or [])
-
-        # CheckOutput uses both expected and allowed patterns for filtering;
-        # only expected_patterns are asserted to appear at least once.
-        all_patterns = expected_patterns + list(allowed_output or [])
-        compiled_patterns = [re.compile(p) for p in expected_patterns] if expected_patterns else []
-
-        # Run example in-process.
-        # CheckOutput captures stdout and fails on unexpected lines.
-        # warnings.catch_warnings captures Python warnings for separate validation.
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
         factory = getattr(mod, "create_example", None) or mod.Example
-        with CheckOutput(test, expected_patterns=all_patterns) as check:
-            with wp.ScopedDevice(device), warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                example = factory(viewer, args)
-                newton.examples.run(example, args)
-
-        # Assert each expected pattern appears in warnings or stdout
-        warning_messages = [str(w.message) for w in caught]
-        all_text = "\n".join(warning_messages)
-        if check.output.strip():
-            all_text += "\n" + check.output
-        for pattern in compiled_patterns:
-            test.assertRegex(all_text, pattern, f"Expected output pattern not found: {pattern.pattern}")
-
-        # Fail on unexpected warnings originating from newton code
-        newton_root = os.path.dirname(os.path.dirname(newton.examples.__file__))
-        for w in caught:
-            if not str(w.filename).startswith(newton_root):
-                continue
-            msg = str(w.message)
-            if not any(p.search(msg) for p in compiled_patterns):
-                test.fail(f"Unexpected warning: {msg}")
+        with wp.ScopedDevice(device):
+            example = factory(viewer, args)
+            newton.examples.run(example, args)
 
     test_name = f"test_{name}_{test_suffix}" if test_suffix else f"test_{name}"
-    add_function_test(cls, test_name, run, devices=devices, check_output=False)
+    add_function_test(
+        cls,
+        test_name,
+        run,
+        devices=devices,
+        expected_patterns=expected_output,
+        expected_patterns_cpu=expected_output_cpu,
+        allowed_patterns=allowed_output,
+        warning_source_root=newton_root,
+    )
 
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
