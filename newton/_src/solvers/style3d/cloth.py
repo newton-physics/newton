@@ -139,6 +139,9 @@ def _compute_edge_bending_data(
     def dot(a, b):
         return (a * b).sum(axis=-1)
 
+    def cross2d(a, b):
+        return a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+
     if edge_aniso_values is not None:
         angle_f0 = np.atan2(panel_x43_f0[:, 1], panel_x43_f0[:, 0])
         angle_f1 = np.atan2(panel_x43_f1[:, 1], panel_x43_f1[:, 0])
@@ -153,8 +156,8 @@ def _compute_edge_bending_data(
         edge_ke = aniso_ke[:, 0] * sin12 + aniso_ke[:, 1] * cos12 + aniso_ke[:, 2] * 4.0 * sin2 * cos2
 
     edge_area = (
-        np.abs(np.cross(panel_x43_f0, panel_x1_f0 - panel_x3_f0))
-        + np.abs(np.cross(panel_x43_f1, panel_x2_f1 - panel_x3_f1))
+        np.abs(cross2d(panel_x43_f0, panel_x1_f0 - panel_x3_f0))
+        + np.abs(cross2d(panel_x43_f1, panel_x2_f1 - panel_x3_f1))
         + 1.0e-8
     ) / 3.0
 
@@ -162,7 +165,7 @@ def _compute_edge_bending_data(
         ba = b - a
         ca = c - a
         dot_a = dot(ba, ca)
-        cross_a = np.abs(np.cross(ba, ca)) + 1.0e-8
+        cross_a = np.abs(cross2d(ba, ca)) + 1.0e-8
         return dot_a / cross_a
 
     cot1 = cot2d(panel_x3_f0, panel_x4_f0, panel_x1_f0)
