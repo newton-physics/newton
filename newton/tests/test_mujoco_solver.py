@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -8675,6 +8676,51 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
             )
         finally:
             os.unlink(xml_path)
+
+
+class TestRegisterCustomAttributesDocstringCoverage(unittest.TestCase):
+    """Verify the register_custom_attributes docstring mentions every registration."""
+
+    def test_register_custom_attributes_docstring_coverage(self):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        docstring = SolverMuJoCo.register_custom_attributes.__doc__
+        self.assertIsNotNone(docstring, "register_custom_attributes must have a docstring")
+
+        def _contains_exact_name(name: str) -> bool:
+            pattern = rf"(?<![A-Za-z0-9_:]){re.escape(name)}(?![A-Za-z0-9_:])"
+            return re.search(pattern, docstring) is not None
+
+        # Collect all mujoco-namespace attribute names
+        missing_attrs = []
+        for _key, attr in builder.custom_attributes.items():
+            if attr.namespace != "mujoco":
+                continue
+            if not _contains_exact_name(attr.name):
+                missing_attrs.append(attr.name)
+
+        self.assertEqual(
+            missing_attrs,
+            [],
+            f"The following custom attributes are registered but not mentioned "
+            f"in the register_custom_attributes docstring: {missing_attrs}",
+        )
+
+        # Collect all mujoco-namespace frequency names
+        missing_freqs = []
+        for key, _freq in builder.custom_frequencies.items():
+            if not key.startswith("mujoco:"):
+                continue
+            if not _contains_exact_name(key):
+                missing_freqs.append(key)
+
+        self.assertEqual(
+            missing_freqs,
+            [],
+            f"The following custom frequencies are registered but not mentioned "
+            f"in the register_custom_attributes docstring: {missing_freqs}",
+        )
 
 
 class TestUpdateContactsPointPositions(unittest.TestCase):

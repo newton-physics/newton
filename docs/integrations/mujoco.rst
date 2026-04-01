@@ -123,12 +123,11 @@ Shape parameters
 **MuJoCo-specific custom attributes.**
   Many MuJoCo-specific parameters are stored in Newton's ``mujoco``
   custom-attribute namespace and forwarded to the MuJoCo model when present.
-  These cover geom properties (``condim``, ``geom_priority``, ``geom_solimp``,
-  ``geom_solmix``), joint properties (``dof_passive_stiffness``,
-  ``dof_passive_damping``, ``jnt_actgravcomp``, ``dof_springref``, ``dof_ref``,
-  ``limit_margin``, ``solimplimit``, ``solreffriction``, ``solimpfriction``),
-  equality constraints (``eq_solref``), tendons, general actuators, and solver
-  options.  See :doc:`/concepts/custom_attributes` for the full list.
+  These cover geom properties, joint properties, equality constraints, tendons,
+  general actuators, and solver options.  See
+  :ref:`mujoco-custom-attributes-and-frequencies` below for the full catalog
+  and :doc:`/concepts/custom_attributes` for the general custom-attribute
+  mechanism.
 
 
 Collision filtering
@@ -363,3 +362,226 @@ If you edit :attr:`newton.Model.joint_X_p` or :attr:`newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 ``solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES)``
 to synchronize the updated fixed-root poses into MuJoCo.
+
+
+.. _mujoco-custom-attributes-and-frequencies:
+
+Custom Attributes and Frequencies
+---------------------------------
+
+:meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` registers
+MuJoCo-specific custom attributes in the ``mujoco`` namespace and custom
+frequencies for variable-length entity types.  Call it on a
+:class:`~newton.ModelBuilder` **before** loading assets.  After
+:meth:`~newton.ModelBuilder.finalize`, the attributes are accessible as
+``model.mujoco.<name>``.
+
+See the :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` API
+documentation for the full catalog of registered frequencies and attributes,
+and :doc:`/concepts/custom_attributes` for background on Newton's
+custom-attribute system.
+
+
+.. _mujoco-usd-schemas:
+
+MuJoCo USD Schema
+------------------
+
+When loading USD assets, Newton can parse MuJoCo-specific attributes via the
+``mjc:`` USD attribute prefix.  The ``mjc:`` naming comes from the
+`mjcPhysics USD schema <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/usd/mjcPhysics/generatedSchema.usda>`_
+developed by the MuJoCo team.  The schema is not yet published as a registered
+USD schema, so Newton reads ``mjc:``-prefixed attributes directly rather than
+relying on applied schemas.
+
+This is handled by the internal ``SchemaResolverMjc`` resolver, which maps
+``mjc:``-prefixed USD attributes to Newton model properties during
+:meth:`~newton.ModelBuilder.add_usd`.  The ``mjc:`` convention means that
+MuJoCo attributes are named ``mjc:attr`` in USD files rather than
+``newton:mujoco:attr``.
+
+The following tables list the subset of ``mjc:`` attributes currently supported
+by Newton.  Attributes not listed here are ignored during USD import.  Default
+values shown are the mjcPhysics schema defaults, which may differ from Newton's
+own API defaults.
+
+**Scene** (``PhysicsScene``, ``MjcSceneAPI``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - USD attribute
+     - Newton property
+     - Default
+   * - ``mjc:option:iterations``
+     - ``max_solver_iterations``
+     - 100
+   * - ``mjc:option:timestep``
+     - ``time_steps_per_second``
+     - 0.002 (→ 500 Hz)
+   * - ``mjc:flag:gravity``
+     - ``gravity_enabled``
+     - ``True``
+
+**Joint** (``PhysicsRevoluteJoint``, ``PhysicsPrismaticJoint``, etc. — ``MjcJointAPI``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - USD attribute
+     - Newton property
+     - Default
+   * - ``mjc:armature``
+     - ``armature``
+     - 0.0
+   * - ``mjc:frictionloss``
+     - ``friction``
+     - 0.0
+   * - ``mjc:solref``
+     - ``limit_*_ke`` / ``limit_*_kd``
+     - ``[0.02, 1.0]``
+
+The ``mjc:solref`` attribute is mapped to per-axis limit stiffness and damping
+for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
+``rotZ``, ``linear``, ``angular``).
+
+.. note::
+
+   The imported ``solref`` values are currently incorrectly mapped to
+   ``ke``/``kd``: ``solref`` is mass-normalized, while the ``ke``/``kd``
+   Newton properties have force-based units.  See
+   `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
+   for details.
+
+**Shape — collision** (``PhysicsCollisionAPI`` + ``MjcCollisionAPI``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - USD attribute
+     - Newton property
+     - Default
+   * - ``mjc:margin``
+     - ``margin``
+     - 0.0
+   * - ``mjc:gap``
+     - ``gap``
+     - 0.0
+   * - ``mjc:solref``
+     - ``ke`` / ``kd``
+     - ``[0.02, 1.0]``
+
+.. note::
+
+   Newton's ``margin`` is computed as ``mjc:margin − mjc:gap`` (not a
+   direct copy of ``mjc:margin``).  MuJoCo uses ``margin`` as the full
+   contact-detection envelope and ``gap`` as a sub-threshold that
+   suppresses constraint activation; Newton stores them separately.
+
+.. note::
+
+   The ``solref`` → ``ke``/``kd`` direct mapping has the same
+   mass-normalization issue as the joint mapping.  See
+   `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
+   for details.
+
+**Shape — mesh** (``MjcMeshCollisionAPI``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - USD attribute
+     - Newton property
+     - Default
+   * - ``mjc:maxhullvert``
+     - ``max_hull_vertices``
+     - -1
+
+**Material — friction** (``PhysicsMaterialAPI`` + ``MjcMaterialAPI``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - USD attribute
+     - Newton property
+     - Default
+   * - ``mjc:torsionalfriction``
+     - ``mu_torsional``
+     - 0.005
+   * - ``mjc:rollingfriction``
+     - ``mu_rolling``
+     - 0.0001
+
+**Material — contact model** (``PhysicsMaterialAPI`` + ``MjcCollisionAPI``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - USD attribute
+     - Newton property
+     - Default
+   * - ``mjc:priority``
+     - ``priority``
+     - 0
+   * - ``mjc:solmix``
+     - ``weight``
+     - 1.0
+   * - ``mjc:solref``
+     - ``stiffness`` / ``damping``
+     - ``[0.02, 1.0]``
+
+.. note::
+
+   The ``solref`` → ``stiffness``/``damping`` direct mapping has the same
+   mass-normalization issue as the joint mapping.  See
+   `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
+   for details.
+
+**Actuator** (``MjcActuator``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - USD attribute
+     - Newton property
+     - Default
+   * - ``mjc:ctrlRange:min`` / ``max``
+     - ``ctrl_low`` / ``ctrl_high``
+     - 0.0
+   * - ``mjc:forceRange:min`` / ``max``
+     - ``force_low`` / ``force_high``
+     - 0.0
+   * - ``mjc:actRange:min`` / ``max``
+     - ``act_low`` / ``act_high``
+     - 0.0
+   * - ``mjc:lengthRange:min`` / ``max``
+     - ``length_low`` / ``length_high``
+     - 0.0
+   * - ``mjc:gainPrm``
+     - ``gainPrm``
+     - ``[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
+   * - ``mjc:gainType``
+     - ``gainType``
+     - ``"fixed"``
+   * - ``mjc:biasPrm``
+     - ``biasPrm``
+     - ``[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
+   * - ``mjc:biasType``
+     - ``biasType``
+     - ``"none"``
+   * - ``mjc:dynPrm``
+     - ``dynPrm``
+     - ``[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
+   * - ``mjc:dynType``
+     - ``dynType``
+     - ``"none"``
+   * - ``mjc:gear``
+     - ``gear``
+     - ``[1, 0, 0, 0, 0, 0]``
