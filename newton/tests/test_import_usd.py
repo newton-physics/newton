@@ -5098,8 +5098,8 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_joint_ordering_cycle_falls_back_to_source_order(self):
-        """Joint ordering should fall back to source order for cyclic/multi-root articulation graphs."""
+    def test_joint_ordering_cycle_raises(self):
+        """Topological sort errors (cycle/multi-root) must propagate instead of silently falling back."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -5132,13 +5132,9 @@ def Xform "Articulation" (
             "newton._src.utils.topology.topological_sort_undirected",
             side_effect=ValueError("Joint graph contains a cycle at body 0"),
         ):
-            with self.assertWarnsRegex(UserWarning, "Falling back to source joint order"):
-                builder = newton.ModelBuilder()
-                result = builder.add_usd(stage, joint_ordering="dfs", load_visual_shapes=False, load_sites=False)
-
-        self.assertEqual(builder.joint_count, 2)
-        self.assertIn("/World/Articulation/JointX", builder.joint_label)
-        self.assertIn("/World/Articulation/JointX", result["path_joint_map"])
+            builder = newton.ModelBuilder()
+            with self.assertRaises(ValueError):
+                builder.add_usd(stage, joint_ordering="dfs", load_visual_shapes=False, load_sites=False)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_enabled_parsing(self):

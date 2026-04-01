@@ -1658,20 +1658,9 @@ def parse_usd(
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")
-                    try:
-                        sorted_joints, reversed_joint_list = topological_sort_undirected(
-                            joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
-                        )
-                    except ValueError as exc:
-                        exc_lower = str(exc).lower()
-                        if "cycle" not in exc_lower and "root" not in exc_lower:
-                            raise  # Re-raise unexpected ValueErrors
-                        warnings.warn(
-                            f"Falling back to source joint order for articulation '{articulation_path}': {exc}",
-                            stacklevel=2,
-                        )
-                        sorted_joints = np.arange(len(joint_names))
-                        reversed_joint_list = []
+                    sorted_joints, reversed_joint_list = topological_sort_undirected(
+                        joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
+                    )
                     if reversed_joint_list:
                         reversed_joint_paths = [joint_names[joint_id] for joint_id in reversed_joint_list]
                         reversed_joint_names = ", ".join(reversed_joint_paths)
@@ -2711,7 +2700,14 @@ def parse_usd(
                 target1 = _get_first_target(joint_prim, "physics:body1")
 
                 if is_connect:
-                    anchor = wp.vec3(*joint_desc.localPose0Position) if target0 in path_body_map else site0_local_pos
+                    # Use the authored localPose0 when target0 is a known body or the world
+                    # (empty target means world); fall back to the site-derived local position
+                    # only when target0 is a site prim that is not itself a body.
+                    anchor = (
+                        wp.vec3(*joint_desc.localPose0Position)
+                        if (not target0 or target0 in path_body_map)
+                        else site0_local_pos
+                    )
                     builder.add_equality_constraint_connect(
                         body1=body0_idx,
                         body2=body1_idx,
@@ -2721,7 +2717,13 @@ def parse_usd(
                         custom_attributes=eq_custom_attrs,
                     )
                 else:
-                    anchor = wp.vec3(*joint_desc.localPose1Position) if target1 in path_body_map else site1_local_pos
+                    # Same logic as connect: use the authored localPose1 for bodies or
+                    # world; use site-derived local position only for site targets.
+                    anchor = (
+                        wp.vec3(*joint_desc.localPose1Position)
+                        if (not target1 or target1 in path_body_map)
+                        else site1_local_pos
+                    )
                     local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
                     local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
                     local_pos0 = wp.vec3(*joint_desc.localPose0Position)
