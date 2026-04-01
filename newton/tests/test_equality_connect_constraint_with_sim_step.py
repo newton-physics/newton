@@ -23,6 +23,7 @@ import warp as wp
 import newton
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 
+
 class Sim:
     """Holds the simulation objects for a single test."""
 
@@ -60,9 +61,11 @@ def connect_residual(body_poses, connect_body_indices, body2_anchor, body3_ancho
     P3 = wp.transform_get_translation(T3) + wp.quat_rotate(wp.transform_get_rotation(T3), body3_anchor)
     return float(wp.length(P2 - P3))
 
+
 class TestEqualityConstraintWithSimStepBase:
     def _create_solver(self, model):
         raise NotImplementedError
+
 
 class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase):
     """Test that a CONNECT equality constraint pins two bodies at a point."""
@@ -538,6 +541,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
     def test_connect_constraint(self):
         self._test_connect_constraint()
 
+
 class TestConnectConstraintJointMuJoCo(TestConnectConstraintWithSimStepBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -548,8 +552,6 @@ class TestConnectConstraintJointMuJoCo(TestConnectConstraintWithSimStepBase, uni
             use_mujoco_cpu=False,
             integrator="euler",
         )
-
-
 
 
 if __name__ == "__main__":
