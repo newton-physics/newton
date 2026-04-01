@@ -9,6 +9,8 @@ Installation
 This guide covers the recommended way to install Newton from PyPI. For
 installing from source or using ``uv``, see the :doc:`development` guide.
 
+.. _system-requirements:
+
 System Requirements
 -------------------
 
@@ -274,6 +276,8 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
 Some extras transitively include others. For example, ``examples`` pulls in both
 ``sim`` and ``importers``, and ``dev`` pulls in ``examples``. You only need to
 install the most specific set for your use case.
+
+.. _versioning:
 
 Versioning
 ----------

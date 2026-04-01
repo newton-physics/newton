@@ -912,3 +912,15 @@ also ensuring that the benchmark is run a sufficient number of times to get a st
 The ``--durations all`` flag can be passed to the ``asv run`` command to show the durations of all benchmarks,
 which is helpful for ensuring that a single benchmark is not requiring an abnormally long amount of time compared
 to the other benchmarks.
+
+
+Release process
+---------------
+
+See :doc:`release` for the full release workflow, including versioning,
+branching strategy, testing criteria, and publication steps.
+
+.. toctree::
+   :hidden:
+
+   release

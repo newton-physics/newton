@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import enum
 import os
 import sys
 import warnings
@@ -21,6 +22,18 @@ from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
 class ViewerBase(ABC):
+    class SDFMarginMode(enum.IntEnum):
+        """Controls which offset surface is visualized for SDF debug wireframes."""
+
+        OFF = 0
+        """Do not draw SDF margin debug wireframes."""
+
+        MARGIN = 1
+        """Wireframe at ``shape_margin`` only."""
+
+        MARGIN_GAP = 2
+        """Wireframe at ``shape_margin`` + ``shape_gap`` (outer contact threshold), not gap alone."""
+
     def __init__(self):
         """Initialize shared viewer state and rendering caches."""
         self.time = 0.0
@@ -111,6 +124,7 @@ class ViewerBase(ABC):
         self.show_static = False
         self.show_inertia_boxes = False
         self.show_hydro_contact_surface = False
+        self.sdf_margin_mode: ViewerBase.SDFMarginMode = ViewerBase.SDFMarginMode.OFF
 
         self.gaussians_max_points = 100_000  # Max number of points to visualize per gaussian
 
@@ -135,6 +149,19 @@ class ViewerBase(ABC):
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         self._sdf_isomesh_populated: bool = False
         self._shape_sdf_index_host: np.ndarray | None = None
+
+        # SDF margin visualization (wireframe edges).
+        # Mesh cache: keyed by (geo_type, geo_scale, geo_src_id, offset).
+        # Vertex-data cache: keyed by (id(mesh), color) — avoids redundant
+        #   edge extraction when the same mesh appears on multiple shapes.
+        # Edge caches: per-mode dict of
+        #   {shape_idx: (vertex_data, body_idx, shape_xf, world_idx)}.
+        # Keeping separate per-mode caches lets mode toggling reuse GPU VBOs.
+        self._sdf_margin_mesh_cache: dict[tuple, newton.Mesh | None] = {}
+        self._sdf_margin_vdata_cache: dict[tuple, np.ndarray] = {}
+        self._sdf_margin_edge_caches: dict[
+            ViewerBase.SDFMarginMode, dict[int, tuple[np.ndarray, int, np.ndarray, int]]
+        ] = {}
 
     def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
         """
@@ -471,6 +498,7 @@ class ViewerBase(ABC):
             )
 
         self._log_inertia_boxes(state)
+        self._log_sdf_margin_wireframes(state)
 
         self._log_triangles(state)
         self._log_particles(state)
@@ -977,6 +1005,30 @@ class ViewerBase(ABC):
             width: Line width in rendered scene units.
             hidden: Whether the line batch should be hidden.
         """
+        pass
+
+    def log_wireframe_shape(  # noqa: B027
+        self,
+        name: str,
+        vertex_data: np.ndarray | None,
+        world_matrix: np.ndarray | None,
+        hidden: bool = False,
+    ):
+        """Log a wireframe shape for rendering via the geometry-shader line pipeline.
+
+        Args:
+            name: Unique path/name for the wireframe shape.
+            vertex_data: ``(N, 6)`` float32 array of interleaved ``[px,py,pz, cr,cg,cb]``
+                line-segment vertices (pairs).  Pass ``None`` to keep existing
+                geometry and only update the transform.
+            world_matrix: 4x4 float32 model-to-world matrix, or ``None`` to
+                keep the current matrix.
+            hidden: Whether the wireframe shape should be hidden.
+        """
+        pass
+
+    def clear_wireframe_vbo_cache(self):  # noqa: B027
+        """Clear the shared wireframe VBO cache (overridden by GL viewer)."""
         pass
 
     @abstractmethod
@@ -1630,6 +1682,220 @@ class ViewerBase(ABC):
         self.log_lines(
             "/model/inertia_boxes", self._inertia_box_points0, self._inertia_box_points1, self._inertia_box_colors
         )
+
+    def _compute_shape_offset_mesh(
+        self,
+        shape_idx: int,
+        mode: ViewerBase.SDFMarginMode,
+        margin_np: np.ndarray,
+        gap_np: np.ndarray,
+        type_np: np.ndarray,
+        scale_np: np.ndarray,
+    ) -> newton.Mesh | None:
+        """Compute the offset isosurface mesh for a collision shape.
+
+        Args:
+            shape_idx: Index of the shape in the model.
+            mode: Which offset to use (MARGIN or MARGIN_GAP).
+            margin_np: Pre-snapshotted ``shape_margin`` host array.
+            gap_np: Pre-snapshotted ``shape_gap`` host array.
+            type_np: Pre-snapshotted ``shape_type`` host array.
+            scale_np: Pre-snapshotted ``shape_scale`` host array.
+
+        Returns:
+            Mesh for the offset surface, or ``None`` if unavailable.
+        """
+        if self.model is None or mode == self.SDFMarginMode.OFF:
+            return None
+
+        shape_margin_val = float(margin_np[shape_idx])
+
+        if mode == self.SDFMarginMode.MARGIN:
+            offset = shape_margin_val
+        else:
+            offset = shape_margin_val + float(gap_np[shape_idx])
+
+        if offset < 0.0:
+            return None
+
+        geo_type = int(type_np[shape_idx])
+        geo_scale = [float(v) for v in scale_np[shape_idx]]
+        geo_src = self.model.shape_source[shape_idx]
+
+        # Replicated meshes share the same SDF object via Mesh.__deepcopy__,
+        # so keying on id(sdf) deduplicates across worlds.
+        geo_identity = id(getattr(geo_src, "sdf", None) or geo_src) if geo_src is not None else 0
+        cache_key = (geo_type, tuple(geo_scale), geo_identity, offset)
+
+        if cache_key in self._sdf_margin_mesh_cache:
+            return self._sdf_margin_mesh_cache[cache_key]
+
+        from ..geometry.sdf_utils import compute_offset_mesh  # noqa: PLC0415
+
+        mesh = compute_offset_mesh(
+            shape_type=geo_type,
+            shape_geo=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
+            shape_scale=geo_scale,
+            offset=offset,
+            device=self.device,
+        )
+        self._sdf_margin_mesh_cache[cache_key] = mesh
+        return mesh
+
+    @staticmethod
+    def _extract_wireframe_edges(mesh: newton.Mesh, color: tuple[float, float, float]) -> np.ndarray:
+        """Extract deduplicated edges from a mesh and return interleaved vertex data.
+
+        Args:
+            mesh: Source mesh.
+            color: RGB colour tuple applied to every vertex.
+
+        Returns:
+            ``(E*2, 6)`` float32 array — pairs of ``[px, py, pz, cr, cg, cb]``.
+        """
+        verts = np.asarray(mesh.vertices, dtype=np.float32).reshape(-1, 3)
+        indices = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
+
+        edge_set: set[tuple[int, int]] = set()
+        for tri in indices:
+            i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
+            edge_set.add((min(i0, i1), max(i0, i1)))
+            edge_set.add((min(i1, i2), max(i1, i2)))
+            edge_set.add((min(i2, i0), max(i2, i0)))
+
+        num_edges = len(edge_set)
+        data = np.empty((num_edges * 2, 6), dtype=np.float32)
+        cr, cg, cb = color
+        idx = 0
+        for a, b in edge_set:
+            pa = verts[a]
+            pb = verts[b]
+            data[idx] = [pa[0], pa[1], pa[2], cr, cg, cb]
+            data[idx + 1] = [pb[0], pb[1], pb[2], cr, cg, cb]
+            idx += 2
+        return data
+
+    def _populate_sdf_margin_edges(
+        self,
+        mode: ViewerBase.SDFMarginMode,
+        target: dict[int, tuple[np.ndarray, int, np.ndarray, int]],
+    ):
+        """Compute offset meshes and extract wireframe edge data for every collision shape.
+
+        Results are written into *target* (keyed by shape index).
+        """
+        if self.model is None:
+            return
+
+        if mode == self.SDFMarginMode.MARGIN:
+            color_rgb = (1.0, 0.9, 0.0)
+        else:
+            color_rgb = (1.0, 0.5, 0.0)
+
+        shape_body = self.model.shape_body.numpy()
+        shape_flags = self.model.shape_flags.numpy()
+        shape_world = self.model.shape_world.numpy()
+        shape_transform = self.model.shape_transform.numpy()
+        margin_np = self.model.shape_margin.numpy()
+        gap_np = self.model.shape_gap.numpy()
+        type_np = self.model.shape_type.numpy()
+        scale_np = self.model.shape_scale.numpy()
+        shape_count = len(shape_body)
+
+        for s in range(shape_count):
+            if not self._should_render_world(shape_world[s]):
+                continue
+            if not (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)):
+                continue
+
+            offset_mesh = self._compute_shape_offset_mesh(s, mode, margin_np, gap_np, type_np, scale_np)
+            if offset_mesh is None:
+                continue
+
+            vd_key = (id(offset_mesh), color_rgb)
+            vertex_data = self._sdf_margin_vdata_cache.get(vd_key)
+            if vertex_data is None:
+                vertex_data = self._extract_wireframe_edges(offset_mesh, color_rgb)
+                self._sdf_margin_vdata_cache[vd_key] = vertex_data
+
+            body_idx = int(shape_body[s])
+            world_idx = int(shape_world[s])
+            shape_xf = shape_transform[s].copy()
+            target[s] = (vertex_data, body_idx, shape_xf, world_idx)
+
+    @staticmethod
+    def _transform_to_mat44(tf: np.ndarray) -> np.ndarray:
+        """Convert a 7-element Warp transform ``[tx,ty,tz, qx,qy,qz,qw]`` to a flat column-major 4x4 matrix.
+
+        Returns a shape ``(16,)`` float32 array laid out column-by-column
+        (OpenGL convention), matching the format used by pyglet ``Mat4``.
+        """
+        px, py, pz = float(tf[0]), float(tf[1]), float(tf[2])
+        qx, qy, qz, qw = float(tf[3]), float(tf[4]), float(tf[5]), float(tf[6])
+        x2, y2, z2 = 2 * qx * qx, 2 * qy * qy, 2 * qz * qz
+        xy, xz, yz = 2 * qx * qy, 2 * qx * qz, 2 * qy * qz
+        wx, wy, wz = 2 * qw * qx, 2 * qw * qy, 2 * qw * qz
+        # fmt: off
+        return np.array([
+            1 - y2 - z2,  xy + wz,      xz - wy,      0,   # column 0
+            xy - wz,      1 - x2 - z2,  yz + wx,       0,   # column 1
+            xz + wy,      yz - wx,       1 - x2 - y2,  0,   # column 2
+            px,            py,            pz,            1,   # column 3
+        ], dtype=np.float32)
+        # fmt: on
+
+    def _log_sdf_margin_wireframes(self, state: newton.State):
+        """Update and render SDF margin wireframe edges."""
+        mode = self.sdf_margin_mode
+        visible = mode != self.SDFMarginMode.OFF
+
+        if self.model_changed:
+            self._sdf_margin_edge_caches.clear()
+            self._sdf_margin_mesh_cache.clear()
+            self._sdf_margin_vdata_cache.clear()
+            self.clear_wireframe_vbo_cache()
+
+        if visible:
+            edge_cache = self._sdf_margin_edge_caches.get(mode)
+            if edge_cache is None:
+                edge_cache = {}
+                self._populate_sdf_margin_edges(mode, edge_cache)
+                self._sdf_margin_edge_caches[mode] = edge_cache
+
+                identity = np.eye(4, dtype=np.float32).ravel(order="F")
+                for s, (vertex_data, _body_idx, _shape_xf, _world_idx) in edge_cache.items():
+                    name = f"/model/sdf_margin_wf/{mode.value}/{s}"
+                    self.log_wireframe_shape(name, vertex_data, identity, hidden=False)
+
+        # Hide inactive modes, show active mode
+        for cached_mode, cached_edges in self._sdf_margin_edge_caches.items():
+            hidden = not visible or cached_mode != mode
+            for s in cached_edges:
+                name = f"/model/sdf_margin_wf/{cached_mode.value}/{s}"
+                self.log_wireframe_shape(name, None, None, hidden=hidden)
+
+        if not visible:
+            return
+
+        # Update world transforms for the active mode
+        body_q = state.body_q.numpy() if state is not None else None
+        offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
+
+        for s, (_vertex_data, body_idx, shape_xf, world_idx) in edge_cache.items():
+            name = f"/model/sdf_margin_wf/{mode.value}/{s}"
+            shape_mat = self._transform_to_mat44(shape_xf)
+            if body_idx >= 0 and body_q is not None:
+                body_mat = self._transform_to_mat44(body_q[body_idx])
+                bm = body_mat.reshape(4, 4, order="F")
+                sm = shape_mat.reshape(4, 4, order="F")
+                world_mat = (bm @ sm).ravel(order="F")
+            else:
+                world_mat = shape_mat.copy()
+            if offsets_np is not None and world_idx >= 0:
+                world_mat[12] += offsets_np[world_idx][0]
+                world_mat[13] += offsets_np[world_idx][1]
+                world_mat[14] += offsets_np[world_idx][2]
+            self.log_wireframe_shape(name, None, world_mat, hidden=False)
 
     def _log_joints(self, state: newton.State):
         """
