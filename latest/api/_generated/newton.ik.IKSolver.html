@@ -866,9 +866,9 @@ base problem.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>joint_q_in</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Input joint coordinates [m or rad] for the base
+<li><p><strong>joint_q_in</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Input joint coordinates [m or rad] for the base
 problems, shape [n_problems, joint_coord_count].</p></li>
-<li><p><strong>joint_q_out</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Output joint coordinates [m or rad] for the selected
+<li><p><strong>joint_q_out</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Output joint coordinates [m or rad] for the selected
 solution of each base problem, shape [n_problems, joint_coord_count].
 It may alias <code class="docutils literal notranslate"><span class="pre">joint_q_in</span></code>.</p></li>
 <li><p><strong>iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of optimizer iterations to run for each sampled
@@ -881,13 +881,13 @@ seed.</p></li>
 
 <dl class="py property">
 <dt class="sig sig-object py" id="newton.ik.IKSolver.costs">
-<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">costs</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">float32</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.ik.IKSolver.costs" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">costs</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array(dtype=&lt;class</span> <span class="pre">'warp._src.types.float32'&gt;,</span> <span class="pre">ndim=1)</span></em><a class="headerlink" href="#newton.ik.IKSolver.costs" title="Link to this definition">#</a></dt>
 <dd><p>Expanded per-seed objective costs from the most recent solve.</p>
 </dd></dl>
 
 <dl class="py property">
 <dt class="sig sig-object py" id="newton.ik.IKSolver.joint_q">
-<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">joint_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">float32</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.ik.IKSolver.joint_q" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">joint_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array(dtype=&lt;class</span> <span class="pre">'warp._src.types.float32'&gt;,</span> <span class="pre">ndim=2)</span></em><a class="headerlink" href="#newton.ik.IKSolver.joint_q" title="Link to this definition">#</a></dt>
 <dd><p>Expanded joint-coordinate buffer that stores all sampled seeds.</p>
 </dd></dl>
 

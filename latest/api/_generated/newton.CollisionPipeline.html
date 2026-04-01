@@ -856,7 +856,7 @@ If None, computed as shape_count * particle_count.</p></li>
 a prebuilt broad phase instance for expert usage.</p></li>
 <li><p><strong>narrow_phase</strong> (<a class="reference internal" href="newton.geometry.NarrowPhase.html#newton.geometry.NarrowPhase" title="newton.geometry.NarrowPhase"><em>NarrowPhase</em></a><em> | </em><em>None</em>) – Optional prebuilt narrow phase instance. Must be
 provided together with a broad phase instance for expert usage.</p></li>
-<li><p><strong>shape_pairs_filtered</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>) </em><em>| </em><em>None</em>) – Precomputed shape pairs for EXPLICIT mode.
+<li><p><strong>shape_pairs_filtered</strong> (<em>wp.array</em><em>[</em><em>wp.vec2i</em><em>] </em><em>| </em><em>None</em>) – Precomputed shape pairs for EXPLICIT mode.
 When broad_phase is “explicit”, uses model.shape_contact_pairs if not provided. For
 “nxn”/”sap” modes, ignored.</p></li>
 <li><p><strong>sdf_hydroelastic_config</strong> (<a class="reference internal" href="newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><em>HydroelasticSDF.Config</em></a><em> | </em><em>None</em>) – Configuration for

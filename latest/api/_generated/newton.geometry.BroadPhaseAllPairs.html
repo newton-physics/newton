@@ -832,10 +832,10 @@ checking.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>shape_world</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>np.ndarray</em>) – Array of world IDs (numpy or warp array).
+<li><p><strong>shape_world</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>] </em><em>| </em><em>np.ndarray</em>) – Array of world IDs (numpy or warp array).
 Positive/zero values represent distinct worlds, negative values represent
 shared entities that belong to all worlds.</p></li>
-<li><p><strong>shape_flags</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>np.ndarray</em><em> | </em><em>None</em>) – Optional array of shape flags (numpy or warp array). If provided,
+<li><p><strong>shape_flags</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>] </em><em>| </em><em>np.ndarray</em><em> | </em><em>None</em>) – Optional array of shape flags (numpy or warp array). If provided,
 only shapes with the COLLIDE_SHAPES flag will be included in collision checks.
 This efficiently filters out visual-only shapes.</p></li>
 <li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to store the precomputed arrays on. If None, uses CPU for numpy
@@ -855,18 +855,18 @@ checking each pair twice.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>shape_lower</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of lower bounds for each shape’s AABB</p></li>
-<li><p><strong>shape_upper</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of upper bounds for each shape’s AABB</p></li>
-<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>(</em><em>dtype=float</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>None</em>) – Optional array of per-shape effective gaps. If None or empty array,
+<li><p><strong>shape_lower</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Array of lower bounds for each shape’s AABB</p></li>
+<li><p><strong>shape_upper</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Array of upper bounds for each shape’s AABB</p></li>
+<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional array of per-shape effective gaps. If None or empty array,
 assumes AABBs are pre-expanded (gaps = 0). If provided, gaps are added during overlap checks.</p></li>
-<li><p><strong>shape_collision_group</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of collision group IDs for each shape. Positive values indicate
+<li><p><strong>shape_collision_group</strong> (<em>wp.array</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – Array of collision group IDs for each shape. Positive values indicate
 groups that only collide with themselves (and with negative groups). Negative values indicate
 groups that collide with everything except their negative counterpart. Zero indicates no collisions.</p></li>
-<li><p><strong>shape_world</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of world indices for each shape. Index -1 indicates global entities
+<li><p><strong>shape_world</strong> (<em>wp.array</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – Array of world indices for each shape. Index -1 indicates global entities
 that collide with all worlds. Indices 0, 1, 2, … indicate world-specific entities.</p></li>
 <li><p><strong>shape_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of active bounding boxes to check</p></li>
-<li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store overlapping shape pairs</p></li>
-<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store number of overlapping pairs found</p></li>
+<li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>[</em><em>wp.vec2i</em><em>]</em>) – Output array to store overlapping shape pairs</p></li>
+<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – Output array to store number of overlapping pairs found</p></li>
 <li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to launch on. If None, uses the device of the input arrays.</p></li>
 </ul>
 </dd>

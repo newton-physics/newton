@@ -835,9 +835,9 @@ heightfield collisions (conservative estimate).</p></li>
 When True, uses shared memory contact reduction to select representative contacts.
 This improves performance and stability for meshes with many vertices. Defaults to True.</p></li>
 <li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to allocate buffers on</p></li>
-<li><p><strong>shape_aabb_lower</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional external AABB lower bounds array (if provided, AABBs won’t be computed internally)</p></li>
-<li><p><strong>shape_aabb_upper</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional external AABB upper bounds array (if provided, AABBs won’t be computed internally)</p></li>
-<li><p><strong>shape_voxel_resolution</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3i</em><em>) </em><em>| </em><em>None</em>) – Optional per-shape voxel resolution array used for mesh/SDF and
+<li><p><strong>shape_aabb_lower</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional external AABB lower bounds array (if provided, AABBs won’t be computed internally)</p></li>
+<li><p><strong>shape_aabb_upper</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional external AABB upper bounds array (if provided, AABBs won’t be computed internally)</p></li>
+<li><p><strong>shape_voxel_resolution</strong> (<em>wp.array</em><em>[</em><em>wp.vec3i</em><em>] </em><em>| </em><em>None</em>) – Optional per-shape voxel resolution array used for mesh/SDF and
 hydroelastic contact processing.</p></li>
 <li><p><strong>contact_writer_warp_func</strong> (<em>Any</em><em> | </em><em>None</em>) – Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)</p></li>
 <li><p><strong>hydroelastic_sdf</strong> (<a class="reference internal" href="newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF" title="newton.geometry.HydroelasticSDF"><em>HydroelasticSDF</em></a><em> | </em><em>None</em>) – Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.</p></li>
@@ -858,25 +858,25 @@ heightfield collision buffers and kernels are allocated. Defaults to False.</p><
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of potentially colliding shape pairs from broad phase</p></li>
-<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>)</em>) – Single-element array containing the number of candidate pairs</p></li>
-<li><p><strong>shape_types</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of geometry types for all shapes</p></li>
-<li><p><strong>shape_data</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of vec4 containing scale (xyz) and margin (w) for each shape</p></li>
-<li><p><strong>shape_transform</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of world-space transforms for each shape</p></li>
-<li><p><strong>shape_source</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint64</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of source pointers (mesh IDs, etc.) for each shape</p></li>
-<li><p><strong>shape_sdf_index</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>None</em>) – Per-shape SDF table index (-1 for shapes without SDF)</p></li>
-<li><p><strong>texture_sdf_data</strong> (<em>wp.array</em><em>(</em><em>dtype=TextureSDFData</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>None</em>) – Compact array of TextureSDFData structs</p></li>
-<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of per-shape contact gaps (detection threshold) for each shape</p></li>
-<li><p><strong>shape_collision_radius</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of collision radii for each shape (for AABB fallback for planes/meshes)</p></li>
-<li><p><strong>shape_collision_aabb_lower</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>None</em>) – Local-space AABB lower bounds for each shape (for voxel binning)</p></li>
-<li><p><strong>shape_collision_aabb_upper</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>None</em>) – Local-space AABB upper bounds for each shape (for voxel binning)</p></li>
-<li><p><strong>shape_voxel_resolution</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3i</em><em>, </em><em>ndim=1</em><em>)</em>) – Voxel grid resolution for each shape (for voxel binning)</p></li>
-<li><p><strong>contact_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>)</em>) – Output array for contact shape pairs</p></li>
-<li><p><strong>contact_position</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>)</em>) – Output array for contact positions (center point)</p></li>
-<li><p><strong>contact_normal</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>)</em>) – Output array for contact normals</p></li>
-<li><p><strong>contact_penetration</strong> (<em>wp.array</em><em>(</em><em>dtype=float</em><em>)</em>) – Output array for penetration depths</p></li>
-<li><p><strong>contact_tangent</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Output array for contact tangents, or None to disable tangent computation</p></li>
-<li><p><strong>contact_count</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>)</em>) – Output array (single element) for contact count</p></li>
+<li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>[</em><em>wp.vec2i</em><em>]</em>) – Array of potentially colliding shape pairs from broad phase</p></li>
+<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>]</em>) – Single-element array containing the number of candidate pairs</p></li>
+<li><p><strong>shape_types</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>]</em>) – Array of geometry types for all shapes</p></li>
+<li><p><strong>shape_data</strong> (<em>wp.array</em><em>[</em><em>wp.vec4</em><em>]</em>) – Array of vec4 containing scale (xyz) and margin (w) for each shape</p></li>
+<li><p><strong>shape_transform</strong> (<em>wp.array</em><em>[</em><em>wp.transform</em><em>]</em>) – Array of world-space transforms for each shape</p></li>
+<li><p><strong>shape_source</strong> (<em>wp.array</em><em>[</em><em>wp.uint64</em><em>]</em>) – Array of source pointers (mesh IDs, etc.) for each shape</p></li>
+<li><p><strong>shape_sdf_index</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>] </em><em>| </em><em>None</em>) – Per-shape SDF table index (-1 for shapes without SDF)</p></li>
+<li><p><strong>texture_sdf_data</strong> (<em>wp.array</em><em>[</em><em>TextureSDFData</em><em>] </em><em>| </em><em>None</em>) – Compact array of TextureSDFData structs</p></li>
+<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>]</em>) – Array of per-shape contact gaps (detection threshold) for each shape</p></li>
+<li><p><strong>shape_collision_radius</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>]</em>) – Array of collision radii for each shape (for AABB fallback for planes/meshes)</p></li>
+<li><p><strong>shape_collision_aabb_lower</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Local-space AABB lower bounds for each shape (for voxel binning)</p></li>
+<li><p><strong>shape_collision_aabb_upper</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Local-space AABB upper bounds for each shape (for voxel binning)</p></li>
+<li><p><strong>shape_voxel_resolution</strong> (<em>wp.array</em><em>[</em><em>wp.vec3i</em><em>]</em>) – Voxel grid resolution for each shape (for voxel binning)</p></li>
+<li><p><strong>contact_pair</strong> (<em>wp.array</em><em>[</em><em>wp.vec2i</em><em>]</em>) – Output array for contact shape pairs</p></li>
+<li><p><strong>contact_position</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Output array for contact positions (center point)</p></li>
+<li><p><strong>contact_normal</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Output array for contact normals</p></li>
+<li><p><strong>contact_penetration</strong> (<em>wp.array</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>]</em>) – Output array for penetration depths</p></li>
+<li><p><strong>contact_tangent</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Output array for contact tangents, or None to disable tangent computation</p></li>
+<li><p><strong>contact_count</strong> (<em>wp.array</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – Output array (single element) for contact count</p></li>
 <li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to launch on</p></li>
 </ul>
 </dd>
@@ -892,20 +892,20 @@ are safe inside a <a class="reference external" href="https://nvidia.github.io/w
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of potentially colliding shape pairs from broad phase</p></li>
-<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>)</em>) – Single-element array containing the number of candidate pairs</p></li>
-<li><p><strong>shape_types</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of geometry types for all shapes</p></li>
-<li><p><strong>shape_data</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of vec4 containing scale (xyz) and margin (w) for each shape</p></li>
-<li><p><strong>shape_transform</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of world-space transforms for each shape</p></li>
-<li><p><strong>shape_source</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint64</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of source pointers (mesh IDs, etc.) for each shape</p></li>
-<li><p><strong>shape_sdf_index</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>)</em>) – Per-shape SDF table index (-1 for shapes without SDF)</p></li>
-<li><p><strong>texture_sdf_data</strong> (<em>wp.array</em><em>(</em><em>dtype=TextureSDFData</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>None</em>) – Compact array of TextureSDFData structs</p></li>
-<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of per-shape contact gaps (detection threshold) for each shape</p></li>
-<li><p><strong>shape_collision_radius</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of collision radii for each shape (for AABB fallback for planes/meshes)</p></li>
-<li><p><strong>shape_flags</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of shape flags for each shape (includes ShapeFlags.HYDROELASTIC)</p></li>
-<li><p><strong>shape_collision_aabb_lower</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>, </em><em>ndim=1</em><em>)</em>) – Local-space AABB lower bounds for each shape (for voxel binning)</p></li>
-<li><p><strong>shape_collision_aabb_upper</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>, </em><em>ndim=1</em><em>)</em>) – Local-space AABB upper bounds for each shape (for voxel binning)</p></li>
-<li><p><strong>shape_voxel_resolution</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3i</em><em>, </em><em>ndim=1</em><em>)</em>) – Voxel grid resolution for each shape (for voxel binning)</p></li>
+<li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>[</em><em>wp.vec2i</em><em>]</em>) – Array of potentially colliding shape pairs from broad phase</p></li>
+<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>]</em>) – Single-element array containing the number of candidate pairs</p></li>
+<li><p><strong>shape_types</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>]</em>) – Array of geometry types for all shapes</p></li>
+<li><p><strong>shape_data</strong> (<em>wp.array</em><em>[</em><em>wp.vec4</em><em>]</em>) – Array of vec4 containing scale (xyz) and margin (w) for each shape</p></li>
+<li><p><strong>shape_transform</strong> (<em>wp.array</em><em>[</em><em>wp.transform</em><em>]</em>) – Array of world-space transforms for each shape</p></li>
+<li><p><strong>shape_source</strong> (<em>wp.array</em><em>[</em><em>wp.uint64</em><em>]</em>) – Array of source pointers (mesh IDs, etc.) for each shape</p></li>
+<li><p><strong>shape_sdf_index</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>]</em>) – Per-shape SDF table index (-1 for shapes without SDF)</p></li>
+<li><p><strong>texture_sdf_data</strong> (<em>wp.array</em><em>[</em><em>TextureSDFData</em><em>] </em><em>| </em><em>None</em>) – Compact array of TextureSDFData structs</p></li>
+<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>]</em>) – Array of per-shape contact gaps (detection threshold) for each shape</p></li>
+<li><p><strong>shape_collision_radius</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>]</em>) – Array of collision radii for each shape (for AABB fallback for planes/meshes)</p></li>
+<li><p><strong>shape_flags</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>]</em>) – Array of shape flags for each shape (includes ShapeFlags.HYDROELASTIC)</p></li>
+<li><p><strong>shape_collision_aabb_lower</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Local-space AABB lower bounds for each shape (for voxel binning)</p></li>
+<li><p><strong>shape_collision_aabb_upper</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Local-space AABB upper bounds for each shape (for voxel binning)</p></li>
+<li><p><strong>shape_voxel_resolution</strong> (<em>wp.array</em><em>[</em><em>wp.vec3i</em><em>]</em>) – Voxel grid resolution for each shape (for voxel binning)</p></li>
 <li><p><strong>writer_data</strong> (<em>Any</em>) – Custom struct instance for contact writing (type must match the custom writer function)</p></li>
 <li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to launch on</p></li>
 </ul>

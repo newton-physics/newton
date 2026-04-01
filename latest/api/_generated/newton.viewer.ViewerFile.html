@@ -944,7 +944,7 @@ with the state snapshot at frame_id.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the array signal.</p></li>
-<li><p><strong>array</strong> (<em>wp.array</em><em>(</em><em>dtype=Any</em><em>) </em><em>| </em><em>np.ndarray</em>) – Array data to visualize.</p></li>
+<li><p><strong>array</strong> (<em>wp.array</em><em>[</em><em>Any</em><em>] </em><em>| </em><em>np.ndarray</em>) – Array data to visualize.</p></li>
 </ul>
 </dd>
 </dl>
@@ -959,10 +959,10 @@ with the state snapshot at frame_id.</p>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the instance batch.</p></li>
 <li><p><strong>mesh</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Name of the base mesh.</p></li>
-<li><p><strong>xforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>) </em><em>| </em><em>None</em>) – Optional per-instance transforms.</p></li>
-<li><p><strong>scales</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional per-instance scales.</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional per-instance colors.</p></li>
-<li><p><strong>materials</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>) </em><em>| </em><em>None</em>) – Optional per-instance material parameters.</p></li>
+<li><p><strong>xforms</strong> (<em>wp.array</em><em>[</em><em>wp.transform</em><em>] </em><em>| </em><em>None</em>) – Optional per-instance transforms.</p></li>
+<li><p><strong>scales</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional per-instance scales.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional per-instance colors.</p></li>
+<li><p><strong>materials</strong> (<em>wp.array</em><em>[</em><em>wp.vec4</em><em>] </em><em>| </em><em>None</em>) – Optional per-instance material parameters.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the instance batch is hidden.</p></li>
 </ul>
 </dd>
@@ -977,9 +977,9 @@ with the state snapshot at frame_id.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the line batch.</p></li>
-<li><p><strong>starts</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional line start points.</p></li>
-<li><p><strong>ends</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional line end points.</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional per-line colors or a shared RGB triplet.</p></li>
+<li><p><strong>starts</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional line start points.</p></li>
+<li><p><strong>ends</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional line end points.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>wp.array</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional per-line colors or a shared RGB triplet.</p></li>
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Line width hint.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the line batch is hidden.</p></li>
 </ul>
@@ -995,10 +995,10 @@ with the state snapshot at frame_id.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the mesh.</p></li>
-<li><p><strong>points</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>)</em>) – Mesh vertex positions.</p></li>
-<li><p><strong>indices</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>)</em>) – Mesh triangle indices.</p></li>
-<li><p><strong>normals</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional vertex normals.</p></li>
-<li><p><strong>uvs</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2</em><em>) </em><em>| </em><em>None</em>) – Optional UV coordinates.</p></li>
+<li><p><strong>points</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Mesh vertex positions.</p></li>
+<li><p><strong>indices</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>] </em><em>| </em><em>wp.array</em><em>[</em><em>wp.uint32</em><em>]</em>) – Mesh triangle indices.</p></li>
+<li><p><strong>normals</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional vertex normals.</p></li>
+<li><p><strong>uvs</strong> (<em>wp.array</em><em>[</em><em>wp.vec2</em><em>] </em><em>| </em><em>None</em>) – Optional UV coordinates.</p></li>
 <li><p><strong>texture</strong> (<em>np.ndarray</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Optional texture path/URL or image array.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the mesh is hidden.</p></li>
 <li><p><strong>backface_culling</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether back-face culling is enabled.</p></li>
@@ -1015,9 +1015,9 @@ with the state snapshot at frame_id.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the point batch.</p></li>
-<li><p><strong>points</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional point positions.</p></li>
-<li><p><strong>radii</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Optional per-point radii or a shared radius.</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional per-point colors or a shared RGB triplet.</p></li>
+<li><p><strong>points</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional point positions.</p></li>
+<li><p><strong>radii</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Optional per-point radii or a shared radius.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>wp.array</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional per-point colors or a shared RGB triplet.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the point batch is hidden.</p></li>
 </ul>
 </dd>

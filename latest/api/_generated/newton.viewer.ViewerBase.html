@@ -878,7 +878,7 @@
 <dd><p>Allocates the batch of shape instances as Warp arrays.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>shape_colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – The colors of the shapes.</p>
+<dd class="field-odd"><p><strong>shape_colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – The colors of the shapes.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -891,7 +891,7 @@
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The current state of the simulation.</p></li>
-<li><p><strong>world_offsets</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec3f</em><em>)</em>) – The world offsets.</p></li>
+<li><p><strong>world_offsets</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.vec3f'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – The world offsets.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1024,7 +1024,7 @@ when switching examples).</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the array signal.</p></li>
-<li><p><strong>array</strong> (<em>wp.array</em><em>(</em><em>dtype=Any</em><em>) </em><em>| </em><em>np.ndarray</em>) – Array data as a Warp array or NumPy array.</p></li>
+<li><p><strong>array</strong> (<em>wp.array</em><em>[</em><em>Any</em><em>] </em><em>| </em><em>np.ndarray</em>) – Array data as a Warp array or NumPy array.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1042,10 +1042,10 @@ If the viewer backend does not specialize this path, it will fall back to
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the capsule batch.</p></li>
 <li><p><strong>mesh</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Path/name of a mesh previously registered via
 <a class="reference internal" href="#newton.viewer.ViewerBase.log_mesh" title="newton.viewer.ViewerBase.log_mesh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_mesh()</span></code></a>.</p></li>
-<li><p><strong>xforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>) </em><em>| </em><em>None</em>) – Optional per-capsule transforms as a Warp transform array.</p></li>
-<li><p><strong>scales</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional per-capsule scales as a Warp vec3 array.</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional per-capsule colors as a Warp vec3 array.</p></li>
-<li><p><strong>materials</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>) </em><em>| </em><em>None</em>) – Optional per-capsule material parameters as a Warp vec4 array.</p></li>
+<li><p><strong>xforms</strong> (<em>wp.array</em><em>[</em><em>wp.transform</em><em>] </em><em>| </em><em>None</em>) – Optional per-capsule transforms as a Warp transform array.</p></li>
+<li><p><strong>scales</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional per-capsule scales as a Warp vec3 array.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional per-capsule colors as a Warp vec3 array.</p></li>
+<li><p><strong>materials</strong> (<em>wp.array</em><em>[</em><em>wp.vec4</em><em>] </em><em>| </em><em>None</em>) – Optional per-capsule material parameters as a Warp vec4 array.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the capsule batch should be hidden.</p></li>
 </ul>
 </dd>
@@ -1157,10 +1157,10 @@ collision is not enabled.</p></li>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the instance batch.</p></li>
 <li><p><strong>mesh</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Path/name of a mesh previously registered via <a class="reference internal" href="#newton.viewer.ViewerBase.log_mesh" title="newton.viewer.ViewerBase.log_mesh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">log_mesh()</span></code></a>.</p></li>
-<li><p><strong>xforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>) </em><em>| </em><em>None</em>) – Optional per-instance transforms as a Warp transform array.</p></li>
-<li><p><strong>scales</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional per-instance scales as a Warp vec3 array.</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional per-instance colors as a Warp vec3 array.</p></li>
-<li><p><strong>materials</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>) </em><em>| </em><em>None</em>) – Optional per-instance material parameters as a Warp vec4 array.</p></li>
+<li><p><strong>xforms</strong> (<em>wp.array</em><em>[</em><em>wp.transform</em><em>] </em><em>| </em><em>None</em>) – Optional per-instance transforms as a Warp transform array.</p></li>
+<li><p><strong>scales</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional per-instance scales as a Warp vec3 array.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional per-instance colors as a Warp vec3 array.</p></li>
+<li><p><strong>materials</strong> (<em>wp.array</em><em>[</em><em>wp.vec4</em><em>] </em><em>| </em><em>None</em>) – Optional per-instance material parameters as a Warp vec4 array.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the instance batch should be hidden.</p></li>
 </ul>
 </dd>
@@ -1175,9 +1175,9 @@ collision is not enabled.</p></li>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the line batch.</p></li>
-<li><p><strong>starts</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional line start points as a Warp vec3 array.</p></li>
-<li><p><strong>ends</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional line end points as a Warp vec3 array.</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Per-line colors as a Warp array, or a single RGB triplet.</p></li>
+<li><p><strong>starts</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional line start points as a Warp vec3 array.</p></li>
+<li><p><strong>ends</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional line end points as a Warp vec3 array.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>wp.array</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Per-line colors as a Warp array, or a single RGB triplet.</p></li>
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Line width in rendered scene units.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the line batch should be hidden.</p></li>
 </ul>
@@ -1193,10 +1193,10 @@ collision is not enabled.</p></li>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the mesh asset.</p></li>
-<li><p><strong>points</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>)</em>) – Vertex positions as a Warp vec3 array.</p></li>
-<li><p><strong>indices</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>)</em>) – Triangle index buffer as a Warp integer array.</p></li>
-<li><p><strong>normals</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional vertex normals as a Warp vec3 array.</p></li>
-<li><p><strong>uvs</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2</em><em>) </em><em>| </em><em>None</em>) – Optional texture coordinates as a Warp vec2 array.</p></li>
+<li><p><strong>points</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Vertex positions as a Warp vec3 array.</p></li>
+<li><p><strong>indices</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>] </em><em>| </em><em>wp.array</em><em>[</em><em>wp.uint32</em><em>]</em>) – Triangle index buffer as a Warp integer array.</p></li>
+<li><p><strong>normals</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional vertex normals as a Warp vec3 array.</p></li>
+<li><p><strong>uvs</strong> (<em>wp.array</em><em>[</em><em>wp.vec2</em><em>] </em><em>| </em><em>None</em>) – Optional texture coordinates as a Warp vec2 array.</p></li>
 <li><p><strong>texture</strong> (<em>np.ndarray</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Optional texture image array or path.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the mesh should be hidden.</p></li>
 <li><p><strong>backface_culling</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether back-face culling should be enabled.</p></li>
@@ -1213,9 +1213,9 @@ collision is not enabled.</p></li>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the point batch.</p></li>
-<li><p><strong>points</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Optional point positions as a Warp vec3 array.</p></li>
-<li><p><strong>radii</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Optional per-point radii array or a single radius value.</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional per-point colors or a single RGB triplet.</p></li>
+<li><p><strong>points</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – Optional point positions as a Warp vec3 array.</p></li>
+<li><p><strong>radii</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Optional per-point radii array or a single radius value.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>wp.array</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional per-point colors or a single RGB triplet.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the points should be hidden.</p></li>
 </ul>
 </dd>
@@ -1251,9 +1251,9 @@ render a batch of instances with the provided transforms/colors/materials.</p>
 - Capsule/Cylinder/Cone: (radius, height)
 - Plane: (width, length) or float for both
 - Box: (x_extent, y_extent, z_extent) or float for all</p></li>
-<li><p><strong>xforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>)</em>) – wp.array(dtype=wp.transform) of instance transforms</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – wp.array(dtype=wp.vec3) or None (broadcasted if length 1)</p></li>
-<li><p><strong>materials</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>) </em><em>| </em><em>None</em>) – wp.array(dtype=wp.vec4) or None (broadcasted if length 1)</p></li>
+<li><p><strong>xforms</strong> (<em>wp.array</em><em>[</em><em>wp.transform</em><em>]</em>) – wp.array[wp.transform] of instance transforms</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>] </em><em>| </em><em>None</em>) – wp.array[wp.vec3] or None (broadcasted if length 1)</p></li>
+<li><p><strong>materials</strong> (<em>wp.array</em><em>[</em><em>wp.vec4</em><em>] </em><em>| </em><em>None</em>) – wp.array[wp.vec4] or None (broadcasted if length 1)</p></li>
 <li><p><strong>geo_thickness</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Optional thickness used for hashing and solidification.</p></li>
 <li><p><strong>geo_is_solid</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If False, use shell-thickening for mesh-based geometry.</p></li>
 <li><p><strong>geo_src</strong> (<a class="reference internal" href="newton.Mesh.html#newton.Mesh" title="newton.Mesh"><em>newton.Mesh</em></a><em> | </em><a class="reference internal" href="newton.Heightfield.html#newton.Heightfield" title="newton.Heightfield"><em>newton.Heightfield</em></a><em> | </em><em>None</em>) – Source geometry to use only when <code class="docutils literal notranslate"><span class="pre">geo_type</span></code> is

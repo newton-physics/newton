@@ -820,7 +820,7 @@
 <li><p><strong>link_index</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Body index whose frame defines the constrained link.</p></li>
 <li><p><strong>link_offset_rotation</strong> (<em>wp.quat</em>) – Local rotation from the body frame to the
 constrained frame, stored in <code class="docutils literal notranslate"><span class="pre">(x,</span> <span class="pre">y,</span> <span class="pre">z,</span> <span class="pre">w)</span></code> order.</p></li>
-<li><p><strong>target_rotations</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>)</em>) – Target orientations, shape [problem_count]. Each
+<li><p><strong>target_rotations</strong> (<em>wp.array</em><em>[</em><em>wp.vec4</em><em>]</em>) – Target orientations, shape [problem_count]. Each
 quaternion is stored in <code class="docutils literal notranslate"><span class="pre">(x,</span> <span class="pre">y,</span> <span class="pre">z,</span> <span class="pre">w)</span></code> order.</p></li>
 <li><p><strong>canonicalize_quat_err</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If <code class="docutils literal notranslate"><span class="pre">True</span></code>, flip equivalent quaternions so the
 residual follows the short rotational arc.</p></li>
@@ -842,15 +842,15 @@ residual follows the short rotational arc.</p></li>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>body_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=transformf</em><em>)</em>) – Batched body transforms for the evaluation rows,
+<li><p><strong>body_q</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.transformf'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Batched body transforms for the evaluation rows,
 shape [n_batch, body_count].</p></li>
-<li><p><strong>joint_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Batched joint coordinates, shape [n_batch, joint_coord_count].
+<li><p><strong>joint_q</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Batched joint coordinates, shape [n_batch, joint_coord_count].
 Present for interface compatibility and not used directly by
 this objective.</p></li>
 <li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – Shared articulation model.</p></li>
-<li><p><strong>jacobian</strong> (<em>array</em><em>(</em><em>ndim=3</em><em>, </em><em>dtype=float32</em><em>)</em>) – Global Jacobian buffer to update,
+<li><p><strong>jacobian</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=3</em><em>)</em>) – Global Jacobian buffer to update,
 shape [n_batch, total_residual_count, joint_dof_count].</p></li>
-<li><p><strong>joint_S_s</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=vector</em><em>(</em><em>length=6</em><em>, </em><em>dtype=float32</em><em>)</em><em>)</em>) – Batched motion-subspace columns,
+<li><p><strong>joint_S_s</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.spatial_vectorf'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Batched motion-subspace columns,
 shape [n_batch, joint_dof_count].</p></li>
 <li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – First residual row reserved for this objective.</p></li>
 </ul>
@@ -868,10 +868,10 @@ shape [n_batch, joint_dof_count].</p></li>
 <li><p><strong>tape</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.Tape.html#warp.Tape" title="(in Warp v1.12.0)"><em>Tape</em></a>) – Recorded Warp tape whose output is the global residual
 buffer.</p></li>
 <li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – Shared articulation model.</p></li>
-<li><p><strong>jacobian</strong> (<em>array</em><em>(</em><em>ndim=3</em><em>, </em><em>dtype=float32</em><em>)</em>) – Global Jacobian buffer to update,
+<li><p><strong>jacobian</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=3</em><em>)</em>) – Global Jacobian buffer to update,
 shape [n_batch, total_residual_count, joint_dof_count].</p></li>
 <li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – First residual row reserved for this objective.</p></li>
-<li><p><strong>dq_dof</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Differentiable joint update variable for the current
+<li><p><strong>dq_dof</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Differentiable joint update variable for the current
 batch, shape [n_batch, joint_dof_count].</p></li>
 </ul>
 </dd>
@@ -885,17 +885,17 @@ batch, shape [n_batch, joint_dof_count].</p></li>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>body_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=transformf</em><em>)</em>) – Batched body transforms for the evaluation rows,
+<li><p><strong>body_q</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.transformf'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Batched body transforms for the evaluation rows,
 shape [n_batch, body_count].</p></li>
-<li><p><strong>joint_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Batched joint coordinates, shape [n_batch, joint_coord_count].
+<li><p><strong>joint_q</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Batched joint coordinates, shape [n_batch, joint_coord_count].
 Present for interface compatibility and not used directly by
 this objective.</p></li>
 <li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a>) – Shared articulation model. Present for interface
 compatibility.</p></li>
-<li><p><strong>residuals</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Global residual buffer to update,
+<li><p><strong>residuals</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Global residual buffer to update,
 shape [n_batch, total_residual_count].</p></li>
 <li><p><strong>start_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – First residual row reserved for this objective.</p></li>
-<li><p><strong>problem_idx</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=int32</em><em>)</em>) – Mapping from evaluation rows to base problem
+<li><p><strong>problem_idx</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.int32'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Mapping from evaluation rows to base problem
 indices, shape [n_batch], used to fetch <code class="docutils literal notranslate"><span class="pre">target_rotations</span></code>.</p></li>
 </ul>
 </dd>
@@ -945,7 +945,7 @@ order.</p></li>
 <dd><p>Replace the target orientations for all base IK problems.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>new_rotations</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec4f</em><em>)</em>) – Target quaternions, shape [problem_count], in
+<dd class="field-odd"><p><strong>new_rotations</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.vec4f'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Target quaternions, shape [problem_count], in
 <code class="docutils literal notranslate"><span class="pre">(x,</span> <span class="pre">y,</span> <span class="pre">z,</span> <span class="pre">w)</span></code> order.</p>
 </dd>
 </dl>

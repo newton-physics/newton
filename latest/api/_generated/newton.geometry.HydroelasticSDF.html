@@ -836,9 +836,9 @@ penetration depth and represented area.</p>
 <li><p><strong>num_shape_pairs</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Maximum number of hydroelastic shape pairs to process.</p></li>
 <li><p><strong>total_num_tiles</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Total number of SDF blocks across all hydroelastic shapes.</p></li>
 <li><p><strong>max_num_blocks_per_shape</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Maximum block count for any single shape.</p></li>
-<li><p><strong>shape_sdf_block_coords</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3us</em><em>)</em>) – Block coordinates for each shape’s SDF representation.</p></li>
-<li><p><strong>shape_sdf_shape2blocks</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>)</em>) – Mapping from shape index to (start, end) block range.</p></li>
-<li><p><strong>shape_material_kh</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>)</em>) – Hydroelastic stiffness coefficient for each shape.</p></li>
+<li><p><strong>shape_sdf_block_coords</strong> (<em>wp.array</em><em>[</em><em>wp.vec3us</em><em>]</em>) – Block coordinates for each shape’s SDF representation.</p></li>
+<li><p><strong>shape_sdf_shape2blocks</strong> (<em>wp.array</em><em>[</em><em>wp.vec2i</em><em>]</em>) – Mapping from shape index to (start, end) block range.</p></li>
+<li><p><strong>shape_material_kh</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>]</em>) – Hydroelastic stiffness coefficient for each shape.</p></li>
 <li><p><strong>n_shapes</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Total number of shapes in the simulation.</p></li>
 <li><p><strong>config</strong> (<a class="reference internal" href="#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><em>HydroelasticSDF.Config</em></a><em> | </em><em>None</em>) – Configuration options controlling buffer sizes, contact reduction,
 and other behavior. Defaults to <a class="reference internal" href="#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">HydroelasticSDF.Config</span></code></a>.</p></li>
@@ -997,25 +997,25 @@ the contact surface triangles from hydroelastic collision detection.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_depth">
-<span class="sig-name descname"><span class="pre">contact_surface_depth</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">float32</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_depth" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">contact_surface_depth</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array(dtype=&lt;class</span> <span class="pre">'warp._src.types.float32'&gt;,</span> <span class="pre">ndim=1)</span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_depth" title="Link to this definition">#</a></dt>
 <dd><p>Penetration depth at each face centroid.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_point">
-<span class="sig-name descname"><span class="pre">contact_surface_point</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">vec3f</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_point" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">contact_surface_point</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array(dtype=&lt;class</span> <span class="pre">'warp._src.types.vec3f'&gt;,</span> <span class="pre">ndim=1)</span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_point" title="Link to this definition">#</a></dt>
 <dd><p>World-space positions of contact surface triangle vertices (3 per face).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_shape_pair">
-<span class="sig-name descname"><span class="pre">contact_surface_shape_pair</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">vec2i</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_shape_pair" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">contact_surface_shape_pair</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array(dtype=&lt;class</span> <span class="pre">'warp._src.types.vec2i'&gt;,</span> <span class="pre">ndim=1)</span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_shape_pair" title="Link to this definition">#</a></dt>
 <dd><p>Shape pair indices (shape_a, shape_b) for each face.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.face_contact_count">
-<span class="sig-name descname"><span class="pre">face_contact_count</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">int32</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.face_contact_count" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">face_contact_count</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array(dtype=&lt;class</span> <span class="pre">'warp._src.types.int32'&gt;,</span> <span class="pre">ndim=1)</span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.face_contact_count" title="Link to this definition">#</a></dt>
 <dd><p>Array containing the number of face contacts.</p>
 </dd></dl>
 
@@ -1058,15 +1058,15 @@ method is safe to call inside a <a class="reference external" href="https://nvid
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>texture_sdf_data</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=newton._src.geometry.sdf_texture.TextureSDFData</em><em>)</em>) – Compact texture SDF table.</p></li>
-<li><p><strong>shape_sdf_index</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=int32</em><em>)</em>) – Per-shape SDF index into texture_sdf_data.</p></li>
-<li><p><strong>shape_transform</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=transformf</em><em>)</em>) – World transforms for each shape.</p></li>
-<li><p><strong>shape_gap</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=float32</em><em>)</em>) – Per-shape contact gap (detection threshold) for each shape.</p></li>
-<li><p><strong>shape_collision_aabb_lower</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec3f</em><em>)</em>) – Per-shape collision AABB lower bounds.</p></li>
-<li><p><strong>shape_collision_aabb_upper</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec3f</em><em>)</em>) – Per-shape collision AABB upper bounds.</p></li>
-<li><p><strong>shape_voxel_resolution</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec3i</em><em>)</em>) – Per-shape voxel grid resolution.</p></li>
-<li><p><strong>shape_pairs_sdf_sdf</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec2i</em><em>)</em>) – Pairs of shape indices to check for collision.</p></li>
-<li><p><strong>shape_pairs_sdf_sdf_count</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=int32</em><em>)</em>) – Number of valid shape pairs.</p></li>
+<li><p><strong>texture_sdf_data</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;warp._src.codegen.Struct object at 0x7f6c5abdb890&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Compact texture SDF table.</p></li>
+<li><p><strong>shape_sdf_index</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.int32'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Per-shape SDF index into texture_sdf_data.</p></li>
+<li><p><strong>shape_transform</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.transformf'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – World transforms for each shape.</p></li>
+<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Per-shape contact gap (detection threshold) for each shape.</p></li>
+<li><p><strong>shape_collision_aabb_lower</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.vec3f'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Per-shape collision AABB lower bounds.</p></li>
+<li><p><strong>shape_collision_aabb_upper</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.vec3f'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Per-shape collision AABB upper bounds.</p></li>
+<li><p><strong>shape_voxel_resolution</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.vec3i'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Per-shape voxel grid resolution.</p></li>
+<li><p><strong>shape_pairs_sdf_sdf</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.vec2i'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Pairs of shape indices to check for collision.</p></li>
+<li><p><strong>shape_pairs_sdf_sdf_count</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.int32'&gt;</em><em>, </em><em>ndim=1</em><em>)</em>) – Number of valid shape pairs.</p></li>
 <li><p><strong>writer_data</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a>) – Contact data writer for output.</p></li>
 </ul>
 </dd>

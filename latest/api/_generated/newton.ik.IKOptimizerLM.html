@@ -851,13 +851,13 @@ for per-problem objective data.</p></li>
 <dd><p>Evaluate squared residual costs for a batch of joint configurations.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>joint_q</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Joint coordinates to evaluate, shape [n_batch, joint_coord_count].</p>
+<dd class="field-odd"><p><strong>joint_q</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Joint coordinates to evaluate, shape [n_batch, joint_coord_count].</p>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
 <dd class="field-even"><p>Costs for each batch row, shape [n_batch].</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>array(ndim=1, dtype=float32)</p>
+<dd class="field-odd"><p>wp.array(dtype=&lt;class ‘warp._src.types.float32’&gt;, ndim=1)</p>
 </dd>
 </dl>
 </dd></dl>
@@ -877,8 +877,8 @@ for per-problem objective data.</p></li>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>joint_q_in</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Input joint coordinates, shape [n_batch, joint_coord_count].</p></li>
-<li><p><strong>joint_q_out</strong> (<em>array</em><em>(</em><em>ndim=2</em><em>, </em><em>dtype=float32</em><em>)</em>) – Output buffer for the optimized coordinates, shape
+<li><p><strong>joint_q_in</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Input joint coordinates, shape [n_batch, joint_coord_count].</p></li>
+<li><p><strong>joint_q_out</strong> (<em>wp.array</em><em>(</em><em>dtype=&lt;class 'warp._src.types.float32'&gt;</em><em>, </em><em>ndim=2</em><em>)</em>) – Output buffer for the optimized coordinates, shape
 [n_batch, joint_coord_count]. It may alias <code class="docutils literal notranslate"><span class="pre">joint_q_in</span></code> for
 in-place updates.</p></li>
 <li><p><strong>iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of LM iterations to execute.</p></li>

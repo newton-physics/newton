@@ -838,14 +838,14 @@ indices of shape pairs whose AABBs overlap.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>shape_lower</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of lower bounds for shape bounding boxes</p></li>
-<li><p><strong>shape_upper</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of upper bounds for shape bounding boxes</p></li>
-<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>(</em><em>dtype=float</em><em>, </em><em>ndim=1</em><em>) </em><em>| </em><em>None</em>) – Optional array of per-shape effective gaps. If None or empty array,
+<li><p><strong>shape_lower</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Array of lower bounds for shape bounding boxes</p></li>
+<li><p><strong>shape_upper</strong> (<em>wp.array</em><em>[</em><em>wp.vec3</em><em>]</em>) – Array of upper bounds for shape bounding boxes</p></li>
+<li><p><strong>shape_gap</strong> (<em>wp.array</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional array of per-shape effective gaps. If None or empty array,
 assumes AABBs are pre-expanded (gaps = 0). If provided, gaps are added during overlap checks.</p></li>
-<li><p><strong>shape_pairs</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>, </em><em>ndim=1</em><em>)</em>) – Array of precomputed shape pairs to check</p></li>
+<li><p><strong>shape_pairs</strong> (<em>wp.array</em><em>[</em><em>wp.vec2i</em><em>]</em>) – Array of precomputed shape pairs to check</p></li>
 <li><p><strong>shape_pair_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of shape pairs to check</p></li>
-<li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store overlapping shape pairs</p></li>
-<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store number of overlapping pairs found</p></li>
+<li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>[</em><em>wp.vec2i</em><em>]</em>) – Output array to store overlapping shape pairs</p></li>
+<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – Output array to store number of overlapping pairs found</p></li>
 <li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Device to launch on. If None, uses the device of the input arrays.</p></li>
 </ul>
 </dd>
