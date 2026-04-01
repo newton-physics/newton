@@ -1098,9 +1098,9 @@ class ViewerBase(ABC):
             self.world_xforms = None
             self.colors_changed: bool = False
             """Indicates that finalized
-            :attr:`ShapeInstances.colors` changed and
+            ``ShapeInstances.colors`` changed and
             should be included in
-            :meth:`log_instances`.
+            :meth:`~newton.viewer.ViewerBase.log_instances`.
             """
 
         def add(

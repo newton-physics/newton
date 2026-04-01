@@ -263,7 +263,7 @@ class SensorContact:
     """
 
     class ObjectType(Enum):
-        """Deprecated. Type tag for entries in legacy :attr:`sensing_objs` and :attr:`counterparts` properties."""
+        """Deprecated. Type tag for entries in legacy :attr:`~newton.sensors.SensorContact.sensing_objs` and :attr:`~newton.sensors.SensorContact.counterparts` properties."""
 
         TOTAL = _OBJ_TYPE_TOTAL
         """Total force entry."""

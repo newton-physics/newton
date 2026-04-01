@@ -761,6 +761,7 @@ class Mesh:
 
     @property
     def color(self) -> Vec3 | None:
+        """Optional display RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
@@ -769,6 +770,7 @@ class Mesh:
 
     @property
     def texture(self) -> str | np.ndarray | None:
+        """Optional texture as a file path or a normalized RGBA array."""
         return self._texture
 
     @texture.setter
@@ -783,7 +785,7 @@ class Mesh:
         """Content-based hash of the assigned texture.
 
         Returns a stable integer hash derived from the texture data.
-        The value is lazily computed and cached until :attr:`texture`
+        The value is lazily computed and cached until :attr:`~newton.Mesh.texture`
         is reassigned.
         """
         return self._compute_texture_hash()

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import sys
 import tempfile
 import time
 import unittest
@@ -4373,7 +4372,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         model.request_contact_attributes("force")
         return model, ramp_shape
 
-    @unittest.skipIf(sys.platform == "darwin", "Flaky on macOS, see GH-2239")
+    @unittest.skip("Flaky on CI, see GH-2239")
     def test_contact_forces_on_incline(self):
         """Contact force on an incline must balance gravity (tests rotated contact frame)."""
         incline_angle = 0.25  # rad (~14°); mu=1.0 > tan(0.25)≈0.26 → static

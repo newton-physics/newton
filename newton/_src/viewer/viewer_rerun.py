@@ -141,7 +141,7 @@ class ViewerRerun(ViewerBase):
             web_port: Port to serve the web viewer on. Only used if ``serve_web_viewer`` is True.
             grpc_port: Port to serve the gRPC server on.
             keep_historical_data: If True, keep historical data in the timeline of the web viewer.
-                If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
+                If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`~newton.viewer.ViewerBase.log_state`.
                 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
                 If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.
             keep_scalar_history: If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
