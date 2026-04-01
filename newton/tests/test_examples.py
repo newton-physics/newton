@@ -117,7 +117,9 @@ def add_example_test(
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = warp_cache_path
         if not allow_deprecation_warnings:
-            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning:newton"
+            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
+        else:
+            env_vars.pop("PYTHONWARNINGS", None)
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory

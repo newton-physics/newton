@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import collections
 import datetime
+import inspect
 import itertools
 import os
 import posixpath
@@ -36,6 +37,24 @@ from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
 
 AttributeFrequency = Model.AttributeFrequency
+
+_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
+
+def _external_stacklevel() -> int:
+    """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
+    frame = inspect.currentframe()
+    if frame is None:
+        return 2
+    frame = frame.f_back
+    stacklevel = 1
+    try:
+        while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
+            frame = frame.f_back
+            stacklevel += 1
+        return stacklevel
+    finally:
+        del frame
 
 
 def parse_usd(
@@ -643,6 +662,7 @@ def parse_usd(
             xform=xform,
             label=label,
             inertia=body_inertia,
+            armature=0.0 if armature is not None else None,
             is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
@@ -692,7 +712,7 @@ def parse_usd(
                 "removed in a future release. Add any isotropic artificial inertia directly to the body's "
                 "inertia instead.",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=_external_stacklevel(),
             )
             warned_deprecated_body_armature_paths.add(body_armature_source_path)
 

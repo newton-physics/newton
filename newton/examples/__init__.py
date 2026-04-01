@@ -29,8 +29,14 @@ def get_asset(filename: str) -> str:
 
 @lru_cache(maxsize=1)
 def _enable_example_deprecation_warnings() -> None:
-    """Show Newton deprecations during example runs."""
-    warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
+    """Show Newton deprecations during example runs.
+
+    Skipped when ``PYTHONWARNINGS`` is already set so that
+    ``test_examples.py`` (or a user) can escalate warnings to errors
+    without this filter overriding their policy.
+    """
+    if "PYTHONWARNINGS" not in os.environ:
+        warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
 
 
 def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):

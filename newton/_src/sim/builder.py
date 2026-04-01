@@ -3336,7 +3336,7 @@ class ModelBuilder:
     def default_body_armature(self) -> float:
         """Deprecated default body armature.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Add any isotropic artificial inertia directly to ``inertia`` instead.
         """
         self._warn_default_body_armature_deprecated()
@@ -3367,8 +3367,9 @@ class ModelBuilder:
 
         After calling this method and one of the joint methods, ensure that an articulation is created using :meth:`add_articulation`.
 
-        The ``armature`` argument is deprecated. Add any isotropic artificial inertia
-        directly to ``inertia`` instead.
+        .. deprecated:: 1.1
+            The ``armature`` parameter is deprecated. Add any isotropic artificial
+            inertia directly to ``inertia`` instead.
 
         Args:
             xform: The location of the body in the world frame.
@@ -3390,7 +3391,7 @@ class ModelBuilder:
             The index of the body in the model.
 
         """
-        if armature is not None:
+        if armature is not None and armature != 0.0:
             self._warn_body_armature_arg_deprecated()
         if xform is None:
             xform = wp.transform()
@@ -3467,8 +3468,9 @@ class ModelBuilder:
         For creating articulations with multiple linked bodies, use :meth:`add_link`,
         the appropriate joint methods, and :meth:`add_articulation` directly.
 
-        The ``armature`` argument is deprecated. Add any isotropic artificial inertia
-        directly to ``inertia`` instead.
+        .. deprecated:: 1.1
+            The ``armature`` parameter is deprecated. Add any isotropic artificial
+            inertia directly to ``inertia`` instead.
 
         Args:
             xform: The location of the body in the world frame.
