@@ -1089,13 +1089,13 @@ pipeline, or <code class="docutils literal notranslate"><span class="pre">None</
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverKamino.update_contacts">
-<span class="sig-name descname"><span class="pre">update_contacts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverKamino.update_contacts" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">update_contacts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverKamino.update_contacts" title="Link to this definition">#</a></dt>
 <dd><p>Converts Kamino contacts to Newton’s Contacts format.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a>) – The Newton Contacts object to populate.</p></li>
-<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Simulation state providing <code class="docutils literal notranslate"><span class="pre">body_q</span></code> for converting
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a><em> | </em><em>None</em>) – Simulation state providing <code class="docutils literal notranslate"><span class="pre">body_q</span></code> for converting
 world-space contact positions to body-local frame.</p></li>
 </ul>
 </dd>

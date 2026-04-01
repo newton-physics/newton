@@ -940,12 +940,15 @@ Defaults to <cite>None</cite> which means the control values from the
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverBase.update_contacts">
-<span class="sig-name descname"><span class="pre">update_contacts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverBase.update_contacts" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">update_contacts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverBase.update_contacts" title="Link to this definition">#</a></dt>
 <dd><p>Update a Contacts object with forces from the solver state. Where the solver state contains
 other contact data, convert that data to the Contacts format.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a>) – The object to update from the solver state.</p>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a>) – The object to update from the solver state.</p></li>
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a><em> | </em><em>None</em>) – Optional simulation state, used by some solvers.</p></li>
+</ul>
 </dd>
 </dl>
 </dd></dl>
