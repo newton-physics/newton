@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from time import perf_counter
+
 import numpy as np
 import warp as wp
 
@@ -39,6 +41,12 @@ class ViewerGui:
 
         # Gizmo active-frame tracking (handles snap_to on release)
         self._gizmo_active = {}
+
+        # FPS tracking
+        self._fps_history: list[float] = []
+        self._last_fps_time: float = perf_counter()
+        self._fps_frame_count: int = 0
+        self._current_fps: float = 0.0
 
         # Selection panel state (UI-local, not simulation state).
         self._selection_ui_state = {
@@ -217,10 +225,22 @@ class ViewerGui:
         if picking is not None:
             picking.release()
 
+    def _update_fps(self):
+        """Update FPS counter; called once per rendered frame."""
+        current_time = perf_counter()
+        self._fps_frame_count += 1
+        if current_time - self._last_fps_time >= 1.0:
+            self._current_fps = self._fps_frame_count / (current_time - self._last_fps_time)
+            self._fps_history.append(self._current_fps)
+            if len(self._fps_history) > 60:
+                self._fps_history.pop(0)
+            self._last_fps_time = current_time
+            self._fps_frame_count = 0
+
     def render_frame(self, update_fps: bool = True):
         """Render GUI into the active OpenGL framebuffer."""
         if update_fps:
-            self._viewer._update_fps()
+            self._update_fps()
         if not self.is_available or not self.show_ui:
             return
         self.ui.begin_frame()
@@ -503,7 +523,7 @@ class ViewerGui:
 
         if imgui.begin("Performance Stats", flags=flags):
             imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(*fps_color))
-            imgui.text(f"FPS: {viewer._current_fps:.1f}")
+            imgui.text(f"FPS: {self._current_fps:.1f}")
             imgui.pop_style_color()
 
             if viewer.model is not None:

@@ -240,12 +240,6 @@ class ViewerGL(ViewerBase):
         # Register wind panel (checks self.wind at render time, so safe to register early)
         self._ui_callbacks["panel"].append(self._render_wind_panel)
 
-        # Performance tracking
-        self._fps_history = []
-        self._last_fps_time = time.perf_counter()
-        self._frame_count = 0
-        self._current_fps = 0.0
-
         # a low resolution sphere mesh for point rendering
         self._point_mesh = None
 
@@ -1407,9 +1401,8 @@ class ViewerGL(ViewerBase):
         if self._ui_is_capturing_mouse():
             return
 
-        fov_delta = scroll_y * 2.0
-        self.camera.fov -= fov_delta
-        self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+        if self.gui:
+            self.gui.adjust_camera_fov_from_scroll(scroll_y)
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
         """Convert window coordinates to framebuffer coordinates."""
@@ -1436,12 +1429,8 @@ class ViewerGL(ViewerBase):
 
         import pyglet
 
-        # Handle right-click for picking
-        if button == pyglet.window.mouse.RIGHT and self.picking_enabled and self.picking is not None:
-            fb_x, fb_y = self._to_framebuffer_coords(x, y)
-            ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
-            if self._last_state is not None:
-                self.picking.pick(self._last_state, ray_start, ray_dir)
+        if button == pyglet.window.mouse.RIGHT and self.gui:
+            self.gui.start_picking_from_screen(x, y, self._to_framebuffer_coords)
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
         """
@@ -1453,8 +1442,8 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
-        if self.picking is not None:
-            self.picking.release()
+        if self.gui:
+            self.gui.release_picking()
 
     def on_mouse_drag(
         self,
@@ -1479,24 +1468,16 @@ class ViewerGL(ViewerBase):
         if self._ui_is_capturing_mouse():
             return
 
+        if not self.gui:
+            return
+
         import pyglet
 
         if buttons & pyglet.window.mouse.LEFT:
-            sensitivity = 0.1
-            dx *= sensitivity
-            dy *= sensitivity
+            self.gui.rotate_camera_from_drag(dx, dy)
 
-            # Map screen-space right drag to a right turn (clockwise),
-            # independent of world up-axis convention.
-            self.camera.yaw = (self.camera.yaw - dx + 180.0) % 360.0 - 180.0
-            self.camera.pitch = max(min(self.camera.pitch + dy, 89.0), -89.0)
-
-        if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
-            fb_x, fb_y = self._to_framebuffer_coords(x, y)
-            ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
-
-            if self.picking is not None and self.picking.is_picking():
-                self.picking.update(ray_start, ray_dir)
+        if buttons & pyglet.window.mouse.RIGHT:
+            self.gui.update_picking_from_screen(x, y, self._to_framebuffer_coords)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
         """
@@ -1635,26 +1616,6 @@ class ViewerGL(ViewerBase):
 
         if self.ui:
             self.ui.resize(width, height)
-
-    def _update_fps(self):
-        """
-        Update FPS calculation and statistics.
-        """
-        current_time = time.perf_counter()
-        self._frame_count += 1
-
-        # Update FPS every second
-        if current_time - self._last_fps_time >= 1.0:
-            time_delta = current_time - self._last_fps_time
-            self._current_fps = self._frame_count / time_delta
-            self._fps_history.append(self._current_fps)
-
-            # Keep only last 60 FPS readings
-            if len(self._fps_history) > 60:
-                self._fps_history.pop(0)
-
-            self._last_fps_time = current_time
-            self._frame_count = 0
 
     def _apply_rendering_options(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""

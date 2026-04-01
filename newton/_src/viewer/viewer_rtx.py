@@ -226,12 +226,6 @@ class ViewerRTX(ViewerUSD):
         self._last_perf_time: float | None = None
         self.gui = None
 
-        # FPS tracking (used by ViewerGui.render_frame)
-        self._fps_history: list[float] = []
-        self._last_fps_time: float = perf_counter()
-        self._fps_frame_count: int = 0
-        self._current_fps: float = 0.0
-
         # async rendering
         self._render_result = None
 
@@ -1656,18 +1650,6 @@ void main() {
                 self._point_batch_synced_counts[name] = count
 
     # ------------------------------------------------------- render + display
-
-    def _update_fps(self):
-        current_time = perf_counter()
-        self._fps_frame_count += 1
-        if current_time - self._last_fps_time >= 1.0:
-            time_delta = current_time - self._last_fps_time
-            self._current_fps = self._fps_frame_count / time_delta
-            self._fps_history.append(self._current_fps)
-            if len(self._fps_history) > 60:
-                self._fps_history.pop(0)
-            self._last_fps_time = current_time
-            self._fps_frame_count = 0
 
     def _render_and_display(self):
         if self._rtx is None or self._should_close:
