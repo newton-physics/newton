@@ -620,8 +620,9 @@ def raycast_kernel(
     # Skip shapes from non-visible worlds
     if visible_worlds_mask and shape_world.shape[0] > 0:
         world_idx = shape_world[shape_idx]
-        if world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
-            return
+        if world_idx >= 0:
+            if visible_worlds_mask[world_idx] == 0:
+                return
 
     # compute shape transform
     b = shape_body[shape_idx]

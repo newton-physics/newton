@@ -273,10 +273,11 @@ def compute_contact_lines(
     world_b = shape_world[shape_b]
     if visible_worlds_mask:
         w = world_a if world_a >= 0 else world_b
-        if w >= 0 and visible_worlds_mask[w] == 0:
-            line_start[tid] = nan_line
-            line_end[tid] = nan_line
-            return
+        if w >= 0:
+            if visible_worlds_mask[w] == 0:
+                line_start[tid] = nan_line
+                line_end[tid] = nan_line
+                return
 
     # Get world transforms for both shapes
     body_a = shape_body[shape_a]
@@ -360,11 +361,12 @@ def compute_joint_basis_lines(
     if visible_worlds_mask:
         if filter_body >= 0:
             world_idx = body_world[filter_body]
-            if world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
-                line_starts[tid] = nan_line
-                line_ends[tid] = nan_line
-                line_colors[tid] = zero_color
-                return
+            if world_idx >= 0:
+                if visible_worlds_mask[world_idx] == 0:
+                    line_starts[tid] = nan_line
+                    line_ends[tid] = nan_line
+                    line_colors[tid] = zero_color
+                    return
 
     # Get joint transform
     joint_tf = joint_transform[joint_id]
@@ -419,9 +421,10 @@ def compute_com_positions(
     # Filter by visible worlds
     world_idx = body_world[tid]
     if visible_worlds_mask:
-        if world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
-            com_positions[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-            return
+        if world_idx >= 0:
+            if visible_worlds_mask[world_idx] == 0:
+                com_positions[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+                return
 
     body_tf = body_q[tid]
     world_com = wp.transform_point(body_tf, body_com[tid])
@@ -456,11 +459,12 @@ def compute_inertia_box_lines(
     # Skip bodies from non-visible worlds
     world_idx = body_world[body_id]
     if visible_worlds_mask:
-        if world_idx >= 0 and visible_worlds_mask[world_idx] == 0:
-            line_starts[tid] = nan_line
-            line_ends[tid] = nan_line
-            line_colors[tid] = zero_color
-            return
+        if world_idx >= 0:
+            if visible_worlds_mask[world_idx] == 0:
+                line_starts[tid] = nan_line
+                line_ends[tid] = nan_line
+                line_colors[tid] = zero_color
+                return
 
     inv_m = body_inv_mass[body_id]
     if inv_m == 0.0:
@@ -696,17 +700,18 @@ def compute_hydro_contact_surface_lines(
         world_a = shape_world[shape_pair[0]]
         world_b = shape_world[shape_pair[1]]
         w = world_a if world_a >= 0 else world_b
-        if w >= 0 and visible_worlds_mask[w] == 0:
-            line_starts[tid * 3 + 0] = zero
-            line_ends[tid * 3 + 0] = zero
-            line_colors[tid * 3 + 0] = zero
-            line_starts[tid * 3 + 1] = zero
-            line_ends[tid * 3 + 1] = zero
-            line_colors[tid * 3 + 1] = zero
-            line_starts[tid * 3 + 2] = zero
-            line_ends[tid * 3 + 2] = zero
-            line_colors[tid * 3 + 2] = zero
-            return
+        if w >= 0:
+            if visible_worlds_mask[w] == 0:
+                line_starts[tid * 3 + 0] = zero
+                line_ends[tid * 3 + 0] = zero
+                line_colors[tid * 3 + 0] = zero
+                line_starts[tid * 3 + 1] = zero
+                line_ends[tid * 3 + 1] = zero
+                line_colors[tid * 3 + 1] = zero
+                line_starts[tid * 3 + 2] = zero
+                line_ends[tid * 3 + 2] = zero
+                line_colors[tid * 3 + 2] = zero
+                return
 
     # Get the 3 vertices of this triangle
     v0 = triangle_vertices[tid * 3 + 0]
