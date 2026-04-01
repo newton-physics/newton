@@ -30,18 +30,18 @@ from .simulator import Simulator
 @wp.kernel
 def compute_contact_box_transforms(
     # Kamino contact data
-    position_A: wp.array[wp.vec3],  # Contact position on body A
-    position_B: wp.array[wp.vec3],  # Contact position on body B
-    frame: wp.array[wp.quatf],  # Contact frames
-    mode: wp.array[wp.int32],  # Contact modes
-    wid: wp.array[wp.int32],
+    position_A: wp.array(dtype=wp.vec3),  # Contact position on body A
+    position_B: wp.array(dtype=wp.vec3),  # Contact position on body B
+    frame: wp.array(dtype=wp.quatf),  # Contact frames
+    mode: wp.array(dtype=wp.int32),  # Contact modes
+    wid: wp.array(dtype=wp.int32),
     num_contacts: int,
     world_spacing: wp.vec3,
     box_size: wp.vec3,  # Box dimensions
     # Output buffers
-    transforms: wp.array[wp.transform],
-    scales: wp.array[wp.vec3],
-    colors: wp.array[wp.vec3],
+    transforms: wp.array(dtype=wp.transform),
+    scales: wp.array(dtype=wp.vec3),
+    colors: wp.array(dtype=wp.vec3),
 ):
     """
     Compute transforms, scales, and colors for contact frame boxes.
@@ -90,21 +90,21 @@ def compute_contact_box_transforms(
 @wp.kernel
 def compute_contact_force_arrows(
     # Kamino contact data
-    position_A: wp.array[wp.vec3],
-    position_B: wp.array[wp.vec3],
-    frame: wp.array[wp.quatf],  # Contact frames
-    reaction: wp.array[wp.vec3],  # Contact forces in respective local contact frame
-    mode: wp.array[wp.int32],  # Contact modes
-    wid: wp.array[wp.int32],
+    position_A: wp.array(dtype=wp.vec3),
+    position_B: wp.array(dtype=wp.vec3),
+    frame: wp.array(dtype=wp.quatf),  # Contact frames
+    reaction: wp.array(dtype=wp.vec3),  # Contact forces in respective local contact frame
+    mode: wp.array(dtype=wp.int32),  # Contact modes
+    wid: wp.array(dtype=wp.int32),
     num_contacts: int,
     world_spacing: wp.vec3,
     force_scale: float,
     force_threshold: float,  # Minimum force to display
     # Output buffers
-    line_starts: wp.array[wp.vec3],
-    line_ends: wp.array[wp.vec3],
-    line_colors: wp.array[wp.vec3],
-    line_widths: wp.array[float],
+    line_starts: wp.array(dtype=wp.vec3),
+    line_ends: wp.array(dtype=wp.vec3),
+    line_colors: wp.array(dtype=wp.vec3),
+    line_widths: wp.array(dtype=float),
 ):
     """
     Compute line segments for visualizing contact forces as arrows.

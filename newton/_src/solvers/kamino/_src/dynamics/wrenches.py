@@ -39,19 +39,19 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _compute_joint_dof_body_wrenches_dense(
     # Inputs:
-    model_info_num_body_dofs: wp.array[int32],
-    model_info_bodies_offset: wp.array[int32],
-    model_info_joint_dofs_offset: wp.array[int32],
-    model_joints_num_dofs: wp.array[int32],
-    model_joints_dofs_offset: wp.array[int32],
-    model_joints_wid: wp.array[int32],
-    model_joints_bid_B: wp.array[int32],
-    model_joints_bid_F: wp.array[int32],
-    data_joints_tau_j: wp.array[float32],
-    jacobian_dofs_offsets: wp.array[int32],
-    jacobian_dofs_data: wp.array[float32],
+    model_info_num_body_dofs: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array(dtype=int32),
+    model_info_joint_dofs_offset: wp.array(dtype=int32),
+    model_joints_num_dofs: wp.array(dtype=int32),
+    model_joints_dofs_offset: wp.array(dtype=int32),
+    model_joints_wid: wp.array(dtype=int32),
+    model_joints_bid_B: wp.array(dtype=int32),
+    model_joints_bid_F: wp.array(dtype=int32),
+    data_joints_tau_j: wp.array(dtype=float32),
+    jacobian_dofs_offsets: wp.array(dtype=int32),
+    jacobian_dofs_data: wp.array(dtype=float32),
     # Outputs:
-    data_bodies_w_a: wp.array[vec6f],
+    data_bodies_w_a: wp.array(dtype=vec6f),
 ):
     # Retrieve the thread index as the joint index
     jid = wp.tid()
@@ -110,17 +110,17 @@ def _compute_joint_dof_body_wrenches_dense(
 @wp.kernel
 def _compute_joint_dof_body_wrenches_sparse(
     # Inputs:
-    model_info_joint_dofs_offset: wp.array[int32],
-    model_joints_num_dofs: wp.array[int32],
-    model_joints_dofs_offset: wp.array[int32],
-    model_joints_wid: wp.array[int32],
-    model_joints_bid_B: wp.array[int32],
-    model_joints_bid_F: wp.array[int32],
-    data_joints_tau_j: wp.array[float32],
-    jac_joint_nzb_offsets: wp.array[int32],
-    jac_nzb_values: wp.array[vec6f],
+    model_info_joint_dofs_offset: wp.array(dtype=int32),
+    model_joints_num_dofs: wp.array(dtype=int32),
+    model_joints_dofs_offset: wp.array(dtype=int32),
+    model_joints_wid: wp.array(dtype=int32),
+    model_joints_bid_B: wp.array(dtype=int32),
+    model_joints_bid_F: wp.array(dtype=int32),
+    data_joints_tau_j: wp.array(dtype=float32),
+    jac_joint_nzb_offsets: wp.array(dtype=int32),
+    jac_nzb_values: wp.array(dtype=vec6f),
     # Outputs:
-    data_bodies_w_a: wp.array[vec6f],
+    data_bodies_w_a: wp.array(dtype=vec6f),
 ):
     # Retrieve the thread index as the joint index
     jid = wp.tid()
@@ -170,24 +170,24 @@ def _compute_joint_dof_body_wrenches_sparse(
 @wp.kernel
 def _compute_joint_cts_body_wrenches_dense(
     # Inputs:
-    model_info_num_body_dofs: wp.array[int32],
-    model_info_bodies_offset: wp.array[int32],
-    model_info_joint_dynamic_cts_group_offset: wp.array[int32],
-    model_info_joint_kinematic_cts_group_offset: wp.array[int32],
-    model_time_inv_dt: wp.array[float32],
-    model_joints_wid: wp.array[int32],
-    model_joints_num_dynamic_cts: wp.array[int32],
-    model_joints_num_kinematic_cts: wp.array[int32],
-    model_joints_dynamic_cts_offset: wp.array[int32],
-    model_joints_kinematic_cts_offset: wp.array[int32],
-    model_joints_bid_B: wp.array[int32],
-    model_joints_bid_F: wp.array[int32],
-    jacobian_cts_offset: wp.array[int32],
-    jacobian_cts_data: wp.array[float32],
-    lambdas_offsets: wp.array[int32],
-    lambdas_data: wp.array[float32],
+    model_info_num_body_dofs: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array(dtype=int32),
+    model_info_joint_dynamic_cts_group_offset: wp.array(dtype=int32),
+    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
+    model_time_inv_dt: wp.array(dtype=float32),
+    model_joints_wid: wp.array(dtype=int32),
+    model_joints_num_dynamic_cts: wp.array(dtype=int32),
+    model_joints_num_kinematic_cts: wp.array(dtype=int32),
+    model_joints_dynamic_cts_offset: wp.array(dtype=int32),
+    model_joints_kinematic_cts_offset: wp.array(dtype=int32),
+    model_joints_bid_B: wp.array(dtype=int32),
+    model_joints_bid_F: wp.array(dtype=int32),
+    jacobian_cts_offset: wp.array(dtype=int32),
+    jacobian_cts_data: wp.array(dtype=float32),
+    lambdas_offsets: wp.array(dtype=int32),
+    lambdas_data: wp.array(dtype=float32),
     # Outputs:
-    data_bodies_w_j: wp.array[vec6f],
+    data_bodies_w_j: wp.array(dtype=vec6f),
 ):
     # Retrieve the thread index as the joint index
     jid = wp.tid()
@@ -269,21 +269,21 @@ def _compute_joint_cts_body_wrenches_dense(
 @wp.kernel
 def _compute_limit_cts_body_wrenches_dense(
     # Inputs:
-    model_info_num_body_dofs: wp.array[int32],
-    model_info_bodies_offset: wp.array[int32],
-    data_info_limit_cts_group_offset: wp.array[int32],
-    model_time_inv_dt: wp.array[float32],
-    limits_model_num: wp.array[int32],
+    model_info_num_body_dofs: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array(dtype=int32),
+    data_info_limit_cts_group_offset: wp.array(dtype=int32),
+    model_time_inv_dt: wp.array(dtype=float32),
+    limits_model_num: wp.array(dtype=int32),
     limits_model_max: int32,
-    limits_wid: wp.array[int32],
-    limits_lid: wp.array[int32],
-    limits_bids: wp.array[vec2i],
-    jacobian_cts_offset: wp.array[int32],
-    jacobian_cts_data: wp.array[float32],
-    lambdas_offsets: wp.array[int32],
-    lambdas_data: wp.array[float32],
+    limits_wid: wp.array(dtype=int32),
+    limits_lid: wp.array(dtype=int32),
+    limits_bids: wp.array(dtype=vec2i),
+    jacobian_cts_offset: wp.array(dtype=int32),
+    jacobian_cts_data: wp.array(dtype=float32),
+    lambdas_offsets: wp.array(dtype=int32),
+    lambdas_data: wp.array(dtype=float32),
     # Outputs:
-    data_bodies_w_l: wp.array[vec6f],
+    data_bodies_w_l: wp.array(dtype=vec6f),
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -357,21 +357,21 @@ def _compute_limit_cts_body_wrenches_dense(
 @wp.kernel
 def _compute_contact_cts_body_wrenches_dense(
     # Inputs:
-    model_info_num_body_dofs: wp.array[int32],
-    model_info_bodies_offset: wp.array[int32],
-    data_info_contact_cts_group_offset: wp.array[int32],
-    model_time_inv_dt: wp.array[float32],
-    contacts_model_num: wp.array[int32],
+    model_info_num_body_dofs: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array(dtype=int32),
+    data_info_contact_cts_group_offset: wp.array(dtype=int32),
+    model_time_inv_dt: wp.array(dtype=float32),
+    contacts_model_num: wp.array(dtype=int32),
     contacts_model_max: int32,
-    contacts_wid: wp.array[int32],
-    contacts_cid: wp.array[int32],
-    contacts_bid_AB: wp.array[vec2i],
-    jacobian_cts_offset: wp.array[int32],
-    jacobian_cts_data: wp.array[float32],
-    lambdas_offsets: wp.array[int32],
-    lambdas_data: wp.array[float32],
+    contacts_wid: wp.array(dtype=int32),
+    contacts_cid: wp.array(dtype=int32),
+    contacts_bid_AB: wp.array(dtype=vec2i),
+    jacobian_cts_offset: wp.array(dtype=int32),
+    jacobian_cts_data: wp.array(dtype=float32),
+    lambdas_offsets: wp.array(dtype=int32),
+    lambdas_data: wp.array(dtype=float32),
     # Outputs:
-    data_bodies_w_c: wp.array[vec6f],
+    data_bodies_w_c: wp.array(dtype=vec6f),
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -448,20 +448,20 @@ def _compute_contact_cts_body_wrenches_dense(
 @wp.kernel
 def _compute_cts_body_wrenches_sparse(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    model_info_bodies_offset: wp.array[int32],
-    data_info_limit_cts_group_offset: wp.array[int32],
-    data_info_contact_cts_group_offset: wp.array[int32],
-    jac_num_nzb: wp.array[int32],
-    jac_nzb_start: wp.array[int32],
-    jac_nzb_coords: wp.array2d[int32],
-    jac_nzb_values: wp.array[vec6f],
-    lambdas_offsets: wp.array[int32],
-    lambdas_data: wp.array[float32],
+    model_time_inv_dt: wp.array(dtype=float32),
+    model_info_bodies_offset: wp.array(dtype=int32),
+    data_info_limit_cts_group_offset: wp.array(dtype=int32),
+    data_info_contact_cts_group_offset: wp.array(dtype=int32),
+    jac_num_nzb: wp.array(dtype=int32),
+    jac_nzb_start: wp.array(dtype=int32),
+    jac_nzb_coords: wp.array2d(dtype=int32),
+    jac_nzb_values: wp.array(dtype=vec6f),
+    lambdas_offsets: wp.array(dtype=int32),
+    lambdas_data: wp.array(dtype=float32),
     # Outputs:
-    data_bodies_w_j_i: wp.array[vec6f],
-    data_bodies_w_l_i: wp.array[vec6f],
-    data_bodies_w_c_i: wp.array[vec6f],
+    data_bodies_w_j_i: wp.array(dtype=vec6f),
+    data_bodies_w_l_i: wp.array(dtype=vec6f),
+    data_bodies_w_c_i: wp.array(dtype=vec6f),
 ):
     # Retrieve the world and non-zero
     # block indices from the thread grid

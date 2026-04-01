@@ -105,16 +105,16 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _build_delassus_elementwise_dense(
     # Inputs:
-    model_info_num_bodies: wp.array[int32],
-    model_info_bodies_offset: wp.array[int32],
-    model_bodies_inv_m_i: wp.array[float32],
-    data_bodies_inv_I_i: wp.array[mat33f],
-    jacobians_cts_offset: wp.array[int32],
-    jacobians_cts_data: wp.array[float32],
-    delassus_dim: wp.array[int32],
-    delassus_mio: wp.array[int32],
+    model_info_num_bodies: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array(dtype=int32),
+    model_bodies_inv_m_i: wp.array(dtype=float32),
+    data_bodies_inv_I_i: wp.array(dtype=mat33f),
+    jacobians_cts_offset: wp.array(dtype=int32),
+    jacobians_cts_data: wp.array(dtype=float32),
+    delassus_dim: wp.array(dtype=int32),
+    delassus_mio: wp.array(dtype=int32),
     # Outputs:
-    delassus_D: wp.array[float32],
+    delassus_D: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the world index and Delassus element index
     wid, tid = wp.tid()
@@ -196,17 +196,17 @@ def _build_delassus_elementwise_dense(
 @wp.kernel
 def _build_delassus_elementwise_sparse(
     # Inputs:
-    model_info_bodies_offset: wp.array[int32],
-    model_bodies_inv_m_i: wp.array[float32],
-    data_bodies_inv_I_i: wp.array[mat33f],
-    jacobian_cts_num_nzb: wp.array[int32],
-    jacobian_cts_nzb_start: wp.array[int32],
-    jacobian_cts_nzb_coords: wp.array2d[int32],
-    jacobian_cts_nzb_values: wp.array[vec6f],
-    delassus_dim: wp.array[int32],
-    delassus_mio: wp.array[int32],
+    model_info_bodies_offset: wp.array(dtype=int32),
+    model_bodies_inv_m_i: wp.array(dtype=float32),
+    data_bodies_inv_I_i: wp.array(dtype=mat33f),
+    jacobian_cts_num_nzb: wp.array(dtype=int32),
+    jacobian_cts_nzb_start: wp.array(dtype=int32),
+    jacobian_cts_nzb_coords: wp.array2d(dtype=int32),
+    jacobian_cts_nzb_values: wp.array(dtype=vec6f),
+    delassus_dim: wp.array(dtype=int32),
+    delassus_mio: wp.array(dtype=int32),
     # Outputs:
-    delassus_D: wp.array[float32],
+    delassus_D: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the world index and Jacobian block index pair
     wid, tid = wp.tid()
@@ -281,13 +281,13 @@ def _build_delassus_elementwise_sparse(
 @wp.kernel
 def _add_joint_armature_diagonal_regularization_dense(
     # Inputs:
-    model_info_num_joint_dynamic_cts: wp.array[int32],
-    model_info_joint_dynamic_cts_offset: wp.array[int32],
-    model_joint_inv_m_j: wp.array[float32],
-    delassus_dim: wp.array[int32],
-    delassus_mio: wp.array[int32],
+    model_info_num_joint_dynamic_cts: wp.array(dtype=int32),
+    model_info_joint_dynamic_cts_offset: wp.array(dtype=int32),
+    model_joint_inv_m_j: wp.array(dtype=float32),
+    delassus_dim: wp.array(dtype=int32),
+    delassus_mio: wp.array(dtype=int32),
     # Outputs:
-    delassus_D: wp.array[float32],
+    delassus_D: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the world index and Delassus element index
     wid, tid = wp.tid()
@@ -316,12 +316,12 @@ def _add_joint_armature_diagonal_regularization_dense(
 @wp.kernel
 def _regularize_delassus_diagonal_dense(
     # Inputs:
-    delassus_dim: wp.array[int32],
-    delassus_vio: wp.array[int32],
-    delassus_mio: wp.array[int32],
-    eta: wp.array[float32],
+    delassus_dim: wp.array(dtype=int32),
+    delassus_vio: wp.array(dtype=int32),
+    delassus_mio: wp.array(dtype=int32),
+    eta: wp.array(dtype=float32),
     # Outputs:
-    delassus_D: wp.array[float32],
+    delassus_D: wp.array(dtype=float32),
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -341,13 +341,13 @@ def _regularize_delassus_diagonal_dense(
 
 @wp.kernel
 def _merge_inv_mass_matrix_kernel(
-    model_info_bodies_offset: wp.array[int32],
-    model_bodies_inv_m_i: wp.array[float32],
-    data_bodies_inv_I_i: wp.array[mat33f],
-    num_nzb: wp.array[int32],
-    nzb_start: wp.array[int32],
-    nzb_coords: wp.array2d[int32],
-    nzb_values: wp.array[vec6f],
+    model_info_bodies_offset: wp.array(dtype=int32),
+    model_bodies_inv_m_i: wp.array(dtype=float32),
+    data_bodies_inv_I_i: wp.array(dtype=mat33f),
+    num_nzb: wp.array(dtype=int32),
+    nzb_start: wp.array(dtype=int32),
+    nzb_coords: wp.array2d(dtype=int32),
+    nzb_values: wp.array(dtype=vec6f),
 ):
     """
     Kernel to merge the inverse mass matrix into an existing sparse matrix, so that the resulting
@@ -404,13 +404,13 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
     @wp.kernel
     def merge_preconditioner_kernel(
         # Inputs:
-        num_nzb: wp.array[int32],
-        nzb_start: wp.array[int32],
-        nzb_coords: wp.array2d[int32],
-        row_start: wp.array[int32],
-        preconditioner: wp.array[float32],
+        num_nzb: wp.array(dtype=int32),
+        nzb_start: wp.array(dtype=int32),
+        nzb_coords: wp.array2d(dtype=int32),
+        row_start: wp.array(dtype=int32),
+        preconditioner: wp.array(dtype=float32),
         # Outputs:
-        nzb_values: wp.array[block_type.warp_type],
+        nzb_values: wp.array(dtype=block_type.warp_type),
     ):
         mat_id, block_idx = wp.tid()
 
@@ -445,12 +445,12 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
 @wp.kernel
 def _add_armature_regularization_sparse(
     # Inputs:
-    model_info_num_joint_dynamic_cts: wp.array[int32],
-    model_info_joint_dynamic_cts_offset: wp.array[int32],
-    row_start: wp.array[int32],
-    model_joint_inv_m_j: wp.array[float32],
+    model_info_num_joint_dynamic_cts: wp.array(dtype=int32),
+    model_info_joint_dynamic_cts_offset: wp.array(dtype=int32),
+    row_start: wp.array(dtype=int32),
+    model_joint_inv_m_j: wp.array(dtype=float32),
     # Outputs:
-    combined_regularization: wp.array[float32],
+    combined_regularization: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the world index and joint dynamics index
     wid, tid = wp.tid()
@@ -478,13 +478,13 @@ def _add_armature_regularization_sparse(
 @wp.kernel
 def _add_armature_regularization_preconditioned_sparse(
     # Inputs:
-    model_info_num_joint_dynamic_cts: wp.array[int32],
-    model_info_joint_dynamic_cts_offset: wp.array[int32],
-    model_joint_inv_m_j: wp.array[float32],
-    row_start: wp.array[int32],
-    preconditioner: wp.array[float32],
+    model_info_num_joint_dynamic_cts: wp.array(dtype=int32),
+    model_info_joint_dynamic_cts_offset: wp.array(dtype=int32),
+    model_joint_inv_m_j: wp.array(dtype=float32),
+    row_start: wp.array(dtype=int32),
+    preconditioner: wp.array(dtype=float32),
     # Outputs:
-    combined_regularization: wp.array[float32],
+    combined_regularization: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the world index and joint dynamics index
     wid, tid = wp.tid()
@@ -515,16 +515,16 @@ def _add_armature_regularization_preconditioned_sparse(
 @wp.kernel
 def _compute_block_sparse_delassus_diagonal(
     # Inputs:
-    model_info_bodies_offset: wp.array[int32],
-    model_bodies_inv_m_i: wp.array[float32],
-    data_bodies_inv_I_i: wp.array[mat33f],
-    bsm_nzb_start: wp.array[int32],
-    bsm_num_nzb: wp.array[int32],
-    bsm_nzb_coords: wp.array2d[int32],
-    bsm_nzb_values: wp.array[vec6f],
-    vec_start: wp.array[int32],
+    model_info_bodies_offset: wp.array(dtype=int32),
+    model_bodies_inv_m_i: wp.array(dtype=float32),
+    data_bodies_inv_I_i: wp.array(dtype=mat33f),
+    bsm_nzb_start: wp.array(dtype=int32),
+    bsm_num_nzb: wp.array(dtype=int32),
+    bsm_nzb_coords: wp.array2d(dtype=int32),
+    bsm_nzb_values: wp.array(dtype=vec6f),
+    vec_start: wp.array(dtype=int32),
     # Outputs:
-    diag: wp.array[float32],
+    diag: wp.array(dtype=float32),
 ):
     """
     Computes the diagonal entries of the Delassus matrix by summing up the contributions of each
@@ -574,13 +574,13 @@ def _compute_block_sparse_delassus_diagonal(
 
 @wp.kernel
 def _add_matrix_diag_product(
-    model_data_num_total_cts: wp.array[int32],
-    row_start: wp.array[int32],
-    d: wp.array[float32],
-    x: wp.array[float32],
-    y: wp.array[float32],
+    model_data_num_total_cts: wp.array(dtype=int32),
+    row_start: wp.array(dtype=int32),
+    d: wp.array(dtype=float32),
+    x: wp.array(dtype=float32),
+    y: wp.array(dtype=float32),
     alpha: float,
-    world_mask: wp.array[int32],
+    world_mask: wp.array(dtype=int32),
 ):
     """
     Adds the product of a vector with a diagonal matrix to another vector: y += alpha * diag(d) @ x
@@ -600,14 +600,14 @@ def _add_matrix_diag_product(
 @wp.kernel
 def _scale_row_vector_kernel(
     # Matrix data:
-    matrix_dims: wp.array2d[int32],
+    matrix_dims: wp.array2d(dtype=int32),
     # Vector block offsets:
-    row_start: wp.array[int32],
+    row_start: wp.array(dtype=int32),
     # Inputs:
-    x: wp.array[Any],
+    x: wp.array(dtype=Any),
     beta: Any,
     # Mask:
-    matrix_mask: wp.array[int32],
+    matrix_mask: wp.array(dtype=int32),
 ):
     """
     Computes a vector scaling for all active entries: y = beta * y
@@ -629,22 +629,22 @@ def _make_block_sparse_gemv_regularization_kernel(alpha: float32):
     @wp.kernel
     def _block_sparse_gemv_regularization_kernel(
         # Matrix data:
-        dims: wp.array2d[int32],
-        num_nzb: wp.array[int32],
-        nzb_start: wp.array[int32],
-        nzb_coords: wp.array2d[int32],
-        nzb_values: wp.array[vec6f],
+        dims: wp.array2d(dtype=int32),
+        num_nzb: wp.array(dtype=int32),
+        nzb_start: wp.array(dtype=int32),
+        nzb_coords: wp.array2d(dtype=int32),
+        nzb_values: wp.array(dtype=vec6f),
         # Vector block offsets:
-        row_start: wp.array[int32],
-        col_start: wp.array[int32],
+        row_start: wp.array(dtype=int32),
+        col_start: wp.array(dtype=int32),
         # Regularization:
-        eta: wp.array[float32],
+        eta: wp.array(dtype=float32),
         # Vector:
-        x: wp.array[float32],
-        y: wp.array[float32],
-        z: wp.array[float32],
+        x: wp.array(dtype=float32),
+        y: wp.array(dtype=float32),
+        z: wp.array(dtype=float32),
         # Mask:
-        matrix_mask: wp.array[int32],
+        matrix_mask: wp.array(dtype=int32),
     ):
         """
         Computes a generalized matrix-vector product with an added diagonal regularization component:

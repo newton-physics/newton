@@ -261,15 +261,15 @@ def make_unilateral_constraints_info(
 @wp.kernel
 def _update_constraints_info(
     # Inputs:
-    model_info_num_joint_cts: wp.array[int32],
-    data_info_num_limits: wp.array[int32],
-    data_info_num_contacts: wp.array[int32],
+    model_info_num_joint_cts: wp.array(dtype=int32),
+    data_info_num_limits: wp.array(dtype=int32),
+    data_info_num_contacts: wp.array(dtype=int32),
     # Outputs:
-    data_info_num_total_cts: wp.array[int32],
-    data_info_num_limit_cts: wp.array[int32],
-    data_info_num_contact_cts: wp.array[int32],
-    data_info_limit_cts_group_offset: wp.array[int32],
-    data_info_contact_cts_group_offset: wp.array[int32],
+    data_info_num_total_cts: wp.array(dtype=int32),
+    data_info_num_limit_cts: wp.array(dtype=int32),
+    data_info_num_contact_cts: wp.array(dtype=int32),
+    data_info_limit_cts_group_offset: wp.array(dtype=int32),
+    data_info_contact_cts_group_offset: wp.array(dtype=int32),
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
@@ -302,19 +302,19 @@ def _update_constraints_info(
 @wp.kernel
 def _unpack_joint_constraint_solutions(
     # Inputs:
-    model_info_joint_cts_offset: wp.array[int32],
-    model_info_total_cts_offset: wp.array[int32],
-    model_info_joint_dynamic_cts_group_offset: wp.array[int32],
-    model_info_joint_kinematic_cts_group_offset: wp.array[int32],
-    model_time_inv_dt: wp.array[float32],
-    model_joint_wid: wp.array[int32],
-    model_joints_num_dynamic_cts: wp.array[int32],
-    model_joints_num_kinematic_cts: wp.array[int32],
-    model_joints_dynamic_cts_offset: wp.array[int32],
-    model_joints_kinematic_cts_offset: wp.array[int32],
-    lambdas: wp.array[float32],
+    model_info_joint_cts_offset: wp.array(dtype=int32),
+    model_info_total_cts_offset: wp.array(dtype=int32),
+    model_info_joint_dynamic_cts_group_offset: wp.array(dtype=int32),
+    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
+    model_time_inv_dt: wp.array(dtype=float32),
+    model_joint_wid: wp.array(dtype=int32),
+    model_joints_num_dynamic_cts: wp.array(dtype=int32),
+    model_joints_num_kinematic_cts: wp.array(dtype=int32),
+    model_joints_dynamic_cts_offset: wp.array(dtype=int32),
+    model_joints_kinematic_cts_offset: wp.array(dtype=int32),
+    lambdas: wp.array(dtype=float32),
     # Outputs:
-    joint_lambda_j: wp.array[float32],
+    joint_lambda_j: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the joint index
     jid = wp.tid()
@@ -350,17 +350,17 @@ def _unpack_joint_constraint_solutions(
 @wp.kernel
 def _unpack_limit_constraint_solutions(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    model_info_total_cts_offset: wp.array[int32],
-    data_info_limit_cts_group_offset: wp.array[int32],
-    limit_model_num_limits: wp.array[int32],
-    limit_wid: wp.array[int32],
-    limit_lid: wp.array[int32],
-    lambdas: wp.array[float32],
-    v_plus: wp.array[float32],
+    model_time_inv_dt: wp.array(dtype=float32),
+    model_info_total_cts_offset: wp.array(dtype=int32),
+    data_info_limit_cts_group_offset: wp.array(dtype=int32),
+    limit_model_num_limits: wp.array(dtype=int32),
+    limit_wid: wp.array(dtype=int32),
+    limit_lid: wp.array(dtype=int32),
+    lambdas: wp.array(dtype=float32),
+    v_plus: wp.array(dtype=float32),
     # Outputs:
-    limit_reaction: wp.array[float32],
-    limit_velocity: wp.array[float32],
+    limit_reaction: wp.array(dtype=float32),
+    limit_velocity: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the contact index
     lid = wp.tid()
@@ -399,18 +399,18 @@ def _unpack_limit_constraint_solutions(
 @wp.kernel
 def _unpack_contact_constraint_solutions(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    model_info_total_cts_offset: wp.array[int32],
-    data_info_contact_cts_group_offset: wp.array[int32],
-    contact_model_num_contacts: wp.array[int32],
-    contact_wid: wp.array[int32],
-    contact_cid: wp.array[int32],
-    lambdas: wp.array[float32],
-    v_plus: wp.array[float32],
+    model_time_inv_dt: wp.array(dtype=float32),
+    model_info_total_cts_offset: wp.array(dtype=int32),
+    data_info_contact_cts_group_offset: wp.array(dtype=int32),
+    contact_model_num_contacts: wp.array(dtype=int32),
+    contact_wid: wp.array(dtype=int32),
+    contact_cid: wp.array(dtype=int32),
+    lambdas: wp.array(dtype=float32),
+    v_plus: wp.array(dtype=float32),
     # Outputs:
-    contact_mode: wp.array[int32],
-    contact_reaction: wp.array[vec3f],
-    contact_velocity: wp.array[vec3f],
+    contact_mode: wp.array(dtype=int32),
+    contact_reaction: wp.array(dtype=vec3f),
+    contact_velocity: wp.array(dtype=vec3f),
 ):
     # Retrieve the thread index as the contact index
     cid = wp.tid()

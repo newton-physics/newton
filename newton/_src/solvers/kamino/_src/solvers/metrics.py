@@ -471,11 +471,11 @@ def compute_v_plus(
     vio: int32,
     mio: int32,
     sigma: float32,
-    P: wp.array[float32],
-    D_p: wp.array[float32],
-    v_f_p: wp.array[float32],
-    lambdas: wp.array[float32],
-    v_plus: wp.array[float32],
+    P: wp.array(dtype=float32),
+    D_p: wp.array(dtype=float32),
+    v_f_p: wp.array(dtype=float32),
+    lambdas: wp.array(dtype=float32),
+    v_plus: wp.array(dtype=float32),
 ):
     """
     Computes the post-event constraint-space velocity as:
@@ -501,13 +501,13 @@ def compute_v_plus(
         dim (int32): The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio (int32): The vector index offset (i.e. start index) for the vectors `x, b, c`.
         mio (int32): The matrix index offset (i.e. start index) for the matrix `A`.
-        D_p (wp.array[float32]):
+        D_p (wp.array(dtype=float32)):
             Input preconditioned Delassus matrix stored in row-major order.
-        v_f_p (wp.array[float32]):
+        v_f_p (wp.array(dtype=float32)):
             Input preconditioned unconstrained constraint-space velocity vector.
-        lambdas (wp.array[float32]):
+        lambdas (wp.array(dtype=float32)):
             Input constraint reactions (i.e. Lagrange multipliers) vector.
-        v_plus (wp.array[float32]):
+        v_plus (wp.array(dtype=float32)):
             Output array to store the post-event constraint-space velocity vector.
     """
     v_f_p_i = float(0.0)
@@ -531,10 +531,10 @@ def compute_v_plus(
 def compute_v_plus_sparse(
     dim: int32,
     vio: int32,
-    P: wp.array[float32],
-    v_f_p: wp.array[float32],
-    D_p_lambdas: wp.array[float32],
-    v_plus: wp.array[float32],
+    P: wp.array(dtype=float32),
+    v_f_p: wp.array(dtype=float32),
+    D_p_lambdas: wp.array(dtype=float32),
+    v_plus: wp.array(dtype=float32),
 ):
     """
     Computes the post-event constraint-space velocity as:
@@ -553,12 +553,12 @@ def compute_v_plus_sparse(
     Args:
         dim (int32): The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio (int32): The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        v_f_p (wp.array[float32]):
+        v_f_p (wp.array(dtype=float32)):
             Input preconditioned unconstrained constraint-space velocity vector.
-        D_p_lambdas (wp.array[float32]):
+        D_p_lambdas (wp.array(dtype=float32)):
             Product of the Delassus matrix with the input constraint reactions
             (i.e. Lagrange multipliers) vector.
-        v_plus (wp.array[float32]):
+        v_plus (wp.array(dtype=float32)):
             Output array to store the post-event constraint-space velocity vector.
     """
     for i in range(dim):
@@ -570,8 +570,8 @@ def compute_v_plus_sparse(
 def compute_vector_difference_infnorm(
     dim: int32,
     vio: int32,
-    x: wp.array[float32],
-    y: wp.array[float32],
+    x: wp.array(dtype=float32),
+    y: wp.array(dtype=float32),
 ) -> tuple[float32, int32]:
     """
     Computes the sum of two vectors `x` and `y` and stores the result in vector `z`.\n
@@ -580,9 +580,9 @@ def compute_vector_difference_infnorm(
     Args:
         dim (int32): The dimension (i.e. size) of the vectors.
         vio (int32): The vector index offset (i.e. start index).
-        x (wp.array[float32]): The first vector.
-        y (wp.array[float32]): The second vector.
-        z (wp.array[float32]): The output vector where the sum is stored.
+        x (wp.array(dtype=float32)): The first vector.
+        y (wp.array(dtype=float32)): The second vector.
+        z (wp.array(dtype=float32)): The output vector where the sum is stored.
 
     Returns:
         None: The result is stored in the output vector `z`.
@@ -606,17 +606,17 @@ def compute_vector_difference_infnorm(
 @wp.kernel
 def _compute_eom_residual(
     # Inputs
-    model_time_dt: wp.array[float32],
-    model_gravity: wp.array[vec4f],
-    model_bodies_wid: wp.array[int32],
-    model_bodies_m_i: wp.array[float32],
-    state_bodies_I_i: wp.array[mat33f],
-    state_bodies_w_i: wp.array[vec6f],
-    state_bodies_u_i: wp.array[vec6f],
-    state_bodies_u_i_p: wp.array[vec6f],
+    model_time_dt: wp.array(dtype=float32),
+    model_gravity: wp.array(dtype=vec4f),
+    model_bodies_wid: wp.array(dtype=int32),
+    model_bodies_m_i: wp.array(dtype=float32),
+    state_bodies_I_i: wp.array(dtype=mat33f),
+    state_bodies_w_i: wp.array(dtype=vec6f),
+    state_bodies_u_i: wp.array(dtype=vec6f),
+    state_bodies_u_i_p: wp.array(dtype=vec6f),
     # Outputs
-    metric_r_eom: wp.array[float32],
-    metric_r_eom_argmax: wp.array[int64],
+    metric_r_eom: wp.array(dtype=float32),
+    metric_r_eom_argmax: wp.array(dtype=int64),
 ):
     # Retrieve the thread index as the body index
     bid = wp.tid()
@@ -662,20 +662,20 @@ def _compute_eom_residual(
 @wp.kernel
 def _compute_joint_kinematics_residual_dense(
     # Inputs:
-    model_info_num_body_dofs: wp.array[int32],
-    model_info_bodies_offset: wp.array[int32],
-    model_info_joint_kinematic_cts_group_offset: wp.array[int32],
-    model_joint_wid: wp.array[int32],
-    model_joint_num_kinematic_cts: wp.array[int32],
-    model_joint_kinematic_cts_offset: wp.array[int32],
-    model_joint_bid_B: wp.array[int32],
-    model_joint_bid_F: wp.array[int32],
-    data_bodies_u_i: wp.array[vec6f],
-    jacobian_cts_offset: wp.array[int32],
-    jacobian_cts_data: wp.array[float32],
+    model_info_num_body_dofs: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array(dtype=int32),
+    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
+    model_joint_wid: wp.array(dtype=int32),
+    model_joint_num_kinematic_cts: wp.array(dtype=int32),
+    model_joint_kinematic_cts_offset: wp.array(dtype=int32),
+    model_joint_bid_B: wp.array(dtype=int32),
+    model_joint_bid_F: wp.array(dtype=int32),
+    data_bodies_u_i: wp.array(dtype=vec6f),
+    jacobian_cts_offset: wp.array(dtype=int32),
+    jacobian_cts_data: wp.array(dtype=float32),
     # Outputs:
-    metric_r_kinematics: wp.array[float32],
-    metric_r_kinematics_argmax: wp.array[int64],
+    metric_r_kinematics: wp.array(dtype=float32),
+    metric_r_kinematics_argmax: wp.array(dtype=int64),
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -727,18 +727,18 @@ def _compute_joint_kinematics_residual_dense(
 @wp.kernel
 def _compute_joint_kinematics_residual_sparse(
     # Inputs:
-    model_joint_wid: wp.array[int32],
-    model_joint_num_dynamic_cts: wp.array[int32],
-    model_joint_num_kinematic_cts: wp.array[int32],
-    model_joint_kinematic_cts_offset: wp.array[int32],
-    model_joint_bid_B: wp.array[int32],
-    model_joint_bid_F: wp.array[int32],
-    data_bodies_u_i: wp.array[vec6f],
-    jac_nzb_values: wp.array[vec6f],
-    jac_joint_nzb_offsets: wp.array[int32],
+    model_joint_wid: wp.array(dtype=int32),
+    model_joint_num_dynamic_cts: wp.array(dtype=int32),
+    model_joint_num_kinematic_cts: wp.array(dtype=int32),
+    model_joint_kinematic_cts_offset: wp.array(dtype=int32),
+    model_joint_bid_B: wp.array(dtype=int32),
+    model_joint_bid_F: wp.array(dtype=int32),
+    data_bodies_u_i: wp.array(dtype=vec6f),
+    jac_nzb_values: wp.array(dtype=vec6f),
+    jac_joint_nzb_offsets: wp.array(dtype=int32),
     # Outputs:
-    metric_r_kinematics: wp.array[float32],
-    metric_r_kinematics_argmax: wp.array[int64],
+    metric_r_kinematics: wp.array(dtype=float32),
+    metric_r_kinematics_argmax: wp.array(dtype=int64),
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -784,15 +784,15 @@ def _compute_joint_kinematics_residual_sparse(
 @wp.kernel
 def _compute_cts_joints_residual(
     # Inputs:
-    model_info_joints_cts_offset: wp.array[int32],
-    model_info_joint_kinematic_cts_group_offset: wp.array[int32],
-    model_joint_wid: wp.array[int32],
-    model_joint_num_kinematic_cts: wp.array[int32],
-    model_joint_kinematic_cts_offset: wp.array[int32],
-    data_joints_r_j: wp.array[float32],
+    model_info_joints_cts_offset: wp.array(dtype=int32),
+    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
+    model_joint_wid: wp.array(dtype=int32),
+    model_joint_num_kinematic_cts: wp.array(dtype=int32),
+    model_joint_kinematic_cts_offset: wp.array(dtype=int32),
+    data_joints_r_j: wp.array(dtype=float32),
     # Outputs:
-    metric_r_cts_joints: wp.array[float32],
-    metric_r_cts_joints_argmax: wp.array[int64],
+    metric_r_cts_joints: wp.array(dtype=float32),
+    metric_r_cts_joints_argmax: wp.array(dtype=int64),
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -824,14 +824,14 @@ def _compute_cts_joints_residual(
 @wp.kernel
 def _compute_cts_limits_residual(
     # Inputs:
-    limit_model_num_limits: wp.array[int32],
-    limit_wid: wp.array[int32],
-    limit_lid: wp.array[int32],
-    limit_dof: wp.array[int32],
-    limit_r_q: wp.array[float32],
+    limit_model_num_limits: wp.array(dtype=int32),
+    limit_wid: wp.array(dtype=int32),
+    limit_lid: wp.array(dtype=int32),
+    limit_dof: wp.array(dtype=int32),
+    limit_r_q: wp.array(dtype=float32),
     # Outputs:
-    metric_r_cts_limits: wp.array[float32],
-    metric_r_cts_limits_argmax: wp.array[int64],
+    metric_r_cts_limits: wp.array(dtype=float32),
+    metric_r_cts_limits_argmax: wp.array(dtype=int64),
 ):
     # Retrieve the thread index as the limit index
     lid = wp.tid()
@@ -861,13 +861,13 @@ def _compute_cts_limits_residual(
 @wp.kernel
 def _compute_cts_contacts_residual(
     # Inputs:
-    contact_model_num_contacts: wp.array[int32],
-    contact_wid: wp.array[int32],
-    contact_cid: wp.array[int32],
-    contact_gapfunc: wp.array[vec4f],
+    contact_model_num_contacts: wp.array(dtype=int32),
+    contact_wid: wp.array(dtype=int32),
+    contact_cid: wp.array(dtype=int32),
+    contact_gapfunc: wp.array(dtype=vec4f),
     # Outputs:
-    metric_r_cts_contacts: wp.array[float32],
-    metric_r_cts_contacts_argmax: wp.array[int32],
+    metric_r_cts_contacts: wp.array(dtype=float32),
+    metric_r_cts_contacts_argmax: wp.array(dtype=int32),
 ):
     # Retrieve the thread index as the contact index
     cid = wp.tid()
@@ -896,37 +896,37 @@ def _compute_cts_contacts_residual(
 @wp.kernel
 def _compute_dual_problem_metrics(
     # Inputs:
-    problem_nl: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    problem_D: wp.array[float32],
-    problem_P: wp.array[float32],
-    solution_sigma: wp.array[vec2f],
-    solution_lambdas: wp.array[float32],
-    solution_v_plus: wp.array[float32],
+    problem_nl: wp.array(dtype=int32),
+    problem_nc: wp.array(dtype=int32),
+    problem_cio: wp.array(dtype=int32),
+    problem_lcgo: wp.array(dtype=int32),
+    problem_ccgo: wp.array(dtype=int32),
+    problem_dim: wp.array(dtype=int32),
+    problem_vio: wp.array(dtype=int32),
+    problem_mio: wp.array(dtype=int32),
+    problem_mu: wp.array(dtype=float32),
+    problem_v_f: wp.array(dtype=float32),
+    problem_D: wp.array(dtype=float32),
+    problem_P: wp.array(dtype=float32),
+    solution_sigma: wp.array(dtype=vec2f),
+    solution_lambdas: wp.array(dtype=float32),
+    solution_v_plus: wp.array(dtype=float32),
     # Buffers:
-    buffer_s: wp.array[float32],
-    buffer_v: wp.array[float32],
+    buffer_s: wp.array(dtype=float32),
+    buffer_v: wp.array(dtype=float32),
     # Outputs:
-    metric_r_v_plus: wp.array[float32],
-    metric_r_v_plus_argmax: wp.array[int32],
-    metric_r_ncp_primal: wp.array[float32],
-    metric_r_ncp_primal_argmax: wp.array[int32],
-    metric_r_ncp_dual: wp.array[float32],
-    metric_r_ncp_dual_argmax: wp.array[int32],
-    metric_r_ncp_compl: wp.array[float32],
-    metric_r_ncp_compl_argmax: wp.array[int32],
-    metric_r_vi_natmap: wp.array[float32],
-    metric_r_vi_natmap_argmax: wp.array[int32],
-    metric_f_ncp: wp.array[float32],
-    metric_f_ccp: wp.array[float32],
+    metric_r_v_plus: wp.array(dtype=float32),
+    metric_r_v_plus_argmax: wp.array(dtype=int32),
+    metric_r_ncp_primal: wp.array(dtype=float32),
+    metric_r_ncp_primal_argmax: wp.array(dtype=int32),
+    metric_r_ncp_dual: wp.array(dtype=float32),
+    metric_r_ncp_dual_argmax: wp.array(dtype=int32),
+    metric_r_ncp_compl: wp.array(dtype=float32),
+    metric_r_ncp_compl_argmax: wp.array(dtype=int32),
+    metric_r_vi_natmap: wp.array(dtype=float32),
+    metric_r_vi_natmap_argmax: wp.array(dtype=int32),
+    metric_f_ncp: wp.array(dtype=float32),
+    metric_f_ccp: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
@@ -997,34 +997,34 @@ def _compute_dual_problem_metrics(
 @wp.kernel
 def _compute_dual_problem_metrics_sparse(
     # Inputs:
-    problem_nl: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    problem_P: wp.array[float32],
-    solution_lambdas: wp.array[float32],
-    solution_v_plus: wp.array[float32],
+    problem_nl: wp.array(dtype=int32),
+    problem_nc: wp.array(dtype=int32),
+    problem_cio: wp.array(dtype=int32),
+    problem_lcgo: wp.array(dtype=int32),
+    problem_ccgo: wp.array(dtype=int32),
+    problem_dim: wp.array(dtype=int32),
+    problem_vio: wp.array(dtype=int32),
+    problem_mu: wp.array(dtype=float32),
+    problem_v_f: wp.array(dtype=float32),
+    problem_P: wp.array(dtype=float32),
+    solution_lambdas: wp.array(dtype=float32),
+    solution_v_plus: wp.array(dtype=float32),
     # Buffers:
-    buffer_s: wp.array[float32],
-    buffer_v: wp.array[float32],
+    buffer_s: wp.array(dtype=float32),
+    buffer_v: wp.array(dtype=float32),
     # Outputs:
-    metric_r_v_plus: wp.array[float32],
-    metric_r_v_plus_argmax: wp.array[int32],
-    metric_r_ncp_primal: wp.array[float32],
-    metric_r_ncp_primal_argmax: wp.array[int32],
-    metric_r_ncp_dual: wp.array[float32],
-    metric_r_ncp_dual_argmax: wp.array[int32],
-    metric_r_ncp_compl: wp.array[float32],
-    metric_r_ncp_compl_argmax: wp.array[int32],
-    metric_r_vi_natmap: wp.array[float32],
-    metric_r_vi_natmap_argmax: wp.array[int32],
-    metric_f_ncp: wp.array[float32],
-    metric_f_ccp: wp.array[float32],
+    metric_r_v_plus: wp.array(dtype=float32),
+    metric_r_v_plus_argmax: wp.array(dtype=int32),
+    metric_r_ncp_primal: wp.array(dtype=float32),
+    metric_r_ncp_primal_argmax: wp.array(dtype=int32),
+    metric_r_ncp_dual: wp.array(dtype=float32),
+    metric_r_ncp_dual_argmax: wp.array(dtype=int32),
+    metric_r_ncp_compl: wp.array(dtype=float32),
+    metric_r_ncp_compl_argmax: wp.array(dtype=int32),
+    metric_r_vi_natmap: wp.array(dtype=float32),
+    metric_r_vi_natmap_argmax: wp.array(dtype=int32),
+    metric_f_ncp: wp.array(dtype=float32),
+    metric_f_ccp: wp.array(dtype=float32),
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()

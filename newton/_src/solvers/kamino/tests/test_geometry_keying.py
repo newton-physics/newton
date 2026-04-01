@@ -93,7 +93,9 @@ class TestPairKeyOps(unittest.TestCase):
 
         # Define a Warp kernel to test build_pair_key2
         @wp.kernel
-        def _test_kernel_build_pair_key2(index_A: wp.array[uint32], index_B: wp.array[uint32], key: wp.array[uint64]):
+        def _test_kernel_build_pair_key2(
+            index_A: wp.array(dtype=uint32), index_B: wp.array(dtype=uint32), key: wp.array(dtype=uint64)
+        ):
             tid = wp.tid()
             key[tid] = build_pair_key2(index_A[tid], index_B[tid])
 
@@ -143,10 +145,10 @@ class TestPairKeyOps(unittest.TestCase):
             # Generate the test kernel for the specified build_pair_key3 function
             @wp.kernel
             def _test_kernel_build_pair_key3(
-                index_A: wp.array[uint32],
-                index_B: wp.array[uint32],
-                index_C: wp.array[uint32],
-                key: wp.array[uint64],
+                index_A: wp.array(dtype=uint32),
+                index_B: wp.array(dtype=uint32),
+                index_C: wp.array(dtype=uint32),
+                key: wp.array(dtype=uint64),
             ):
                 tid = wp.tid()
                 key[tid] = build_pair_key3(index_A[tid], index_B[tid], index_C[tid])
@@ -240,11 +242,11 @@ class TestBinarySearchOps(unittest.TestCase):
         @wp.kernel
         def _test_kernel_binary_search_find_pair(
             # Inputs:
-            num_active_pairs: wp.array[int32],
-            all_pairs: wp.array[wp.vec2i],
-            target_pair: wp.array[wp.vec2i],
+            num_active_pairs: wp.array(dtype=int32),
+            all_pairs: wp.array(dtype=wp.vec2i),
+            target_pair: wp.array(dtype=wp.vec2i),
             # Output:
-            target_index: wp.array[wp.int32],
+            target_index: wp.array(dtype=wp.int32),
         ):
             tid = wp.tid()
             target_index[tid] = binary_search_find_pair(num_active_pairs[0], target_pair[tid], all_pairs)
@@ -288,11 +290,11 @@ class TestBinarySearchOps(unittest.TestCase):
         @wp.kernel
         def _test_kernel_binary_search_find_range_start(
             # Inputs:
-            num_active_keys: wp.array[int32],
-            all_keys: wp.array[uint64],
-            target_key: wp.array[uint64],
+            num_active_keys: wp.array(dtype=int32),
+            all_keys: wp.array(dtype=uint64),
+            target_key: wp.array(dtype=uint64),
             # Output:
-            target_start: wp.array[int32],
+            target_start: wp.array(dtype=int32),
         ):
             tid = wp.tid()
             target_start[tid] = binary_search_find_range_start(int32(0), num_active_keys[0], target_key[tid], all_keys)

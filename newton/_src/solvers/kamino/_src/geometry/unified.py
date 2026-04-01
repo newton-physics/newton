@@ -57,39 +57,39 @@ class ContactWriterDataKamino:
 
     # Contact limits
     model_max_contacts: int32
-    world_max_contacts: wp.array[int32]
+    world_max_contacts: wp.array(dtype=int32)
 
     # Geometry information arrays
-    geom_wid: wp.array[int32]  # World ID for each geometry
-    geom_bid: wp.array[int32]  # Body ID for each geometry
-    geom_mid: wp.array[int32]  # Material ID for each geometry
-    geom_gap: wp.array[float32]  # Detection gap for each geometry [m]
+    geom_wid: wp.array(dtype=int32)  # World ID for each geometry
+    geom_bid: wp.array(dtype=int32)  # Body ID for each geometry
+    geom_mid: wp.array(dtype=int32)  # Material ID for each geometry
+    geom_gap: wp.array(dtype=float32)  # Detection gap for each geometry [m]
 
     # Material properties (indexed by material pair)
-    material_restitution: wp.array[float32]
-    material_static_friction: wp.array[float32]
-    material_dynamic_friction: wp.array[float32]
-    material_pair_restitution: wp.array[float32]
-    material_pair_static_friction: wp.array[float32]
-    material_pair_dynamic_friction: wp.array[float32]
+    material_restitution: wp.array(dtype=float32)
+    material_static_friction: wp.array(dtype=float32)
+    material_dynamic_friction: wp.array(dtype=float32)
+    material_pair_restitution: wp.array(dtype=float32)
+    material_pair_static_friction: wp.array(dtype=float32)
+    material_pair_dynamic_friction: wp.array(dtype=float32)
 
     # Contact limit and active count (Newton interface)
     contact_max: int32
-    contact_count: wp.array[int32]
+    contact_count: wp.array(dtype=int32)
 
     # Output arrays (Kamino Contacts format)
-    contacts_model_num_active: wp.array[int32]
-    contacts_world_num_active: wp.array[int32]
-    contact_wid: wp.array[int32]
-    contact_cid: wp.array[int32]
-    contact_gid_AB: wp.array[vec2i]
-    contact_bid_AB: wp.array[vec2i]
-    contact_position_A: wp.array[vec3f]
-    contact_position_B: wp.array[vec3f]
-    contact_gapfunc: wp.array[vec4f]
-    contact_frame: wp.array[quatf]
-    contact_material: wp.array[vec2f]
-    contact_key: wp.array[uint64]
+    contacts_model_num_active: wp.array(dtype=int32)
+    contacts_world_num_active: wp.array(dtype=int32)
+    contact_wid: wp.array(dtype=int32)
+    contact_cid: wp.array(dtype=int32)
+    contact_gid_AB: wp.array(dtype=vec2i)
+    contact_bid_AB: wp.array(dtype=vec2i)
+    contact_position_A: wp.array(dtype=vec3f)
+    contact_position_B: wp.array(dtype=vec3f)
+    contact_gapfunc: wp.array(dtype=vec4f)
+    contact_frame: wp.array(dtype=quatf)
+    contact_material: wp.array(dtype=vec2f)
+    contact_key: wp.array(dtype=uint64)
 
 
 ###
@@ -279,14 +279,14 @@ def _compute_collision_radius(geo_type: int32, scale: vec3f) -> float32:
 def _convert_geom_data_kamino_to_newton(
     # Inputs:
     default_gap: float32,
-    geom_sid: wp.array[int32],
-    geom_params: wp.array[vec4f],
-    geom_margin: wp.array[float32],
+    geom_sid: wp.array(dtype=int32),
+    geom_params: wp.array(dtype=vec4f),
+    geom_margin: wp.array(dtype=float32),
     # Outputs:
-    geom_gap: wp.array[float32],
-    geom_type: wp.array[int32],
-    geom_data: wp.array[vec4f],
-    shape_collision_radius: wp.array[float32],
+    geom_gap: wp.array(dtype=float32),
+    geom_type: wp.array(dtype=int32),
+    geom_data: wp.array(dtype=vec4f),
+    shape_collision_radius: wp.array(dtype=float32),
 ):
     """
     Converts Kamino geometry data to Newton-compatible format.
@@ -320,19 +320,19 @@ def _convert_geom_data_kamino_to_newton(
 @wp.kernel
 def _update_geom_poses_and_compute_aabbs(
     # Inputs:
-    geom_type: wp.array[int32],
-    geom_data: wp.array[vec4f],
-    geom_bid: wp.array[int32],
-    geom_ptr: wp.array[wp.uint64],
-    geom_offset: wp.array[transformf],
-    geom_margin: wp.array[float32],
-    geom_gap: wp.array[float32],
-    shape_collision_radius: wp.array[float32],
-    body_pose: wp.array[transformf],
+    geom_type: wp.array(dtype=int32),
+    geom_data: wp.array(dtype=vec4f),
+    geom_bid: wp.array(dtype=int32),
+    geom_ptr: wp.array(dtype=wp.uint64),
+    geom_offset: wp.array(dtype=transformf),
+    geom_margin: wp.array(dtype=float32),
+    geom_gap: wp.array(dtype=float32),
+    shape_collision_radius: wp.array(dtype=float32),
+    body_pose: wp.array(dtype=transformf),
     # Outputs:
-    geom_pose: wp.array[transformf],
-    shape_aabb_lower: wp.array[vec3f],
-    shape_aabb_upper: wp.array[vec3f],
+    geom_pose: wp.array(dtype=transformf),
+    shape_aabb_lower: wp.array(dtype=vec3f),
+    shape_aabb_upper: wp.array(dtype=vec3f),
 ):
     """
     Updates the pose of each Kamino geometry in world coordinates and computes its AABB.

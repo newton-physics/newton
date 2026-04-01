@@ -576,8 +576,8 @@ class BlockSparseMatrices:
 
 @wp.kernel
 def _copy_square_dims_kernel(
-    src_dim: wp.array[int32],
-    dst_dims: wp.array2d[int32],
+    src_dim: wp.array(dtype=int32),
+    dst_dims: wp.array2d(dtype=int32),
 ):
     """Copies square dimensions from 1D array to 2D (n, n) format."""
     wid = wp.tid()
@@ -596,15 +596,15 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
     @wp.kernel
     def kernel(
         # Dense matrix info
-        dense_dim: wp.array[int32],
-        dense_mio: wp.array[int32],
-        dense_mat: wp.array[float32],
+        dense_dim: wp.array(dtype=int32),
+        dense_mio: wp.array(dtype=int32),
+        dense_mat: wp.array(dtype=float32),
         # BSM info
-        max_nzb: wp.array[int32],
-        nzb_start: wp.array[int32],
+        max_nzb: wp.array(dtype=int32),
+        nzb_start: wp.array(dtype=int32),
         # Outputs
-        num_nzb: wp.array[int32],
-        nzb_coords: wp.array2d[int32],
+        num_nzb: wp.array(dtype=int32),
+        nzb_coords: wp.array2d(dtype=int32),
     ):
         wid, bi, bj = wp.tid()
 
@@ -655,15 +655,15 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
     @wp.kernel
     def kernel(
         # Dense matrix info
-        dense_dim: wp.array[int32],
-        dense_mio: wp.array[int32],
-        dense_mat: wp.array[float32],
+        dense_dim: wp.array(dtype=int32),
+        dense_mio: wp.array(dtype=int32),
+        dense_mat: wp.array(dtype=float32),
         # BSM info
-        nzb_start: wp.array[int32],
-        num_nzb: wp.array[int32],
-        nzb_coords: wp.array2d[int32],
+        nzb_start: wp.array(dtype=int32),
+        num_nzb: wp.array(dtype=int32),
+        nzb_coords: wp.array2d(dtype=int32),
         # Output
-        nzb_values: wp.array[mat_type],
+        nzb_values: wp.array(dtype=mat_type),
     ):
         wid, block_idx = wp.tid()
 

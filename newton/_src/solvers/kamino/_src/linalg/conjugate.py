@@ -155,14 +155,14 @@ class BatchedLinearOperator:
 def make_termination_kernel(n_worlds):
     @wp.kernel
     def check_termination(
-        maxiter: wp.array[int],
+        maxiter: wp.array(dtype=int),
         cycle_size: int,
-        r_norm_sq: wp.array[Any],
-        atol_sq: wp.array[Any],
-        world_active: wp.array[wp.int32],
-        cur_iter: wp.array[int],
-        world_condition: wp.array[wp.int32],
-        batch_condition: wp.array[wp.int32],
+        r_norm_sq: wp.array(dtype=Any),
+        atol_sq: wp.array(dtype=Any),
+        world_active: wp.array(dtype=wp.int32),
+        cur_iter: wp.array(dtype=int),
+        world_condition: wp.array(dtype=wp.int32),
+        batch_condition: wp.array(dtype=wp.int32),
     ):
         thread = wp.tid()
         active = wp.tile_load(world_active, (n_worlds,))
@@ -186,14 +186,14 @@ def make_termination_kernel(n_worlds):
 
 @wp.kernel
 def _cg_kernel_1(
-    tol: wp.array[Any],
-    resid: wp.array[Any],
-    rz_old: wp.array[Any],
-    p_Ap: wp.array[Any],
-    p: wp.array2d[Any],
-    Ap: wp.array2d[Any],
-    x: wp.array2d[Any],
-    r: wp.array2d[Any],
+    tol: wp.array(dtype=Any),
+    resid: wp.array(dtype=Any),
+    rz_old: wp.array(dtype=Any),
+    p_Ap: wp.array(dtype=Any),
+    p: wp.array2d(dtype=Any),
+    Ap: wp.array2d(dtype=Any),
+    x: wp.array2d(dtype=Any),
+    r: wp.array2d(dtype=Any),
 ):
     e, i = wp.tid()
 
@@ -205,12 +205,12 @@ def _cg_kernel_1(
 
 @wp.kernel
 def _cg_kernel_2(
-    tol: wp.array[Any],
-    resid_new: wp.array[Any],
-    rz_old: wp.array[Any],
-    rz_new: wp.array[Any],
-    z: wp.array2d[Any],
-    p: wp.array2d[Any],
+    tol: wp.array(dtype=Any),
+    resid_new: wp.array(dtype=Any),
+    rz_old: wp.array(dtype=Any),
+    rz_new: wp.array(dtype=Any),
+    z: wp.array2d(dtype=Any),
+    p: wp.array2d(dtype=Any),
 ):
     #    p = r + (rz_new / rz_old) * p;
     e, i = wp.tid()
@@ -223,16 +223,16 @@ def _cg_kernel_2(
 
 @wp.kernel
 def _cr_kernel_1(
-    tol: wp.array[Any],
-    resid: wp.array[Any],
-    zAz_old: wp.array[Any],
-    y_Ap: wp.array[Any],
-    p: wp.array2d[Any],
-    Ap: wp.array2d[Any],
-    y: wp.array2d[Any],
-    x: wp.array2d[Any],
-    r: wp.array2d[Any],
-    z: wp.array2d[Any],
+    tol: wp.array(dtype=Any),
+    resid: wp.array(dtype=Any),
+    zAz_old: wp.array(dtype=Any),
+    y_Ap: wp.array(dtype=Any),
+    p: wp.array2d(dtype=Any),
+    Ap: wp.array2d(dtype=Any),
+    y: wp.array2d(dtype=Any),
+    x: wp.array2d(dtype=Any),
+    r: wp.array2d(dtype=Any),
+    z: wp.array2d(dtype=Any),
 ):
     e, i = wp.tid()
 
@@ -245,14 +245,14 @@ def _cr_kernel_1(
 
 @wp.kernel
 def _cr_kernel_2(
-    tol: wp.array[Any],
-    resid: wp.array[Any],
-    zAz_old: wp.array[Any],
-    zAz_new: wp.array[Any],
-    z: wp.array2d[Any],
-    Az: wp.array2d[Any],
-    p: wp.array2d[Any],
-    Ap: wp.array2d[Any],
+    tol: wp.array(dtype=Any),
+    resid: wp.array(dtype=Any),
+    zAz_old: wp.array(dtype=Any),
+    zAz_new: wp.array(dtype=Any),
+    z: wp.array2d(dtype=Any),
+    Az: wp.array2d(dtype=Any),
+    p: wp.array2d(dtype=Any),
+    Ap: wp.array2d(dtype=Any),
 ):
     #    p = r + (rz_new / rz_old) * p;
     e, i = wp.tid()
@@ -266,10 +266,10 @@ def _cr_kernel_2(
 def _run_capturable_loop(
     do_cycle: Callable,
     r_norm_sq: wp.array,
-    world_active: wp.array[wp.int32],
-    cur_iter: wp.array[wp.int32],
-    conditions: wp.array[wp.int32],
-    maxiter: wp.array[int],
+    world_active: wp.array(dtype=wp.int32),
+    cur_iter: wp.array(dtype=wp.int32),
+    conditions: wp.array(dtype=wp.int32),
+    maxiter: wp.array(dtype=int),
     atol_sq: wp.array,
     callback: Callable | None,
     use_cuda_graph: bool,
@@ -357,11 +357,11 @@ def make_dot_kernel(tile_size: int, maxdim: int):
 
     @wp.kernel(enable_backward=False)
     def dot(
-        a: wp.array3d[Any],
-        b: wp.array3d[Any],
-        world_size: wp.array[wp.int32],
-        world_active: wp.array[wp.int32],
-        result: wp.array2d[Any],
+        a: wp.array3d(dtype=Any),
+        b: wp.array3d(dtype=Any),
+        world_size: wp.array(dtype=wp.int32),
+        world_active: wp.array(dtype=wp.int32),
+        result: wp.array2d(dtype=Any),
     ):
         """Compute the dot products between the trailing-dim arrays in a and b using tiles and pairwise summation."""
         col, world, tid = wp.tid()
@@ -396,11 +396,11 @@ def make_dot_kernel(tile_size: int, maxdim: int):
 
 @wp.kernel
 def dot_sequential(
-    a: wp.array3d[Any],
-    b: wp.array3d[Any],
-    world_size: wp.array[wp.int32],
-    world_active: wp.array[wp.int32],
-    partial_sum: wp.array3d[Any],
+    a: wp.array3d(dtype=Any),
+    b: wp.array3d(dtype=Any),
+    world_size: wp.array(dtype=wp.int32),
+    world_active: wp.array(dtype=wp.int32),
+    partial_sum: wp.array3d(dtype=Any),
 ):
     col, world = wp.tid()
 
@@ -429,7 +429,7 @@ def dot_sequential(
 
 @wp.kernel
 def _initialize_tolerance_kernel(
-    rtol: wp.array[Any], atol: wp.array[Any], b_norm_sq: wp.array[Any], atol_sq: wp.array[Any]
+    rtol: wp.array(dtype=Any), atol: wp.array(dtype=Any), b_norm_sq: wp.array(dtype=Any), atol_sq: wp.array(dtype=Any)
 ):
     world = wp.tid()
     a, r = atol[world], rtol[world]
@@ -437,7 +437,9 @@ def _initialize_tolerance_kernel(
 
 
 @wp.kernel
-def make_jacobi_preconditioner(A: wp.array2d[Any], world_dims: wp.array[wp.int32], diag: wp.array2d[Any]):
+def make_jacobi_preconditioner(
+    A: wp.array2d(dtype=Any), world_dims: wp.array(dtype=wp.int32), diag: wp.array2d(dtype=Any)
+):
     world, row = wp.tid()
     world_dim = world_dims[world]
     if row >= world_dim:
@@ -473,10 +475,10 @@ class ConjugateSolver:
     def __init__(
         self,
         A: BatchedLinearOperator,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[wp.int32] | None = None,
-        atol: float | wp.array[Any] | None = None,
-        rtol: float | wp.array[Any] | None = None,
+        active_dims: wp.array(dtype=Any) | None = None,
+        world_active: wp.array(dtype=wp.int32) | None = None,
+        atol: float | wp.array(dtype=Any) | None = None,
+        rtol: float | wp.array(dtype=Any) | None = None,
         maxiter: wp.array = None,
         Mi: BatchedLinearOperator | None = None,
         callback: Callable | None = None,
@@ -605,8 +607,8 @@ class CGSolver(ConjugateSolver):
         self,
         b: wp.array,
         x: wp.array,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[wp.int32] | None = None,
+        active_dims: wp.array(dtype=Any) | None = None,
+        world_active: wp.array(dtype=wp.int32) | None = None,
     ):
         if active_dims is None:
             if self.active_dims is None:
@@ -721,8 +723,8 @@ class CRSolver(ConjugateSolver):
         self,
         b: wp.array,
         x: wp.array,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[wp.int32] | None = None,
+        active_dims: wp.array(dtype=Any) | None = None,
+        world_active: wp.array(dtype=wp.int32) | None = None,
     ):
         if active_dims is None:
             if self.active_dims is None:

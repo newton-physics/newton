@@ -66,7 +66,7 @@ class block_type(BlockDType(dtype=wp.float32, shape=(7,)).warp_type):
 
 
 @wp.func
-def read_quat_from_array(array: wp.array[wp.float32], offset: int) -> wp.quatf:
+def read_quat_from_array(array: wp.array(dtype=wp.float32), offset: int) -> wp.quatf:
     """
     Utility function to read a quaternion from a flat array
     """
@@ -81,12 +81,12 @@ def read_quat_from_array(array: wp.array[wp.float32], offset: int) -> wp.quatf:
 @wp.kernel
 def _reset_state(
     # Inputs
-    num_bodies: wp.array[wp.int32],
-    first_body_id: wp.array[wp.int32],
-    bodies_q_0_flat: wp.array[wp.float32],
-    world_mask: wp.array[wp.int32],
+    num_bodies: wp.array(dtype=wp.int32),
+    first_body_id: wp.array(dtype=wp.int32),
+    bodies_q_0_flat: wp.array(dtype=wp.float32),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    bodies_q_flat: wp.array[wp.float32],
+    bodies_q_flat: wp.array(dtype=wp.float32),
 ):
     """
     A kernel resetting the fk state (body poses) to the reference state
@@ -109,16 +109,16 @@ def _reset_state(
 @wp.kernel
 def _reset_state_base_q(
     # Inputs
-    base_joint_id: wp.array[wp.int32],
-    base_q: wp.array[wp.transformf],
-    joints_X: wp.array[wp.mat33f],
-    joints_B_r_B: wp.array[wp.vec3f],
-    num_bodies: wp.array[wp.int32],
-    first_body_id: wp.array[wp.int32],
-    bodies_q_0: wp.array[wp.transformf],
-    world_mask: wp.array[wp.int32],
+    base_joint_id: wp.array(dtype=wp.int32),
+    base_q: wp.array(dtype=wp.transformf),
+    joints_X: wp.array(dtype=wp.mat33f),
+    joints_B_r_B: wp.array(dtype=wp.vec3f),
+    num_bodies: wp.array(dtype=wp.int32),
+    first_body_id: wp.array(dtype=wp.int32),
+    bodies_q_0: wp.array(dtype=wp.transformf),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    bodies_q: wp.array[wp.transformf],
+    bodies_q: wp.array(dtype=wp.transformf),
 ):
     """
     A kernel resetting the fk state (body poses) to a rigid transformation of the reference state,
@@ -168,11 +168,11 @@ def _reset_state_base_q(
 @wp.kernel
 def _eval_fk_actuated_dofs_or_coords(
     # Inputs
-    model_base_dofs: wp.array[wp.float32],
-    model_actuated_dofs: wp.array[wp.float32],
-    actuated_dofs_map: wp.array[wp.int32],
+    model_base_dofs: wp.array(dtype=wp.float32),
+    model_actuated_dofs: wp.array(dtype=wp.float32),
+    actuated_dofs_map: wp.array(dtype=wp.int32),
     # Outputs
-    fk_actuated_dofs: wp.array[wp.float32],
+    fk_actuated_dofs: wp.array(dtype=wp.float32),
 ):
     """
     A kernel mapping actuated and base dofs/coordinates of the main model to actuated dofs/coordinates of the fk model,
@@ -208,13 +208,13 @@ def _eval_fk_actuated_dofs_or_coords(
 @wp.kernel
 def _eval_position_control_transformations(
     # Inputs
-    joints_dof_type: wp.array[wp.int32],
-    joints_act_type: wp.array[wp.int32],
-    actuated_coords_offset: wp.array[wp.int32],
-    joints_X: wp.array[wp.mat33f],
-    actuators_q: wp.array[wp.float32],
+    joints_dof_type: wp.array(dtype=wp.int32),
+    joints_act_type: wp.array(dtype=wp.int32),
+    actuated_coords_offset: wp.array(dtype=wp.int32),
+    joints_X: wp.array(dtype=wp.mat33f),
+    actuators_q: wp.array(dtype=wp.float32),
     # Outputs
-    pos_control_transforms: wp.array[wp.transformf],
+    pos_control_transforms: wp.array(dtype=wp.transformf),
 ):
     """
     A kernel computing a transformation per joint corresponding to position-control parameters
@@ -286,12 +286,12 @@ def _eval_position_control_transformations(
 @wp.kernel
 def _eval_unit_quaternion_constraints(
     # Inputs
-    num_bodies: wp.array[wp.int32],
-    first_body_id: wp.array[wp.int32],
-    bodies_q: wp.array[wp.transformf],
-    world_mask: wp.array[wp.int32],
+    num_bodies: wp.array(dtype=wp.int32),
+    first_body_id: wp.array(dtype=wp.int32),
+    bodies_q: wp.array(dtype=wp.transformf),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    constraints: wp.array2d[wp.float32],
+    constraints: wp.array2d(dtype=wp.float32),
 ):
     """
         A kernel computing unit norm quaternion constraints for each body, written at the top of the constraints vector
@@ -328,21 +328,21 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
     @wp.kernel
     def _eval_joint_constraints(
         # Inputs
-        num_joints: wp.array[wp.int32],
-        first_joint_id: wp.array[wp.int32],
-        joints_dof_type: wp.array[wp.int32],
-        joints_act_type: wp.array[wp.int32],
-        joints_bid_B: wp.array[wp.int32],
-        joints_bid_F: wp.array[wp.int32],
-        joints_X: wp.array[wp.mat33f],
-        joints_B_r_B: wp.array[wp.vec3f],
-        joints_F_r_F: wp.array[wp.vec3f],
-        bodies_q: wp.array[wp.transformf],
-        pos_control_transforms: wp.array[wp.transformf],
-        ct_full_to_red_map: wp.array[wp.int32],
-        world_mask: wp.array[wp.int32],
+        num_joints: wp.array(dtype=wp.int32),
+        first_joint_id: wp.array(dtype=wp.int32),
+        joints_dof_type: wp.array(dtype=wp.int32),
+        joints_act_type: wp.array(dtype=wp.int32),
+        joints_bid_B: wp.array(dtype=wp.int32),
+        joints_bid_F: wp.array(dtype=wp.int32),
+        joints_X: wp.array(dtype=wp.mat33f),
+        joints_B_r_B: wp.array(dtype=wp.vec3f),
+        joints_F_r_F: wp.array(dtype=wp.vec3f),
+        bodies_q: wp.array(dtype=wp.transformf),
+        pos_control_transforms: wp.array(dtype=wp.transformf),
+        ct_full_to_red_map: wp.array(dtype=wp.int32),
+        world_mask: wp.array(dtype=wp.int32),
         # Outputs
-        constraints: wp.array2d[wp.float32],
+        constraints: wp.array2d(dtype=wp.float32),
     ):
         """
         A kernel computing joint constraints with the log map formulation, first computing 6 constraints per
@@ -455,12 +455,12 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
 @wp.kernel
 def _eval_unit_quaternion_constraints_jacobian(
     # Inputs
-    num_bodies: wp.array[wp.int32],
-    first_body_id: wp.array[wp.int32],
-    bodies_q: wp.array[wp.transformf],
-    world_mask: wp.array[wp.int32],
+    num_bodies: wp.array(dtype=wp.int32),
+    first_body_id: wp.array(dtype=wp.int32),
+    bodies_q: wp.array(dtype=wp.transformf),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    constraints_jacobian: wp.array3d[wp.float32],
+    constraints_jacobian: wp.array3d(dtype=wp.float32),
 ):
     """
     A kernel computing the Jacobian of unit norm quaternion constraints for each body, written at the top of the
@@ -494,13 +494,13 @@ def _eval_unit_quaternion_constraints_jacobian(
 @wp.kernel
 def _eval_unit_quaternion_constraints_sparse_jacobian(
     # Inputs
-    num_bodies: wp.array[wp.int32],
-    first_body_id: wp.array[wp.int32],
-    bodies_q: wp.array[wp.transformf],
-    rb_nzb_id: wp.array[wp.int32],
-    world_mask: wp.array[wp.int32],
+    num_bodies: wp.array(dtype=wp.int32),
+    first_body_id: wp.array(dtype=wp.int32),
+    bodies_q: wp.array(dtype=wp.transformf),
+    rb_nzb_id: wp.array(dtype=wp.int32),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    jacobian_nzb: wp.array[block_type],
+    jacobian_nzb: wp.array(dtype=block_type),
 ):
     """
     A kernel computing the sparse Jacobian of unit norm quaternion constraints for each body, written at the top of the
@@ -542,22 +542,22 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
     @wp.kernel
     def _eval_joint_constraints_jacobian(
         # Inputs
-        num_joints: wp.array[wp.int32],
-        first_joint_id: wp.array[wp.int32],
-        first_body_id: wp.array[wp.int32],
-        joints_dof_type: wp.array[wp.int32],
-        joints_act_type: wp.array[wp.int32],
-        joints_bid_B: wp.array[wp.int32],
-        joints_bid_F: wp.array[wp.int32],
-        joints_X: wp.array[wp.mat33f],
-        joints_B_r_B: wp.array[wp.vec3f],
-        joints_F_r_F: wp.array[wp.vec3f],
-        bodies_q: wp.array[wp.transformf],
-        pos_control_transforms: wp.array[wp.transformf],
-        ct_full_to_red_map: wp.array[wp.int32],
-        world_mask: wp.array[wp.int32],
+        num_joints: wp.array(dtype=wp.int32),
+        first_joint_id: wp.array(dtype=wp.int32),
+        first_body_id: wp.array(dtype=wp.int32),
+        joints_dof_type: wp.array(dtype=wp.int32),
+        joints_act_type: wp.array(dtype=wp.int32),
+        joints_bid_B: wp.array(dtype=wp.int32),
+        joints_bid_F: wp.array(dtype=wp.int32),
+        joints_X: wp.array(dtype=wp.mat33f),
+        joints_B_r_B: wp.array(dtype=wp.vec3f),
+        joints_F_r_F: wp.array(dtype=wp.vec3f),
+        bodies_q: wp.array(dtype=wp.transformf),
+        pos_control_transforms: wp.array(dtype=wp.transformf),
+        ct_full_to_red_map: wp.array(dtype=wp.int32),
+        world_mask: wp.array(dtype=wp.int32),
         # Outputs
-        constraints_jacobian: wp.array3d[wp.float32],
+        constraints_jacobian: wp.array3d(dtype=wp.float32),
     ):
         """
         A kernel computing the Jacobian of the joint constraints.
@@ -707,23 +707,23 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
     @wp.kernel
     def _eval_joint_constraints_sparse_jacobian(
         # Inputs
-        num_joints: wp.array[wp.int32],
-        first_joint_id: wp.array[wp.int32],
-        first_body_id: wp.array[wp.int32],
-        joints_dof_type: wp.array[wp.int32],
-        joints_act_type: wp.array[wp.int32],
-        joints_bid_B: wp.array[wp.int32],
-        joints_bid_F: wp.array[wp.int32],
-        joints_X: wp.array[wp.mat33f],
-        joints_B_r_B: wp.array[wp.vec3f],
-        joints_F_r_F: wp.array[wp.vec3f],
-        bodies_q: wp.array[wp.transformf],
-        pos_control_transforms: wp.array[wp.transformf],
-        ct_nzb_id_base: wp.array[wp.int32],
-        ct_nzb_id_follower: wp.array[wp.int32],
-        world_mask: wp.array[wp.int32],
+        num_joints: wp.array(dtype=wp.int32),
+        first_joint_id: wp.array(dtype=wp.int32),
+        first_body_id: wp.array(dtype=wp.int32),
+        joints_dof_type: wp.array(dtype=wp.int32),
+        joints_act_type: wp.array(dtype=wp.int32),
+        joints_bid_B: wp.array(dtype=wp.int32),
+        joints_bid_F: wp.array(dtype=wp.int32),
+        joints_X: wp.array(dtype=wp.mat33f),
+        joints_B_r_B: wp.array(dtype=wp.vec3f),
+        joints_F_r_F: wp.array(dtype=wp.vec3f),
+        bodies_q: wp.array(dtype=wp.transformf),
+        pos_control_transforms: wp.array(dtype=wp.transformf),
+        ct_nzb_id_base: wp.array(dtype=wp.int32),
+        ct_nzb_id_follower: wp.array(dtype=wp.int32),
+        world_mask: wp.array(dtype=wp.int32),
         # Outputs
-        jacobian_nzb: wp.array[block_type],
+        jacobian_nzb: wp.array(dtype=block_type),
     ):
         """
         A kernel computing the Jacobian of the joint constraints.
@@ -880,9 +880,9 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
     @wp.kernel
     def _eval_pattern_T_pattern(
         # Inputs
-        sparsity_pattern: wp.array3d[wp.float32],
+        sparsity_pattern: wp.array3d(dtype=wp.float32),
         # Outputs
-        pattern_T_pattern: wp.array3d[wp.float32],
+        pattern_T_pattern: wp.array3d(dtype=wp.float32),
     ):
         """
         A kernel computing the sparsity pattern of J^T * J given that of J, in each world
@@ -936,9 +936,9 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
     @wp.kernel
     def _eval_max_constraint(
         # Inputs
-        constraints: wp.array2d[wp.float32],
+        constraints: wp.array2d(dtype=wp.float32),
         # Outputs
-        max_constraint: wp.array[wp.float32],
+        max_constraint: wp.array(dtype=wp.float32),
     ):
         """
         A kernel computing the max absolute constraint from the constraints vector, in each world.
@@ -973,10 +973,10 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
     @wp.kernel
     def _eval_jacobian_T_jacobian(
         # Inputs
-        constraints_jacobian: wp.array3d[wp.float32],
-        world_mask: wp.array[wp.int32],
+        constraints_jacobian: wp.array3d(dtype=wp.float32),
+        world_mask: wp.array(dtype=wp.int32),
         # Outputs
-        jacobian_T_jacobian: wp.array3d[wp.float32],
+        jacobian_T_jacobian: wp.array3d(dtype=wp.float32),
     ):
         """
         A kernel computing the matrix product J^T * J given the Jacobian J, in each world
@@ -1022,11 +1022,11 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
     @wp.kernel
     def _eval_jacobian_T_constraints(
         # Inputs
-        constraints_jacobian: wp.array3d[wp.float32],
-        constraints: wp.array2d[wp.float32],
-        world_mask: wp.array[wp.int32],
+        constraints_jacobian: wp.array3d(dtype=wp.float32),
+        constraints: wp.array2d(dtype=wp.float32),
+        world_mask: wp.array(dtype=wp.int32),
         # Outputs
-        jacobian_T_constraints: wp.array2d[wp.float32],
+        jacobian_T_constraints: wp.array2d(dtype=wp.float32),
     ):
         """
         A kernel computing the matrix product J^T * C given the Jacobian J and the constraints vector C, in each world
@@ -1081,9 +1081,9 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
     @wp.kernel
     def _eval_merit_function(
         # Inputs
-        constraints: wp.array2d[wp.float32],
+        constraints: wp.array2d(dtype=wp.float32),
         # Outputs
-        merit_function_val: wp.array[wp.float32],
+        merit_function_val: wp.array(dtype=wp.float32),
     ):
         """
         A kernel computing the merit function, i.e. the least-squares error 1/2 * ||C||^2, from the constraints
@@ -1106,10 +1106,10 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
     @wp.kernel
     def _eval_merit_function_gradient(
         # Inputs
-        step: wp.array2d[wp.float32],
-        grad: wp.array2d[wp.float32],
+        step: wp.array2d(dtype=wp.float32),
+        grad: wp.array2d(dtype=wp.float32),
         # Outputs
-        merit_function_grad: wp.array[wp.float32],
+        merit_function_grad: wp.array(dtype=wp.float32),
     ):
         """
         A kernel computing the merit function gradient w.r.t. line search step size, from the step direction
@@ -1144,9 +1144,9 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
 @wp.kernel
 def _eval_rhs(
     # Inputs
-    grad: wp.array2d[wp.float32],
+    grad: wp.array2d(dtype=wp.float32),
     # Outputs
-    rhs: wp.array2d[wp.float32],
+    rhs: wp.array2d(dtype=wp.float32),
 ):
     """
     A kernel computing rhs := -grad (where rhs has shape (num_worlds, num_states_max, 1))
@@ -1165,13 +1165,13 @@ def _eval_rhs(
 def _eval_linear_combination(
     # Inputs
     alpha: wp.float32,
-    x: wp.array2d[wp.float32],
+    x: wp.array2d(dtype=wp.float32),
     beta: wp.float32,
-    y: wp.array2d[wp.float32],
-    num_rows: wp.array[wp.int32],
-    world_mask: wp.array[wp.int32],
+    y: wp.array2d(dtype=wp.float32),
+    num_rows: wp.array(dtype=wp.int32),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    z: wp.array2d[wp.float32],
+    z: wp.array2d(dtype=wp.float32),
 ):
     """
     A kernel computing z := alpha * x + beta * y
@@ -1194,14 +1194,14 @@ def _eval_linear_combination(
 @wp.kernel
 def _eval_stepped_state(
     # Inputs
-    num_bodies: wp.array[wp.int32],
-    first_body_id: wp.array[wp.int32],
-    bodies_q_0_flat: wp.array[wp.float32],
-    alpha: wp.array[wp.float32],
-    step: wp.array2d[wp.float32],
-    world_mask: wp.array[wp.int32],
+    num_bodies: wp.array(dtype=wp.int32),
+    first_body_id: wp.array(dtype=wp.int32),
+    bodies_q_0_flat: wp.array(dtype=wp.float32),
+    alpha: wp.array(dtype=wp.float32),
+    step: wp.array2d(dtype=wp.float32),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    bodies_q_alpha_flat: wp.array[wp.float32],
+    bodies_q_alpha_flat: wp.array(dtype=wp.float32),
 ):
     """
     A kernel computing states_alpha := states_0 + alpha * step
@@ -1226,12 +1226,12 @@ def _eval_stepped_state(
 @wp.kernel
 def _apply_line_search_step(
     # Inputs
-    num_bodies: wp.array[wp.int32],
-    first_body_id: wp.array[wp.int32],
-    bodies_q_alpha: wp.array[wp.transformf],
-    line_search_success: wp.array[wp.int32],
+    num_bodies: wp.array(dtype=wp.int32),
+    first_body_id: wp.array(dtype=wp.int32),
+    bodies_q_alpha: wp.array(dtype=wp.transformf),
+    line_search_success: wp.array(dtype=wp.int32),
     # Outputs
-    bodies_q: wp.array[wp.transformf],
+    bodies_q: wp.array(dtype=wp.transformf),
 ):
     """
     A kernel replacing the state with the line search result, in worlds where line search succeeded
@@ -1255,15 +1255,15 @@ def _apply_line_search_step(
 @wp.kernel
 def _line_search_check(
     # Inputs
-    val_0: wp.array[wp.float32],
-    grad_0: wp.array[wp.float32],
-    alpha: wp.array[wp.float32],
-    val_alpha: wp.array[wp.float32],
-    iteration: wp.array[wp.int32],
+    val_0: wp.array(dtype=wp.float32),
+    grad_0: wp.array(dtype=wp.float32),
+    alpha: wp.array(dtype=wp.float32),
+    val_alpha: wp.array(dtype=wp.float32),
+    iteration: wp.array(dtype=wp.int32),
     max_iterations: wp.array(dtype=wp.int32, shape=(1,)),
     # Outputs
-    line_search_success: wp.array[wp.int32],
-    line_search_mask: wp.array[wp.int32],
+    line_search_success: wp.array(dtype=wp.int32),
+    line_search_mask: wp.array(dtype=wp.int32),
     line_search_loop_condition: wp.array(dtype=wp.int32, shape=(1,)),
 ):
     """
@@ -1298,14 +1298,14 @@ def _line_search_check(
 @wp.kernel
 def _newton_check(
     # Inputs
-    max_constraint: wp.array[wp.float32],
+    max_constraint: wp.array(dtype=wp.float32),
     tolerance: wp.array(dtype=wp.float32, shape=(1,)),
-    iteration: wp.array[wp.int32],
+    iteration: wp.array(dtype=wp.int32),
     max_iterations: wp.array(dtype=wp.int32, shape=(1,)),
-    line_search_success: wp.array[wp.int32],
+    line_search_success: wp.array(dtype=wp.int32),
     # Outputs
-    newton_success: wp.array[wp.int32],
-    newton_mask: wp.array[wp.int32],
+    newton_success: wp.array(dtype=wp.int32),
+    newton_mask: wp.array(dtype=wp.int32),
     newton_loop_condition: wp.array(dtype=wp.int32, shape=(1,)),
 ):
     """
@@ -1342,16 +1342,16 @@ def _newton_check(
 @wp.kernel
 def _eval_target_constraint_velocities(
     # Inputs
-    num_joints: wp.array[wp.int32],
-    first_joint_id: wp.array[wp.int32],
-    joints_dof_type: wp.array[wp.int32],
-    joints_act_type: wp.array[wp.int32],
-    actuated_dofs_offset: wp.array[wp.int32],
-    ct_full_to_red_map: wp.array[wp.int32],
-    actuators_u: wp.array[wp.float32],
-    world_mask: wp.array[wp.int32],
+    num_joints: wp.array(dtype=wp.int32),
+    first_joint_id: wp.array(dtype=wp.int32),
+    joints_dof_type: wp.array(dtype=wp.int32),
+    joints_act_type: wp.array(dtype=wp.int32),
+    actuated_dofs_offset: wp.array(dtype=wp.int32),
+    ct_full_to_red_map: wp.array(dtype=wp.int32),
+    actuators_u: wp.array(dtype=wp.float32),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    target_cts_u: wp.array2d[wp.float32],
+    target_cts_u: wp.array2d(dtype=wp.float32),
 ):
     """
     A kernel computing the target constraint velocities, i.e. zero for passive constraints
@@ -1413,13 +1413,13 @@ def _eval_target_constraint_velocities(
 @wp.kernel
 def _eval_body_velocities(
     # Inputs
-    num_bodies: wp.array[wp.int32],
-    first_body_id: wp.array[wp.int32],
-    bodies_q: wp.array[wp.transformf],
-    bodies_q_dot: wp.array2d[wp.float32],
-    world_mask: wp.array[wp.int32],
+    num_bodies: wp.array(dtype=wp.int32),
+    first_body_id: wp.array(dtype=wp.int32),
+    bodies_q: wp.array(dtype=wp.transformf),
+    bodies_q_dot: wp.array2d(dtype=wp.float32),
+    world_mask: wp.array(dtype=wp.int32),
     # Outputs
-    bodies_u: wp.array[vec6f],
+    bodies_u: wp.array(dtype=vec6f),
 ):
     """
     A kernel computing the body velocities (twists) from the time derivative of body poses,
@@ -1462,11 +1462,11 @@ def _eval_body_velocities(
 @wp.kernel
 def _update_cg_tolerance_kernel(
     # Input
-    max_constraint: wp.array[wp.float32],
-    world_mask: wp.array[wp.int32],
+    max_constraint: wp.array(dtype=wp.float32),
+    world_mask: wp.array(dtype=wp.int32),
     # Output
-    atol: wp.array[wp.float32],
-    rtol: wp.array[wp.float32],
+    atol: wp.array(dtype=wp.float32),
+    rtol: wp.array(dtype=wp.float32),
 ):
     """
     A kernel heuristically adapting the CG tolerance based on the current constraint residual
@@ -2153,8 +2153,8 @@ class ForwardKinematicsSolver:
 
     def _reset_state(
         self,
-        bodies_q: wp.array[wp.transformf],
-        world_mask: wp.array[wp.int32],
+        bodies_q: wp.array(dtype=wp.transformf),
+        world_mask: wp.array(dtype=wp.int32),
     ):
         """
         Internal function resetting the bodies state to the reference state stored in the model.
@@ -2182,9 +2182,9 @@ class ForwardKinematicsSolver:
 
     def _reset_state_base_q(
         self,
-        bodies_q: wp.array[wp.transformf],
-        base_q: wp.array[wp.transformf],
-        world_mask: wp.array[wp.int32],
+        bodies_q: wp.array(dtype=wp.transformf),
+        base_q: wp.array(dtype=wp.transformf),
+        world_mask: wp.array(dtype=wp.int32),
     ):
         """
         Internal function resetting the bodies state to a rigid transformation of the reference state,
@@ -2209,9 +2209,9 @@ class ForwardKinematicsSolver:
 
     def _eval_position_control_transformations(
         self,
-        base_q: wp.array[wp.transformf],
-        actuators_q: wp.array[wp.float32],
-        pos_control_transforms: wp.array[wp.transformf],
+        base_q: wp.array(dtype=wp.transformf),
+        actuators_q: wp.array(dtype=wp.float32),
+        pos_control_transforms: wp.array(dtype=wp.transformf),
     ):
         """
         Internal evaluator for position control transformations, from actuated & base coordinates of the main model.
@@ -2248,10 +2248,10 @@ class ForwardKinematicsSolver:
 
     def _eval_kinematic_constraints(
         self,
-        bodies_q: wp.array[wp.transformf],
-        pos_control_transforms: wp.array[wp.transformf],
-        world_mask: wp.array[wp.int32],
-        constraints: wp.array2d[wp.float32],
+        bodies_q: wp.array(dtype=wp.transformf),
+        pos_control_transforms: wp.array(dtype=wp.transformf),
+        world_mask: wp.array(dtype=wp.int32),
+        constraints: wp.array2d(dtype=wp.float32),
     ):
         """
         Internal evaluator for the kinematic constraints vector, from body poses and position-control transformations
@@ -2287,7 +2287,9 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _eval_max_constraint(self, constraints: wp.array2d[wp.float32], max_constraint: wp.array[wp.float32]):
+    def _eval_max_constraint(
+        self, constraints: wp.array2d(dtype=wp.float32), max_constraint: wp.array(dtype=wp.float32)
+    ):
         """
         Internal evaluator for the maximal absolute constraint, from the constraints vector, in each world
         """
@@ -2302,10 +2304,10 @@ class ForwardKinematicsSolver:
 
     def _eval_kinematic_constraints_jacobian(
         self,
-        bodies_q: wp.array[wp.transformf],
-        pos_control_transforms: wp.array[wp.transformf],
-        world_mask: wp.array[wp.int32],
-        constraints_jacobian: wp.array3d[wp.float32],
+        bodies_q: wp.array(dtype=wp.transformf),
+        pos_control_transforms: wp.array(dtype=wp.transformf),
+        world_mask: wp.array(dtype=wp.int32),
+        constraints_jacobian: wp.array3d(dtype=wp.float32),
     ):
         """
         Internal evaluator for the kinematic constraints Jacobian with respect to body poses, from body poses
@@ -2346,9 +2348,9 @@ class ForwardKinematicsSolver:
 
     def _assemble_sparse_jacobian(
         self,
-        bodies_q: wp.array[wp.transformf],
-        pos_control_transforms: wp.array[wp.transformf],
-        world_mask: wp.array[wp.int32],
+        bodies_q: wp.array(dtype=wp.transformf),
+        pos_control_transforms: wp.array(dtype=wp.transformf),
+        world_mask: wp.array(dtype=wp.int32),
     ):
         """
         Internal evaluator for the sparse kinematic constraints Jacobian with respect to body poses, from body poses
@@ -2399,9 +2401,9 @@ class ForwardKinematicsSolver:
 
     def _eval_lhs_gemv(
         self,
-        x: wp.array2d[wp.float32],
-        y: wp.array2d[wp.float32],
-        world_mask: wp.array[wp.int32],
+        x: wp.array2d(dtype=wp.float32),
+        y: wp.array2d(dtype=wp.float32),
+        world_mask: wp.array(dtype=wp.int32),
         alpha: wp.float32,
         beta: wp.float32,
     ):
@@ -2417,7 +2419,7 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _eval_merit_function(self, constraints: wp.array2d[wp.float32], error: wp.array[wp.float32]):
+    def _eval_merit_function(self, constraints: wp.array2d(dtype=wp.float32), error: wp.array(dtype=wp.float32)):
         """
         Internal evaluator for the line search merit function, i.e. the least-squares error 1/2 * ||C||^2,
         from the constraints vector C, in each world
@@ -2433,9 +2435,9 @@ class ForwardKinematicsSolver:
 
     def _eval_merit_function_gradient(
         self,
-        step: wp.array2d[wp.float32],
-        grad: wp.array2d[wp.float32],
-        error_grad: wp.array[wp.float32],
+        step: wp.array2d(dtype=wp.float32),
+        grad: wp.array2d(dtype=wp.float32),
+        error_grad: wp.array(dtype=wp.float32),
     ):
         """
         Internal evaluator for the merit function gradient w.r.t. line search step size, from the step direction
@@ -2450,7 +2452,7 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _run_line_search_iteration(self, bodies_q: wp.array[wp.transformf]):
+    def _run_line_search_iteration(self, bodies_q: wp.array(dtype=wp.transformf)):
         """
         Internal function running one iteration of line search, checking the Armijo sufficient descent condition
         """
@@ -2505,8 +2507,8 @@ class ForwardKinematicsSolver:
 
     def _update_cg_tolerance(
         self,
-        residual_norm: wp.array[wp.float32],
-        world_mask: wp.array[wp.int32],
+        residual_norm: wp.array(dtype=wp.float32),
+        world_mask: wp.array(dtype=wp.int32),
     ):
         """
         Internal function heuristically adapting the CG tolerance based on the current constraint residual
@@ -2520,7 +2522,7 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _run_newton_iteration(self, bodies_q: wp.array[wp.transformf]):
+    def _run_newton_iteration(self, bodies_q: wp.array(dtype=wp.transformf)):
         """
         Internal function running one iteration of Gauss-Newton. Assumes the constraints vector to be already
         up-to-date (because we will already have checked convergence before the first loop iteration)
@@ -2626,12 +2628,12 @@ class ForwardKinematicsSolver:
 
     def _solve_for_body_velocities(
         self,
-        pos_control_transforms: wp.array[wp.transformf],
-        base_u: wp.array[vec6f],
-        actuators_u: wp.array[wp.float32],
-        bodies_q: wp.array[wp.transformf],
-        bodies_u: wp.array[vec6f],
-        world_mask: wp.array[wp.int32],
+        pos_control_transforms: wp.array(dtype=wp.transformf),
+        base_u: wp.array(dtype=vec6f),
+        actuators_u: wp.array(dtype=wp.float32),
+        bodies_q: wp.array(dtype=wp.transformf),
+        bodies_u: wp.array(dtype=vec6f),
+        world_mask: wp.array(dtype=wp.int32),
     ):
         """
         Internal function solving for body velocities, so that constraint velocities are zero,
@@ -2730,7 +2732,7 @@ class ForwardKinematicsSolver:
     ###
 
     def eval_position_control_transformations(
-        self, actuators_q: wp.array[wp.float32], base_q: wp.array[wp.transformf] | None = None
+        self, actuators_q: wp.array(dtype=wp.float32), base_q: wp.array(dtype=wp.transformf) | None = None
     ):
         """
         Evaluates and returns position control transformations (an intermediary quantity needed for the
@@ -2748,7 +2750,7 @@ class ForwardKinematicsSolver:
         return pos_control_transforms
 
     def eval_kinematic_constraints(
-        self, bodies_q: wp.array[wp.transformf], pos_control_transforms: wp.array[wp.transformf]
+        self, bodies_q: wp.array(dtype=wp.transformf), pos_control_transforms: wp.array(dtype=wp.transformf)
     ):
         """
         Evaluates and returns the kinematic constraints vector given the body poses and the position
@@ -2770,7 +2772,7 @@ class ForwardKinematicsSolver:
         return constraints
 
     def eval_kinematic_constraints_jacobian(
-        self, bodies_q: wp.array[wp.transformf], pos_control_transforms: wp.array[wp.transformf]
+        self, bodies_q: wp.array(dtype=wp.transformf), pos_control_transforms: wp.array(dtype=wp.transformf)
     ):
         """
         Evaluates and returns the kinematic constraints Jacobian (w.r.t. body poses) given the body poses
@@ -2787,7 +2789,7 @@ class ForwardKinematicsSolver:
         return constraints_jacobian
 
     def assemble_sparse_jacobian(
-        self, bodies_q: wp.array[wp.transformf], pos_control_transforms: wp.array[wp.transformf]
+        self, bodies_q: wp.array(dtype=wp.transformf), pos_control_transforms: wp.array(dtype=wp.transformf)
     ):
         """
         Assembles the sparse Jacobian (under self.sparse_jacobian) given input body poses and control transforms.
@@ -2801,12 +2803,12 @@ class ForwardKinematicsSolver:
 
     def solve_for_body_velocities(
         self,
-        pos_control_transforms: wp.array[wp.transformf],
-        actuators_u: wp.array[wp.float32],
-        bodies_q: wp.array[wp.transformf],
-        bodies_u: wp.array[vec6f],
-        base_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[wp.int32] | None = None,
+        pos_control_transforms: wp.array(dtype=wp.transformf),
+        actuators_u: wp.array(dtype=wp.float32),
+        bodies_q: wp.array(dtype=wp.transformf),
+        bodies_u: wp.array(dtype=vec6f),
+        base_u: wp.array(dtype=vec6f) | None = None,
+        world_mask: wp.array(dtype=wp.int32) | None = None,
     ):
         """
         Graph-capturable function solving for body velocities as a post-processing to the FK solve.
@@ -2854,13 +2856,13 @@ class ForwardKinematicsSolver:
 
     def run_fk_solve(
         self,
-        actuators_q: wp.array[wp.float32],
-        bodies_q: wp.array[wp.transformf],
-        base_q: wp.array[wp.transformf] | None = None,
-        actuators_u: wp.array[wp.float32] | None = None,
-        base_u: wp.array[vec6f] | None = None,
-        bodies_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[wp.int32] | None = None,
+        actuators_q: wp.array(dtype=wp.float32),
+        bodies_q: wp.array(dtype=wp.transformf),
+        base_q: wp.array(dtype=wp.transformf) | None = None,
+        actuators_u: wp.array(dtype=wp.float32) | None = None,
+        base_u: wp.array(dtype=vec6f) | None = None,
+        bodies_u: wp.array(dtype=vec6f) | None = None,
+        world_mask: wp.array(dtype=wp.int32) | None = None,
     ):
         """
         Graph-capturable function solving forward kinematics with Gauss-Newton.
@@ -2967,13 +2969,13 @@ class ForwardKinematicsSolver:
 
     def solve_fk(
         self,
-        actuators_q: wp.array[wp.float32],
-        bodies_q: wp.array[wp.transformf],
-        base_q: wp.array[wp.transformf] | None = None,
-        actuators_u: wp.array[wp.float32] | None = None,
-        base_u: wp.array[vec6f] | None = None,
-        bodies_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[wp.int32] | None = None,
+        actuators_q: wp.array(dtype=wp.float32),
+        bodies_q: wp.array(dtype=wp.transformf),
+        base_q: wp.array(dtype=wp.transformf) | None = None,
+        actuators_u: wp.array(dtype=wp.float32) | None = None,
+        base_u: wp.array(dtype=vec6f) | None = None,
+        bodies_u: wp.array(dtype=vec6f) | None = None,
+        world_mask: wp.array(dtype=wp.int32) | None = None,
         verbose: bool = False,
         return_status: bool = False,
         use_graph: bool = True,

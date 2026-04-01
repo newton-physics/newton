@@ -44,11 +44,11 @@ def make_get_array_offset_ptr_func(dtype):
 
     # Define a Warp wrapper around a native C++ function to get the raw pointer of a warp array
     @wp.func_native(get_array_ptr_cpp)
-    def get_dtype_array_ptr(arr: wp.array[dtype]) -> wp.uint64: ...
+    def get_dtype_array_ptr(arr: wp.array(dtype=dtype)) -> wp.uint64: ...
 
     # Define a Warp function to get the raw pointer of a warp array with an offset
     @wp.func
-    def get_dtype_array_offset_ptr(arr: wp.array[dtype], start_index: int) -> wp.uint64:
+    def get_dtype_array_offset_ptr(arr: wp.array(dtype=dtype), start_index: int) -> wp.uint64:
         return get_dtype_array_ptr(arr) + wp.uint64(start_index * wp.static(sizeof(dtype._type_)))
 
     return get_dtype_array_offset_ptr
@@ -103,11 +103,11 @@ def make_llt_blocked_factorize_kernel(block_size: int):
     @wp.kernel
     def llt_blocked_factorize_kernel(
         # Inputs:
-        dim: wp.array[int32],
-        mio: wp.array[int32],
-        A: wp.array[float32],
+        dim: wp.array(dtype=int32),
+        mio: wp.array(dtype=int32),
+        A: wp.array(dtype=float32),
         # Outputs:
-        L: wp.array[float32],
+        L: wp.array(dtype=float32),
     ):
         # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
@@ -205,14 +205,14 @@ def make_llt_blocked_solve_kernel(block_size: int):
     @wp.kernel
     def llt_blocked_solve_kernel(
         # Inputs:
-        dim: wp.array[int32],
-        mio: wp.array[int32],
-        vio: wp.array[int32],
-        L: wp.array[float32],
-        b: wp.array[float32],
+        dim: wp.array(dtype=int32),
+        mio: wp.array(dtype=int32),
+        vio: wp.array(dtype=int32),
+        L: wp.array(dtype=float32),
+        b: wp.array(dtype=float32),
         # Outputs:
-        y: wp.array[float32],
-        x: wp.array[float32],
+        y: wp.array(dtype=float32),
+        x: wp.array(dtype=float32),
     ):
         # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
@@ -292,13 +292,13 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
     @wp.kernel
     def llt_blocked_solve_inplace_kernel(
         # Inputs:
-        dim: wp.array[int32],
-        mio: wp.array[int32],
-        vio: wp.array[int32],
-        L: wp.array[float32],
+        dim: wp.array(dtype=int32),
+        mio: wp.array(dtype=int32),
+        vio: wp.array(dtype=int32),
+        L: wp.array(dtype=float32),
         # Outputs:
-        y: wp.array[float32],
-        x: wp.array[float32],
+        y: wp.array(dtype=float32),
+        x: wp.array(dtype=float32),
     ):
         # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
@@ -376,10 +376,10 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
 
 def llt_blocked_factorize(
     kernel,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    A: wp.array[float32],
-    L: wp.array[float32],
+    dim: wp.array(dtype=int32),
+    mio: wp.array(dtype=int32),
+    A: wp.array(dtype=float32),
+    L: wp.array(dtype=float32),
     num_blocks: int = 1,
     block_dim: int = 128,  # TODO: Rename this to be clearer that this is the number of threads per TILE block and not matrix block
     device: wp.DeviceLike = None,
@@ -401,13 +401,13 @@ def llt_blocked_factorize(
 
 def llt_blocked_solve(
     kernel,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    vio: wp.array[int32],
-    L: wp.array[float32],
-    b: wp.array[float32],
-    y: wp.array[float32],
-    x: wp.array[float32],
+    dim: wp.array(dtype=int32),
+    mio: wp.array(dtype=int32),
+    vio: wp.array(dtype=int32),
+    L: wp.array(dtype=float32),
+    b: wp.array(dtype=float32),
+    y: wp.array(dtype=float32),
+    x: wp.array(dtype=float32),
     num_blocks: int = 1,
     block_dim: int = 64,
     device: wp.DeviceLike = None,
@@ -434,12 +434,12 @@ def llt_blocked_solve(
 
 def llt_blocked_solve_inplace(
     kernel,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    vio: wp.array[int32],
-    L: wp.array[float32],
-    y: wp.array[float32],
-    x: wp.array[float32],
+    dim: wp.array(dtype=int32),
+    mio: wp.array(dtype=int32),
+    vio: wp.array(dtype=int32),
+    L: wp.array(dtype=float32),
+    y: wp.array(dtype=float32),
+    x: wp.array(dtype=float32),
     num_blocks: int = 1,
     block_dim: int = 64,
     device: wp.DeviceLike = None,

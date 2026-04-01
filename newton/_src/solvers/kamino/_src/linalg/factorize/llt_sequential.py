@@ -36,11 +36,11 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _llt_sequential_factorize(
     # Inputs:
-    dim_in: wp.array[int32],
-    mio_in: wp.array[int32],
-    A_in: wp.array[float32],
+    dim_in: wp.array(dtype=int32),
+    mio_in: wp.array(dtype=int32),
+    A_in: wp.array(dtype=float32),
     # Outputs:
-    L_out: wp.array[float32],
+    L_out: wp.array(dtype=float32),
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -74,14 +74,14 @@ def _llt_sequential_factorize(
 @wp.kernel
 def _llt_sequential_solve(
     # Inputs:
-    dim_in: wp.array[int32],
-    mio_in: wp.array[int32],
-    vio_in: wp.array[int32],
-    L_in: wp.array[float32],
-    b_in: wp.array[float32],
+    dim_in: wp.array(dtype=int32),
+    mio_in: wp.array(dtype=int32),
+    vio_in: wp.array(dtype=int32),
+    L_in: wp.array(dtype=float32),
+    b_in: wp.array(dtype=float32),
     # Outputs:
-    y_out: wp.array[float32],
-    x_out: wp.array[float32],
+    y_out: wp.array(dtype=float32),
+    x_out: wp.array(dtype=float32),
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -117,11 +117,11 @@ def _llt_sequential_solve(
 @wp.kernel
 def _llt_sequential_solve_inplace(
     # Inputs:
-    dim_in: wp.array[int32],
-    mio_in: wp.array[int32],
-    vio_in: wp.array[int32],
-    L_in: wp.array[float32],
-    x_inout: wp.array[float32],
+    dim_in: wp.array(dtype=int32),
+    mio_in: wp.array(dtype=int32),
+    vio_in: wp.array(dtype=int32),
+    L_in: wp.array(dtype=float32),
+    x_inout: wp.array(dtype=float32),
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -161,10 +161,10 @@ def _llt_sequential_solve_inplace(
 
 def llt_sequential_factorize(
     num_blocks: int,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    A: wp.array[float32],
-    L: wp.array[float32],
+    dim: wp.array(dtype=int32),
+    mio: wp.array(dtype=int32),
+    A: wp.array(dtype=float32),
+    L: wp.array(dtype=float32),
     device: wp.DeviceLike = None,
 ):
     """
@@ -187,13 +187,13 @@ def llt_sequential_factorize(
 
 def llt_sequential_solve(
     num_blocks: int,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    vio: wp.array[int32],
-    L: wp.array[float32],
-    b: wp.array[float32],
-    y: wp.array[float32],
-    x: wp.array[float32],
+    dim: wp.array(dtype=int32),
+    mio: wp.array(dtype=int32),
+    vio: wp.array(dtype=int32),
+    L: wp.array(dtype=float32),
+    b: wp.array(dtype=float32),
+    y: wp.array(dtype=float32),
+    x: wp.array(dtype=float32),
     device: wp.DeviceLike = None,
 ):
     """
@@ -219,11 +219,11 @@ def llt_sequential_solve(
 
 def llt_sequential_solve_inplace(
     num_blocks: int,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    vio: wp.array[int32],
-    L: wp.array[float32],
-    x: wp.array[float32],
+    dim: wp.array(dtype=int32),
+    mio: wp.array(dtype=int32),
+    vio: wp.array(dtype=int32),
+    L: wp.array(dtype=float32),
+    x: wp.array(dtype=float32),
     device: wp.DeviceLike = None,
 ):
     """

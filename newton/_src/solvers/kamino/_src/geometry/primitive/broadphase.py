@@ -435,10 +435,10 @@ def add_active_pair(
     model_num_pairs_in: int32,
     world_num_pairs_in: int32,
     # Outputs:
-    model_num_collisions_out: wp.array[int32],
-    world_num_collisions_out: wp.array[int32],
-    collision_wid_out: wp.array[int32],
-    collision_geom_pair_out: wp.array[vec2i],
+    model_num_collisions_out: wp.array(dtype=int32),
+    world_num_collisions_out: wp.array(dtype=int32),
+    collision_wid_out: wp.array(dtype=int32),
+    collision_geom_pair_out: wp.array(dtype=vec2i),
 ):
     # Increment the number of collisions detected for
     # the model and world and retrieve the pair indices
@@ -472,16 +472,16 @@ def add_active_pair(
 def _update_geometries_state_and_aabb(
     # Inputs:
     default_gap: float32,
-    geom_bid: wp.array[int32],
-    geom_sid: wp.array[int32],
-    geom_params: wp.array[vec4f],
-    geom_margin: wp.array[float32],
-    geom_gap: wp.array[float32],
-    geom_offset: wp.array[transformf],
-    body_pose: wp.array[transformf],
+    geom_bid: wp.array(dtype=int32),
+    geom_sid: wp.array(dtype=int32),
+    geom_params: wp.array(dtype=vec4f),
+    geom_margin: wp.array(dtype=float32),
+    geom_gap: wp.array(dtype=float32),
+    geom_offset: wp.array(dtype=transformf),
+    body_pose: wp.array(dtype=transformf),
     # Outputs:
-    geom_pose: wp.array[transformf],
-    geom_aabb: wp.array[vec6f],
+    geom_pose: wp.array(dtype=transformf),
+    geom_aabb: wp.array(dtype=vec6f),
 ):
     """
     Updates the state of each geometry and computes its Axis-Aligned Bounding Box (AABB).
@@ -515,16 +515,16 @@ def _update_geometries_state_and_aabb(
 def _update_geometries_state_and_bs(
     # Inputs:
     default_gap: float32,
-    geom_bid: wp.array[int32],
-    geom_sid: wp.array[int32],
-    geom_params: wp.array[vec4f],
-    geom_margin: wp.array[float32],
-    geom_gap: wp.array[float32],
-    geom_offset: wp.array[transformf],
-    body_pose: wp.array[transformf],
+    geom_bid: wp.array(dtype=int32),
+    geom_sid: wp.array(dtype=int32),
+    geom_params: wp.array(dtype=vec4f),
+    geom_margin: wp.array(dtype=float32),
+    geom_gap: wp.array(dtype=float32),
+    geom_offset: wp.array(dtype=transformf),
+    body_pose: wp.array(dtype=transformf),
     # Outputs:
-    geom_pose: wp.array[transformf],
-    geom_bs_radius: wp.array[float32],
+    geom_pose: wp.array(dtype=transformf),
+    geom_bs_radius: wp.array(dtype=float32),
 ):
     """
     Updates the state of each geometry and computes its bounding sphere (BS).
@@ -557,43 +557,43 @@ def _update_geometries_state_and_bs(
 @wp.kernel
 def _nxn_broadphase_aabb(
     # Inputs:
-    geom_sid: wp.array[int32],
-    geom_aabb_minmax: wp.array[vec6f],
-    cmodel_model_num_pairs: wp.array[int32],
-    cmodel_world_num_pairs: wp.array[int32],
-    cmodel_wid: wp.array[int32],
-    cmodel_geom_pair: wp.array[vec2i],
+    geom_sid: wp.array(dtype=int32),
+    geom_aabb_minmax: wp.array(dtype=vec6f),
+    cmodel_model_num_pairs: wp.array(dtype=int32),
+    cmodel_world_num_pairs: wp.array(dtype=int32),
+    cmodel_wid: wp.array(dtype=int32),
+    cmodel_geom_pair: wp.array(dtype=vec2i),
     # Outputs:
-    cdata_model_num_collisions: wp.array[int32],
-    cdata_world_num_collisions: wp.array[int32],
-    cdata_wid: wp.array[int32],
-    cdata_geom_pair: wp.array[vec2i],
+    cdata_model_num_collisions: wp.array(dtype=int32),
+    cdata_world_num_collisions: wp.array(dtype=int32),
+    cdata_wid: wp.array(dtype=int32),
+    cdata_geom_pair: wp.array(dtype=vec2i),
 ):
     """
     A kernel that performs broad-phase collision detection using Axis-Aligned Bounding Boxes (AABB).
 
     Inputs:
-        geom_sid (wp.array[int32]):
+        geom_sid (wp.array(dtype=int32)):
             Shape index for each geometry.
-        geom_aabb_minmax (wp.array[vec6f]):
+        geom_aabb_minmax (wp.array(dtype=vec6f)):
             Minimum and maximum coordinates for each geometry's Axis-Aligned Bounding Box (AABB).
-        cmodel_model_num_pairs (wp.array[int32]):
+        cmodel_model_num_pairs (wp.array(dtype=int32)):
             Total number of collision pairs in the model.
-        cmodel_world_num_pairs (wp.array[int32]):
+        cmodel_world_num_pairs (wp.array(dtype=int32)):
             Number of collision pairs per world.
-        cmodel_wid (wp.array[int32]):
+        cmodel_wid (wp.array(dtype=int32)):
             World index for each collision pair candidate.
-        cmodel_geom_pair (wp.array[vec2i]):
+        cmodel_geom_pair (wp.array(dtype=vec2i)):
             Geometry indices for each collision pair candidate.
 
     Outputs:
-        cdata_model_num_collisions (wp.array[int32]):
+        cdata_model_num_collisions (wp.array(dtype=int32)):
             Number of collisions detected across all worlds in the model.
-        cdata_world_num_collisions (wp.array[int32]):
+        cdata_world_num_collisions (wp.array(dtype=int32)):
             Number of collisions detected per world.
-        cdata_wid (wp.array[int32]):
+        cdata_wid (wp.array(dtype=int32)):
             World index for each detected collision.
-        cdata_geom_pair (wp.array[vec2i]):
+        cdata_geom_pair (wp.array(dtype=vec2i)):
             Geometry indices for each detected collision.
     """
     # Retrieve the geom-pair index from the thread grid
@@ -637,46 +637,46 @@ def _nxn_broadphase_aabb(
 @wp.kernel
 def _nxn_broadphase_bs(
     # Inputs:
-    geom_sid: wp.array[int32],
-    geom_pose: wp.array[transformf],
-    geom_bs_radius: wp.array[float32],
-    cmodel_model_num_pairs: wp.array[int32],
-    cmodel_world_num_pairs: wp.array[int32],
-    cmodel_wid: wp.array[int32],
-    cmodel_geom_pair: wp.array[vec2i],
+    geom_sid: wp.array(dtype=int32),
+    geom_pose: wp.array(dtype=transformf),
+    geom_bs_radius: wp.array(dtype=float32),
+    cmodel_model_num_pairs: wp.array(dtype=int32),
+    cmodel_world_num_pairs: wp.array(dtype=int32),
+    cmodel_wid: wp.array(dtype=int32),
+    cmodel_geom_pair: wp.array(dtype=vec2i),
     # Outputs:
-    cdata_model_num_collisions: wp.array[int32],
-    cdata_world_num_collisions: wp.array[int32],
-    cdata_wid: wp.array[int32],
-    cdata_geom_pair: wp.array[vec2i],
+    cdata_model_num_collisions: wp.array(dtype=int32),
+    cdata_world_num_collisions: wp.array(dtype=int32),
+    cdata_wid: wp.array(dtype=int32),
+    cdata_geom_pair: wp.array(dtype=vec2i),
 ):
     """
     A kernel that performs broad-phase collision detection using bounding spheres (BS).
 
     Inputs:
-        geom_sid (wp.array[int32]):
+        geom_sid (wp.array(dtype=int32)):
             Shape index for each geometry.
-        geom_pose (wp.array[transformf]):
+        geom_pose (wp.array(dtype=transformf)):
             Pose of each geometry in world coordinates.
-        geom_bs_radius (wp.array[float32]):
+        geom_bs_radius (wp.array(dtype=float32)):
             Radius of the bounding sphere for each geometry.
-        cmodel_model_num_pairs (wp.array[int32]):
+        cmodel_model_num_pairs (wp.array(dtype=int32)):
             Total number of collision pairs in the model.
-        cmodel_world_num_pairs (wp.array[int32]):
+        cmodel_world_num_pairs (wp.array(dtype=int32)):
             Number of collision pairs per world.
-        cmodel_wid (wp.array[int32]):
+        cmodel_wid (wp.array(dtype=int32)):
             World index for each collision pair candidate.
-        cmodel_geom_pair (wp.array[vec2i]):
+        cmodel_geom_pair (wp.array(dtype=vec2i)):
             Geometry indices for each collision pair candidate.
 
     Outputs:
-        cdata_model_num_collisions (wp.array[int32]):
+        cdata_model_num_collisions (wp.array(dtype=int32)):
             Number of collisions detected across all worlds in the model.
-        cdata_world_num_collisions (wp.array[int32]):
+        cdata_world_num_collisions (wp.array(dtype=int32)):
             Number of collisions detected per world.
-        cdata_wid (wp.array[int32]):
+        cdata_wid (wp.array(dtype=int32)):
             World index of each active collision pair.
-        cdata_geom_pair (wp.array[vec2i]):
+        cdata_geom_pair (wp.array(dtype=vec2i)):
             Geometry indices for each active collision pair.
     """
     # Retrieve the geom-pair index from the thread grid

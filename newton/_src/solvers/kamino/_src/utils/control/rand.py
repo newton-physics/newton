@@ -80,19 +80,19 @@ class RandomJointControllerData:
 def _generate_random_control_inputs(
     # Inputs
     controller_seed: int,
-    controller_decimation: wp.array[int32],
-    controller_scale: wp.array[float32],
-    model_info_joint_dofs_offset: wp.array[int32],
-    model_joints_wid: wp.array[int32],
-    model_joints_act_type: wp.array[int32],
-    model_joints_num_dofs: wp.array[int32],
-    model_joints_dofs_offset: wp.array[int32],
-    model_joints_tau_j_max: wp.array[float32],
-    state_time_steps: wp.array[int32],
+    controller_decimation: wp.array(dtype=int32),
+    controller_scale: wp.array(dtype=float32),
+    model_info_joint_dofs_offset: wp.array(dtype=int32),
+    model_joints_wid: wp.array(dtype=int32),
+    model_joints_act_type: wp.array(dtype=int32),
+    model_joints_num_dofs: wp.array(dtype=int32),
+    model_joints_dofs_offset: wp.array(dtype=int32),
+    model_joints_tau_j_max: wp.array(dtype=float32),
+    state_time_steps: wp.array(dtype=int32),
     # Outputs
     # TODO: Add support for other control types
     # (e.g. position and velocity targets)
-    control_tau_j: wp.array[float32],
+    control_tau_j: wp.array(dtype=float32),
 ):
     """
     A kernel to generate random control inputs for testing and benchmarking purposes.
