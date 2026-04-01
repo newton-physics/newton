@@ -1780,35 +1780,44 @@ class TestMenagerieBase(unittest.TestCase):
         native_mjw_data = self._native_mjw_data
         dt = self._dt
 
-        # Disable collisions on both sides
-        _disable_collisions(newton_solver.mjw_model)
-        _disable_collisions(native_mjw_model)
+        # Disable collisions on both sides (save/restore to avoid mutating cached model)
+        newton_saved = _disable_collisions(newton_solver.mjw_model)
+        native_saved = _disable_collisions(native_mjw_model)
 
-        # Initialize step-response control
-        strategy = StepResponseControlStrategy(target=self.dynamics_target)
-        strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)
-        strategy.fill_control(0.0)
+        try:
+            # Initialize step-response control
+            strategy = StepResponseControlStrategy(target=self.dynamics_target)
+            strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)
+            strategy.fill_control(0.0)
 
-        # Step loop — both sides run full mujoco_warp.step() independently.
-        # No split pipeline needed since collisions are disabled.
-        for step in range(self.num_steps):
-            strategy.fill_control(step * dt)
-            newton_solver.step(newton_state, newton_state, newton_control, None, dt)
-            _mujoco_warp.step(native_mjw_model, native_mjw_data)
+            # Step loop — both sides run full mujoco_warp.step() independently.
+            # No split pipeline needed since collisions are disabled.
+            for step in range(self.num_steps):
+                strategy.fill_control(step * dt)
+                newton_solver.step(newton_state, newton_state, newton_control, None, dt)
+                _mujoco_warp.step(native_mjw_model, native_mjw_data)
 
-            # Compare qpos and qvel
-            compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, "qpos", self.dynamics_tolerance, step)
-            compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, "qvel", self.dynamics_tolerance, step)
+                # Compare qpos and qvel
+                compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, "qpos", self.dynamics_tolerance, step)
+                compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, "qvel", self.dynamics_tolerance, step)
+        finally:
+            _restore_collisions(newton_solver.mjw_model, newton_saved)
+            _restore_collisions(native_mjw_model, native_saved)
 
 
-def _disable_collisions(mjw_model: Any) -> None:
-    """Disable contact generation via MuJoCo disable flag and broadphase masks.
+def _disable_collisions(mjw_model: Any) -> dict:
+    """Disable contact generation and return saved state for restoration.
 
-    Uses mjDSBL_CONTACT (same mechanism as SolverMuJoCo's disable_contacts)
-    plus zeroing contype/conaffinity as a belt-and-suspenders approach.
+    Uses mjDSBL_CONTACT plus zeroing contype/conaffinity.
+    Returns saved values so _restore_collisions can undo the changes.
     """
     import mujoco
 
+    saved = {
+        "disableflags": int(mjw_model.opt.disableflags),
+        "contype": mjw_model.geom_contype.numpy().copy(),
+        "conaffinity": mjw_model.geom_conaffinity.numpy().copy(),
+    }
     mjw_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
     contype = mjw_model.geom_contype.numpy()
     contype[:] = 0
@@ -1816,6 +1825,14 @@ def _disable_collisions(mjw_model: Any) -> None:
     conaffinity = mjw_model.geom_conaffinity.numpy()
     conaffinity[:] = 0
     mjw_model.geom_conaffinity.assign(conaffinity)
+    return saved
+
+
+def _restore_collisions(mjw_model: Any, saved: dict) -> None:
+    """Restore collision settings from saved state."""
+    mjw_model.opt.disableflags = saved["disableflags"]
+    mjw_model.geom_contype.assign(saved["contype"])
+    mjw_model.geom_conaffinity.assign(saved["conaffinity"])
 
 
 # =============================================================================
