@@ -4,6 +4,7 @@
 newton.selection
 ================
 
+.. py:module:: newton.selection
 .. currentmodule:: newton.selection
 
 .. rubric:: Classes
