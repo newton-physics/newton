@@ -5403,15 +5403,13 @@ class ModelBuilder:
             color=color,
         )
 
-    _UNSET = object()
-
     def add_shape_ellipsoid(
         self,
         body: int,
         xform: Transform | None = None,
-        rx: float | object = _UNSET,
-        ry: float | object = _UNSET,
-        rz: float | object = _UNSET,
+        rx: float = 1.0,
+        ry: float = 0.75,
+        rz: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
@@ -5463,11 +5461,10 @@ class ModelBuilder:
                 builder.add_shape_ellipsoid(body=body, rx=0.5, ry=0.5, rz=0.5)
         """
         # Backward compat: accept deprecated a, b, c parameter names
-        _UNSET = ModelBuilder._UNSET
-        _deprecated_map = {"a": ("rx", rx), "b": ("ry", ry), "c": ("rz", rz)}
-        for old_name, (new_name, new_val) in _deprecated_map.items():
+        _deprecated_map = {"a": ("rx", rx, 1.0), "b": ("ry", ry, 0.75), "c": ("rz", rz, 0.5)}
+        for old_name, (new_name, new_val, default) in _deprecated_map.items():
             if old_name in kwargs:
-                if new_val is not _UNSET:
+                if new_val != default:
                     raise TypeError(f"Cannot specify both '{old_name}' and '{new_name}'")
                 warnings.warn(
                     f"Parameter '{old_name}' is deprecated, use '{new_name}' instead.",
@@ -5482,13 +5479,6 @@ class ModelBuilder:
             rz = kwargs.pop("c")
         if kwargs:
             raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
-        # Apply defaults for any parameters that were neither explicitly passed nor set via deprecated names
-        if rx is _UNSET:
-            rx = 1.0
-        if ry is _UNSET:
-            ry = 0.75
-        if rz is _UNSET:
-            rz = 0.5
 
         if cfg is None:
             cfg = self.default_site_cfg if as_site else self.default_shape_cfg
