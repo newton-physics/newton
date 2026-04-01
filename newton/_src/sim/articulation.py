@@ -169,6 +169,7 @@ def invert_3d_rotational_dofs(
 def eval_single_articulation_fk(
     joint_start: int,
     joint_end: int,
+    joint_eval_order: wp.array(dtype=int),
     joint_articulation: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
@@ -189,28 +190,29 @@ def eval_single_articulation_fk(
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
     for i in range(joint_start, joint_end):
-        articulation = joint_articulation[i]
+        joint_index = joint_eval_order[i]
+        articulation = joint_articulation[joint_index]
         if articulation == -1:
             continue
 
-        parent = joint_parent[i]
-        child = joint_child[i]
+        parent = joint_parent[joint_index]
+        child = joint_child[joint_index]
 
         # compute transform across the joint
-        type = joint_type[i]
+        joint_type_id = joint_type[joint_index]
 
-        X_pj = joint_X_p[i]
-        X_cj = joint_X_c[i]
+        X_pj = joint_X_p[joint_index]
+        X_cj = joint_X_c[joint_index]
 
-        q_start = joint_q_start[i]
-        qd_start = joint_qd_start[i]
-        lin_axis_count = joint_dof_dim[i, 0]
-        ang_axis_count = joint_dof_dim[i, 1]
+        q_start = joint_q_start[joint_index]
+        qd_start = joint_qd_start[joint_index]
+        lin_axis_count = joint_dof_dim[joint_index, 0]
+        ang_axis_count = joint_dof_dim[joint_index, 1]
 
         X_j = wp.transform_identity()
         v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
 
-        if type == JointType.PRISMATIC:
+        if joint_type_id == JointType.PRISMATIC:
             axis = joint_axis[qd_start]
 
             q = joint_q[q_start]
@@ -219,7 +221,7 @@ def eval_single_articulation_fk(
             X_j = wp.transform(axis * q, wp.quat_identity())
             v_j = wp.spatial_vector(axis * qd, wp.vec3())
 
-        if type == JointType.REVOLUTE:
+        if joint_type_id == JointType.REVOLUTE:
             axis = joint_axis[qd_start]
 
             q = joint_q[q_start]
@@ -228,7 +230,7 @@ def eval_single_articulation_fk(
             X_j = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, q))
             v_j = wp.spatial_vector(wp.vec3(), axis * qd)
 
-        if type == JointType.BALL:
+        if joint_type_id == JointType.BALL:
             r = wp.quat(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2], joint_q[q_start + 3])
 
             w = wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2])
@@ -236,7 +238,7 @@ def eval_single_articulation_fk(
             X_j = wp.transform(wp.vec3(), r)
             v_j = wp.spatial_vector(wp.vec3(), w)
 
-        if type == JointType.FREE or type == JointType.DISTANCE:
+        if joint_type_id == JointType.FREE or joint_type_id == JointType.DISTANCE:
             t = wp.transform(
                 wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
                 wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
@@ -250,7 +252,7 @@ def eval_single_articulation_fk(
             X_j = t
             v_j = v
 
-        if type == JointType.D6:
+        if joint_type_id == JointType.D6:
             pos = wp.vec3(0.0)
             rot = wp.quat_identity()
             vel_v = wp.vec3(0.0)
@@ -349,6 +351,7 @@ def eval_articulation_fk(
         dtype=bool
     ),  # used to enable / disable FK for an articulation, if None then treat all as enabled
     articulation_indices: wp.array(dtype=int),  # can be None, articulation indices to process
+    joint_eval_order: wp.array(dtype=int),
     joint_articulation: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
@@ -393,6 +396,7 @@ def eval_articulation_fk(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_eval_order,
         joint_articulation,
         joint_q,
         joint_qd,
@@ -456,6 +460,7 @@ def eval_fk(
             model.articulation_count,
             mask,
             indices,
+            model.joint_eval_order,
             model.joint_articulation,
             joint_q,
             joint_qd,
