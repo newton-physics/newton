@@ -19,23 +19,23 @@ There are two types of parameterizations to describe the configuration of an art
 generalized coordinates and maximal coordinates.
 
 Generalized (sometimes also called "reduced") coordinates describe an articulation in terms of its joint positions and velocities.
-For example, a double-pendulum articulation has two revolute joints, so its generalized state consists of two joint angles in :attr:`State.joint_q` and two corresponding joint velocities in :attr:`State.joint_qd`.
+For example, a double-pendulum articulation has two revolute joints, so its generalized state consists of two joint angles in :attr:`newton.State.joint_q` and two corresponding joint velocities in :attr:`newton.State.joint_qd`.
 See the table below for the number of generalized coordinates for each joint type.
 For a floating-base articulation (one connected to the world by a free joint), the generalized coordinates also include the base link pose: a 3D position and an XYZW quaternion.
 
 Maximal coordinates describe the configuration of an articulation in terms of the body link positions and velocities.
-Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`State.body_q`,
-and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`State.body_qd`.
+Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
+and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 
 To convert between these two representations, we use forward and inverse kinematics:
 forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to maximal coordinates, and inverse kinematics (:func:`newton.eval_ik`) converts maximal coordinates to generalized coordinates.
 
 Newton supports both parameterizations, and each solver chooses which one it treats as the primary articulation state representation.
-For example, :class:`~solvers.SolverMuJoCo` and :class:`~solvers.SolverFeatherstone`
-use generalized coordinates, while :class:`~solvers.SolverXPBD`,
-:class:`~solvers.SolverSemiImplicit`, and :class:`~solvers.SolverVBD`
+For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`
+use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
+:class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
 use maximal coordinates.
-Note that collision detection, e.g., via :meth:`Model.collide` requires the maximal coordinates to be current in the state.
+Note that collision detection, e.g., via :meth:`newton.Model.collide` requires the maximal coordinates to be current in the state.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -58,8 +58,8 @@ its joint angle to 0.5 and joint velocity to 10.0:
   assert all(state.joint_q.numpy() == [0.5])
   assert all(state.joint_qd.numpy() == [10.0])
 
-While the generalized coordinates have been initialized by the values we set through the :attr:`ModelBuilder.joint_q` and :attr:`ModelBuilder.joint_qd` definitions,
-the body poses (maximal coordinates) are still initialized by the identity transform (since we did not provide a ``xform`` argument to the :meth:`ModelBuilder.add_link` call, it defaults to the identity transform).
+While the generalized coordinates have been initialized by the values we set through the :attr:`newton.ModelBuilder.joint_q` and :attr:`newton.ModelBuilder.joint_qd` definitions,
+the body poses (maximal coordinates) are still initialized by the identity transform (since we did not provide a ``xform`` argument to the :meth:`newton.ModelBuilder.add_link` call, it defaults to the identity transform).
 This is not a problem for generalized-coordinate solvers, as they do not use the body poses (maximal coordinates) to represent the state of the articulation but only the generalized coordinates.
 
 In order to update the body poses (maximal coordinates), we need to use the forward kinematics function :func:`newton.eval_fk`:
@@ -71,7 +71,7 @@ In order to update the body poses (maximal coordinates), we need to use the forw
 Now, the body poses (maximal coordinates) have been updated by the forward kinematics and a maximal-coordinate solver can simulate the scene starting from these initial conditions.
 As mentioned above, this call is not needed for generalized-coordinate solvers.
 
-When declaring an articulation using the :class:`~ModelBuilder`, the rigid body poses (maximal coordinates :attr:`State.body_q`) are initialized by the ``xform`` argument:
+When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
 .. testcode::
 
@@ -90,7 +90,7 @@ When declaring an articulation using the :class:`~ModelBuilder`, the rigid body 
   assert len(state.joint_q) == 7  # 7 DOF for a free joint (3 position + 4 quaternion)
 
 In this setup, we have a body with a box shape that both maximal-coordinate and generalized-coordinate solvers can simulate.
-Since :meth:`~ModelBuilder.add_body` automatically adds a free joint, the body already has the necessary degrees of freedom in generalized coordinates (:attr:`State.joint_q`).
+Since :meth:`~newton.ModelBuilder.add_body` automatically adds a free joint, the body already has the necessary degrees of freedom in generalized coordinates (:attr:`newton.State.joint_q`).
 
 .. testcode::
 
@@ -132,8 +132,8 @@ Newton distinguishes three motion modes for rigid bodies:
 **Dynamic**
   Moves from forces, constraints, and contacts during solver integration.
 
-Kinematic bodies are created through the ``is_kinematic=True`` flag on :meth:`~ModelBuilder.add_link`
-or :meth:`~ModelBuilder.add_body`. Only root links (joint parent ``-1``) may be kinematic.
+Kinematic bodies are created through the ``is_kinematic=True`` flag on :meth:`~newton.ModelBuilder.add_link`
+or :meth:`~newton.ModelBuilder.add_body`. Only root links (joint parent ``-1``) may be kinematic.
 Setting a non-root link to kinematic raises a :class:`ValueError` during articulation construction.
 
 Common combinations
@@ -219,16 +219,16 @@ For scalar coordinates, this is the familiar ``q_next = q + qd * dt`` relation; 
 
 When writing kinematic state values:
 
-- For generalized-coordinate workflows, write :attr:`State.joint_q` and :attr:`State.joint_qd`,
+- For generalized-coordinate workflows, write :attr:`newton.State.joint_q` and :attr:`newton.State.joint_qd`,
   then call :func:`newton.eval_fk` so maximal coordinates (for collisions and body-space consumers) are current.
-- For maximal-coordinate workflows, write :attr:`State.body_q` and :attr:`State.body_qd` directly.
+- For maximal-coordinate workflows, write :attr:`newton.State.body_q` and :attr:`newton.State.body_qd` directly.
 
 Rigid-body solver behavior
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The rigid-body solvers (:class:`~solvers.SolverMuJoCo`,
-:class:`~solvers.SolverFeatherstone`, :class:`~solvers.SolverXPBD`,
-:class:`~solvers.SolverSemiImplicit`, :class:`~solvers.SolverVBD`)
+The rigid-body solvers (:class:`~newton.solvers.SolverMuJoCo`,
+:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverXPBD`,
+:class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverVBD`)
 support the same user-facing kinematic authoring model:
 
 - Kinematic links keep their declared joint type (free/revolute/etc.).
@@ -238,20 +238,20 @@ support the same user-facing kinematic authoring model:
 
 Implementation details differ by coordinate formulation:
 
-- Generalized-coordinate solvers (:class:`~solvers.SolverMuJoCo`,
-  :class:`~solvers.SolverFeatherstone`) treat kinematic motion through prescribed joint state.
-- Maximal-coordinate solvers (:class:`~solvers.SolverXPBD`,
-  :class:`~solvers.SolverSemiImplicit`, :class:`~solvers.SolverVBD`)
+- Generalized-coordinate solvers (:class:`~newton.solvers.SolverMuJoCo`,
+  :class:`~newton.solvers.SolverFeatherstone`) treat kinematic motion through prescribed joint state.
+- Maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverVBD`)
   use prescribed body transforms/twists.
-- Contact handling of kinematic bodies is not identical across the solvers. :class:`~solvers.SolverXPBD`,
-  :class:`~solvers.SolverVBD`, :class:`~solvers.SolverMuJoCo`, and
-  :class:`~solvers.SolverFeatherstone` treat kinematic bodies like
+- Contact handling of kinematic bodies is not identical across the solvers. :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverMuJoCo`, and
+  :class:`~newton.solvers.SolverFeatherstone` treat kinematic bodies like
   infinite-mass colliders for contact response, while
-  :class:`~solvers.SolverSemiImplicit` currently preserves prescribed state but
+  :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
   does not zero inverse mass/inertia inside its contact solver. Contacts against
   kinematic bodies can therefore be softer under SemiImplicit.
 
-In :class:`~solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
+In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
 large internal armature value; see :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
@@ -307,8 +307,8 @@ Prismatic, revolute, planar, and universal joints can be seen as special cases o
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :attr:`Model.joint_q` array stores the default generalized joint positions
-for all joints in the model and is used to initialize :attr:`State.joint_q`.
+The :attr:`newton.Model.joint_q` array stores the default generalized joint positions
+for all joints in the model and is used to initialize :attr:`newton.State.joint_q`.
 Both arrays share the same per-joint layout.
 For scalar-coordinate joints (for example this D6 joint), the positional coordinates can be queried as follows:
 
@@ -352,18 +352,18 @@ For scalar-coordinate joints (for example this D6 joint), the positional coordin
 Definition of ``joint_qd``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :attr:`Model.joint_qd` array stores the default generalized joint velocities
-for all joints in the model and is used to initialize :attr:`State.joint_qd`.
-The generalized joint forces at :attr:`Control.joint_f` use the same DOF order.
+The :attr:`newton.Model.joint_qd` array stores the default generalized joint velocities
+for all joints in the model and is used to initialize :attr:`newton.State.joint_qd`.
+The generalized joint forces at :attr:`newton.Control.joint_f` use the same DOF order.
 
 Several other arrays also use this same DOF-ordered layout, indexed from
-:attr:`Model.joint_qd_start` rather than :attr:`Model.joint_q_start`.
-This includes :attr:`Model.joint_axis`, joint limits and other per-DOF
-properties defined via :class:`ModelBuilder.JointDofConfig`, and the
-position targets at :attr:`Control.joint_target_pos`.
+:attr:`newton.Model.joint_qd_start` rather than :attr:`newton.Model.joint_q_start`.
+This includes :attr:`newton.Model.joint_axis`, joint limits and other per-DOF
+properties defined via :class:`newton.ModelBuilder.JointDofConfig`, and the
+position targets at :attr:`newton.Control.joint_target_pos`.
 
 For every joint, these per-DOF arrays are stored consecutively, with linear DOFs
-first and angular DOFs second. Use :attr:`Model.joint_dof_dim` to query
+first and angular DOFs second. Use :attr:`newton.Model.joint_dof_dim` to query
 how many of each a joint has.
 
 The velocity DOFs for each joint can be queried as follows:
@@ -516,7 +516,7 @@ A robust pattern is:
 ArticulationView: selection interface for RL and batched control
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-:class:`selection.ArticulationView` is the high-level interface for selecting a subset
+:class:`newton.selection.ArticulationView` is the high-level interface for selecting a subset
 of articulations and accessing their joints/links/DOFs with stable tensor shapes. This is
 especially useful in RL pipelines where the same observation/action logic is applied to many
 parallel environments.
@@ -569,7 +569,7 @@ link transforms) without manual index bookkeeping.
 Move articulations in world space
 """""""""""""""""""""""""""""""""
 
-Use :meth:`selection.ArticulationView.set_root_transforms` to move selected articulations:
+Use :meth:`newton.selection.ArticulationView.set_root_transforms` to move selected articulations:
 
 .. testcode:: articulation-view
 
@@ -642,17 +642,17 @@ relative transform from the parent and child body to the respective anchor frame
    * - Symbol
      - Description
    * - x_wp
-     - World transform of the parent body (stored at :attr:`~State.body_q`)
+     - World transform of the parent body (stored at :attr:`State.body_q`)
    * - x_wc
-     - World transform of the child body (stored at :attr:`~State.body_q`)
+     - World transform of the child body (stored at :attr:`State.body_q`)
    * - x_pj
-     - Transform from the parent body to the joint parent anchor frame (defined by :attr:`~Model.joint_X_p`)
+     - Transform from the parent body to the joint parent anchor frame (defined by :attr:`Model.joint_X_p`)
    * - x_cj
-     - Transform from the child body to the joint child anchor frame (defined by :attr:`~Model.joint_X_c`)
+     - Transform from the child body to the joint child anchor frame (defined by :attr:`Model.joint_X_c`)
    * - x_j
      - Joint transform from the joint parent anchor frame to the joint child anchor frame
 
-In the forward kinematics, the joint transform is determined by the joint coordinates (generalized joint positions :attr:`~State.joint_q` and velocities :attr:`~State.joint_qd`).
+In the forward kinematics, the joint transform is determined by the joint coordinates (generalized joint positions :attr:`State.joint_q` and velocities :attr:`State.joint_qd`).
 Given the parent body's world transform :math:`x_{wp}` and the joint transform :math:`x_{j}`, the child body's world transform :math:`x_{wc}` is computed as:
 
 .. math::
@@ -676,11 +676,11 @@ An **orphan joint** is a joint that is not part of any articulation. This situat
 * The USD asset does not define a ``PhysicsArticulationRootAPI`` on any prim, so no articulations are discovered during parsing.
 * A joint connects two bodies that are not under any ``PhysicsArticulationRootAPI`` prim, even though other articulations exist in the scene.
 
-When orphan joints are detected during USD parsing (:meth:`~ModelBuilder.add_usd`), Newton issues a warning that lists the affected joint paths.
+When orphan joints are detected during USD parsing (:meth:`~newton.ModelBuilder.add_usd`), Newton issues a warning that lists the affected joint paths.
 
 **Validation and finalization**
 
-By default, :meth:`~ModelBuilder.finalize` validates that every joint belongs to an articulation and raises a :class:`ValueError` if orphan joints are found.
+By default, :meth:`~newton.ModelBuilder.finalize` validates that every joint belongs to an articulation and raises a :class:`ValueError` if orphan joints are found.
 To proceed with orphan joints, skip this validation:
 
 .. testsetup:: articulation-orphan-joints
@@ -696,5 +696,5 @@ To proceed with orphan joints, skip this validation:
 
 **Solver compatibility**
 
-Only maximal-coordinate solvers (:class:`~solvers.SolverXPBD`, :class:`~solvers.SolverSemiImplicit`) support orphan joints.
-Generalized-coordinate solvers (:class:`~solvers.SolverFeatherstone`, :class:`~solvers.SolverMuJoCo`) require every joint to belong to an articulation.
+Only maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`) support orphan joints.
+Generalized-coordinate solvers (:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverMuJoCo`) require every joint to belong to an articulation.

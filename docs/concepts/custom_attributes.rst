@@ -29,20 +29,20 @@ Overview
 
 Newton organizes simulation data into four primary objects, each containing flat arrays indexed by simulation entities: 
 
-* **Model Object** (:class:`~Model`) - Static configuration and physical properties that remain constant during simulation
-* **State Object** (:class:`~State`) - Dynamic quantities that evolve during simulation
-* **Control Object** (:class:`~Control`) - Control inputs and actuator commands
-* **Contact Object** (:class:`~Contacts`) - Contact-specific properties
+* **Model Object** (:class:`~newton.Model`) - Static configuration and physical properties that remain constant during simulation
+* **State Object** (:class:`~newton.State`) - Dynamic quantities that evolve during simulation
+* **Control Object** (:class:`~newton.Control`) - Control inputs and actuator commands
+* **Contact Object** (:class:`~newton.Contacts`) - Contact-specific properties
 
-Custom attributes extend these objects with user-defined arrays that follow the same indexing scheme as Newton's built-in attributes. The ``CONTACT`` assignment attaches attributes to the :class:`~Contacts` object created during collision detection.
+Custom attributes extend these objects with user-defined arrays that follow the same indexing scheme as Newton's built-in attributes. The ``CONTACT`` assignment attaches attributes to the :class:`~newton.Contacts` object created during collision detection.
 
 Declaring Custom Attributes
 ----------------------------
 
-Custom attributes must be declared before use via the :meth:`ModelBuilder.add_custom_attribute` method. Each declaration specifies:
+Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies:
 
 * **name**: Attribute name
-* **frequency**: Determines array size and indexing—either a :class:`~Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``, ``ONCE``) or a string for custom frequencies
+* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``, ``ONCE``) or a string for custom frequencies
 * **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.) or ``str`` for string attributes stored as Python lists
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)
 * **default** (optional): Default value for unspecified entities. When omitted, a sensible zero-value is derived from the dtype (``0`` for scalars, identity for quaternions, ``False`` for booleans, ``""`` for strings)
@@ -219,7 +219,7 @@ Before loading assets, register solver-specific attributes:
    assert hasattr(model_mujoco, "mujoco")
    assert hasattr(model_mujoco.mujoco, "condim")
 
-MuJoCo boolean custom attributes use a ``parse_bool`` transformer (registered by :meth:`~solvers.SolverMuJoCo.register_custom_attributes`) that handles strings (``"true"``/``"false"``), integers, and native booleans.
+MuJoCo boolean custom attributes use a ``parse_bool`` transformer (registered by :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes`) that handles strings (``"true"``/``"false"``), integers, and native booleans.
 
 Authoring Custom Attributes
 ----------------------------
@@ -459,14 +459,14 @@ For more information about USD integration and the schema resolver system, see :
 MJCF and URDF Integration
 --------------------------
 
-Custom attributes can also be parsed from MJCF and URDF files. Each :class:`~ModelBuilder.CustomAttribute` has optional fields for controlling how values are extracted from these formats:
+Custom attributes can also be parsed from MJCF and URDF files. Each :class:`~newton.ModelBuilder.CustomAttribute` has optional fields for controlling how values are extracted from these formats:
 
-* ``CustomAttribute.mjcf_attribute_name`` — name of the XML attribute to read (defaults to the attribute ``name``)
-* ``CustomAttribute.mjcf_value_transformer`` — callable that converts the XML string value to the target dtype
-* ``CustomAttribute.urdf_attribute_name`` — name of the XML attribute to read (defaults to the attribute ``name``)
-* ``CustomAttribute.urdf_value_transformer`` — callable that converts the XML string value to the target dtype
+* :attr:`~newton.ModelBuilder.CustomAttribute.mjcf_attribute_name` — name of the XML attribute to read (defaults to the attribute ``name``)
+* :attr:`~newton.ModelBuilder.CustomAttribute.mjcf_value_transformer` — callable that converts the XML string value to the target dtype
+* :attr:`~newton.ModelBuilder.CustomAttribute.urdf_attribute_name` — name of the XML attribute to read (defaults to the attribute ``name``)
+* :attr:`~newton.ModelBuilder.CustomAttribute.urdf_value_transformer` — callable that converts the XML string value to the target dtype
 
-These are primarily used by solver integrations (e.g., :meth:`~solvers.SolverMuJoCo.register_custom_attributes` registers MJCF transformers for MuJoCo-specific attributes like ``condim``, ``priority``, and ``solref``). When no transformer is provided, values are parsed using a generic string-to-Warp converter.
+These are primarily used by solver integrations (e.g., :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` registers MJCF transformers for MuJoCo-specific attributes like ``condim``, ``priority``, and ``solref``). When no transformer is provided, values are parsed using a generic string-to-Warp converter.
 
 .. code-block:: python
 
@@ -495,14 +495,14 @@ The custom attribute system enforces several constraints to ensure correctness:
 Custom Frequencies
 ==================
 
-While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the :attr:`~ModelBuilder.CustomAttribute.frequency` parameter.
+While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` parameter.
 
 **Example use case:** MuJoCo's ``<contact><pair>`` elements define contact pairs between geometries. These pairs have their own count independent of bodies or shapes, and their indices must be remapped when merging worlds.
 
 Registering Custom Frequencies
 ------------------------------
 
-Custom frequencies must be **registered before use** via :meth:`~ModelBuilder.add_custom_frequency` using a :class:`~ModelBuilder.CustomFrequency` object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.
+Custom frequencies must be **registered before use** via :meth:`~newton.ModelBuilder.add_custom_frequency` using a :class:`~newton.ModelBuilder.CustomFrequency` object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.
 
 .. testsetup:: custom-freqs
 
@@ -519,12 +519,12 @@ Custom frequencies must be **registered before use** via :meth:`~ModelBuilder.ad
        )
    )
 
-The frequency key follows the same namespace rules as attribute keys: if a namespace is provided, it is prepended to the name (e.g., ``"mujoco:pair"``). When declaring a custom attribute, the :attr:`~ModelBuilder.CustomAttribute.frequency` string must match this full key.
+The frequency key follows the same namespace rules as attribute keys: if a namespace is provided, it is prepended to the name (e.g., ``"mujoco:pair"``). When declaring a custom attribute, the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` string must match this full key.
 
 Declaring Custom Frequency Attributes
 -------------------------------------
 
-Once a custom frequency is registered, pass a string instead of an enum for the :attr:`~ModelBuilder.CustomAttribute.frequency` parameter when adding attributes:
+Once a custom frequency is registered, pass a string instead of an enum for the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` parameter when adding attributes:
 
 .. testcode:: custom-freqs
 
@@ -549,7 +549,7 @@ Once a custom frequency is registered, pass a string instead of an enum for the 
 Adding Values
 -------------
 
-Custom frequency values are appended using :meth:`~ModelBuilder.add_custom_values`:
+Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custom_values`:
 
 .. testcode:: custom-freqs
 
@@ -585,7 +585,7 @@ Custom frequency values are appended using :meth:`~ModelBuilder.add_custom_value
    [100 101]
    [2.5 3. ]
 
-For convenience, :meth:`~ModelBuilder.add_custom_values_batch` appends multiple rows in a single call:
+For convenience, :meth:`~newton.ModelBuilder.add_custom_values_batch` appends multiple rows in a single call:
 
 .. code-block:: python
 
@@ -603,10 +603,10 @@ Custom frequencies can support automatic USD parsing:
 
 In this section, a *row* means one appended set of values for a custom frequency
 (that is, one index entry across all attributes in that frequency, equivalent to
-one call to :meth:`~ModelBuilder.add_custom_values`).
+one call to :meth:`~newton.ModelBuilder.add_custom_values`).
 
-* ``CustomFrequency.usd_prim_filter`` selects which prims should emit rows.
-* ``CustomFrequency.usd_entry_expander`` (optional) expands one prim into multiple rows.
+* :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter` selects which prims should emit rows.
+* :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander` (optional) expands one prim into multiple rows.
 
 .. code-block:: python
 
@@ -644,14 +644,14 @@ For one-to-many mappings (one prim -> many rows):
        )
    )
 
-When :meth:`~ModelBuilder.add_usd` runs:
+When :meth:`~newton.ModelBuilder.add_usd` runs:
 
 1. Parses standard entities (bodies, shapes, joints, etc.).
-2. Collects custom frequencies that define ``CustomFrequency.usd_prim_filter``.
+2. Collects custom frequencies that define :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter`.
 3. Traverses prims once (including instance proxies via ``Usd.TraverseInstanceProxies()``).
 4. For each prim, evaluate matching frequencies in registration order:
    
-   - If ``CustomFrequency.usd_entry_expander`` is set, one row is appended per emitted dictionary,
+   - If :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander` is set, one row is appended per emitted dictionary,
      and default per-attribute USD extraction for that frequency is skipped for that prim.
    - Otherwise, one row is appended from the frequency's declared attributes.
 
@@ -662,19 +662,19 @@ Callback inputs:
 * ``context`` is a small dictionary:
   
   - ``prim``: current USD prim (same object as the ``prim`` argument)
-  - ``builder``: current :class:`~ModelBuilder` instance
-  - ``result``: dictionary returned by :meth:`~ModelBuilder.add_usd`
+  - ``builder``: current :class:`~newton.ModelBuilder` instance
+  - ``result``: dictionary returned by :meth:`~newton.ModelBuilder.add_usd`
 
 .. note::
    Important behavior:
 
    - Frequency callbacks are evaluated in deterministic registration order for each visited prim.
-   - If a frequency defines ``CustomFrequency.usd_entry_expander``, then for every matched
+   - If a frequency defines :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander`, then for every matched
      prim in that frequency, the expander output is the only source of row values.
-   - In that expander code path, the normal :class:`~ModelBuilder.CustomAttribute` USD parsing path is skipped
+   - In that expander code path, the normal :class:`~newton.ModelBuilder.CustomAttribute` USD parsing path is skipped
      for that frequency/prim. In other words,
-     ``CustomAttribute.usd_attribute_name`` and
-     ``CustomAttribute.usd_value_transformer`` are not evaluated for those rows.
+     :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` and
+     :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` are not evaluated for those rows.
    - Example: if frequency ``"mujoco:tendon_joint"`` has an expander and attribute
      ``CustomAttribute(name="tendon_coef", frequency="mujoco:tendon_joint", ...)``, then ``tendon_coef`` is populated
      only from keys returned by the expander rows. If a row omits ``"mujoco:tendon_coef"``, the value is treated as
@@ -686,11 +686,11 @@ during model import.
 Deriving Values from Prim Data (Wildcard Attribute)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default, each custom attribute reads its value from a specific USD attribute on the prim (e.g., ``newton:myns:my_attr``). Sometimes, however, you want to **compute** an attribute value from arbitrary prim data rather than reading a single named attribute. This is what setting ``CustomAttribute.usd_attribute_name`` to ``"*"`` is for.
+By default, each custom attribute reads its value from a specific USD attribute on the prim (e.g., ``newton:myns:my_attr``). Sometimes, however, you want to **compute** an attribute value from arbitrary prim data rather than reading a single named attribute. This is what setting :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` to ``"*"`` is for.
 
-When ``CustomAttribute.usd_attribute_name`` is set to ``"*"``, the attribute's ``CustomAttribute.usd_value_transformer`` is called for **every prim** matching the attribute's frequency — regardless of which USD attributes exist on that prim. The transformer receives ``None`` as the value (since there is no specific attribute to read) and a context dictionary containing the prim and the attribute definition.
+When :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` is set to ``"*"``, the attribute's :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` is called for **every prim** matching the attribute's frequency — regardless of which USD attributes exist on that prim. The transformer receives ``None`` as the value (since there is no specific attribute to read) and a context dictionary containing the prim and the attribute definition.
 
-A ``CustomAttribute.usd_value_transformer`` **must** be provided when using ``"*"``; omitting it raises a :class:`ValueError`.
+A :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` **must** be provided when using ``"*"``; omitting it raises a :class:`ValueError`.
 
 **Example:** Suppose your USD stage contains "sensor" prims, each with an arbitrary ``sensor:position`` attribute. You want to store the distance from the origin as a custom attribute, computed at parse time:
 
@@ -739,10 +739,10 @@ A ``CustomAttribute.usd_value_transformer`` **must** be provided when using ``"*
 The transformer context dictionary contains:
 
 * ``"prim"``: The current USD prim.
-* ``"attr"``: The :class:`~ModelBuilder.CustomAttribute` being evaluated.
-* When called from :meth:`~ModelBuilder.add_usd` custom-frequency parsing,
+* ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` being evaluated.
+* When called from :meth:`~newton.ModelBuilder.add_usd` custom-frequency parsing,
   context also includes ``"result"`` (the ``add_usd`` return dictionary) and
-  ``"builder"`` (the current :class:`~ModelBuilder`).
+  ``"builder"`` (the current :class:`~newton.ModelBuilder`).
 
 This pattern is useful when:
 
@@ -754,7 +754,7 @@ This pattern is useful when:
 Multi-World Merging
 -------------------
 
-When using ``add_builder()``, ``add_world()``, or ``replicate()`` in multi-world simulations, the ``CustomAttribute.references`` field specifies how attribute values should be transformed:
+When using ``add_builder()``, ``add_world()``, or ``replicate()`` in multi-world simulations, the :attr:`~newton.ModelBuilder.CustomAttribute.references` field specifies how attribute values should be transformed:
 
 .. testcode:: custom-merge
 
@@ -792,7 +792,7 @@ Supported reference types:
 Querying Counts
 ---------------
 
-Use :meth:`~Model.get_custom_frequency_count` to get the count for a custom frequency (raises ``KeyError`` if unknown):
+Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a custom frequency (raises ``KeyError`` if unknown):
 
 .. testcode:: custom-merge
 
@@ -813,4 +813,4 @@ Use :meth:`~Model.get_custom_frequency_count` to get the count for a custom freq
 ArticulationView Limitations
 ----------------------------
 
-Custom frequency attributes are generally not accessible via :class:`~selection.ArticulationView` because they represent entity types that aren't tied to articulation structure. The one exception is the ``mujoco:tendon`` frequency, which is supported. For per-articulation data, use enum frequencies like ``ARTICULATION``, ``JOINT``, or ``BODY``.
+Custom frequency attributes are generally not accessible via :class:`~newton.selection.ArticulationView` because they represent entity types that aren't tied to articulation structure. The one exception is the ``mujoco:tendon`` frequency, which is supported. For per-articulation data, use enum frequencies like ``ARTICULATION``, ``JOINT``, or ``BODY``.

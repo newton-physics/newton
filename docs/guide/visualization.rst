@@ -11,30 +11,30 @@ Newton provides multiple viewer backends for different visualization needs, from
 Common Interface
 ----------------
 
-All viewer backends inherit from :class:`~viewer.ViewerBase` and share a common interface:
+All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a common interface:
 
 **Core loop methods** — every viewer uses the same simulation loop pattern:
 
-- :meth:`~viewer.ViewerBase.set_model` — assign a :class:`~Model` and optionally limit the number of rendered worlds with ``max_worlds``
-- :meth:`~viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
-- :meth:`~viewer.ViewerBase.log_state` — update the viewer with the current :class:`~State` (body transforms, particle positions, etc.)
-- :meth:`~viewer.ViewerBase.end_frame` — finish the frame and present it
-- :meth:`~viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
-- :meth:`~viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~viewer.ViewerGL`)
-- :meth:`~viewer.ViewerBase.close` — close the viewer and release resources
+- :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` and optionally limit the number of rendered worlds with ``max_worlds``
+- :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
+- :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
+- :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
+- :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
+- :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
+- :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
 
 **Camera and layout:**
 
-- :meth:`~viewer.ViewerBase.set_camera` — set camera position, pitch, and yaw
-- :meth:`~viewer.ViewerBase.set_world_offsets` — arrange multiple worlds in a grid with a given spacing along each axis
+- :meth:`~newton.viewer.ViewerBase.set_camera` — set camera position, pitch, and yaw
+- :meth:`~newton.viewer.ViewerBase.set_world_offsets` — arrange multiple worlds in a grid with a given spacing along each axis
 
 **Custom visualization** — draw debug overlays on top of the simulation:
 
-- :meth:`~viewer.ViewerBase.log_lines` — draw line segments (e.g. rays, normals, force vectors)
-- :meth:`~viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
-- :meth:`~viewer.ViewerBase.log_contacts` — visualize :class:`~Contacts` as normal lines at contact points
-- :meth:`~viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
-- :meth:`~viewer.ViewerBase.log_scalar` / :meth:`~viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
+- :meth:`~newton.viewer.ViewerBase.log_lines` — draw line segments (e.g. rays, normals, force vectors)
+- :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
+- :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
+- :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
+- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
@@ -55,7 +55,7 @@ Real-time Viewers
 OpenGL Viewer
 ~~~~~~~~~~~~~
 
-Newton provides :class:`~viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
+Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
 The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
 
 Constructor parameters:
@@ -82,7 +82,7 @@ Constructor parameters:
 
 **Interactive forces and input:**
 
-:meth:`~viewer.ViewerGL.apply_forces` applies viewer-driven forces (object picking with right-click, wind) to the simulation state.
+:meth:`~newton.viewer.ViewerGL.apply_forces` applies viewer-driven forces (object picking with right-click, wind) to the simulation state.
 Call it each frame before stepping the solver:
 
 .. code-block:: python
@@ -90,7 +90,7 @@ Call it each frame before stepping the solver:
     viewer.apply_forces(state)
     solver.step(model, state, ...)
 
-:meth:`~viewer.ViewerGL.is_key_down` queries whether a key is currently pressed.
+:meth:`~newton.viewer.ViewerGL.is_key_down` queries whether a key is currently pressed.
 Keys can be specified as single-character strings (``'w'``), special key names (``'space'``, ``'escape'``), or pyglet key constants:
 
 .. code-block:: python
@@ -101,7 +101,7 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 **Headless mode and frame capture:**
 
 In headless mode (``headless=True``), the viewer renders off-screen without opening a window.
-Use :meth:`~viewer.ViewerGL.get_frame` to retrieve the rendered image as a GPU array:
+Use :meth:`~newton.viewer.ViewerGL.get_frame` to retrieve the rendered image as a GPU array:
 
 .. code-block:: python
 
@@ -117,7 +117,7 @@ Use :meth:`~viewer.ViewerGL.get_frame` to retrieve the rendered image as a GPU a
 
 **Custom UI panels:**
 
-:meth:`~viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
+:meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
 The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``:
 
 .. code-block:: python
@@ -166,7 +166,7 @@ Recording and Offline Viewers
 Recording to File (ViewerFile)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The :class:`~viewer.ViewerFile` backend records simulation data to JSON or binary files for later replay or analysis. 
+The :class:`~newton.viewer.ViewerFile` backend records simulation data to JSON or binary files for later replay or analysis. 
 This is useful for capturing simulations for debugging, sharing results, or post-processing.
 
 **File formats:**
@@ -214,7 +214,7 @@ To use binary format, install the optional dependency:
 
 **Loading and playing back recordings:**
 
-Use :class:`~viewer.ViewerFile` to load a recording, then restore the model and state for a given frame. Use :class:`~viewer.ViewerGL` (or another rendering viewer) to visualize.
+Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the model and state for a given frame. Use :class:`~newton.viewer.ViewerGL` (or another rendering viewer) to visualize.
 
 .. testcode:: viewer-file
 
@@ -246,7 +246,7 @@ Key parameters:
 Rendering to USD
 ~~~~~~~~~~~~~~~~
 
-Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the :class:`~viewer.ViewerUSD` backend.
+Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the :class:`~newton.viewer.ViewerUSD` backend.
 
 Constructor parameters:
 
@@ -276,7 +276,7 @@ External Integrations
 Rerun Viewer
 ~~~~~~~~~~~~
 
-The :class:`~viewer.ViewerRerun` backend integrates with the `rerun <https://rerun.io>`_ visualization library, 
+The :class:`~newton.viewer.ViewerRerun` backend integrates with the `rerun <https://rerun.io>`_ visualization library, 
 enabling real-time or offline visualization with advanced features like time scrubbing and data inspection.
 
 **Installation**: Requires the rerun-sdk package:
@@ -318,7 +318,7 @@ Constructor parameters:
     viewer.log_state(state)
     viewer.end_frame()
 
-By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via :meth:`~viewer.ViewerBase.log_state`.
+By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via :meth:`~newton.viewer.ViewerBase.log_state`.
 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
 If you want to keep the historical state data in the viewer, you can set the ``keep_historical_data`` flag to ``True``.
 
@@ -332,7 +332,7 @@ The rerun viewer provides a web-based interface with features like:
 **Jupyter notebook support**
 
 The ViewerRerun backend automatically detects if it is running inside a Jupyter notebook environment and automatically generates an output widget for the viewer
-during the construction of :class:`~viewer.ViewerRerun`.
+during the construction of :class:`~newton.viewer.ViewerRerun`.
 
 The rerun SDK provides a Jupyter notebook extension that allows you to visualize rerun data in a Jupyter notebook.
 
@@ -374,7 +374,7 @@ The history of states will be available in the viewer to scrub through the simul
 Viser Viewer
 ~~~~~~~~~~~~
 
-The :class:`~viewer.ViewerViser` backend integrates with the `viser <https://viser.studio>`_ visualization library,
+The :class:`~newton.viewer.ViewerViser` backend integrates with the `viser <https://viser.studio>`_ visualization library,
 providing web-based 3D visualization that works in any browser and has native Jupyter notebook support.
 
 **Installation**: Requires the viser package:
@@ -469,7 +469,7 @@ Utility Viewers
 Null Viewer
 ~~~~~~~~~~~
 
-The :class:`~viewer.ViewerNull` provides a no-operation viewer for headless environments or automated testing where visualization is not required.
+The :class:`~newton.viewer.ViewerNull` provides a no-operation viewer for headless environments or automated testing where visualization is not required.
 It simply counts frames and provides stub implementations for all viewer methods.
 
 .. testcode:: viewer-null
@@ -505,11 +505,11 @@ This is particularly useful for:
 Custom Visualization
 --------------------
 
-In addition to rendering simulation state with :meth:`~viewer.ViewerBase.log_state`, you can draw custom debug overlays using the ``log_*`` methods available on all viewers.
+In addition to rendering simulation state with :meth:`~newton.viewer.ViewerBase.log_state`, you can draw custom debug overlays using the ``log_*`` methods available on all viewers.
 
 **Drawing lines:**
 
-Use :meth:`~viewer.ViewerBase.log_lines` to draw line segments — useful for visualizing forces, rays, or normals:
+Use :meth:`~newton.viewer.ViewerBase.log_lines` to draw line segments — useful for visualizing forces, rays, or normals:
 
 .. code-block:: python
 
@@ -524,7 +524,7 @@ Use :meth:`~viewer.ViewerBase.log_lines` to draw line segments — useful for vi
 
 **Drawing points:**
 
-Use :meth:`~viewer.ViewerBase.log_points` to draw a point cloud:
+Use :meth:`~newton.viewer.ViewerBase.log_points` to draw a point cloud:
 
 .. code-block:: python
 
@@ -537,8 +537,8 @@ Use :meth:`~viewer.ViewerBase.log_points` to draw a point cloud:
 
 **Visualizing contacts:**
 
-Use :meth:`~viewer.ViewerBase.log_contacts` to draw contact normals from a :class:`~Contacts` object.
-The viewer's ``show_contacts`` flag (toggled in the :class:`~viewer.ViewerGL` sidebar) controls visibility:
+Use :meth:`~newton.viewer.ViewerBase.log_contacts` to draw contact normals from a :class:`~newton.Contacts` object.
+The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.ViewerGL` sidebar) controls visibility:
 
 .. code-block:: python
 
@@ -546,7 +546,7 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~viewer.ViewerGL` si
 
 **Transform gizmos:**
 
-Use :meth:`~viewer.ViewerBase.log_gizmo` to display a coordinate-frame gizmo at a given transform:
+Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gizmo at a given transform:
 
 .. code-block:: python
 
@@ -554,14 +554,14 @@ Use :meth:`~viewer.ViewerBase.log_gizmo` to display a coordinate-frame gizmo at 
 
 **Camera and world layout:**
 
-Set the camera programmatically with :meth:`~viewer.ViewerBase.set_camera`:
+Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`:
 
 .. code-block:: python
 
     viewer.set_camera(pos=wp.vec3(5.0, 2.0, 3.0), pitch=-0.3, yaw=0.5)
 
-When visualizing multiple worlds, use :meth:`~viewer.ViewerBase.set_world_offsets` to arrange them in a grid
-(must be called after :meth:`~viewer.ViewerBase.set_model`):
+When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world_offsets` to arrange them in a grid
+(must be called after :meth:`~newton.viewer.ViewerBase.set_model`):
 
 .. code-block:: python
 
@@ -577,27 +577,27 @@ Choosing the Right Viewer
       - Use Case
       - Output
       - Dependencies
-    * - :class:`~viewer.ViewerGL`
+    * - :class:`~newton.viewer.ViewerGL`
       - Interactive development and debugging
       - Real-time display
       - pyglet, imgui_bundle
-    * - :class:`~viewer.ViewerFile`
+    * - :class:`~newton.viewer.ViewerFile`
       - Recording for replay/sharing
       - .json or .bin files
       - None
-    * - :class:`~viewer.ViewerUSD`
+    * - :class:`~newton.viewer.ViewerUSD`
       - Integration with 3D pipelines
       - .usd files
       - usd-core
-    * - :class:`~viewer.ViewerRerun`
+    * - :class:`~newton.viewer.ViewerRerun`
       - Advanced visualization and analysis
       - Web interface
       - rerun-sdk
-    * - :class:`~viewer.ViewerViser`
+    * - :class:`~newton.viewer.ViewerViser`
       - Browser-based visualization and Jupyter notebooks
       - Web interface, .viser files
       - viser
-    * - :class:`~viewer.ViewerNull`
+    * - :class:`~newton.viewer.ViewerNull`
       - Headless/automated environments
       - None
       - None

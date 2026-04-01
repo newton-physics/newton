@@ -8,7 +8,7 @@
 Extended Attributes
 ===================
 
-Newton's :class:`~State` and :class:`~Contacts` objects can optionally carry extra arrays that are not always needed.
+Newton's :class:`~newton.State` and :class:`~newton.Contacts` objects can optionally carry extra arrays that are not always needed.
 These *extended attributes* are allocated on demand when explicitly requested, reducing memory usage for simulations that don't need them.
 
 .. _extended_contact_attributes:
@@ -16,8 +16,8 @@ These *extended attributes* are allocated on demand when explicitly requested, r
 Extended Contact Attributes
 ---------------------------
 
-Extended contact attributes are optional arrays on :class:`~Contacts` (e.g., contact forces for sensors).
-Request them via :meth:`Model.request_contact_attributes <newton.Model.request_contact_attributes>` or :meth:`ModelBuilder.request_contact_attributes <newton.ModelBuilder.request_contact_attributes>` before creating a :class:`~Contacts` object.
+Extended contact attributes are optional arrays on :class:`~newton.Contacts` (e.g., contact forces for sensors).
+Request them via :meth:`Model.request_contact_attributes <newton.Model.request_contact_attributes>` or :meth:`ModelBuilder.request_contact_attributes <newton.ModelBuilder.request_contact_attributes>` before creating a :class:`~newton.Contacts` object.
 
 .. testcode::
 
@@ -39,7 +39,7 @@ Request them via :meth:`Model.request_contact_attributes <newton.Model.request_c
    True
 
 Some components request attributes transparently.  For example,
-:class:`~sensors.SensorContact` requests ``"force"`` at init time, so
+:class:`~newton.sensors.SensorContact` requests ``"force"`` at init time, so
 creating the sensor before allocating contacts is sufficient:
 
 .. testcode::
@@ -70,8 +70,8 @@ The canonical list is :attr:`Contacts.EXTENDED_ATTRIBUTES <newton.Contacts.EXTEN
 
    * - Attribute
      - Description
-   * - :attr:`~Contacts.force`
-     - Contact spatial forces (used by :class:`~sensors.SensorContact`)
+   * - :attr:`~newton.Contacts.force`
+     - Contact spatial forces (used by :class:`~newton.sensors.SensorContact`)
 
 
 .. _extended_state_attributes:
@@ -79,7 +79,7 @@ The canonical list is :attr:`Contacts.EXTENDED_ATTRIBUTES <newton.Contacts.EXTEN
 Extended State Attributes
 -------------------------
 
-Extended state attributes are optional arrays on :class:`~State` (e.g., accelerations for sensors).
+Extended state attributes are optional arrays on :class:`~newton.State` (e.g., accelerations for sensors).
 Request them via :meth:`Model.request_state_attributes <newton.Model.request_state_attributes>` or :meth:`ModelBuilder.request_state_attributes <newton.ModelBuilder.request_state_attributes>` before calling :meth:`Model.state() <newton.Model.state>`.
 
 .. testcode::
@@ -106,18 +106,18 @@ The canonical list is :attr:`State.EXTENDED_ATTRIBUTES <newton.State.EXTENDED_AT
 
    * - Attribute
      - Description
-   * - :attr:`~State.body_qdd`
-     - Rigid-body spatial accelerations (used by :class:`~sensors.SensorIMU`)
-   * - :attr:`~State.body_parent_f`
+   * - :attr:`~newton.State.body_qdd`
+     - Rigid-body spatial accelerations (used by :class:`~newton.sensors.SensorIMU`)
+   * - :attr:`~newton.State.body_parent_f`
      - Rigid-body parent interaction wrenches
    * - ``State.mujoco.qfrc_actuator``
      - Actuator forces in generalized (joint DOF) coordinates, namespaced under ``state.mujoco.qfrc_actuator``.
-       Only populated by :class:`~solvers.SolverMuJoCo`.
+       Only populated by :class:`~newton.solvers.SolverMuJoCo`.
 
 
 Notes
 -----
 
-- Some components transparently request attributes they need. For example, :class:`~sensors.SensorIMU` requests ``body_qdd`` and :class:`~sensors.SensorContact` requests ``force``.
+- Some components transparently request attributes they need. For example, :class:`~newton.sensors.SensorIMU` requests ``body_qdd`` and :class:`~newton.sensors.SensorContact` requests ``force``.
   Create sensors before allocating State/Contacts for this to work automatically.
-- Solvers populate extended attributes they support. Currently, :class:`~solvers.SolverMuJoCo` populates ``body_qdd``, ``body_parent_f``, ``mujoco:qfrc_actuator``, and ``force``.
+- Solvers populate extended attributes they support. Currently, :class:`~newton.solvers.SolverMuJoCo` populates ``body_qdd``, ``body_parent_f``, ``mujoco:qfrc_actuator``, and ``force``.

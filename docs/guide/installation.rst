@@ -257,7 +257,7 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``importers``
      - Asset import and mesh processing dependencies
    * - ``remesh``
-     - Remeshing dependencies (Open3D, pyfqmr) for :class:`~SurfaceReconstructor`
+     - Remeshing dependencies (Open3D, pyfqmr) for :func:`newton.utils.remesh_mesh`
    * - ``examples``
      - Dependencies for running examples, including visualization (includes ``sim`` + ``importers``)
    * - ``torch-cu12``
