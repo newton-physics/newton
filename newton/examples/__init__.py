@@ -464,6 +464,13 @@ def create_parser():
         help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
     )
 
+    parser.add_argument(
+        "--tiled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Start with tiled camera view enabled (one tile per world).",
+    )
+
     return parser
 
 
@@ -584,6 +591,9 @@ def init(parser=None):
         viewer = newton.viewer.ViewerViser()
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    if args.tiled:
+        viewer.tiled_view = True
 
     return viewer, args
 
