@@ -163,6 +163,24 @@ class ViewerBase(ABC):
             ViewerBase.SDFMarginMode, dict[int, tuple[np.ndarray, int, np.ndarray, int]]
         ] = {}
 
+        # Tiled camera view
+        self._tiled_view = False
+        self._last_state = None
+
+    @property
+    def tiled_view(self) -> bool:
+        """Whether the tiled camera view is active.
+
+        When True and the model has more than one world, the viewer renders
+        each world in its own tile using the Warp raytrace backend instead
+        of the normal 3D scene.
+        """
+        return self._tiled_view
+
+    @tiled_view.setter
+    def tiled_view(self, value: bool):
+        self._tiled_view = value
+
     def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
         """
         Set the model to be visualized.
@@ -363,6 +381,23 @@ class ViewerBase(ABC):
         """
         pass
 
+    def _setup_tiled_view(self):  # noqa: B027
+        """Allocate backend-specific resources for tiled camera rendering.
+
+        Called lazily on the first frame where :attr:`tiled_view` is True.
+        Subclasses that support tiled rendering should override this.
+        """
+        pass
+
+    def _render_tiled_view(self):  # noqa: B027
+        """Render the tiled camera view and display it.
+
+        Called each frame when :attr:`tiled_view` is True and
+        ``model.world_count > 1``.  Subclasses that support tiled rendering
+        should override this.
+        """
+        pass
+
     def log_state(self, state: newton.State):
         """Update the viewer with the given state of the simulation.
 
@@ -372,6 +407,8 @@ class ViewerBase(ABC):
 
         if self.model is None:
             return
+
+        self._last_state = state
 
         self._sync_shape_colors_from_model()
 
