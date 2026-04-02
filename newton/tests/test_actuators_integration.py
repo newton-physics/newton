@@ -40,7 +40,7 @@ class TestActuatorBuilder(unittest.TestCase):
         dofs = [builder.joint_qd_start[j] for j in joints]
 
         # Add actuators - should accumulate into one
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.5, constant_force=1.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, constant_force=1.0)
         builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=100.0, kd=10.0)
         builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], output_indices=[dofs[2]], kp=150.0, max_force=50.0)
 
@@ -54,7 +54,6 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_equal(act.output_indices.numpy(), [dofs[0], dofs[1], dofs[2]])
         np.testing.assert_array_almost_equal(act.kp.numpy(), [50.0, 100.0, 150.0])
         np.testing.assert_array_almost_equal(act.kd.numpy(), [0.0, 10.0, 0.0])
-        self.assertAlmostEqual(act.gear.numpy()[0], 2.5)
         self.assertAlmostEqual(act.constant_force.numpy()[0], 1.0)
         self.assertAlmostEqual(act.max_force.numpy()[2], 50.0)
         self.assertTrue(math.isinf(act.max_force.numpy()[0]))
@@ -494,7 +493,7 @@ class TestActuatorStepIntegration(unittest.TestCase):
         wp.copy(control_array, wp.array(arr_np, dtype=float, device=model.device))
 
     def test_pd_step_position_error(self):
-        """ActuatorPD: force = kp * (target_pos - q) when kd=0, gear=1."""
+        """ActuatorPD: force = kp * (target_pos - q) when kd=0."""
         model, dofs = self._build_chain_model(3, ActuatorPD, {"kp": 100.0})
         state = model.state()
         control = model.control()
@@ -550,9 +549,9 @@ class TestActuatorStepIntegration(unittest.TestCase):
             rtol=1e-5,
         )
 
-    def test_pd_step_gear_and_clamp(self):
-        """ActuatorPD: gear ratio scales error and force is clamped to max_force."""
-        model, dofs = self._build_chain_model(1, ActuatorPD, {"kp": 100.0, "gear": 2.0, "max_force": 50.0})
+    def test_pd_step_clamp(self):
+        """ActuatorPD: force is clamped to max_force."""
+        model, dofs = self._build_chain_model(1, ActuatorPD, {"kp": 100.0, "max_force": 50.0})
         state = model.state()
         control = model.control()
         control.joint_f.zero_()
@@ -562,7 +561,7 @@ class TestActuatorStepIntegration(unittest.TestCase):
         actuator = model.actuators[0]
         actuator.step(state, control)
 
-        # gear=2, q=0: force = 2 * (100 * (1 - 2*0)) = 200, clamped to 50
+        # kp=100, target=1, q=0: force = 100*(1-0) = 100, clamped to 50
         forces = control.joint_f.numpy()
         self.assertAlmostEqual(forces[dofs[0]], 50.0, places=5)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import warp as wp
 
@@ -29,7 +29,7 @@ class ActuatorDelayedPD(Actuator):
     actuator lag.
     """
 
-    SCALAR_PARAMS = {"delay"}
+    SCALAR_PARAMS: ClassVar[set[str]] = {"delay"}
 
     @dataclass
     class State:

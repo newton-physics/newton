@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import warp as wp
@@ -19,9 +19,9 @@ class Actuator:
     Subclasses override controller, state manager, and transmission methods.
     The :meth:`step` method executes up to three phases:
 
-    1. **Controller** – computes forces from state error.
-    2. **State manager** – updates internal state (e.g., delay buffers).
-    3. **Transmission** – maps actuation forces to output (e.g., via Jacobian).
+    1. **Controller** -- computes forces from state error.
+    2. **State manager** -- updates internal state (e.g., delay buffers).
+    3. **Transmission** -- maps actuation forces to output (e.g., via Jacobian).
 
     Class Attributes:
         SCALAR_PARAMS: Set of parameter names that are instance-level (shared across
@@ -29,7 +29,7 @@ class Actuator:
             separate actuator instances (e.g., ``delay``, ``network``).
     """
 
-    SCALAR_PARAMS: set[str] = set()
+    SCALAR_PARAMS: ClassVar[set[str]] = set()
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -149,7 +149,7 @@ class Actuator:
         sim_control: Control,
         current_act_state: Any = None,
         next_act_state: Any = None,
-        dt: float = None,
+        dt: float | None = None,
     ) -> None:
         """Execute one control step.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import warp as wp
 
@@ -43,7 +43,7 @@ class ActuatorNetLSTM(Actuator):
         (:meth:`is_graphable` returns ``False``).
     """
 
-    SCALAR_PARAMS = {"network_path"}
+    SCALAR_PARAMS: ClassVar[set[str]] = {"network_path"}
 
     @dataclass
     class State:

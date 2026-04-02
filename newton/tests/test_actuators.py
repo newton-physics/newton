@@ -16,9 +16,12 @@ from newton.actuators import (
     Actuator,
     ActuatorDCMotor,
     ActuatorDelayedPD,
+    ActuatorNetLSTM,
+    ActuatorNetMLP,
     ActuatorPD,
     ActuatorPID,
     ActuatorRemotizedPD,
+    parse_actuator_prim,
 )
 
 _HAS_TORCH = importlib.util.find_spec("torch") is not None
@@ -611,7 +614,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_pd_actuator_prim(self):
         """Test parsing a PD actuator prim."""
-        from newton.actuators import ActuatorPD, parse_actuator_prim
 
         prim = MockPrim(
             type_name="Actuator",
@@ -635,7 +637,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_delayed_pd_actuator_prim(self):
         """Test parsing a Delayed PD actuator prim."""
-        from newton.actuators import ActuatorDelayedPD, parse_actuator_prim
 
         prim = MockPrim(
             type_name="Actuator",
@@ -658,7 +659,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_pid_actuator_prim(self):
         """Test parsing a PID actuator prim."""
-        from newton.actuators import ActuatorPID, parse_actuator_prim
 
         prim = MockPrim(
             type_name="Actuator",
@@ -682,7 +682,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_multi_target_actuator(self):
         """Test parsing an actuator with multiple targets."""
-        from newton.actuators import parse_actuator_prim
 
         prim = MockPrim(
             type_name="Actuator",
@@ -706,7 +705,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_non_actuator_prim_returns_none(self):
         """Test that non-Actuator prims return None."""
-        from newton.actuators import parse_actuator_prim
 
         prim = MockPrim(type_name="Mesh", attributes={}, relationships={}, schemas=[])
         result = parse_actuator_prim(prim)
@@ -714,7 +712,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_actuator_without_targets_returns_none(self):
         """Test that actuator without targets returns None."""
-        from newton.actuators import parse_actuator_prim
 
         prim = MockPrim(
             type_name="Actuator",
@@ -727,7 +724,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_dc_motor_actuator_prim(self):
         """Test parsing a DC motor actuator prim with PD + saturation params."""
-        from newton.actuators import ActuatorDCMotor, parse_actuator_prim
 
         prim = MockPrim(
             type_name="Actuator",
@@ -753,7 +749,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_dc_motor_velocity_limit_zero_raises(self):
         """Test that velocity_limit=0 raises ValueError during parsing."""
-        from newton.actuators import parse_actuator_prim
 
         prim = MockPrim(
             type_name="Actuator",
@@ -772,7 +767,6 @@ class TestActuatorParserUnit(unittest.TestCase):
 
     def test_parse_dc_motor_velocity_limit_negative_raises(self):
         """Test that negative velocity_limit raises ValueError during parsing."""
-        from newton.actuators import parse_actuator_prim
 
         prim = MockPrim(
             type_name="Actuator",
@@ -812,7 +806,6 @@ class TestActuatorNetMLPUnit(unittest.TestCase):
 
     def test_mlp_creation(self):
         """Test that ActuatorNetMLP can be created with valid parameters."""
-        from newton.actuators import ActuatorNetMLP
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=self.wp_device)
         network = self._make_mlp(input_dim=2)
@@ -830,7 +823,6 @@ class TestActuatorNetMLPUnit(unittest.TestCase):
 
     def test_mlp_step_runs(self):
         """Test that step() executes without errors and produces output."""
-        from newton.actuators import ActuatorNetMLP
 
         num_dofs = 2
         indices = wp.array([0, 1], dtype=wp.uint32, device=self.wp_device)
@@ -863,7 +855,6 @@ class TestActuatorNetMLPUnit(unittest.TestCase):
 
     def test_mlp_clamping(self):
         """Test that output is clamped to max_force."""
-        from newton.actuators import ActuatorNetMLP
 
         indices = wp.array([0], dtype=wp.uint32, device=self.wp_device)
 
@@ -901,7 +892,6 @@ class TestActuatorNetMLPUnit(unittest.TestCase):
 
     def test_mlp_invalid_input_order(self):
         """Test that an invalid input_order raises ValueError at construction."""
-        from newton.actuators import ActuatorNetMLP
 
         indices = wp.array([0], dtype=wp.uint32, device=self.wp_device)
         network = self._make_mlp(input_dim=2)
@@ -946,7 +936,6 @@ class TestActuatorNetLSTMUnit(unittest.TestCase):
 
     def test_lstm_creation(self):
         """Test that ActuatorNetLSTM can be created with valid parameters."""
-        from newton.actuators import ActuatorNetLSTM
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=self.wp_device)
         network = self._make_lstm()
@@ -963,7 +952,6 @@ class TestActuatorNetLSTMUnit(unittest.TestCase):
 
     def test_lstm_state(self):
         """Test that state() returns properly shaped hidden and cell tensors."""
-        from newton.actuators import ActuatorNetLSTM
 
         hidden_size = 16
         num_layers = 2
@@ -984,7 +972,6 @@ class TestActuatorNetLSTMUnit(unittest.TestCase):
 
     def test_lstm_step_runs(self):
         """Test that step() executes without errors and produces output."""
-        from newton.actuators import ActuatorNetLSTM
 
         num_dofs = 2
         indices = wp.array([0, 1], dtype=wp.uint32, device=self.wp_device)
@@ -1017,7 +1004,6 @@ class TestActuatorNetLSTMUnit(unittest.TestCase):
 
     def test_lstm_clamping(self):
         """Test that output is clamped to max_force."""
-        from newton.actuators import ActuatorNetLSTM
 
         indices = wp.array([0], dtype=wp.uint32, device=self.wp_device)
 

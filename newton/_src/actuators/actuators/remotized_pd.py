@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import warp as wp
@@ -33,7 +33,7 @@ class ActuatorRemotizedPD(ActuatorDelayedPD):
     Stateful: inherits delay buffers from :class:`ActuatorDelayedPD`.
     """
 
-    SCALAR_PARAMS = {"delay", "lookup_angles", "lookup_torques"}
+    SCALAR_PARAMS: ClassVar[set[str]] = {"delay", "lookup_angles", "lookup_torques"}
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
