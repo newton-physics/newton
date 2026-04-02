@@ -5,7 +5,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, State
+from ...sim import BodyFlags, Contacts, Control, Model, State, eval_ik
 from ..flags import SolverNotifyFlags
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -27,9 +27,8 @@ from .kernels import (
     compute_com_transforms,
     compute_spatial_inertia,
     convert_body_force_com_to_origin,
-    convert_free_distance_joint_f_public_to_internal,
-    convert_free_distance_joint_qd_internal_to_public,
     convert_free_distance_joint_qd_public_to_internal,
+    convert_free_distance_joint_f_public_to_internal,
     copy_kinematic_joint_state,
     correct_free_distance_joint_pose_from_world_twist,
     create_inertia_matrix_cholesky_kernel,
@@ -159,13 +158,7 @@ class SolverFeatherstone(SolverBase):
         model = self.model
         self.has_kinematic_bodies = False
         self.has_kinematic_joints = False
-        self.has_descendant_free_distance_joints = False
         self.joint_armature_effective = model.joint_armature
-        if model.joint_count:
-            joint_type = model.joint_type.numpy()
-            joint_parent = model.joint_parent.numpy()
-            free_distance_mask = (joint_type == int(JointType.FREE)) | (joint_type == int(JointType.DISTANCE))
-            self.has_descendant_free_distance_joints = bool(np.any(free_distance_mask & (joint_parent >= 0)))
 
         if model.body_count:
             body_flags = model.body_flags.numpy()
@@ -391,7 +384,7 @@ class SolverFeatherstone(SolverBase):
                     outputs=[state_in.body_q, state_aug.body_q_com],
                     device=model.device,
                 )
-                if self.has_descendant_free_distance_joints and step_in_place:
+                if step_in_place:
                     wp.copy(state_aug.body_q_prev, state_in.body_q)
                     descendant_body_q_prev = state_aug.body_q_prev
 
@@ -828,54 +821,43 @@ class SolverFeatherstone(SolverBase):
                         device=model.device,
                     )
 
-                # update maximal coordinates using FK with velocity conversion
-                eval_fk_with_velocity_conversion(model, state_out.joint_q, state_aug.joint_qd_internal_out, state_out)
-
-                if self.has_descendant_free_distance_joints:
-                    # Descendant FREE/DISTANCE joints still advance in Featherstone's
-                    # internal parent-origin coordinates, so once the parent end-step
-                    # pose is known we correct their relative pose and rerun FK.
-                    wp.launch(
-                        correct_free_distance_joint_pose_from_world_twist,
-                        dim=model.articulation_count,
-                        inputs=[
-                            model.articulation_start,
-                            model.joint_type,
-                            model.joint_parent,
-                            model.joint_child,
-                            model.joint_q_start,
-                            model.joint_X_p,
-                            model.joint_X_c,
-                            model.body_com,
-                            descendant_body_q_prev,
-                            state_out.body_qd,
-                            state_out.joint_q,
-                            state_out.body_q,
-                            dt,
-                        ],
-                        device=model.device,
-                    )
-
-                    # Refresh body state from the corrected descendant poses.
-                    eval_fk_with_velocity_conversion(
-                        model, state_out.joint_q, state_aug.joint_qd_internal_out, state_out
-                    )
+                # Reconstruct public maximal coordinates once from the updated
+                # generalized state while the solver still carries internal
+                # FREE/DISTANCE speeds.
+                eval_fk_with_velocity_conversion(
+                    model,
+                    state_out.joint_q,
+                    state_aug.joint_qd_internal_out,
+                    state_out,
+                )
 
                 wp.launch(
-                    convert_free_distance_joint_qd_internal_to_public,
-                    dim=model.joint_count,
+                    correct_free_distance_joint_pose_from_world_twist,
+                    dim=model.articulation_count,
                     inputs=[
+                        model.articulation_start,
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
-                        model.joint_qd_start,
+                        model.joint_q_start,
                         model.joint_X_p,
-                        state_out.body_q,
+                        model.joint_X_c,
                         model.body_com,
-                        state_aug.joint_qd_internal_out,
+                        descendant_body_q_prev,
+                        state_out.body_qd,
+                        state_out.joint_q,
+                        state_out.body_q,
+                        dt,
                     ],
-                    outputs=[state_out.joint_qd],
                     device=model.device,
+                )
+
+                eval_ik(
+                    model,
+                    state_out,
+                    state_out.joint_q,
+                    state_out.joint_qd,
+                    body_flag_filter=BodyFlags.ALL,
                 )
 
             self.integrate_particles(model, state_in, state_out, dt)

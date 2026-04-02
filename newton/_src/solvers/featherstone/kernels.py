@@ -531,9 +531,8 @@ def jcalc_integrate(
         w_s = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
 
         # Descendants stay in Featherstone's internal parent-origin coordinates
-        # during the integrator step. Once the parent end-step pose is known, a
-        # later correction pass reconstructs the descendant relative pose from
-        # the published end-step world twist.
+        # during the integrator step. The public COM convention is restored at
+        # the solver boundary once the end-step parent pose is known.
         w_s = w_s + m_s * dt
         v_s = v_s + a_s * dt
 
