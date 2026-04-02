@@ -150,16 +150,12 @@ def climb_reward(rollout_sim, config, t, actions=None, n_actual=None):
     N = n_actual or bp.shape[0]
     bp, bq, bv, ba = bp[:N], bq[:N], bv[:N], ba[:N]
 
-    # Compute head position in world frame
-    head_local = np.tile(HEAD_OFFSET, (N, 1))
-    head_world = bp + quat_rotate(bq, head_local)
-
-    # Target: center of box top, at standing height above box
+    # Target: robot CoM centered on box top
     target_pos = np.array([BOX_X, 0.0, 2 * BOX_HALF_HEIGHT + config.standing_height],
                           dtype=np.float32)
 
-    # === Primary: head-to-target distance (weight 1.0, paper-style) ===
-    reward_pos = -1.0 * np.sum((head_world - target_pos[None, :]) ** 2, axis=1)
+    # === Primary: body-to-target distance (weight 1.0, paper-style) ===
+    reward_pos = -1.0 * np.sum((bp - target_pos[None, :]) ** 2, axis=1)
 
     # === Upright (very light, weight 0.01 in paper) ===
     up_body = compute_up_in_body(bq)
@@ -247,7 +243,7 @@ class Example:
         target_z = 2 * BOX_HALF_HEIGHT + settled_z
         print(f"  Settled height: {settled_z:.4f}m")
         print(f"  Box: height={2 * BOX_HALF_HEIGHT:.2f}m, "
-              f"target head pos=({BOX_X:.1f}, 0, {target_z:.2f})")
+              f"target CoM=({BOX_X:.1f}, 0, {target_z:.2f})")
 
         # Build rollout sim with box
         physics_builder, _ = _make_go2_builder(usd_path, self.go2_config, load_visual_shapes=False)
@@ -321,16 +317,13 @@ class Example:
         self.trajectory["action"].append(action.copy())
 
         if self.sim_step % 20 == 0 or self.sim_step == self.mpc_config.n_steps - 1:
-            # Compute head position
-            head_local = HEAD_OFFSET.reshape(1, 3)
-            head_world = bq[0, :3] + quat_rotate(base_quat.reshape(1, 4), head_local)[0]
             target_z = 2 * BOX_HALF_HEIGHT + self.mpc_config.standing_height
             box_front = BOX_X - BOX_HALF_LEN
             on_box = bq[0, 0] > box_front and bq[0, 2] > target_z - 0.05
             tag = "ON BOX" if on_box else ""
             print(
                 f"  Step {self.sim_step:4d}/{self.mpc_config.n_steps}  "
-                f"t={self.sim_time:.2f}s  head=({head_world[0]:.2f},{head_world[2]:.2f})  "
+                f"t={self.sim_time:.2f}s  x={bq[0, 0]:.2f}  "
                 f"z={bq[0, 2]:.3f}m  pitch={np.degrees(pitch):+.1f}°  "
                 f"rew={reward:+.3f}  {tag}"
             )
