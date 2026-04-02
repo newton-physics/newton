@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import ctypes
 import io
@@ -28,6 +16,7 @@ from ...utils.texture import normalize_texture
 from .shaders import (
     FrameShader,
     ShaderLine,
+    ShaderLineWireframe,
     ShaderShape,
     ShaderSky,
     ShadowShader,
@@ -128,10 +117,10 @@ class LineVertex:
 
 @wp.kernel
 def fill_vertex_data(
-    points: wp.array(dtype=wp.vec3),
-    normals: wp.array(dtype=wp.vec3),
-    uvs: wp.array(dtype=wp.vec2),
-    vertices: wp.array(dtype=RenderVertex),
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    uvs: wp.array[wp.vec2],
+    vertices: wp.array[RenderVertex],
 ):
     tid = wp.tid()
 
@@ -146,10 +135,10 @@ def fill_vertex_data(
 
 @wp.kernel
 def fill_line_vertex_data(
-    starts: wp.array(dtype=wp.vec3),
-    ends: wp.array(dtype=wp.vec3),
-    colors: wp.array(dtype=wp.vec3),
-    vertices: wp.array(dtype=LineVertex),
+    starts: wp.array[wp.vec3],
+    ends: wp.array[wp.vec3],
+    colors: wp.array[wp.vec3],
+    vertices: wp.array[LineVertex],
 ):
     tid = wp.tid()
 
@@ -372,7 +361,7 @@ class MeshGL:
             if self.texture_id is not None:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
             else:
-                gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
@@ -504,11 +493,84 @@ class LinesGL:
             gl.glBindVertexArray(0)
 
 
+class WireframeShapeGL:
+    """Per-shape wireframe edge data rendered via GL_LINES with a geometry shader.
+
+    Stores interleaved (position, color) vertex data in model space.
+    The World matrix is set per-shape by the caller before drawing.
+
+    Multiple instances can share the same VAO/VBO when created via
+    :meth:`create_shared`.  Only the *owner* (``_owns_gl == True``)
+    deletes the GL resources on :meth:`destroy`.
+    """
+
+    def __init__(self, vertex_data: np.ndarray):
+        """Create a wireframe shape that owns its GL resources."""
+        gl = RendererGL.gl
+        self.num_vertices = len(vertex_data)
+        self.hidden = False
+        self.world_matrix = np.eye(4, dtype=np.float32)
+        self._owns_gl = True
+
+        vertex_byte_size = 6 * 4
+
+        self.vao = gl.GLuint()
+        gl.glGenVertexArrays(1, self.vao)
+        gl.glBindVertexArray(self.vao)
+
+        self.vbo = gl.GLuint()
+        gl.glGenBuffers(1, self.vbo)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
+
+        data = vertex_data.astype(np.float32)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, data.nbytes, data.ctypes.data, gl.GL_STATIC_DRAW)
+
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_byte_size, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_byte_size, ctypes.c_void_p(3 * 4))
+        gl.glEnableVertexAttribArray(1)
+
+        gl.glBindVertexArray(0)
+
+    @classmethod
+    def create_shared(cls, owner: "WireframeShapeGL") -> "WireframeShapeGL":
+        """Create an instance that shares *owner*'s VAO/VBO."""
+        obj = cls.__new__(cls)
+        obj.vao = owner.vao
+        obj.vbo = owner.vbo
+        obj.num_vertices = owner.num_vertices
+        obj.hidden = False
+        obj.world_matrix = np.eye(4, dtype=np.float32)
+        obj._owns_gl = False
+        return obj
+
+    def destroy(self):
+        """Free GL resources if this instance owns them."""
+        if not getattr(self, "_owns_gl", False):
+            return
+        gl = RendererGL.gl
+        try:
+            if hasattr(self, "vao"):
+                gl.glDeleteVertexArrays(1, self.vao)
+            if hasattr(self, "vbo"):
+                gl.glDeleteBuffers(1, self.vbo)
+        except Exception:
+            pass
+
+    def render(self):
+        if self.hidden or self.num_vertices == 0:
+            return
+        gl = RendererGL.gl
+        gl.glBindVertexArray(self.vao)
+        gl.glDrawArrays(gl.GL_LINES, 0, self.num_vertices)
+        gl.glBindVertexArray(0)
+
+
 @wp.kernel
 def update_vbo_transforms(
-    instance_transforms: wp.array(dtype=wp.transform),
-    instance_scalings: wp.array(dtype=wp.vec3),
-    vbo_transforms: wp.array(dtype=wp.mat44),
+    instance_transforms: wp.array[wp.transform],
+    instance_scalings: wp.array[wp.vec3],
+    vbo_transforms: wp.array[wp.mat44],
 ):
     """Update VBO with simple instance transformation matrices."""
     tid = wp.tid()
@@ -551,9 +613,9 @@ def update_vbo_transforms(
 
 @wp.kernel
 def update_vbo_transforms_from_points(
-    points: wp.array(dtype=wp.vec3),
-    widths: wp.array(dtype=wp.float32),
-    vbo_transforms: wp.array(dtype=wp.mat44),
+    points: wp.array[wp.vec3],
+    widths: wp.array[wp.float32],
+    vbo_transforms: wp.array[wp.mat44],
 ):
     """Update VBO with simple instance transformation matrices."""
     tid = wp.tid()
@@ -868,7 +930,7 @@ class MeshInstancerGL:
         if self.mesh.texture_id is not None:
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.mesh.texture_id)
         else:
-            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(
@@ -879,6 +941,7 @@ class MeshInstancerGL:
 
 class RendererGL:
     gl = None  # Class-level variable to hold the imported module
+    _fallback_texture = None  # 1x1 white texture bound when no albedo is set (suppresses macOS GL warning)
 
     @classmethod
     def initialize_gl(cls):
@@ -887,11 +950,28 @@ class RendererGL:
 
             cls.gl = gl
 
+    @classmethod
+    def get_fallback_texture(cls):
+        """Return a 1x1 white RGBA texture, creating it on first use."""
+        if cls._fallback_texture is None:
+            gl = cls.gl
+            tex = gl.GLuint()
+            gl.glGenTextures(1, tex)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+            pixel = (gl.GLubyte * 4)(255, 255, 255, 255)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, 1, 1, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, pixel)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            cls._fallback_texture = tex
+        return cls._fallback_texture
+
     def __init__(self, title="Newton", screen_width=1920, screen_height=1080, vsync=True, headless=None, device=None):
         self.draw_sky = True
         self.draw_fps = True
         self.draw_shadows = True
         self.draw_wireframe = False
+        self.wireframe_line_width = 1.5  # pixels
 
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
@@ -904,6 +984,14 @@ class RendererGL:
         self._specular_scale = 1.0
         self.spotlight_enabled = True
         self._shadow_extents = 10.0
+        self._exposure = 1.6
+
+        # Hemispherical ambient light colors, interpolated by dot(N, up).
+        # Decoupled from the sky background so the visible sky can be a
+        # saturated blue while the ambient fill stays neutral — a stand-in
+        # for a proper irradiance map that we don't precompute yet.
+        self.ambient_sky = (0.8, 0.8, 0.85)
+        self.ambient_ground = (0.3, 0.3, 0.35)
 
         # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
         # that pyglet creates via XWayland. Force GLX so both libraries agree.
@@ -961,6 +1049,17 @@ class RendererGL:
             self.msaa_samples = 0
 
         self._set_icon()
+
+        # Pyglet on Windows 8+ (where _always_dwm=True) disables the GL
+        # swap interval to avoid double-syncing with DWM, but then also
+        # skips calling DwmFlush() in flip() due to a condition bug.
+        # We call DwmFlush() ourselves in present() to work around this.
+        self._dwm_flush = None
+        if sys.platform == "win32" and getattr(self.window, "_always_dwm", False):
+            try:
+                self._dwm_flush = ctypes.windll.dwmapi.DwmFlush
+            except (AttributeError, OSError):
+                pass
 
         if headless is None:
             self.headless = pyglet.options.get("headless", False)
@@ -1040,6 +1139,7 @@ class RendererGL:
         self._frame_shader = FrameShader(gl)
         self._sky_shader = ShaderSky(gl)
         self._line_shader = ShaderLine(gl)
+        self._wireframe_shader = ShaderLineWireframe(gl)
 
         if not headless:
             self._setup_window_callbacks()
@@ -1076,6 +1176,14 @@ class RendererGL:
     def shadow_extents(self, value: float):
         self._shadow_extents = max(float(value), 1e-4)
 
+    @property
+    def exposure(self) -> float:
+        return self._exposure
+
+    @exposure.setter
+    def exposure(self, value: float):
+        self._exposure = max(float(value), 0.0)
+
     def update(self):
         self._make_current()
 
@@ -1093,7 +1201,7 @@ class RendererGL:
                 # This is a non-fatal error that can be safely ignored
                 pass
 
-    def render(self, camera, objects, lines=None):
+    def render(self, camera, objects, lines=None, wireframe_shapes=None):
         gl = RendererGL.gl
         self._make_current()
 
@@ -1157,6 +1265,9 @@ class RendererGL:
         if lines:
             self._render_lines(lines)
 
+        if wireframe_shapes:
+            self._render_wireframe_shapes(wireframe_shapes)
+
         # ------------------------------------------------------------------
         # If MSAA is enabled, resolve the multi-sample buffer into texture FBO
         # ------------------------------------------------------------------
@@ -1209,8 +1320,9 @@ class RendererGL:
 
     def present(self):
         if not self.headless:
+            if self._dwm_flush is not None and self.window._interval:
+                self._dwm_flush()
             self.window.flip()
-        #    self.app.event_loop._redraw_windows(1.0 / 60.0)
 
     def resize(self, width, height):
         self._screen_width, self._screen_height = self.window.get_framebuffer_size()
@@ -1245,6 +1357,7 @@ class RendererGL:
             self.app.event_loop.dispatch_event("on_exit")
             self.app.platform_event_loop.stop()
 
+        RendererGL._fallback_texture = None
         self.window.close()
 
     def _setup_window_callbacks(self):
@@ -1705,8 +1818,8 @@ class RendererGL:
             shadow_texture=self._shadow_texture,
             light_space_matrix=self._light_space_matrix,
             light_color=self._light_color,
-            sky_color=self.sky_upper,
-            ground_color=self.sky_lower,
+            sky_color=self.ambient_sky,
+            ground_color=self.ambient_ground,
             env_texture=self._env_texture,
             env_intensity=self._env_intensity,
             shadow_radius=self.shadow_radius,
@@ -1714,6 +1827,7 @@ class RendererGL:
             specular_scale=self.specular_scale,
             spotlight_enabled=self.spotlight_enabled,
             shadow_extents=self.shadow_extents,
+            exposure=self.exposure,
         )
 
         with self._shape_shader:
@@ -1733,6 +1847,29 @@ class RendererGL:
                 if hasattr(line_obj, "render"):
                     line_obj.render()
 
+        check_gl_error()
+
+    def _render_wireframe_shapes(self, wireframe_shapes):
+        """Render wireframe shapes using the geometry-shader line expansion."""
+        gl = RendererGL.gl
+        inv_asp = float(self._screen_height) / float(max(self._screen_width, 1))
+        clip_width = self.wireframe_line_width * 2.0 / max(self._screen_height, 1)
+
+        gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glDisable(gl.GL_CULL_FACE)
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+
+        with self._wireframe_shader:
+            self._wireframe_shader.update_frame(
+                self._view_matrix, self._projection_matrix, inv_asp, line_width=clip_width
+            )
+            for shape in wireframe_shapes.values():
+                if not shape.hidden and shape.num_vertices > 0:
+                    self._wireframe_shader.set_world(shape.world_matrix)
+                    shape.render()
+
+        gl.glDisable(gl.GL_BLEND)
         check_gl_error()
 
     def _draw_objects(self, objects):

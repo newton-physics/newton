@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -77,14 +65,14 @@ def _eval_grad(primitive: int, point: wp.vec3, p0: float, p1: float, p2: float, 
 @wp.kernel
 def evaluate_gradient_error_kernel(
     primitive: int,
-    points: wp.array(dtype=wp.vec3),
+    points: wp.array[wp.vec3],
     p0: float,
     p1: float,
     p2: float,
     up_axis: int,
     eps: float,
-    dot_alignment: wp.array(dtype=float),
-    analytic_norm: wp.array(dtype=float),
+    dot_alignment: wp.array[float],
+    analytic_norm: wp.array[float],
 ):
     tid = wp.tid()
     point = points[tid]

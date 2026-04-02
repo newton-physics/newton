@@ -1,18 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 
 import warp as wp
 
@@ -22,17 +9,17 @@ from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State
 
 @wp.kernel
 def integrate_particles(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    f: wp.array(dtype=wp.vec3),
-    w: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    particle_world: wp.array(dtype=wp.int32),
-    gravity: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    f: wp.array[wp.vec3],
+    w: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
     dt: float,
     v_max: float,
-    x_new: wp.array(dtype=wp.vec3),
-    v_new: wp.array(dtype=wp.vec3),
+    x_new: wp.array[wp.vec3],
+    v_new: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     x0 = x[tid]
@@ -110,22 +97,22 @@ def integrate_rigid_body(
 # semi-implicit Euler integration
 @wp.kernel
 def integrate_bodies(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    m: wp.array(dtype=float),
-    I: wp.array(dtype=wp.mat33),
-    inv_m: wp.array(dtype=float),
-    inv_I: wp.array(dtype=wp.mat33),
-    body_flags: wp.array(dtype=wp.int32),
-    body_world: wp.array(dtype=wp.int32),
-    gravity: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    m: wp.array[float],
+    I: wp.array[wp.mat33],
+    inv_m: wp.array[float],
+    inv_I: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
     angular_damping: float,
     dt: float,
     # outputs
-    body_q_new: wp.array(dtype=wp.transform),
-    body_qd_new: wp.array(dtype=wp.spatial_vector),
+    body_q_new: wp.array[wp.transform],
+    body_qd_new: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -172,11 +159,11 @@ def integrate_bodies(
 
 @wp.kernel
 def _update_effective_inv_mass_inertia(
-    body_flags: wp.array(dtype=wp.int32),
-    model_inv_mass: wp.array(dtype=float),
-    model_inv_inertia: wp.array(dtype=wp.mat33),
-    eff_inv_mass: wp.array(dtype=float),
-    eff_inv_inertia: wp.array(dtype=wp.mat33),
+    body_flags: wp.array[wp.int32],
+    model_inv_mass: wp.array[float],
+    model_inv_inertia: wp.array[wp.mat33],
+    eff_inv_mass: wp.array[float],
+    eff_inv_inertia: wp.array[wp.mat33],
 ):
     tid = wp.tid()
     if (body_flags[tid] & BodyFlags.KINEMATIC) != 0:
@@ -332,7 +319,7 @@ class SolverBase:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
-        ``SolverNotifyFlags`` enums defined in :mod:`newton.solvers`.
+        :class:`~newton.solvers.SolverNotifyFlags` enums defined in :mod:`newton.solvers`.
         Each flag represents a category of model data that may have been
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its
@@ -357,13 +344,14 @@ class SolverBase:
         """
         pass
 
-    def update_contacts(self, contacts: Contacts) -> None:
+    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """
         Update a Contacts object with forces from the solver state. Where the solver state contains
         other contact data, convert that data to the Contacts format.
 
         Args:
             contacts: The object to update from the solver state.
+            state: Optional simulation state, used by some solvers.
         """
         raise NotImplementedError()
 

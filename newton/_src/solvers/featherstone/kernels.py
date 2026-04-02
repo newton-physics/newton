@@ -1,23 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
 import warp as wp
 
-from ...math import transform_twist
+from ...math import transform_twist, velocity_at_point
 from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
@@ -28,10 +16,10 @@ from ..semi_implicit.kernels_body import joint_force
 
 @wp.kernel
 def compute_spatial_inertia(
-    body_inertia: wp.array(dtype=wp.mat33),
-    body_mass: wp.array(dtype=float),
+    body_inertia: wp.array[wp.mat33],
+    body_mass: wp.array[float],
     # outputs
-    body_I_m: wp.array(dtype=wp.spatial_matrix),
+    body_I_m: wp.array[wp.spatial_matrix],
 ):
     tid = wp.tid()
     I = body_inertia[tid]
@@ -50,9 +38,9 @@ def compute_spatial_inertia(
 
 @wp.kernel
 def compute_com_transforms(
-    body_com: wp.array(dtype=wp.vec3),
+    body_com: wp.array[wp.vec3],
     # outputs
-    body_X_com: wp.array(dtype=wp.transform),
+    body_X_com: wp.array[wp.transform],
 ):
     tid = wp.tid()
     com = body_com[tid]
@@ -61,8 +49,8 @@ def compute_com_transforms(
 
 @wp.kernel
 def zero_kinematic_body_forces(
-    body_flags: wp.array(dtype=wp.int32),
-    body_f: wp.array(dtype=wp.spatial_vector),
+    body_flags: wp.array[wp.int32],
+    body_f: wp.array[wp.spatial_vector],
 ):
     """Zero accumulated spatial forces for kinematic bodies."""
     tid = wp.tid()
@@ -150,11 +138,11 @@ def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
 @wp.func
 def jcalc_transform(
     type: int,
-    joint_axis: wp.array(dtype=wp.vec3),
+    joint_axis: wp.array[wp.vec3],
     axis_start: int,
     lin_axis_count: int,
     ang_axis_count: int,
-    joint_q: wp.array(dtype=float),
+    joint_q: wp.array[float],
     q_start: int,
 ):
     if type == JointType.PRISMATIC:
@@ -250,14 +238,14 @@ def jcalc_transform(
 @wp.func
 def jcalc_motion(
     type: int,
-    joint_axis: wp.array(dtype=wp.vec3),
+    joint_axis: wp.array[wp.vec3],
     lin_axis_count: int,
     ang_axis_count: int,
     X_sc: wp.transform,
-    joint_qd: wp.array(dtype=float),
+    joint_qd: wp.array[float],
     qd_start: int,
     # outputs
-    joint_S_s: wp.array(dtype=wp.spatial_vector),
+    joint_S_s: wp.array[wp.spatial_vector],
 ):
     if type == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -354,25 +342,25 @@ def jcalc_motion(
 @wp.func
 def jcalc_tau(
     type: int,
-    joint_target_ke: wp.array(dtype=float),
-    joint_target_kd: wp.array(dtype=float),
-    joint_limit_ke: wp.array(dtype=float),
-    joint_limit_kd: wp.array(dtype=float),
-    joint_S_s: wp.array(dtype=wp.spatial_vector),
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_f: wp.array(dtype=float),
-    joint_target_pos: wp.array(dtype=float),
-    joint_target_vel: wp.array(dtype=float),
-    joint_limit_lower: wp.array(dtype=float),
-    joint_limit_upper: wp.array(dtype=float),
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    joint_S_s: wp.array[wp.spatial_vector],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_f: wp.array[float],
+    joint_target_pos: wp.array[float],
+    joint_target_vel: wp.array[float],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
     coord_start: int,
     dof_start: int,
     lin_axis_count: int,
     ang_axis_count: int,
     body_f_s: wp.spatial_vector,
     # outputs
-    tau: wp.array(dtype=float),
+    tau: wp.array[float],
 ):
     if type == JointType.BALL:
         # target_ke = joint_target_ke[dof_start]
@@ -428,17 +416,17 @@ def jcalc_tau(
 @wp.func
 def jcalc_integrate(
     type: int,
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_qdd: wp.array(dtype=float),
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_qdd: wp.array[float],
     coord_start: int,
     dof_start: int,
     lin_axis_count: int,
     ang_axis_count: int,
     dt: float,
     # outputs
-    joint_q_new: wp.array(dtype=float),
-    joint_qd_new: wp.array(dtype=float),
+    joint_q_new: wp.array[float],
+    joint_qd_new: wp.array[float],
 ):
     if type == JointType.FIXED:
         return
@@ -551,20 +539,20 @@ def jcalc_integrate(
 @wp.func
 def compute_link_transform(
     i: int,
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_q: wp.array(dtype=float),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    body_X_com: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
     # outputs
-    body_q: wp.array(dtype=wp.transform),
-    body_q_com: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
 ):
     # parent transform
     parent = joint_parent[i]
@@ -604,21 +592,21 @@ def compute_link_transform(
 
 @wp.kernel
 def eval_rigid_fk(
-    articulation_start: wp.array(dtype=int),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_q: wp.array(dtype=float),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    body_X_com: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
+    articulation_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
     # outputs
-    body_q: wp.array(dtype=wp.transform),
-    body_q_com: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
 ):
     # one thread per-articulation
     index = wp.tid()
@@ -681,25 +669,25 @@ def dense_index(stride: int, i: int, j: int):
 @wp.func
 def compute_link_velocity(
     i: int,
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_qd: wp.array(dtype=float),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    body_I_m: wp.array(dtype=wp.spatial_matrix),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_com: wp.array(dtype=wp.transform),
-    joint_X_p: wp.array(dtype=wp.transform),
-    body_world: wp.array(dtype=wp.int32),
-    gravity: wp.array(dtype=wp.vec3),
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_qd: wp.array[float],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_I_m: wp.array[wp.spatial_matrix],
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
+    joint_X_p: wp.array[wp.transform],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
     # outputs
-    joint_S_s: wp.array(dtype=wp.spatial_vector),
-    body_I_s: wp.array(dtype=wp.spatial_matrix),
-    body_v_s: wp.array(dtype=wp.spatial_vector),
-    body_f_s: wp.array(dtype=wp.spatial_vector),
-    body_a_s: wp.array(dtype=wp.spatial_vector),
+    joint_S_s: wp.array[wp.spatial_vector],
+    body_I_s: wp.array[wp.spatial_matrix],
+    body_v_s: wp.array[wp.spatial_vector],
+    body_f_s: wp.array[wp.spatial_vector],
+    body_a_s: wp.array[wp.spatial_vector],
 ):
     type = joint_type[i]
     child = joint_child[i]
@@ -768,10 +756,10 @@ def compute_link_velocity(
 # Convert body forces from COM-frame to world-origin-frame and negate for use in Featherstone dynamics.
 @wp.kernel
 def convert_body_force_com_to_origin(
-    body_q: wp.array(dtype=wp.transform),
-    body_X_com: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
     # outputs
-    body_f_ext: wp.array(dtype=wp.spatial_vector),
+    body_f_ext: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -793,26 +781,26 @@ def convert_body_force_com_to_origin(
 # Inverse dynamics via Recursive Newton-Euler algorithm (Featherstone Table 5.1)
 @wp.kernel
 def eval_rigid_id(
-    articulation_start: wp.array(dtype=int),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_qd: wp.array(dtype=float),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    body_I_m: wp.array(dtype=wp.spatial_matrix),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_com: wp.array(dtype=wp.transform),
-    joint_X_p: wp.array(dtype=wp.transform),
-    body_world: wp.array(dtype=wp.int32),
-    gravity: wp.array(dtype=wp.vec3),
+    articulation_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_qd: wp.array[float],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_I_m: wp.array[wp.spatial_matrix],
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
+    joint_X_p: wp.array[wp.transform],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
     # outputs
-    joint_S_s: wp.array(dtype=wp.spatial_vector),
-    body_I_s: wp.array(dtype=wp.spatial_matrix),
-    body_v_s: wp.array(dtype=wp.spatial_vector),
-    body_f_s: wp.array(dtype=wp.spatial_vector),
-    body_a_s: wp.array(dtype=wp.spatial_vector),
+    joint_S_s: wp.array[wp.spatial_vector],
+    body_I_s: wp.array[wp.spatial_matrix],
+    body_v_s: wp.array[wp.spatial_vector],
+    body_f_s: wp.array[wp.spatial_vector],
+    body_a_s: wp.array[wp.spatial_vector],
 ):
     # one thread per-articulation
     index = wp.tid()
@@ -847,30 +835,30 @@ def eval_rigid_id(
 
 @wp.kernel
 def eval_rigid_tau(
-    articulation_start: wp.array(dtype=int),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_target_pos: wp.array(dtype=float),
-    joint_target_vel: wp.array(dtype=float),
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_f: wp.array(dtype=float),
-    joint_target_ke: wp.array(dtype=float),
-    joint_target_kd: wp.array(dtype=float),
-    joint_limit_lower: wp.array(dtype=float),
-    joint_limit_upper: wp.array(dtype=float),
-    joint_limit_ke: wp.array(dtype=float),
-    joint_limit_kd: wp.array(dtype=float),
-    joint_S_s: wp.array(dtype=wp.spatial_vector),
-    body_fb_s: wp.array(dtype=wp.spatial_vector),
-    body_f_ext: wp.array(dtype=wp.spatial_vector),
+    articulation_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_target_pos: wp.array[float],
+    joint_target_vel: wp.array[float],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_f: wp.array[float],
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    joint_S_s: wp.array[wp.spatial_vector],
+    body_fb_s: wp.array[wp.spatial_vector],
+    body_f_ext: wp.array[wp.spatial_vector],
     # outputs
-    body_ft_s: wp.array(dtype=wp.spatial_vector),
-    tau: wp.array(dtype=float),
+    body_ft_s: wp.array[wp.spatial_vector],
+    tau: wp.array[float],
 ):
     # one thread per-articulation
     index = wp.tid()
@@ -929,13 +917,13 @@ def eval_rigid_tau(
 # builds spatial Jacobian J which is an (joint_count*6)x(dof_count) matrix
 @wp.kernel
 def eval_rigid_jacobian(
-    articulation_start: wp.array(dtype=int),
-    articulation_J_start: wp.array(dtype=int),
-    joint_ancestor: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_S_s: wp.array(dtype=wp.spatial_vector),
+    articulation_start: wp.array[int],
+    articulation_J_start: wp.array[int],
+    joint_ancestor: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_S_s: wp.array[wp.spatial_vector],
     # outputs
-    J: wp.array(dtype=float),
+    J: wp.array[float],
 ):
     # one thread per-articulation
     index = wp.tid()
@@ -972,12 +960,12 @@ def eval_rigid_jacobian(
 
 @wp.func
 def spatial_mass(
-    body_I_s: wp.array(dtype=wp.spatial_matrix),
+    body_I_s: wp.array[wp.spatial_matrix],
     joint_start: int,
     joint_count: int,
     M_start: int,
     # outputs
-    M: wp.array(dtype=float),
+    M: wp.array[float],
 ):
     stride = joint_count * 6
     for l in range(joint_count):
@@ -989,11 +977,11 @@ def spatial_mass(
 
 @wp.kernel
 def eval_rigid_mass(
-    articulation_start: wp.array(dtype=int),
-    articulation_M_start: wp.array(dtype=int),
-    body_I_s: wp.array(dtype=wp.spatial_matrix),
+    articulation_start: wp.array[int],
+    articulation_M_start: wp.array[int],
+    body_I_s: wp.array[wp.spatial_matrix],
     # outputs
-    M: wp.array(dtype=float),
+    M: wp.array[float],
 ):
     # one thread per-articulation
     index = wp.tid()
@@ -1018,10 +1006,10 @@ def dense_gemm(
     A_start: int,
     B_start: int,
     C_start: int,
-    A: wp.array(dtype=float),
-    B: wp.array(dtype=float),
+    A: wp.array[float],
+    B: wp.array[float],
     # outputs
-    C: wp.array(dtype=float),
+    C: wp.array[float],
 ):
     # multiply a `m x p` matrix A by a `p x n` matrix B to produce a `m x n` matrix C
     for i in range(m):
@@ -1055,10 +1043,10 @@ def dense_gemm(
 #     A_start: int,
 #     B_start: int,
 #     C_start: int,
-#     A: wp.array(dtype=float),
-#     B: wp.array(dtype=float),
+#     A: wp.array[float],
+#     B: wp.array[float],
 #     # outputs
-#     C: wp.array(dtype=float),
+#     C: wp.array[float],
 # ):
 #     add_to_C = True
 #     if transpose_A:
@@ -1073,9 +1061,7 @@ def dense_gemm(
 
 def create_inertia_matrix_kernel(num_joints, num_dofs):
     @wp.kernel
-    def eval_dense_gemm_tile(
-        J_arr: wp.array3d(dtype=float), M_arr: wp.array3d(dtype=float), H_arr: wp.array3d(dtype=float)
-    ):
+    def eval_dense_gemm_tile(J_arr: wp.array3d[float], M_arr: wp.array3d[float], H_arr: wp.array3d[float]):
         articulation = wp.tid()
 
         J = wp.tile_load(J_arr[articulation], shape=(wp.static(6 * num_joints), num_dofs))
@@ -1107,9 +1093,7 @@ def create_batched_cholesky_kernel(num_dofs):
     assert num_dofs == 18
 
     @wp.kernel
-    def eval_tiled_dense_cholesky_batched(
-        A: wp.array3d(dtype=float), R: wp.array2d(dtype=float), L: wp.array3d(dtype=float)
-    ):
+    def eval_tiled_dense_cholesky_batched(A: wp.array3d[float], R: wp.array2d[float], L: wp.array3d[float]):
         articulation = wp.tid()
 
         a = wp.tile_load(A[articulation], shape=(num_dofs, num_dofs), storage="shared")
@@ -1124,11 +1108,11 @@ def create_batched_cholesky_kernel(num_dofs):
 def create_inertia_matrix_cholesky_kernel(num_joints, num_dofs):
     @wp.kernel
     def eval_dense_gemm_and_cholesky_tile(
-        J_arr: wp.array3d(dtype=float),
-        M_arr: wp.array3d(dtype=float),
-        R_arr: wp.array2d(dtype=float),
-        H_arr: wp.array3d(dtype=float),
-        L_arr: wp.array3d(dtype=float),
+        J_arr: wp.array3d[float],
+        M_arr: wp.array3d[float],
+        R_arr: wp.array2d[float],
+        H_arr: wp.array3d[float],
+        L_arr: wp.array3d[float],
     ):
         articulation = wp.tid()
 
@@ -1164,17 +1148,17 @@ def create_inertia_matrix_cholesky_kernel(num_joints, num_dofs):
 
 @wp.kernel
 def eval_dense_gemm_batched(
-    m: wp.array(dtype=int),
-    n: wp.array(dtype=int),
-    p: wp.array(dtype=int),
+    m: wp.array[int],
+    n: wp.array[int],
+    p: wp.array[int],
     transpose_A: bool,
     transpose_B: bool,
-    A_start: wp.array(dtype=int),
-    B_start: wp.array(dtype=int),
-    C_start: wp.array(dtype=int),
-    A: wp.array(dtype=float),
-    B: wp.array(dtype=float),
-    C: wp.array(dtype=float),
+    A_start: wp.array[int],
+    B_start: wp.array[int],
+    C_start: wp.array[int],
+    A: wp.array[float],
+    B: wp.array[float],
+    C: wp.array[float],
 ):
     # on the CPU each thread computes the whole matrix multiply
     # on the GPU each block computes the multiply with one output per-thread
@@ -1200,12 +1184,12 @@ def eval_dense_gemm_batched(
 @wp.func
 def dense_cholesky(
     n: int,
-    A: wp.array(dtype=float),
-    R: wp.array(dtype=float),
+    A: wp.array[float],
+    R: wp.array[float],
     A_start: int,
     R_start: int,
     # outputs
-    L: wp.array(dtype=float),
+    L: wp.array[float],
 ):
     # compute the Cholesky factorization of A = L L^T with diagonal regularization R
     for j in range(n):
@@ -1232,12 +1216,12 @@ def dense_cholesky(
 @wp.func_grad(dense_cholesky)
 def adj_dense_cholesky(
     n: int,
-    A: wp.array(dtype=float),
-    R: wp.array(dtype=float),
+    A: wp.array[float],
+    R: wp.array[float],
     A_start: int,
     R_start: int,
     # outputs
-    L: wp.array(dtype=float),
+    L: wp.array[float],
 ):
     # nop, use dense_solve to differentiate through (A^-1)b = x
     pass
@@ -1245,12 +1229,12 @@ def adj_dense_cholesky(
 
 @wp.kernel
 def eval_dense_cholesky_batched(
-    A_starts: wp.array(dtype=int),
-    A_dim: wp.array(dtype=int),
-    R_starts: wp.array(dtype=int),
-    A: wp.array(dtype=float),
-    R: wp.array(dtype=float),
-    L: wp.array(dtype=float),
+    A_starts: wp.array[int],
+    A_dim: wp.array[int],
+    R_starts: wp.array[int],
+    A: wp.array[float],
+    R: wp.array[float],
+    L: wp.array[float],
 ):
     batch = wp.tid()
 
@@ -1266,10 +1250,10 @@ def dense_subs(
     n: int,
     L_start: int,
     b_start: int,
-    L: wp.array(dtype=float),
-    b: wp.array(dtype=float),
+    L: wp.array[float],
+    b: wp.array[float],
     # outputs
-    x: wp.array(dtype=float),
+    x: wp.array[float],
 ):
     # Solves (L L^T) x = b for x given the Cholesky factor L
     # forward substitution solves the lower triangular system L y = b for y
@@ -1296,12 +1280,12 @@ def dense_solve(
     n: int,
     L_start: int,
     b_start: int,
-    A: wp.array(dtype=float),
-    L: wp.array(dtype=float),
-    b: wp.array(dtype=float),
+    A: wp.array[float],
+    L: wp.array[float],
+    b: wp.array[float],
     # outputs
-    x: wp.array(dtype=float),
-    tmp: wp.array(dtype=float),
+    x: wp.array[float],
+    tmp: wp.array[float],
 ):
     # helper function to include tmp argument for backward pass
     dense_subs(n, L_start, b_start, L, b, x)
@@ -1312,12 +1296,12 @@ def adj_dense_solve(
     n: int,
     L_start: int,
     b_start: int,
-    A: wp.array(dtype=float),
-    L: wp.array(dtype=float),
-    b: wp.array(dtype=float),
+    A: wp.array[float],
+    L: wp.array[float],
+    b: wp.array[float],
     # outputs
-    x: wp.array(dtype=float),
-    tmp: wp.array(dtype=float),
+    x: wp.array[float],
+    tmp: wp.array[float],
 ):
     if not tmp or not wp.adjoint[x] or not wp.adjoint[A] or not wp.adjoint[L]:
         return
@@ -1341,15 +1325,15 @@ def adj_dense_solve(
 
 @wp.kernel
 def eval_dense_solve_batched(
-    L_start: wp.array(dtype=int),
-    L_dim: wp.array(dtype=int),
-    b_start: wp.array(dtype=int),
-    A: wp.array(dtype=float),
-    L: wp.array(dtype=float),
-    b: wp.array(dtype=float),
+    L_start: wp.array[int],
+    L_dim: wp.array[int],
+    b_start: wp.array[int],
+    A: wp.array[float],
+    L: wp.array[float],
+    b: wp.array[float],
     # outputs
-    x: wp.array(dtype=float),
-    tmp: wp.array(dtype=float),
+    x: wp.array[float],
+    tmp: wp.array[float],
 ):
     batch = wp.tid()
 
@@ -1358,17 +1342,17 @@ def eval_dense_solve_batched(
 
 @wp.kernel
 def integrate_generalized_joints(
-    joint_type: wp.array(dtype=int),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_qdd: wp.array(dtype=float),
+    joint_type: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_qdd: wp.array[float],
     dt: float,
     # outputs
-    joint_q_new: wp.array(dtype=float),
-    joint_qd_new: wp.array(dtype=float),
+    joint_q_new: wp.array[float],
+    joint_qd_new: wp.array[float],
 ):
     # one thread per-articulation
     index = wp.tid()
@@ -1396,10 +1380,10 @@ def integrate_generalized_joints(
 
 @wp.kernel
 def zero_kinematic_joint_qdd(
-    joint_child: wp.array(dtype=int),
-    body_flags: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=int),
-    joint_qdd: wp.array(dtype=float),
+    joint_child: wp.array[int],
+    body_flags: wp.array[wp.int32],
+    joint_qd_start: wp.array[int],
+    joint_qdd: wp.array[float],
 ):
     """Zero joint accelerations for joints whose child body is kinematic."""
     joint_id = wp.tid()
@@ -1415,14 +1399,14 @@ def zero_kinematic_joint_qdd(
 
 @wp.kernel
 def copy_kinematic_joint_state(
-    joint_child: wp.array(dtype=int),
-    body_flags: wp.array(dtype=wp.int32),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_q_in: wp.array(dtype=float),
-    joint_qd_in: wp.array(dtype=float),
-    joint_q_out: wp.array(dtype=float),
-    joint_qd_out: wp.array(dtype=float),
+    joint_child: wp.array[int],
+    body_flags: wp.array[wp.int32],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q_in: wp.array[float],
+    joint_qd_in: wp.array[float],
+    joint_q_out: wp.array[float],
+    joint_qd_out: wp.array[float],
 ):
     """Copy prescribed joint state through the solve for kinematic child bodies."""
     joint_id = wp.tid()
@@ -1452,21 +1436,21 @@ def copy_kinematic_joint_state(
 def eval_single_articulation_fk_with_velocity_conversion(
     joint_start: int,
     joint_end: int,
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    body_com: wp.array(dtype=wp.vec3),
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
     # outputs
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
 ):
     for i in range(joint_start, joint_end):
         parent = joint_parent[i]
@@ -1477,20 +1461,6 @@ def eval_single_articulation_fk_with_velocity_conversion(
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
-
-        # parent anchor frame in world space
-        X_wpj = X_pj
-        # velocity of parent anchor point in world space
-        v_wpj = wp.spatial_vector()
-        if parent >= 0:
-            X_wp = body_q[parent]
-            X_wpj = X_wp * X_wpj
-            r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
-
-            v_wp = body_qd[parent]
-            w_p = wp.spatial_bottom(v_wp)
-            v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
-            v_wpj = wp.spatial_vector(v_p, w_p)
 
         q_start = joint_q_start[i]
         qd_start = joint_qd_start[i]
@@ -1593,55 +1563,105 @@ def eval_single_articulation_fk_with_velocity_conversion(
             X_j = wp.transform(pos, rot)
             v_j = wp.spatial_vector(vel_v, vel_w)
 
+        # transform from world to parent joint anchor frame
+        X_wpj = X_pj
+        if parent >= 0:
+            X_wp = body_q[parent]
+            X_wpj = X_wp * X_wpj
+
         # transform from world to joint anchor frame at child body
         X_wcj = X_wpj * X_j
         # transform from world to child body frame
         X_wc = X_wcj * wp.transform_inverse(X_cj)
 
-        # transform velocity across the joint to world space
-        linear_vel = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
-        angular_vel = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+        v_parent_origin = wp.vec3()
+        w_parent = wp.vec3()
+        if parent >= 0:
+            v_wp = body_qd[parent]
+            w_parent = wp.spatial_bottom(v_wp)
+            v_parent_origin = velocity_at_point(
+                v_wp, wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
+            )
 
-        v_wc = v_wpj + wp.spatial_vector(linear_vel, angular_vel)
+        linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+        angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+        child_origin_offset_world = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wcj)
+        linear_joint_origin = linear_joint_anchor + wp.cross(angular_joint_world, child_origin_offset_world)
+
+        v_wc = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
 
         body_q[child] = X_wc
+        body_qd[child] = v_wc
 
-        # Velocity conversion for FREE and DISTANCE joints:
-        # v_wc is a spatial twist at the origin, but body_qd should store COM velocity
-        # Transform: v_com = v_origin + ω x r_com
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            v_origin = wp.spatial_top(v_wc)
-            omega = wp.spatial_bottom(v_wc)
-            r_com = wp.transform_point(X_wc, body_com[child])
-            v_com = v_origin + wp.cross(omega, r_com)
-            body_qd[child] = wp.spatial_vector(v_com, omega)
-        else:
-            body_qd[child] = v_wc
+
+@wp.kernel
+def convert_articulation_free_distance_body_qd(
+    articulation_start: wp.array[int],
+    articulation_count: int,
+    articulation_mask: wp.array[bool],
+    articulation_indices: wp.array[int],
+    joint_type: wp.array[int],
+    joint_child: wp.array[int],
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+
+    if articulation_indices:
+        articulation_id = articulation_indices[tid]
+    else:
+        articulation_id = tid
+
+    if articulation_id < 0 or articulation_id >= articulation_count:
+        return
+
+    if articulation_mask:
+        if not articulation_mask[articulation_id]:
+            return
+
+    joint_start = articulation_start[articulation_id]
+    joint_end = articulation_start[articulation_id + 1]
+
+    for i in range(joint_start, joint_end):
+        type = joint_type[i]
+        if type != JointType.FREE and type != JointType.DISTANCE:
+            continue
+
+        child = joint_child[i]
+        X_wc = body_q[child]
+        v_wc = body_qd[child]
+
+        v_origin = wp.spatial_top(v_wc)
+        omega = wp.spatial_bottom(v_wc)
+        r_com = wp.transform_point(X_wc, body_com[child])
+        v_com = v_origin + wp.cross(omega, r_com)
+        body_qd[child] = wp.spatial_vector(v_com, omega)
 
 
 @wp.kernel
 def eval_articulation_fk_with_velocity_conversion(
-    articulation_start: wp.array(dtype=int),
+    articulation_start: wp.array[int],
     articulation_count: int,  # total number of articulations
-    articulation_mask: wp.array(
-        dtype=bool
-    ),  # used to enable / disable FK for an articulation, if None then treat all as enabled
-    articulation_indices: wp.array(dtype=int),  # can be None, articulation indices to process
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    body_com: wp.array(dtype=wp.vec3),
+    articulation_mask: wp.array[
+        bool
+    ],  # used to enable / disable FK for an articulation, if None then treat all as enabled
+    articulation_indices: wp.array[int],  # can be None, articulation indices to process
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
     # outputs
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -1688,11 +1708,11 @@ def eval_articulation_fk_with_velocity_conversion(
 
 def eval_fk_with_velocity_conversion(
     model: Model,
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
     state: State,
-    mask: wp.array(dtype=bool) | None = None,
-    indices: wp.array(dtype=int) | None = None,
+    mask: wp.array[bool] | None = None,
+    indices: wp.array[int] | None = None,
 ):
     """
     Evaluates the model's forward kinematics with velocity conversion for Featherstone solver.
@@ -1739,6 +1759,25 @@ def eval_fk_with_velocity_conversion(
             model.joint_X_c,
             model.joint_axis,
             model.joint_dof_dim,
+            model.body_com,
+        ],
+        outputs=[
+            state.body_q,
+            state.body_qd,
+        ],
+        device=model.device,
+    )
+
+    wp.launch(
+        kernel=convert_articulation_free_distance_body_qd,
+        dim=num_articulations,
+        inputs=[
+            model.articulation_start,
+            model.articulation_count,
+            mask,
+            indices,
+            model.joint_type,
+            model.joint_child,
             model.body_com,
         ],
         outputs=[

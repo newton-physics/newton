@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Implicit MPM model."""
 
@@ -176,7 +164,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
 
 @wp.kernel
 def _apply_shape_transforms(
-    points: wp.array(dtype=wp.vec3), shape_ids: wp.array(dtype=int), shape_transforms: wp.array(dtype=wp.transform)
+    points: wp.array[wp.vec3], shape_ids: wp.array[int], shape_transforms: wp.array[wp.transform]
 ):
     v = wp.tid()
     p = points[v]
@@ -235,12 +223,44 @@ def _create_body_collider_mesh(
     return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points)), face_material_ids
 
 
+@wp.struct
+class MaterialParameters:
+    """Convenience struct for passing material parameters to kernels."""
+
+    young_modulus: wp.array[float]
+    """Young's modulus for the material."""
+    poisson_ratio: wp.array[float]
+    """Poisson's ratio for the material."""
+    damping: wp.array[float]
+    """Damping for the material."""
+
+    friction: wp.array[float]
+    """Friction for the material."""
+    yield_pressure: wp.array[float]
+    """Yield pressure for the material."""
+    tensile_yield_ratio: wp.array[float]
+    """Tensile yield ratio for the material."""
+    yield_stress: wp.array[float]
+    """Yield stress for the material."""
+    viscosity: wp.array[float]
+    """Viscosity for the material."""
+
+    hardening: wp.array[float]
+    """Hardening for the material."""
+    hardening_rate: wp.array[float]
+    """Hardening rate for the material."""
+    softening_rate: wp.array[float]
+    """Softening rate for the material."""
+    dilatancy: wp.array[float]
+    """Dilatancy for the material."""
+
+
 class ImplicitMPMModel:
     """Wrapper augmenting a ``newton.Model`` with implicit MPM data and setup.
 
     Holds particle material parameters, collider parameters, and convenience
     arrays derived from the wrapped ``model`` and ``SolverImplicitMPM.Config``.
-    instance is consumed by ``SolverImplicitMPM`` during time stepping.
+    Consumed by ``SolverImplicitMPM`` during time stepping.
 
     Args:
         model: The base Newton model to augment.
@@ -264,8 +284,8 @@ class ImplicitMPMModel:
         self.collider = Collider()
         """Collider struct"""
 
-        self.collider_velocity_mode = options.collider_velocity_mode
-        """Collider velocity computation mode (instantaneous or finite_difference)"""
+        self.material_parameters = MaterialParameters()
+        """Material parameters struct"""
 
         self.collider_body_mass = None
         self.collider_body_inv_inertia = None
@@ -293,6 +313,16 @@ class ImplicitMPMModel:
             self.max_hardening = float(np.max(mpm_ns.hardening.numpy()))
         else:
             self.max_hardening = 0.0
+
+        if mpm_ns is not None and hasattr(mpm_ns, "viscosity"):
+            self.has_viscosity = bool(np.any(mpm_ns.viscosity.numpy() > 0))
+        else:
+            self.has_viscosity = False
+
+        if mpm_ns is not None and hasattr(mpm_ns, "dilatancy"):
+            self.has_dilatancy = bool(np.any(mpm_ns.dilatancy.numpy() > 0))
+        else:
+            self.has_dilatancy = False
 
     def notify_collider_changed(self):
         """Refresh cached extrema for collider parameters.
@@ -324,11 +354,24 @@ class ImplicitMPMModel:
         num_particles = model.particle_q.shape[0]
 
         with wp.ScopedDevice(model.device):
-            # Assume that particles represent a cuboid volume of space
-            # (they are typically laid out on a grid)
+            # Assume that particles represent a cuboid volume of space, i.e, V = 8 r**3
+            # (particles are typically laid out in a grid, and represent an uniform material)
             self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
             self.particle_volume = wp.array(8.0 * self.particle_radius.numpy() ** 3)
             self.particle_density = model.particle_mass / self.particle_volume
+
+        self.material_parameters.young_modulus = model.mpm.young_modulus
+        self.material_parameters.poisson_ratio = model.mpm.poisson_ratio
+        self.material_parameters.damping = model.mpm.damping
+        self.material_parameters.friction = model.mpm.friction
+        self.material_parameters.yield_pressure = model.mpm.yield_pressure
+        self.material_parameters.tensile_yield_ratio = model.mpm.tensile_yield_ratio
+        self.material_parameters.yield_stress = model.mpm.yield_stress
+        self.material_parameters.hardening = model.mpm.hardening
+        self.material_parameters.hardening_rate = model.mpm.hardening_rate
+        self.material_parameters.softening_rate = model.mpm.softening_rate
+        self.material_parameters.dilatancy = model.mpm.dilatancy
+        self.material_parameters.viscosity = model.mpm.viscosity
 
         self.notify_particle_material_changed()
 
@@ -532,9 +575,6 @@ class ImplicitMPMModel:
         self.collider_body_inv_inertia = body_inv_inertia
         self.collider_body_q = body_q
         self._collider_meshes = collider_meshes  # Keep a ref so that meshes are not garbage collected
-
-        # Toggle finite-difference collider velocities based on model setting
-        self.collider.use_finite_difference_velocity = self.collider_velocity_mode == "finite_difference"
 
         self.notify_collider_changed()
 

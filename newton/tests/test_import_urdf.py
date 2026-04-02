@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import os
 import tempfile
@@ -79,7 +67,7 @@ INERTIAL_URDF = """
 <robot name="inertial_test">
     <link name="base_link">
         <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <origin xyz="0 0 0" rpy="3 4 5"/>
             <mass value="1.0"/>
             <inertia ixx="1.0" ixy="0.0" ixz="0.0"
                      iyy="1.0" iyz="0.0"
@@ -278,7 +266,9 @@ class TestImportUrdfBasic(unittest.TestCase):
 
         # Check inertial parameters
         assert_np_equal(builder.body_mass[0], np.array([1.0]))
-        assert_np_equal(builder.body_inertia[0], np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]))
+        assert_np_equal(
+            np.array(builder.body_inertia[0]), np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]), 1e-6
+        )
         assert_np_equal(builder.body_com[0], np.array([0.0, 0.0, 0.0]))
 
     def test_cylinder_shapes_preserved(self):

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 KAMINO: UNIT TESTS: COMPARISON UTILITIES
@@ -273,7 +261,6 @@ def assert_builders_equal(
         test.assertEqual(builder1.geoms[k].mid, builder2.geoms[k].mid)
         test.assertEqual(builder1.geoms[k].body, builder2.geoms[k].body)
         test.assertEqual(builder1.geoms[k].shape.type, builder2.geoms[k].shape.type)
-        test.assertEqual(builder1.geoms[k].shape.num_params, builder2.geoms[k].shape.num_params)
         test.assertTrue(lists_equal(builder1.geoms[k].shape.paramsvec, builder2.geoms[k].shape.paramsvec))
         if not skip_materials:
             test.assertEqual(builder1.geoms[k].material, builder2.geoms[k].material)

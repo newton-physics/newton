@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Support mapping functions for collision detection primitives.
@@ -338,10 +326,10 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
 @wp.func
 def extract_shape_data(
     shape_idx: int,
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_types: wp.array(dtype=int),
-    shape_data: wp.array(dtype=wp.vec4),  # scale (xyz), margin_offset (w) or other data
-    shape_source: wp.array(dtype=wp.uint64),
+    shape_transform: wp.array[wp.transform],
+    shape_types: wp.array[int],
+    shape_data: wp.array[wp.vec4],  # scale (xyz), margin_offset (w) or other data
+    shape_source: wp.array[wp.uint64],
 ):
     """
     Extract shape data from the narrow phase API arrays.

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Cable Bundle Hysteresis
@@ -33,16 +21,16 @@ import newton.examples
 
 @wp.kernel
 def move_obstacles_triwave(
-    bodies: wp.array(dtype=int),
-    init_y: wp.array(dtype=float),
-    init_z: wp.array(dtype=float),
+    bodies: wp.array[int],
+    init_y: wp.array[float],
+    init_z: wp.array[float],
     amp_scale: float,
     period: float,
-    t: wp.array(dtype=float),
+    t: wp.array[float],
     stop_time: float,
     release_time: float,
-    body_q0: wp.array(dtype=wp.transform),
-    body_q1: wp.array(dtype=wp.transform),
+    body_q0: wp.array[wp.transform],
+    body_q1: wp.array[wp.transform],
 ):
     """Move obstacles in a triangle wave pattern in Y direction with phase transitions."""
     i = wp.tid()
@@ -90,7 +78,7 @@ def move_obstacles_triwave(
 
 
 @wp.kernel
-def advance_time(t: wp.array(dtype=float), dt: float):
+def advance_time(t: wp.array[float], dt: float):
     """Advance a device-side time accumulator (single-threaded, graph-capture friendly)."""
     i = wp.tid()
     if i == 0:

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This code is based on the GJK/simplex solver implementation from Jitter Physics 2
 # Original: https://github.com/notgiven688/jitterphysics2
@@ -391,13 +379,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
                 return False, point_a, point_b, normal, distance
 
-            # Determine search direction with fallback for near-zero cases
-            used_fallback = bool(False)
             search_dir = -v
-            if dist_sq < 1.0e-12:
-                # Near-zero direction: use fallback to avoid numerical issues
-                search_dir = wp.vec3(1.0, 0.0, 0.0)
-                used_fallback = bool(True)
             # Track last search direction for robust normal fallback
             last_search_dir = search_dir
 
@@ -405,13 +387,11 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             w = minkowski_support(geom_a, geom_b, search_dir, orientation_b, position_b, extend, data_provider)
 
             # Check for convergence using Frank-Wolfe duality gap
-            # Skip check when using fallback direction to avoid premature exit
             # Use BtoA directly (Minkowski difference)
             w_v = w.BtoA
-            if not used_fallback:
-                delta_dist = wp.dot(v, v - w_v)
-                if delta_dist < COLLIDE_EPSILON * wp.sqrt(dist_sq):
-                    break
+            delta_dist = wp.dot(v, v - w_v)
+            if delta_dist < COLLIDE_EPSILON * wp.sqrt(dist_sq):
+                break
 
             # Check for duplicate vertex (numerical stalling)
             is_duplicate = bool(False)
@@ -518,7 +498,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         orientation_b: wp.quat,
         position_a: wp.vec3,
         position_b: wp.vec3,
-        sum_of_contact_offsets: float,
+        combined_margin: float,
         data_provider: Any,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-4,
@@ -533,7 +513,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             orientation_b: Orientation of shape B
             position_a: Position of shape A
             position_b: Position of shape B
-            sum_of_contact_offsets: Sum of contact offsets for both shapes
+            combined_margin: Sum of margin extensions for both shapes [m]
             data_provider: Support mapping data provider
             MAX_ITER: Maximum number of iterations for GJK algorithm
             COLLIDE_EPSILON: Small number for numerical comparisons
@@ -550,7 +530,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             geom_b,
             relative_orientation_b,
             relative_position_b,
-            sum_of_contact_offsets,
+            combined_margin,
             data_provider,
             MAX_ITER,
             COLLIDE_EPSILON,

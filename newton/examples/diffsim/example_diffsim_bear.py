@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Diffsim Bear
@@ -49,7 +37,7 @@ DEFAULT_BEAR_PATH = os.path.join(newton.examples.get_asset_directory(), "bear.us
 
 
 @wp.kernel
-def loss_kernel(com: wp.array(dtype=wp.vec3), loss: wp.array(dtype=float)):
+def loss_kernel(com: wp.array[wp.vec3], loss: wp.array[float]):
     tid = wp.tid()
     vx = com[tid][0]
     vy = com[tid][1]
@@ -60,7 +48,7 @@ def loss_kernel(com: wp.array(dtype=wp.vec3), loss: wp.array(dtype=float)):
 
 
 @wp.kernel
-def com_kernel(velocities: wp.array(dtype=wp.vec3), n: int, com: wp.array(dtype=wp.vec3)):
+def com_kernel(velocities: wp.array[wp.vec3], n: int, com: wp.array[wp.vec3]):
     tid = wp.tid()
     v = velocities[tid]
     a = v / wp.float32(n)
@@ -68,7 +56,7 @@ def com_kernel(velocities: wp.array(dtype=wp.vec3), n: int, com: wp.array(dtype=
 
 
 @wp.kernel
-def compute_phases(phases: wp.array(dtype=float), sim_time: float):
+def compute_phases(phases: wp.array[float], sim_time: float):
     tid = wp.tid()
     phases[tid] = wp.sin(PHASE_FREQ * sim_time + wp.float32(tid) * PHASE_STEP)
 
@@ -79,9 +67,7 @@ def tanh(x: float):
 
 
 @wp.kernel
-def network(
-    phases: wp.array2d(dtype=float), weights: wp.array2d(dtype=float), tet_activations: wp.array2d(dtype=float)
-):
+def network(phases: wp.array2d[float], weights: wp.array2d[float], tet_activations: wp.array2d[float]):
     # output tile index
     i = wp.tid()
 

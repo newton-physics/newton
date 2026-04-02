@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Cloth Twist
@@ -41,14 +29,14 @@ from newton import ParticleFlags
 @wp.kernel
 def initialize_rotation(
     # input
-    vertex_indices_to_rot: wp.array(dtype=wp.int32),
-    pos: wp.array(dtype=wp.vec3),
-    rot_centers: wp.array(dtype=wp.vec3),
-    rot_axes: wp.array(dtype=wp.vec3),
-    t: wp.array(dtype=float),
+    vertex_indices_to_rot: wp.array[wp.int32],
+    pos: wp.array[wp.vec3],
+    rot_centers: wp.array[wp.vec3],
+    rot_axes: wp.array[wp.vec3],
+    t: wp.array[float],
     # output
-    roots: wp.array(dtype=wp.vec3),
-    roots_to_ps: wp.array(dtype=wp.vec3),
+    roots: wp.array[wp.vec3],
+    roots_to_ps: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     v_index = vertex_indices_to_rot[wp.tid()]
@@ -72,17 +60,17 @@ def initialize_rotation(
 @wp.kernel
 def apply_rotation(
     # input
-    vertex_indices_to_rot: wp.array(dtype=wp.int32),
-    rot_axes: wp.array(dtype=wp.vec3),
-    roots: wp.array(dtype=wp.vec3),
-    roots_to_ps: wp.array(dtype=wp.vec3),
-    t: wp.array(dtype=float),
+    vertex_indices_to_rot: wp.array[wp.int32],
+    rot_axes: wp.array[wp.vec3],
+    roots: wp.array[wp.vec3],
+    roots_to_ps: wp.array[wp.vec3],
+    t: wp.array[float],
     angular_velocity: float,
     dt: float,
     end_time: float,
     # output
-    pos_0: wp.array(dtype=wp.vec3),
-    pos_1: wp.array(dtype=wp.vec3),
+    pos_0: wp.array[wp.vec3],
+    pos_1: wp.array[wp.vec3],
 ):
     cur_t = t[0]
     if cur_t > end_time:

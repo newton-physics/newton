@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -374,7 +362,7 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # sum_of_contact_offsets - gap
+                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 type_a == GeoType.SPHERE
@@ -392,7 +380,7 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # sum_of_contact_offsets - gap
+                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 writer_data,
@@ -751,14 +739,14 @@ def pre_contact_check(
     pair: wp.vec2i,
     mesh_id_a: wp.uint64,
     mesh_id_b: wp.uint64,
-    shape_pairs_mesh: wp.array(dtype=wp.vec2i),
-    shape_pairs_mesh_count: wp.array(dtype=int),
-    shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
-    shape_pairs_mesh_plane_cumsum: wp.array(dtype=int),
-    shape_pairs_mesh_plane_count: wp.array(dtype=int),
-    mesh_plane_vertex_total_count: wp.array(dtype=int),
-    shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
-    shape_pairs_mesh_mesh_count: wp.array(dtype=int),
+    shape_pairs_mesh: wp.array[wp.vec2i],
+    shape_pairs_mesh_count: wp.array[int],
+    shape_pairs_mesh_plane: wp.array[wp.vec2i],
+    shape_pairs_mesh_plane_cumsum: wp.array[int],
+    shape_pairs_mesh_plane_count: wp.array[int],
+    mesh_plane_vertex_total_count: wp.array[int],
+    shape_pairs_mesh_mesh: wp.array[wp.vec2i],
+    shape_pairs_mesh_mesh_count: wp.array[int],
 ):
     """
     Perform pre-contact checks for early rejection and special case handling.
@@ -871,12 +859,12 @@ def mesh_vs_convex_midphase(
     X_mesh_ws: wp.transform,
     X_ws: wp.transform,
     mesh_id: wp.uint64,
-    shape_type: wp.array(dtype=int),
-    shape_data: wp.array(dtype=wp.vec4),
-    shape_source_ptr: wp.array(dtype=wp.uint64),
+    shape_type: wp.array[int],
+    shape_data: wp.array[wp.vec4],
+    shape_source_ptr: wp.array[wp.uint64],
     rigid_gap: float,
-    triangle_pairs: wp.array(dtype=wp.vec3i),
-    triangle_pairs_count: wp.array(dtype=int),
+    triangle_pairs: wp.array[wp.vec3i],
+    triangle_pairs_count: wp.array[int],
 ):
     """
     Perform mesh vs convex shape midphase collision detection.
@@ -980,7 +968,7 @@ def mesh_vs_convex_midphase(
 @wp.func
 def find_pair_from_cumulative_index(
     global_idx: int,
-    cumulative_sums: wp.array(dtype=int),
+    cumulative_sums: wp.array[int],
     pair_count: int,
 ) -> tuple[int, int]:
     """

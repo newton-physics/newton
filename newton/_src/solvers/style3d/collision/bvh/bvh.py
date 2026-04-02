@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
@@ -139,9 +127,9 @@ class BvhAabb:
 
     def aabb_vs_aabb(
         self,
-        lower_bounds: wp.array(dtype=wp.vec3),
-        upper_bounds: wp.array(dtype=wp.vec3),
-        query_results: wp.array(dtype=int, ndim=2),
+        lower_bounds: wp.array[wp.vec3],
+        upper_bounds: wp.array[wp.vec3],
+        query_results: wp.array2d[int],
         query_radius: float = 0.0,
         ignore_self_hits: bool = False,
     ):
@@ -183,9 +171,9 @@ class BvhAabb:
 
     def aabb_vs_line(
         self,
-        vertices: wp.array(dtype=wp.vec3),
-        edge_indices: wp.array(dtype=int, ndim=2),
-        query_results: wp.array(dtype=int, ndim=2),
+        vertices: wp.array[wp.vec3],
+        edge_indices: wp.array2d[int],
+        query_results: wp.array2d[int],
         ignore_self_hits: bool = False,
     ):
         """Queries the BVH for intersections between line segments and AABBs.
@@ -248,7 +236,7 @@ class BvhEdge(BvhAabb):
     def __init__(self, edge_count: int, device: wp.Device):
         super().__init__(edge_count, device)
 
-    def update_aabbs(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float):
+    def update_aabbs(self, pos: wp.array[wp.vec3], edge_indices: wp.array2d[int], enlarge: float):
         """Computes AABBs for all edges based on current vertex positions and edge indices.
 
         Args:
@@ -270,7 +258,7 @@ class BvhEdge(BvhAabb):
             device=self.device,
         )
 
-    def build(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def build(self, pos: wp.array[wp.vec3], edge_indices: wp.array2d[int], enlarge: float = 0.0):
         """Builds the edge BVH from scratch using the given vertex positions and edge indices.
 
         This computes the AABBs for all edges and then constructs a new BVH hierarchy.
@@ -288,7 +276,7 @@ class BvhEdge(BvhAabb):
         self.update_aabbs(pos, edge_indices, enlarge)
         super().build()
 
-    def rebuild(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def rebuild(self, pos: wp.array[wp.vec3], edge_indices: wp.array2d[int], enlarge: float = 0.0):
         """Rebuilds the edge BVH using the current vertex positions and edge indices.
 
         This recomputes the edge AABBs and reconstructs the BVH hierarchy
@@ -308,7 +296,7 @@ class BvhEdge(BvhAabb):
         self.update_aabbs(pos, edge_indices, enlarge)
         super().rebuild()
 
-    def refit(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def refit(self, pos: wp.array[wp.vec3], edge_indices: wp.array2d[int], enlarge: float = 0.0):
         """Refits the edge BVH after vertex positions have changed, without rebuilding the hierarchy.
 
         This updates the leaf AABBs for all edges and adjusts the internal BVH bounds,
@@ -327,11 +315,11 @@ class BvhEdge(BvhAabb):
 
     def edge_vs_edge(
         self,
-        test_pos: wp.array(dtype=wp.vec3),
-        test_edge_indices: wp.array(dtype=int, ndim=2),
-        edge_pos: wp.array(dtype=wp.vec3),
-        edge_indices: wp.array(dtype=int, ndim=2),
-        query_results: wp.array(dtype=int, ndim=2),
+        test_pos: wp.array[wp.vec3],
+        test_edge_indices: wp.array2d[int],
+        edge_pos: wp.array[wp.vec3],
+        edge_indices: wp.array2d[int],
+        query_results: wp.array2d[int],
         ignore_self_hits: bool,
         max_dist: float,
         query_radius: float = 0.0,
@@ -394,7 +382,7 @@ class BvhTri(BvhAabb):
     def __init__(self, tri_count: int, device: wp.Device):
         super().__init__(tri_count, device)
 
-    def update_aabbs(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float):
+    def update_aabbs(self, pos: wp.array[wp.vec3], tri_indices: wp.array2d[int], enlarge: float):
         """Computes AABBs for all triangles based on current vertex positions and indices.
 
         Args:
@@ -416,7 +404,7 @@ class BvhTri(BvhAabb):
             device=self.device,
         )
 
-    def build(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def build(self, pos: wp.array[wp.vec3], tri_indices: wp.array2d[int], enlarge: float = 0.0):
         """Builds the triangle BVH from scratch.
 
         This computes AABBs for all triangles and constructs a new BVH hierarchy.
@@ -434,7 +422,7 @@ class BvhTri(BvhAabb):
         self.update_aabbs(pos, tri_indices, enlarge)
         super().build()
 
-    def rebuild(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def rebuild(self, pos: wp.array[wp.vec3], tri_indices: wp.array2d[int], enlarge: float = 0.0):
         """Rebuilds the triangle BVH using the current vertex positions and indices.
 
         This recomputes the triangle AABBs and rebuilds the BVH hierarchy
@@ -455,7 +443,7 @@ class BvhTri(BvhAabb):
         self.update_aabbs(pos, tri_indices, enlarge)
         super().rebuild()
 
-    def refit(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def refit(self, pos: wp.array[wp.vec3], tri_indices: wp.array2d[int], enlarge: float = 0.0):
         """Refits the triangle BVH after vertex positions have changed, without rebuilding the hierarchy.
 
         This updates AABBs for all triangles and propagates the changes up the hierarchy,
@@ -474,10 +462,10 @@ class BvhTri(BvhAabb):
 
     def triangle_vs_point(
         self,
-        pos: wp.array(dtype=wp.vec3),
-        tri_pos: wp.array(dtype=wp.vec3),
-        tri_indices: wp.array(dtype=int, ndim=2),
-        query_results: wp.array(dtype=int, ndim=2),
+        pos: wp.array[wp.vec3],
+        tri_pos: wp.array[wp.vec3],
+        tri_indices: wp.array2d[int],
+        query_results: wp.array2d[int],
         ignore_self_hits: bool,
         max_dist: float,
         query_radius: float = 0.0,

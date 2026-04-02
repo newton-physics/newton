@@ -1,175 +1,172 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Objective definitions for inverse kinematics."""
+
+from __future__ import annotations
 
 import numpy as np
 import warp as wp
 
+from ..model import Model
 from .ik_common import IKJacobianType
 
 
 class IKObjective:
-    """
-    Abstract base class for inverse kinematics objectives.
+    """Base class for inverse-kinematics objectives.
 
-    Subclasses must implement the following methods:
-        - residual_dim(): Returns the number of residuals (constraints) this objective contributes.
-        - compute_residuals(body_q, joint_q, model, residuals, start_idx): Computes the residuals for this objective.
-        - compute_jacobian_autodiff(tape, model, jacobian, start_idx, dq_dof): Computes the Jacobian using autodiff.
+    Each objective contributes one or more residual rows to the global IK
+    system and can optionally provide an analytic Jacobian. Objective
+    instances are shared across a batch of problems, so per-problem data such
+    as targets should live in device arrays and be indexed through the
+    ``problem_idx`` mapping supplied at evaluation time.
 
-    Optional methods for analytic Jacobian support:
-        - supports_analytic(): Returns True if analytic Jacobian is supported, otherwise False.
-        - compute_jacobian_analytic(body_q, joint_q, model, jacobian, joint_S_s, start_idx): Computes the analytic Jacobian if supported.
-
-    Device and buffer management:
-        - bind_device(device): Binds the objective to a specific device.
-        - init_buffers(model, jacobian_mode): Initializes any buffers required for Jacobian computation.
-
-    Notes:
-        - The interface is designed for batch processing of multiple IK problems in parallel.
-        - Each subclass may store per-problem data (e.g., targets) as device arrays.
+    Subclasses should override :meth:`residual_dim`,
+    :meth:`compute_residuals`, and :meth:`compute_jacobian_autodiff`. They can
+    additionally override :meth:`supports_analytic` and
+    :meth:`compute_jacobian_analytic` when an analytic Jacobian is available.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Optimizers assign these before first use via set_batch_layout().
         self.total_residuals = None
         self.residual_offset = None
         self.n_batch = None
 
-    def set_batch_layout(self, total_residuals, residual_offset, n_batch):
-        """
-        Register the residual layout for this objective within the optimizer's
-        global system.
+    def set_batch_layout(self, total_residuals: int, residual_offset: int, n_batch: int) -> None:
+        """Register this objective's rows inside the optimizer's global system.
 
-        Parameters
-        ----------
-        total_residuals : int
-            Total number of residual rows across all objectives (global height of J and r).
-        residual_offset : int
-            Starting row index (into the global residual/Jacobian) reserved for this objective.
-        n_batch : int
-            Number of rows that will be evaluated together by the optimizer
-            (e.g., n_problems * n_seeds, or further expanded for candidates).
+        Args:
+            total_residuals: Total number of residual rows across all
+                objectives.
+            residual_offset: First row reserved for this objective inside the
+                global residual vector and Jacobian.
+            n_batch: Number of evaluation rows processed together. This is the
+                expanded solver batch, not necessarily the number of base IK
+                problems.
 
-        Notes
-        -----
-        * `n_batch` is the size of the **evaluation batch**, not the number of base problems.
-        * Per-problem buffers (e.g., targets) should be sized by the number of base problems
-          and accessed via the `problem_idx` mapping provided at evaluation time, rather than
-          assuming one target per batch row.
-        * This method is called by the optimizer before any residual/Jacobian computations.
+        .. note::
+            Per-problem buffers such as targets should still be sized by the
+            base problem count and accessed through the ``problem_idx`` mapping
+            supplied during residual and Jacobian evaluation.
         """
         self.total_residuals = total_residuals
         self.residual_offset = residual_offset
         self.n_batch = n_batch
 
-    def _require_batch_layout(self):
+    def _require_batch_layout(self) -> None:
         if self.total_residuals is None or self.residual_offset is None or self.n_batch is None:
             raise RuntimeError(f"Batch layout not assigned for {type(self).__name__}; call set_batch_layout() first")
 
-    def residual_dim(self):
-        """
-        Returns the number of residuals (constraints) this objective contributes.
-        Must be implemented by subclasses.
-        """
+    def residual_dim(self) -> int:
+        """Return the number of residual rows contributed by this objective."""
         raise NotImplementedError
 
-    def compute_residuals(self, body_q, joint_q, model, residuals, start_idx, problem_idx):
-        """
-        Computes the residuals for this objective and writes them into the residuals array.
+    def compute_residuals(
+        self,
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
+        model: Model,
+        residuals: wp.array2d[wp.float32],
+        start_idx: int,
+        problem_idx: wp.array[wp.int32],
+    ) -> None:
+        """Write this objective's residual block into a global buffer.
 
         Args:
-            body_q (wp.array2d(dtype=wp.transform)): Array of body transforms for each problem.
-            joint_q (wp.array2d(dtype=wp.float)): Array of joint coordinates for each problem.
-            model (newton.Model): The kinematic model.
-            residuals (wp.array2d(dtype=wp.float)): Output array for residuals.
-            start_idx (int): Starting index in the residuals array for this objective.
-            problem_idx (wp.array1d(dtype=int32) | None): Maps each batched row to
-                the originating problem index when rows have been duplicated (for example,
-                when evaluating multiple candidates per problem). Typical usage inside a
-                kernel looks like `row_idx = wp.tid(); base = problem_idx[row_idx]; target = self.target_positions[base]`.
-                Defaults to None, which indicates rows already align with the solver batch.
+            body_q: Batched body transforms for the current evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates [m or rad] for the current
+                evaluation rows, shape [n_batch, joint_coord_count].
+            model: Shared articulation model.
+            residuals: Global residual buffer that receives this objective's
+                residual rows, shape [n_batch, total_residual_count].
+            start_idx: First residual row reserved for this objective inside
+                the global residual buffer.
+            problem_idx: Mapping from evaluation rows to base problem
+                indices, shape [n_batch]. Use this when objective data is
+                stored once per original problem but the solver expands rows
+                for multiple seeds or line-search candidates.
         """
         raise NotImplementedError
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
-        """
-        Computes the Jacobian for this objective using automatic differentiation.
+    def compute_jacobian_autodiff(
+        self,
+        tape: wp.Tape,
+        model: Model,
+        jacobian: wp.array3d[wp.float32],
+        start_idx: int,
+        dq_dof: wp.array2d[wp.float32],
+    ) -> None:
+        """Fill this objective's Jacobian block with autodiff gradients.
 
         Args:
-            tape (wp.Tape): Autodiff tape.
-            model (newton.Model): The kinematic model.
-            jacobian (wp.array3d(dtype=wp.float)): Output array for the Jacobian.
-            start_idx (int): Starting index in the Jacobian for this objective.
-            dq_dof (wp.array2d(dtype=wp.float)): Derivative of q with respect to DoF.
+            tape: Recorded Warp tape whose output is the global residual
+                buffer.
+            model: Shared articulation model.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            start_idx: First residual row reserved for this objective.
+            dq_dof: Differentiable joint update variable for the current
+                batch, shape [n_batch, joint_dof_count].
         """
         raise NotImplementedError
 
-    def supports_analytic(self):
-        """
-        Returns True if this objective supports analytic Jacobian computation.
-        Subclasses should override if analytic Jacobian is available.
-        """
+    def supports_analytic(self) -> bool:
+        """Return ``True`` when this objective implements an analytic Jacobian."""
         return False
 
-    def bind_device(self, device):
-        """
-        Binds the objective to a specific device (e.g., CUDA or CPU).
-
-        Args:
-            device (wp.Device): The device to bind to.
-        """
+    def bind_device(self, device: wp.DeviceLike) -> None:
+        """Bind this objective to the Warp device used by the solver."""
         self.device = device
 
-    def init_buffers(self, model, jacobian_mode):
-        """
-        Initializes any buffers required for Jacobian computation.
+    def init_buffers(self, model: Model, jacobian_mode: IKJacobianType) -> None:
+        """Allocate any per-objective buffers needed by the chosen backend.
 
         Args:
-            model (newton.Model): The kinematic model.
-            jacobian_mode (IKJacobianType): The Jacobian computation mode (analytic or autodiff).
+            model: Shared articulation model.
+            jacobian_mode: Jacobian backend that will evaluate this
+                objective.
         """
         pass
 
-    def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
-        """
-        Computes the analytic Jacobian for this objective, if supported.
+    def compute_jacobian_analytic(
+        self,
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
+        model: Model,
+        jacobian: wp.array3d[wp.float32],
+        joint_S_s: wp.array2d[wp.spatial_vector],
+        start_idx: int,
+    ) -> None:
+        """Fill this objective's Jacobian block analytically, if supported.
 
         Args:
-            body_q (wp.array2d(dtype=wp.transform)): Array of body transforms for each problem.
-            joint_q (wp.array2d(dtype=wp.float)): Array of joint coordinates for each problem.
-            model (newton.Model): The kinematic model.
-            jacobian (wp.array3d(dtype=wp.float)): Output array for the Jacobian.
-            joint_S_s (wp.array2d(dtype=wp.spatial_vector)): Motion subspace matrices.
-            start_idx (int): Starting index in the Jacobian for this objective.
+            body_q: Batched body transforms for the current evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates for the current evaluation rows,
+                shape [n_batch, joint_coord_count].
+            model: Shared articulation model.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            joint_S_s: Batched motion-subspace columns,
+                shape [n_batch, joint_dof_count].
+            start_idx: First residual row reserved for this objective.
         """
         pass
 
 
 @wp.kernel
 def _pos_residuals(
-    body_q: wp.array2d(dtype=wp.transform),  # (n_batch, n_bodies)
-    target_pos: wp.array1d(dtype=wp.vec3),  # (n_problems)
+    body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+    target_pos: wp.array[wp.vec3],  # (n_problems)
     link_index: int,
     link_offset: wp.vec3,
     start_idx: int,
     weight: float,
-    problem_idx_map: wp.array1d(dtype=wp.int32),
+    problem_idx_map: wp.array[wp.int32],
     # outputs
-    residuals: wp.array2d(dtype=wp.float32),  # (n_batch, n_residuals)
+    residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
 ):
     row = wp.tid()
     base = problem_idx_map[row]
@@ -185,12 +182,12 @@ def _pos_residuals(
 
 @wp.kernel
 def _pos_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+    q_grad: wp.array2d[wp.float32],  # (n_batch, n_dofs)
     n_dofs: int,
     start_idx: int,
     component: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     problem_idx = wp.tid()
     residual_idx = start_idx + component
@@ -204,16 +201,16 @@ def _update_position_target(
     problem_idx: int,
     new_position: wp.vec3,
     # outputs
-    target_array: wp.array1d(dtype=wp.vec3),  # (n_problems)
+    target_array: wp.array[wp.vec3],  # (n_problems)
 ):
     target_array[problem_idx] = new_position
 
 
 @wp.kernel
 def _update_position_targets(
-    new_positions: wp.array1d(dtype=wp.vec3),  # (n_problems)
+    new_positions: wp.array[wp.vec3],  # (n_problems)
     # outputs
-    target_array: wp.array1d(dtype=wp.vec3),  # (n_problems)
+    target_array: wp.array[wp.vec3],  # (n_problems)
 ):
     problem_idx = wp.tid()
     target_array[problem_idx] = new_positions[problem_idx]
@@ -223,14 +220,14 @@ def _update_position_targets(
 def _pos_jac_analytic(
     link_index: int,
     link_offset: wp.vec3,
-    affects_dof: wp.array1d(dtype=wp.uint8),  # (n_dofs)
-    body_q: wp.array2d(dtype=wp.transform),  # (n_batch, n_bodies)
-    joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_batch, n_dofs)
+    affects_dof: wp.array[wp.uint8],  # (n_dofs)
+    body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+    joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_dofs)
     start_idx: int,
     n_dofs: int,
     weight: float,
     # output
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     # one thread per (problem, dof)
     problem_idx, dof_idx = wp.tid()
@@ -258,17 +255,22 @@ def _pos_jac_analytic(
 
 
 class IKObjectivePosition(IKObjective):
-    """
-    End-effector positional target for one link.
+    """Match the world-space position of a point on a link.
 
     Args:
-        link_index (int): Body index whose frame defines the end-effector.
-        link_offset (wp.vec3): Offset from the body frame (local coordinates).
-        target_positions (wp.array(dtype=wp.vec3)): One target position per problem.
-        weight (float, optional): Scalar weight multiplying both residual and Jacobian rows. Defaults to 1.0.
+        link_index: Body index whose frame defines the constrained link.
+        link_offset: Point in the link's local frame [m].
+        target_positions: Target positions [m], shape [problem_count].
+        weight: Scalar multiplier applied to the residual and Jacobian rows.
     """
 
-    def __init__(self, link_index, link_offset, target_positions, weight=1.0):
+    def __init__(
+        self,
+        link_index: int,
+        link_offset: wp.vec3,
+        target_positions: wp.array[wp.vec3],
+        weight: float = 1.0,
+    ) -> None:
         super().__init__()
         self.link_index = link_index
         self.link_offset = link_offset
@@ -278,8 +280,13 @@ class IKObjectivePosition(IKObjective):
         self.affects_dof = None
         self.e_arrays = None
 
-    def init_buffers(self, model, jacobian_mode):
-        """Precompute lookup tables for analytic jacobian computation."""
+    def init_buffers(self, model: Model, jacobian_mode: IKJacobianType) -> None:
+        """Initialize caches used by analytic or autodiff Jacobian evaluation.
+
+        Args:
+            model: Shared articulation model.
+            jacobian_mode: Jacobian backend selected for this objective.
+        """
         self._require_batch_layout()
         if jacobian_mode == IKJacobianType.ANALYTIC:
             joint_qd_start_np = model.joint_qd_start.numpy()
@@ -314,10 +321,18 @@ class IKObjectivePosition(IKObjective):
                     e[prob_idx, self.residual_offset + component] = 1.0
                 self.e_arrays.append(wp.array(e.flatten(), dtype=wp.float32, device=self.device))
 
-    def supports_analytic(self):
+    def supports_analytic(self) -> bool:
+        """Return ``True`` because this objective has an analytic Jacobian."""
         return True
 
-    def set_target_position(self, problem_idx, new_position):
+    def set_target_position(self, problem_idx: int, new_position: wp.vec3) -> None:
+        """Update the target position for a single base IK problem.
+
+        Args:
+            problem_idx: Base problem index to update.
+            new_position: Replacement target position [m] in world
+                coordinates.
+        """
         self._require_batch_layout()
         wp.launch(
             _update_position_target,
@@ -327,7 +342,12 @@ class IKObjectivePosition(IKObjective):
             device=self.device,
         )
 
-    def set_target_positions(self, new_positions):
+    def set_target_positions(self, new_positions: wp.array[wp.vec3]) -> None:
+        """Replace the target positions for all base IK problems.
+
+        Args:
+            new_positions: Target positions [m], shape [problem_count].
+        """
         self._require_batch_layout()
         expected = self.target_positions.shape[0]
         if new_positions.shape[0] != expected:
@@ -340,10 +360,35 @@ class IKObjectivePosition(IKObjective):
             device=self.device,
         )
 
-    def residual_dim(self):
+    def residual_dim(self) -> int:
+        """Return the three translational residual rows for this objective."""
         return 3
 
-    def compute_residuals(self, body_q, joint_q, model, residuals, start_idx, problem_idx):
+    def compute_residuals(
+        self,
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
+        model: Model,
+        residuals: wp.array2d[wp.float32],
+        start_idx: int,
+        problem_idx: wp.array[wp.int32],
+    ) -> None:
+        """Write weighted position errors into the global residual buffer.
+
+        Args:
+            body_q: Batched body transforms for the evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates, shape [n_batch, joint_coord_count].
+                Present for interface compatibility and not used directly by
+                this objective.
+            model: Shared articulation model. Present for interface
+                compatibility.
+            residuals: Global residual buffer to update,
+                shape [n_batch, total_residual_count].
+            start_idx: First residual row reserved for this objective.
+            problem_idx: Mapping from evaluation rows to base problem
+                indices, shape [n_batch], used to fetch ``target_positions``.
+        """
         count = body_q.shape[0]
         wp.launch(
             _pos_residuals,
@@ -361,7 +406,26 @@ class IKObjectivePosition(IKObjective):
             device=self.device,
         )
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
+    def compute_jacobian_autodiff(
+        self,
+        tape: wp.Tape,
+        model: Model,
+        jacobian: wp.array3d[wp.float32],
+        start_idx: int,
+        dq_dof: wp.array2d[wp.float32],
+    ) -> None:
+        """Fill the position Jacobian block using Warp autodiff.
+
+        Args:
+            tape: Recorded Warp tape whose output is the global residual
+                buffer.
+            model: Shared articulation model.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            start_idx: First residual row reserved for this objective.
+            dq_dof: Differentiable joint update variable for the current
+                batch, shape [n_batch, joint_dof_count].
+        """
         self._require_batch_layout()
         for component in range(3):
             tape.backward(grads={tape.outputs[0]: self.e_arrays[component].flatten()})
@@ -387,7 +451,30 @@ class IKObjectivePosition(IKObjective):
 
             tape.zero()
 
-    def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
+    def compute_jacobian_analytic(
+        self,
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
+        model: Model,
+        jacobian: wp.array3d[wp.float32],
+        joint_S_s: wp.array2d[wp.spatial_vector],
+        start_idx: int,
+    ) -> None:
+        """Fill the position Jacobian block from the analytic motion subspace.
+
+        Args:
+            body_q: Batched body transforms for the evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates, shape [n_batch, joint_coord_count].
+                Present for interface compatibility and not used directly by
+                this objective.
+            model: Shared articulation model.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            joint_S_s: Batched motion-subspace columns,
+                shape [n_batch, joint_dof_count].
+            start_idx: First residual row reserved for this objective.
+        """
         n_dofs = model.joint_dof_count
 
         wp.launch(
@@ -410,15 +497,15 @@ class IKObjectivePosition(IKObjective):
 
 @wp.kernel
 def _limit_residuals(
-    joint_q: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-    joint_limit_lower: wp.array1d(dtype=wp.float32),  # (n_dofs)
-    joint_limit_upper: wp.array1d(dtype=wp.float32),  # (n_dofs)
-    dof_to_coord: wp.array1d(dtype=wp.int32),  # (n_dofs)
+    joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
+    joint_limit_lower: wp.array[wp.float32],  # (n_dofs)
+    joint_limit_upper: wp.array[wp.float32],  # (n_dofs)
+    dof_to_coord: wp.array[wp.int32],  # (n_dofs)
     n_dofs: int,
     weight: float,
     start_idx: int,
     # outputs
-    residuals: wp.array2d(dtype=wp.float32),  # (n_batch, n_residuals)
+    residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
 ):
     problem, dof_idx = wp.tid()
     coord_idx = dof_to_coord[dof_idx]
@@ -440,11 +527,11 @@ def _limit_residuals(
 
 @wp.kernel
 def _limit_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+    q_grad: wp.array2d[wp.float32],  # (n_batch, n_dofs)
     n_dofs: int,
     start_idx: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),
+    jacobian: wp.array3d[wp.float32],
 ):
     problem_idx, dof_idx = wp.tid()
 
@@ -453,15 +540,15 @@ def _limit_jac_fill(
 
 @wp.kernel
 def _limit_jac_analytic(
-    joint_q: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-    joint_limit_lower: wp.array1d(dtype=wp.float32),  # (n_dofs)
-    joint_limit_upper: wp.array1d(dtype=wp.float32),  # (n_dofs)
-    dof_to_coord: wp.array1d(dtype=wp.int32),  # (n_dofs)
+    joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
+    joint_limit_lower: wp.array[wp.float32],  # (n_dofs)
+    joint_limit_upper: wp.array[wp.float32],  # (n_dofs)
+    dof_to_coord: wp.array[wp.int32],  # (n_dofs)
     n_dofs: int,
     start_idx: int,
     weight: float,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     problem, dof_idx = wp.tid()
     coord_idx = dof_to_coord[dof_idx]
@@ -486,21 +573,27 @@ def _limit_jac_analytic(
 
 
 class IKObjectiveJointLimit(IKObjective):
-    """
-    Joint limit constraint objective.
+    """Penalize violations of per-DoF joint limits.
+
+    Each DoF contributes one residual row whose value is zero inside the valid
+    range and increases linearly once the coordinate exceeds its lower or upper
+    bound.
 
     Args:
-        joint_limit_lower (wp.array(dtype=float)): Lower bounds for each joint DoF.
-        joint_limit_upper (wp.array(dtype=float)): Upper bounds for each joint DoF.
-        weight (float, optional): Scalar weight for limit violation penalty. Defaults to 0.1.
+        joint_limit_lower: Lower joint limits [m or rad], shape
+            [joint_dof_count].
+        joint_limit_upper: Upper joint limits [m or rad], shape
+            [joint_dof_count].
+        weight: Scalar multiplier applied to each limit-violation residual
+            row.
     """
 
     def __init__(
         self,
-        joint_limit_lower,
-        joint_limit_upper,
-        weight=0.1,
-    ):
+        joint_limit_lower: wp.array[wp.float32],
+        joint_limit_upper: wp.array[wp.float32],
+        weight: float = 0.1,
+    ) -> None:
         super().__init__()
         self.joint_limit_lower = joint_limit_lower
         self.joint_limit_upper = joint_limit_upper
@@ -511,7 +604,13 @@ class IKObjectiveJointLimit(IKObjective):
 
         self.dof_to_coord = None
 
-    def init_buffers(self, model, jacobian_mode):
+    def init_buffers(self, model: Model, jacobian_mode: IKJacobianType) -> None:
+        """Initialize autodiff seeds and the DoF-to-coordinate lookup table.
+
+        Args:
+            model: Shared articulation model.
+            jacobian_mode: Jacobian backend selected for this objective.
+        """
         self._require_batch_layout()
         if jacobian_mode == IKJacobianType.AUTODIFF:
             e = np.zeros((self.n_batch, self.total_residuals), dtype=np.float32)
@@ -532,13 +631,40 @@ class IKObjectiveJointLimit(IKObjective):
                 dof_to_coord_np[dof0 + k] = coord0 + k
         self.dof_to_coord = wp.array(dof_to_coord_np, dtype=wp.int32, device=self.device)
 
-    def supports_analytic(self):
+    def supports_analytic(self) -> bool:
+        """Return ``True`` because this objective has an analytic Jacobian."""
         return True
 
-    def residual_dim(self):
+    def residual_dim(self) -> int:
+        """Return one residual row per joint DoF."""
         return self.n_dofs
 
-    def compute_residuals(self, body_q, joint_q, model, residuals, start_idx, problem_idx):
+    def compute_residuals(
+        self,
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
+        model: Model,
+        residuals: wp.array2d[wp.float32],
+        start_idx: int,
+        problem_idx: wp.array[wp.int32],
+    ) -> None:
+        """Write weighted joint-limit violations into the global residual buffer.
+
+        Args:
+            body_q: Batched body transforms, shape [n_batch, body_count].
+                Present for interface compatibility and not used directly by
+                this objective.
+            joint_q: Batched joint coordinates for the evaluation rows, shape
+                [n_batch, joint_coord_count].
+            model: Shared articulation model. Present for interface
+                compatibility.
+            residuals: Global residual buffer to update,
+                shape [n_batch, total_residual_count].
+            start_idx: First residual row reserved for this objective.
+            problem_idx: Mapping from evaluation rows to base problems, shape
+                [n_batch]. Ignored because joint limits are shared across all
+                problems.
+        """
         count = joint_q.shape[0]
         wp.launch(
             _limit_residuals,
@@ -556,7 +682,26 @@ class IKObjectiveJointLimit(IKObjective):
             device=self.device,
         )
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
+    def compute_jacobian_autodiff(
+        self,
+        tape: wp.Tape,
+        model: Model,
+        jacobian: wp.array3d[wp.float32],
+        start_idx: int,
+        dq_dof: wp.array2d[wp.float32],
+    ) -> None:
+        """Fill the limit Jacobian block using Warp autodiff.
+
+        Args:
+            tape: Recorded Warp tape whose output is the global residual
+                buffer.
+            model: Shared articulation model.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            start_idx: First residual row reserved for this objective.
+            dq_dof: Differentiable joint update variable for the current
+                batch, shape [n_batch, joint_dof_count].
+        """
         self._require_batch_layout()
         tape.backward(grads={tape.outputs[0]: self.e_array})
 
@@ -574,7 +719,31 @@ class IKObjectiveJointLimit(IKObjective):
             device=self.device,
         )
 
-    def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
+    def compute_jacobian_analytic(
+        self,
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
+        model: Model,
+        jacobian: wp.array3d[wp.float32],
+        joint_S_s: wp.array2d[wp.spatial_vector],
+        start_idx: int,
+    ) -> None:
+        """Fill the limit Jacobian block with the piecewise-linear derivative.
+
+        Args:
+            body_q: Batched body transforms, shape [n_batch, body_count].
+                Present for interface compatibility and not used directly by
+                this objective.
+            joint_q: Batched joint coordinates for the evaluation rows, shape
+                [n_batch, joint_coord_count].
+            model: Shared articulation model.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            joint_S_s: Batched motion-subspace columns, shape [n_batch, joint_dof_count].
+                Ignored because the joint-limit derivative is diagonal in
+                joint coordinates.
+            start_idx: First residual row reserved for this objective.
+        """
         count = joint_q.shape[0]
         wp.launch(
             _limit_jac_analytic,
@@ -595,16 +764,16 @@ class IKObjectiveJointLimit(IKObjective):
 
 @wp.kernel
 def _rot_residuals(
-    body_q: wp.array2d(dtype=wp.transform),  # (n_batch, n_bodies)
-    target_rot: wp.array1d(dtype=wp.vec4),  # (n_problems)
+    body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+    target_rot: wp.array[wp.vec4],  # (n_problems)
     link_index: int,
     link_offset_rotation: wp.quat,
     canonicalize_quat_err: wp.bool,
     start_idx: int,
     weight: float,
-    problem_idx_map: wp.array1d(dtype=wp.int32),
+    problem_idx_map: wp.array[wp.int32],
     # outputs
-    residuals: wp.array2d(dtype=wp.float32),  # (n_batch, n_residuals)
+    residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
 ):
     row = wp.tid()
     base = problem_idx_map[row]
@@ -641,12 +810,12 @@ def _rot_residuals(
 
 @wp.kernel
 def _rot_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+    q_grad: wp.array2d[wp.float32],  # (n_batch, n_dofs)
     n_dofs: int,
     start_idx: int,
     component: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     problem_idx = wp.tid()
 
@@ -661,16 +830,16 @@ def _update_rotation_target(
     problem_idx: int,
     new_rotation: wp.vec4,
     # outputs
-    target_array: wp.array1d(dtype=wp.vec4),  # (n_problems)
+    target_array: wp.array[wp.vec4],  # (n_problems)
 ):
     target_array[problem_idx] = new_rotation
 
 
 @wp.kernel
 def _update_rotation_targets(
-    new_rotation: wp.array1d(dtype=wp.vec4),  # (n_problems)
+    new_rotation: wp.array[wp.vec4],  # (n_problems)
     # outputs
-    target_array: wp.array1d(dtype=wp.vec4),  # (n_problems)
+    target_array: wp.array[wp.vec4],  # (n_problems)
 ):
     problem_idx = wp.tid()
     target_array[problem_idx] = new_rotation[problem_idx]
@@ -678,13 +847,13 @@ def _update_rotation_targets(
 
 @wp.kernel
 def _rot_jac_analytic(
-    affects_dof: wp.array1d(dtype=wp.uint8),  # (n_dofs)
-    joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_batch, n_dofs)
+    affects_dof: wp.array[wp.uint8],  # (n_dofs)
+    joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_dofs)
     start_idx: int,  # first residual row for this objective
     n_dofs: int,  # width of the global Jacobian
     weight: float,
     # output
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     # one thread per (problem, dof)
     problem_idx, dof_idx = wp.tid()
@@ -704,27 +873,27 @@ def _rot_jac_analytic(
 
 
 class IKObjectiveRotation(IKObjective):
-    """
-    End-effector rotational target for one link.
+    """Match the world-space orientation of a link frame.
 
     Args:
-        link_index (int): Body index whose frame defines the end-effector.
-        link_offset_rotation (wp.quat): Rotation offset from the body frame (local coordinates).
-        target_rotations (wp.array(dtype=wp.vec4)): One target quaternion per problem (stored as vec4).
-        canonicalize_quat_err (bool, optional): If True, the error quaternion is flipped so its scalar part is non-negative,
-            yielding the short-arc residual in SO(3). When False, the quaternion is used exactly as computed, preserving any
-            sign convention from the forward kinematics. Defaults to True.
-        weight (float, optional): Scalar weight multiplying both residual and Jacobian rows. Defaults to 1.0.
+        link_index: Body index whose frame defines the constrained link.
+        link_offset_rotation: Local rotation from the body frame to the
+            constrained frame, stored in ``(x, y, z, w)`` order.
+        target_rotations: Target orientations, shape [problem_count]. Each
+            quaternion is stored in ``(x, y, z, w)`` order.
+        canonicalize_quat_err: If ``True``, flip equivalent quaternions so the
+            residual follows the short rotational arc.
+        weight: Scalar multiplier applied to the residual and Jacobian rows.
     """
 
     def __init__(
         self,
-        link_index,
-        link_offset_rotation,
-        target_rotations,
-        canonicalize_quat_err=True,
-        weight=1.0,
-    ):
+        link_index: int,
+        link_offset_rotation: wp.quat,
+        target_rotations: wp.array[wp.vec4],
+        canonicalize_quat_err: bool = True,
+        weight: float = 1.0,
+    ) -> None:
         super().__init__()
         self.link_index = link_index
         self.link_offset_rotation = link_offset_rotation
@@ -735,8 +904,13 @@ class IKObjectiveRotation(IKObjective):
         self.affects_dof = None
         self.e_arrays = None
 
-    def init_buffers(self, model, jacobian_mode):
-        """Precompute lookup tables for analytic jacobian computation."""
+    def init_buffers(self, model: Model, jacobian_mode: IKJacobianType) -> None:
+        """Initialize caches used by analytic or autodiff Jacobian evaluation.
+
+        Args:
+            model: Shared articulation model.
+            jacobian_mode: Jacobian backend selected for this objective.
+        """
         self._require_batch_layout()
         if jacobian_mode == IKJacobianType.ANALYTIC:
             joint_qd_start_np = model.joint_qd_start.numpy()
@@ -771,10 +945,18 @@ class IKObjectiveRotation(IKObjective):
                     e[prob_idx, self.residual_offset + component] = 1.0
                 self.e_arrays.append(wp.array(e.flatten(), dtype=wp.float32, device=self.device))
 
-    def supports_analytic(self):
+    def supports_analytic(self) -> bool:
+        """Return ``True`` because this objective has an analytic Jacobian."""
         return True
 
-    def set_target_rotation(self, problem_idx, new_rotation):
+    def set_target_rotation(self, problem_idx: int, new_rotation: wp.vec4) -> None:
+        """Update the target orientation for a single base IK problem.
+
+        Args:
+            problem_idx: Base problem index to update.
+            new_rotation: Replacement target quaternion in ``(x, y, z, w)``
+                order.
+        """
         self._require_batch_layout()
         wp.launch(
             _update_rotation_target,
@@ -784,7 +966,13 @@ class IKObjectiveRotation(IKObjective):
             device=self.device,
         )
 
-    def set_target_rotations(self, new_rotations):
+    def set_target_rotations(self, new_rotations: wp.array[wp.vec4]) -> None:
+        """Replace the target orientations for all base IK problems.
+
+        Args:
+            new_rotations: Target quaternions, shape [problem_count], in
+                ``(x, y, z, w)`` order.
+        """
         self._require_batch_layout()
         expected = self.target_rotations.shape[0]
         if new_rotations.shape[0] != expected:
@@ -797,10 +985,35 @@ class IKObjectiveRotation(IKObjective):
             device=self.device,
         )
 
-    def residual_dim(self):
+    def residual_dim(self) -> int:
+        """Return the three rotational residual rows for this objective."""
         return 3
 
-    def compute_residuals(self, body_q, joint_q, model, residuals, start_idx, problem_idx):
+    def compute_residuals(
+        self,
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
+        model: Model,
+        residuals: wp.array2d[wp.float32],
+        start_idx: int,
+        problem_idx: wp.array[wp.int32],
+    ) -> None:
+        """Write weighted orientation errors into the global residual buffer.
+
+        Args:
+            body_q: Batched body transforms for the evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates, shape [n_batch, joint_coord_count].
+                Present for interface compatibility and not used directly by
+                this objective.
+            model: Shared articulation model. Present for interface
+                compatibility.
+            residuals: Global residual buffer to update,
+                shape [n_batch, total_residual_count].
+            start_idx: First residual row reserved for this objective.
+            problem_idx: Mapping from evaluation rows to base problem
+                indices, shape [n_batch], used to fetch ``target_rotations``.
+        """
         count = body_q.shape[0]
         wp.launch(
             _rot_residuals,
@@ -819,7 +1032,26 @@ class IKObjectiveRotation(IKObjective):
             device=self.device,
         )
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
+    def compute_jacobian_autodiff(
+        self,
+        tape: wp.Tape,
+        model: Model,
+        jacobian: wp.array3d[wp.float32],
+        start_idx: int,
+        dq_dof: wp.array2d[wp.float32],
+    ) -> None:
+        """Fill the rotation Jacobian block using Warp autodiff.
+
+        Args:
+            tape: Recorded Warp tape whose output is the global residual
+                buffer.
+            model: Shared articulation model.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            start_idx: First residual row reserved for this objective.
+            dq_dof: Differentiable joint update variable for the current
+                batch, shape [n_batch, joint_dof_count].
+        """
         self._require_batch_layout()
         for component in range(3):
             tape.backward(grads={tape.outputs[0]: self.e_arrays[component].flatten()})
@@ -845,7 +1077,30 @@ class IKObjectiveRotation(IKObjective):
 
             tape.zero()
 
-    def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
+    def compute_jacobian_analytic(
+        self,
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
+        model: Model,
+        jacobian: wp.array3d[wp.float32],
+        joint_S_s: wp.array2d[wp.spatial_vector],
+        start_idx: int,
+    ) -> None:
+        """Fill the rotation Jacobian block from the analytic motion subspace.
+
+        Args:
+            body_q: Batched body transforms for the evaluation rows,
+                shape [n_batch, body_count].
+            joint_q: Batched joint coordinates, shape [n_batch, joint_coord_count].
+                Present for interface compatibility and not used directly by
+                this objective.
+            model: Shared articulation model.
+            jacobian: Global Jacobian buffer to update,
+                shape [n_batch, total_residual_count, joint_dof_count].
+            joint_S_s: Batched motion-subspace columns,
+                shape [n_batch, joint_dof_count].
+            start_idx: First residual row reserved for this objective.
+        """
         n_dofs = model.joint_dof_count
 
         wp.launch(

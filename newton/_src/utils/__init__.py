@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from typing import Any
 
@@ -73,8 +61,8 @@ def compute_world_offsets(world_count: int, spacing: tuple[float, float, float],
                 d0 = i // side_length
                 d1 = i % side_length
                 offset = np.zeros(3)
-                offset[nonzeros[0]] = d0 * spacing[nonzeros[0]]
-                offset[nonzeros[1]] = d1 * spacing[nonzeros[1]]
+                offset[nonzeros[0]] = d1 * spacing[nonzeros[0]]
+                offset[nonzeros[1]] = d0 * spacing[nonzeros[1]]
                 spacings.append(offset)
         elif num_dim == 3:
             for i in range(world_count):
@@ -82,9 +70,9 @@ def compute_world_offsets(world_count: int, spacing: tuple[float, float, float],
                 d1 = (i // side_length) % side_length
                 d2 = i % side_length
                 offset = np.zeros(3)
-                offset[0] = d0 * spacing[0]
+                offset[0] = d2 * spacing[0]
                 offset[1] = d1 * spacing[1]
-                offset[2] = d2 * spacing[2]
+                offset[2] = d0 * spacing[2]
                 spacings.append(offset)
 
         spacings = np.array(spacings, dtype=np.float32)

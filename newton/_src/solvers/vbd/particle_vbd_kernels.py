@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Particle/soft-body VBD helper routines.
 
@@ -87,17 +75,17 @@ class ParticleForceElementAdjacencyInfo:
     vertex_adjacent_[element]_offsets[i+1]-vertex_adjacent_[element]_offsets[i].
     """
 
-    v_adj_faces: wp.array(dtype=int)
-    v_adj_faces_offsets: wp.array(dtype=int)
+    v_adj_faces: wp.array[int]
+    v_adj_faces_offsets: wp.array[int]
 
-    v_adj_edges: wp.array(dtype=int)
-    v_adj_edges_offsets: wp.array(dtype=int)
+    v_adj_edges: wp.array[int]
+    v_adj_edges_offsets: wp.array[int]
 
-    v_adj_springs: wp.array(dtype=int)
-    v_adj_springs_offsets: wp.array(dtype=int)
+    v_adj_springs: wp.array[int]
+    v_adj_springs_offsets: wp.array[int]
 
-    v_adj_tets: wp.array(dtype=int)
-    v_adj_tets_offsets: wp.array(dtype=int)
+    v_adj_tets: wp.array[int]
+    v_adj_tets_offsets: wp.array[int]
 
     def to(self, device):
         if device == self.v_adj_faces.device:
@@ -255,9 +243,9 @@ def damp_force_and_hessian(
 # def evaluate_volumetric_neo_hookean_force_and_hessian(
 #     tet_id: int,
 #     v_order: int,
-#     pos_prev: wp.array(dtype=wp.vec3),
-#     pos: wp.array(dtype=wp.vec3),
-#     tet_indices: wp.array(dtype=wp.int32, ndim=2),
+#     pos_prev: wp.array[wp.vec3],
+#     pos: wp.array[wp.vec3],
+#     tet_indices: wp.array2d[wp.int32],
 #     Dm_inv: wp.mat33,
 #     mu: float,
 #     lmbd: float,
@@ -347,9 +335,9 @@ def damp_force_and_hessian(
 def evaluate_volumetric_neo_hookean_force_and_hessian(
     tet_id: int,
     v_order: int,
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
     Dm_inv: wp.mat33,
     mu: float,
     lmbd: float,
@@ -643,9 +631,7 @@ def compute_cofactor_derivative(F: wp.mat33, scale: float) -> mat99:
 
 
 @wp.kernel
-def _count_num_adjacent_edges(
-    edges_array: wp.array(dtype=wp.int32, ndim=2), num_vertex_adjacent_edges: wp.array(dtype=wp.int32)
-):
+def _count_num_adjacent_edges(edges_array: wp.array2d[wp.int32], num_vertex_adjacent_edges: wp.array[wp.int32]):
     for edge_id in range(edges_array.shape[0]):
         o0 = edges_array[edge_id, 0]
         o1 = edges_array[edge_id, 1]
@@ -664,10 +650,10 @@ def _count_num_adjacent_edges(
 
 @wp.kernel
 def _fill_adjacent_edges(
-    edges_array: wp.array(dtype=wp.int32, ndim=2),
-    vertex_adjacent_edges_offsets: wp.array(dtype=wp.int32),
-    vertex_adjacent_edges_fill_count: wp.array(dtype=wp.int32),
-    vertex_adjacent_edges: wp.array(dtype=wp.int32),
+    edges_array: wp.array2d[wp.int32],
+    vertex_adjacent_edges_offsets: wp.array[wp.int32],
+    vertex_adjacent_edges_fill_count: wp.array[wp.int32],
+    vertex_adjacent_edges: wp.array[wp.int32],
 ):
     for edge_id in range(edges_array.shape[0]):
         v0 = edges_array[edge_id, 2]
@@ -703,9 +689,7 @@ def _fill_adjacent_edges(
 
 
 @wp.kernel
-def _count_num_adjacent_faces(
-    face_indices: wp.array(dtype=wp.int32, ndim=2), num_vertex_adjacent_faces: wp.array(dtype=wp.int32)
-):
+def _count_num_adjacent_faces(face_indices: wp.array2d[wp.int32], num_vertex_adjacent_faces: wp.array[wp.int32]):
     for face in range(face_indices.shape[0]):
         v0 = face_indices[face, 0]
         v1 = face_indices[face, 1]
@@ -718,10 +702,10 @@ def _count_num_adjacent_faces(
 
 @wp.kernel
 def _fill_adjacent_faces(
-    face_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_adjacent_faces_offsets: wp.array(dtype=wp.int32),
-    vertex_adjacent_faces_fill_count: wp.array(dtype=wp.int32),
-    vertex_adjacent_faces: wp.array(dtype=wp.int32),
+    face_indices: wp.array2d[wp.int32],
+    vertex_adjacent_faces_offsets: wp.array[wp.int32],
+    vertex_adjacent_faces_fill_count: wp.array[wp.int32],
+    vertex_adjacent_faces: wp.array[wp.int32],
 ):
     for face in range(face_indices.shape[0]):
         v0 = face_indices[face, 0]
@@ -748,9 +732,7 @@ def _fill_adjacent_faces(
 
 
 @wp.kernel
-def _count_num_adjacent_springs(
-    springs_array: wp.array(dtype=wp.int32), num_vertex_adjacent_springs: wp.array(dtype=wp.int32)
-):
+def _count_num_adjacent_springs(springs_array: wp.array[wp.int32], num_vertex_adjacent_springs: wp.array[wp.int32]):
     num_springs = springs_array.shape[0] / 2
     for spring_id in range(num_springs):
         v0 = springs_array[spring_id * 2]
@@ -762,10 +744,10 @@ def _count_num_adjacent_springs(
 
 @wp.kernel
 def _fill_adjacent_springs(
-    springs_array: wp.array(dtype=wp.int32),
-    vertex_adjacent_springs_offsets: wp.array(dtype=wp.int32),
-    vertex_adjacent_springs_fill_count: wp.array(dtype=wp.int32),
-    vertex_adjacent_springs: wp.array(dtype=wp.int32),
+    springs_array: wp.array[wp.int32],
+    vertex_adjacent_springs_offsets: wp.array[wp.int32],
+    vertex_adjacent_springs_fill_count: wp.array[wp.int32],
+    vertex_adjacent_springs: wp.array[wp.int32],
 ):
     num_springs = springs_array.shape[0] / 2
     for spring_id in range(num_springs):
@@ -784,9 +766,7 @@ def _fill_adjacent_springs(
 
 
 @wp.kernel
-def _count_num_adjacent_tets(
-    tet_indices: wp.array(dtype=wp.int32, ndim=2), num_vertex_adjacent_tets: wp.array(dtype=wp.int32)
-):
+def _count_num_adjacent_tets(tet_indices: wp.array2d[wp.int32], num_vertex_adjacent_tets: wp.array[wp.int32]):
     for tet in range(tet_indices.shape[0]):
         v0 = tet_indices[tet, 0]
         v1 = tet_indices[tet, 1]
@@ -801,10 +781,10 @@ def _count_num_adjacent_tets(
 
 @wp.kernel
 def _fill_adjacent_tets(
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_adjacent_tets_offsets: wp.array(dtype=wp.int32),
-    vertex_adjacent_tets_fill_count: wp.array(dtype=wp.int32),
-    vertex_adjacent_tets: wp.array(dtype=wp.int32),
+    tet_indices: wp.array2d[wp.int32],
+    vertex_adjacent_tets_offsets: wp.array[wp.int32],
+    vertex_adjacent_tets_fill_count: wp.array[wp.int32],
+    vertex_adjacent_tets: wp.array[wp.int32],
 ):
     for tet in range(tet_indices.shape[0]):
         v0 = tet_indices[tet, 0]
@@ -840,8 +820,8 @@ def _fill_adjacent_tets(
 @wp.kernel
 def _test_compute_force_element_adjacency(
     adjacency: ParticleForceElementAdjacencyInfo,
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    face_indices: wp.array(dtype=wp.int32, ndim=2),
+    edge_indices: wp.array2d[wp.int32],
+    face_indices: wp.array2d[wp.int32],
 ):
     wp.printf("num vertices: %d\n", adjacency.v_adj_edges_offsets.shape[0] - 1)
     for vertex in range(adjacency.v_adj_edges_offsets.shape[0] - 1):
@@ -880,9 +860,9 @@ def _test_compute_force_element_adjacency(
 def evaluate_stvk_force_hessian(
     face: int,
     v_order: int,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     tri_pose: wp.mat22,
     area: float,
     mu: float,
@@ -1075,11 +1055,11 @@ def compute_angle_derivative(
 def evaluate_dihedral_angle_based_bending_force_hessian(
     bending_index: int,
     v_order: int,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_rest_angle: wp.array(dtype=float),
-    edge_rest_length: wp.array(dtype=float),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angle: wp.array[float],
+    edge_rest_length: wp.array[float],
     stiffness: float,
     damping: float,
     dt: float,
@@ -1219,10 +1199,19 @@ def evaluate_self_contact_force_norm(dis: float, collision_radius: float, k: flo
 
     # C2 continuity calculation
     tau = collision_radius * 0.5
-    if tau > dis > 1e-5:
-        k2 = 0.5 * tau * tau * k
+    d_min = 1.0e-5
+    if tau > dis > d_min:
+        # Log-barrier region: E ∝ -ln(dis)
+        k2 = tau * tau * k
         dEdD = -k2 / dis
         d2E_dDdD = k2 / (dis * dis)
+    elif dis <= d_min:
+        # Quadratic extension below d_min (Taylor of the log-barrier at d_min)
+        # preserving C2 continuity: constant Hessian, linear gradient
+        k2 = tau * tau * k
+        d_min_sq = d_min * d_min
+        dEdD = k2 * (dis - 2.0 * d_min) / d_min_sq
+        d2E_dDdD = k2 / d_min_sq
     else:
         dEdD = -k * penetration_depth
         d2E_dDdD = k
@@ -1252,9 +1241,9 @@ def evaluate_edge_edge_contact(
     v_order: int,
     e1: int,
     e2: int,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
     collision_radius: float,
     collision_stiffness: float,
     collision_damping: float,
@@ -1380,9 +1369,9 @@ def evaluate_edge_edge_contact(
 def evaluate_edge_edge_contact_2_vertices(
     e1: int,
     e2: int,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
     collision_radius: float,
     collision_stiffness: float,
     collision_damping: float,
@@ -1519,9 +1508,9 @@ def evaluate_vertex_triangle_collision_force_hessian(
     v: int,
     v_order: int,
     tri: int,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     collision_radius: float,
     collision_stiffness: float,
     collision_damping: float,
@@ -1608,9 +1597,9 @@ def evaluate_vertex_triangle_collision_force_hessian(
 def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
     v: int,
     tri: int,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     collision_radius: float,
     collision_stiffness: float,
     collision_damping: float,
@@ -1790,15 +1779,15 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 @wp.kernel
 def forward_step(
     dt: float,
-    gravity: wp.array(dtype=wp.vec3),
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
-    inv_mass: wp.array(dtype=float),
-    external_force: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    inertia_out: wp.array(dtype=wp.vec3),
-    displacements_out: wp.array(dtype=wp.vec3),
+    gravity: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    vel: wp.array[wp.vec3],
+    inv_mass: wp.array[float],
+    external_force: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    inertia_out: wp.array[wp.vec3],
+    displacements_out: wp.array[wp.vec3],
 ):
     particle = wp.tid()
 
@@ -1823,7 +1812,7 @@ def compute_particle_conservative_bound(
     adjacency: ParticleForceElementAdjacencyInfo,
     collision_info: TriMeshCollisionInfo,
     # outputs
-    particle_conservative_bounds: wp.array(dtype=float),
+    particle_conservative_bounds: wp.array[float],
 ):
     particle_index = wp.tid()
     min_dist = wp.min(collision_query_radius, collision_info.vertex_colliding_triangles_min_dist[particle_index])
@@ -1864,9 +1853,9 @@ def compute_particle_conservative_bound(
 
 @wp.kernel
 def validate_conservative_bound(
-    pos: wp.array(dtype=wp.vec3),
-    pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-    particle_conservative_bounds: wp.array(dtype=float),
+    pos: wp.array[wp.vec3],
+    pos_prev_collision_detection: wp.array[wp.vec3],
+    particle_conservative_bounds: wp.array[float],
 ):
     v_index = wp.tid()
 
@@ -1886,8 +1875,8 @@ def validate_conservative_bound(
 def apply_conservative_bound_truncation(
     v_index: wp.int32,
     pos_new: wp.vec3,
-    pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-    particle_conservative_bounds: wp.array(dtype=float),
+    pos_prev_collision_detection: wp.array[wp.vec3],
+    particle_conservative_bounds: wp.array[float],
 ):
     particle_pos_prev_collision_detection = pos_prev_collision_detection[v_index]
     accumulated_displacement = pos_new - particle_pos_prev_collision_detection
@@ -1906,9 +1895,7 @@ def apply_conservative_bound_truncation(
 
 
 @wp.kernel
-def update_velocity(
-    dt: float, pos_prev: wp.array(dtype=wp.vec3), pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3)
-):
+def update_velocity(dt: float, pos_prev: wp.array[wp.vec3], pos: wp.array[wp.vec3], vel: wp.array[wp.vec3]):
     particle = wp.tid()
     vel[particle] = (pos[particle] - pos_prev[particle]) / dt
 
@@ -1917,12 +1904,12 @@ def update_velocity(
 def convert_body_particle_contact_data_kernel(
     # inputs
     body_particle_contact_buffer_pre_alloc: int,
-    soft_contact_particle: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
+    soft_contact_particle: wp.array[int],
+    contact_count: wp.array[int],
     contact_max: int,
     # outputs
-    body_particle_contact_buffer: wp.array(dtype=int),
-    body_particle_contact_count: wp.array(dtype=int),
+    body_particle_contact_buffer: wp.array[int],
+    body_particle_contact_count: wp.array[int],
 ):
     contact_index = wp.tid()
     count = min(contact_max, contact_count[0])
@@ -1942,13 +1929,13 @@ def accumulate_self_contact_force_and_hessian(
     # inputs
     dt: float,
     current_color: int,
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    particle_colors: wp.array(dtype=int),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    tri_indices: wp.array2d[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
     # self contact
-    collision_info_array: wp.array(dtype=TriMeshCollisionInfo),
+    collision_info_array: wp.array[TriMeshCollisionInfo],
     collision_radius: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
@@ -1956,8 +1943,8 @@ def accumulate_self_contact_force_and_hessian(
     friction_epsilon: float,
     edge_edge_parallel_epsilon: float,
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
     collision_info = collision_info_array[0]
@@ -2270,12 +2257,12 @@ def evaluate_spring_force_and_hessian(
     particle_idx: int,
     spring_idx: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    spring_indices: wp.array(dtype=int),
-    spring_rest_length: wp.array(dtype=float),
-    spring_stiffness: wp.array(dtype=float),
-    spring_damping: wp.array(dtype=float),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
 ):
     v0 = spring_indices[spring_idx * 2]
     v1 = spring_indices[spring_idx * 2 + 1]
@@ -2309,12 +2296,12 @@ def evaluate_spring_force_and_hessian(
 def evaluate_spring_force_and_hessian_both_vertices(
     spring_idx: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    spring_indices: wp.array(dtype=int),
-    spring_rest_length: wp.array(dtype=float),
-    spring_stiffness: wp.array(dtype=float),
-    spring_damping: wp.array(dtype=float),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
 ):
     """Evaluate spring force and hessian for both vertices of a spring.
 
@@ -2358,18 +2345,18 @@ def accumulate_spring_force_and_hessian(
     # inputs
     dt: float,
     current_color: int,
-    pos_anchor: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    particle_colors: wp.array(dtype=int),
+    pos_anchor: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
     num_springs: int,
     # spring constraints
-    spring_indices: wp.array(dtype=int),
-    spring_rest_length: wp.array(dtype=float),
-    spring_stiffness: wp.array(dtype=float),
-    spring_damping: wp.array(dtype=float),
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     """Accumulate spring forces and hessians, parallelized by springs.
 
@@ -2412,32 +2399,32 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     # inputs
     dt: float,
     current_color: int,
-    pos_anchor: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    particle_colors: wp.array(dtype=int),
+    pos_anchor: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
     # body-particle contact
     friction_epsilon: float,
-    particle_radius: wp.array(dtype=float),
-    body_particle_contact_particle: wp.array(dtype=int),
-    body_particle_contact_count: wp.array(dtype=int),
+    particle_radius: wp.array[float],
+    body_particle_contact_particle: wp.array[int],
+    body_particle_contact_count: wp.array[int],
     body_particle_contact_max: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
-    body_particle_contact_penalty_k: wp.array(dtype=float),
-    body_particle_contact_material_kd: wp.array(dtype=float),
-    body_particle_contact_material_mu: wp.array(dtype=float),
-    shape_material_mu: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    contact_shape: wp.array(dtype=int),
-    contact_body_pos: wp.array(dtype=wp.vec3),
-    contact_body_vel: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
 
@@ -2755,14 +2742,14 @@ def planar_truncation_t(
 @wp.kernel
 def apply_planar_truncation_parallel_by_collision(
     # inputs
-    pos: wp.array(dtype=wp.vec3),
-    displacement_in: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    collision_info_array: wp.array(dtype=TriMeshCollisionInfo),
+    pos: wp.array[wp.vec3],
+    displacement_in: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
+    collision_info_array: wp.array[TriMeshCollisionInfo],
     parallel_eps: float,
     gamma: float,
-    truncation_t_out: wp.array(dtype=float),
+    truncation_t_out: wp.array[float],
 ):
     t_id = wp.tid()
     collision_info = collision_info_array[0]
@@ -2887,12 +2874,12 @@ def apply_planar_truncation_parallel_by_collision(
 
 @wp.kernel
 def apply_truncation_ts(
-    pos: wp.array(dtype=wp.vec3),
-    displacement_in: wp.array(dtype=wp.vec3),
-    truncation_ts: wp.array(dtype=float),
+    pos: wp.array[wp.vec3],
+    displacement_in: wp.array[wp.vec3],
+    truncation_ts: wp.array[float],
     max_displacement: float,
-    displacement_out: wp.array(dtype=wp.vec3),
-    pos_out: wp.array(dtype=wp.vec3),
+    displacement_out: wp.array[wp.vec3],
+    pos_out: wp.array[wp.vec3],
 ):
     i = wp.tid()
     t = truncation_ts[i]
@@ -2913,32 +2900,32 @@ def accumulate_particle_body_contact_force_and_hessian(
     # inputs
     dt: float,
     current_color: int,
-    pos_anchor: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    particle_colors: wp.array(dtype=int),
+    pos_anchor: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
     # body-particle contact
     friction_epsilon: float,
-    particle_radius: wp.array(dtype=float),
-    body_particle_contact_particle: wp.array(dtype=int),
-    body_particle_contact_count: wp.array(dtype=int),
+    particle_radius: wp.array[float],
+    body_particle_contact_particle: wp.array[int],
+    body_particle_contact_count: wp.array[int],
     body_particle_contact_max: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
-    body_particle_contact_penalty_k: wp.array(dtype=float),
-    body_particle_contact_material_kd: wp.array(dtype=float),
-    body_particle_contact_material_mu: wp.array(dtype=float),
-    shape_material_mu: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    contact_shape: wp.array(dtype=int),
-    contact_body_pos: wp.array(dtype=wp.vec3),
-    contact_body_vel: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
 
@@ -2982,28 +2969,28 @@ def accumulate_particle_body_contact_force_and_hessian(
 @wp.kernel
 def solve_elasticity_tile(
     dt: float,
-    particle_ids_in_color: wp.array(dtype=wp.int32),
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    mass: wp.array(dtype=float),
-    inertia: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    tri_poses: wp.array(dtype=wp.mat22),
-    tri_materials: wp.array(dtype=float, ndim=2),
-    tri_areas: wp.array(dtype=float),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_rest_angles: wp.array(dtype=float),
-    edge_rest_length: wp.array(dtype=float),
-    edge_bending_properties: wp.array(dtype=float, ndim=2),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    particle_ids_in_color: wp.array[wp.int32],
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    mass: wp.array[float],
+    inertia: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_materials: wp.array2d[float],
+    tri_areas: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angles: wp.array[float],
+    edge_rest_length: wp.array[float],
+    edge_bending_properties: wp.array2d[float],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     particle_adjacency: ParticleForceElementAdjacencyInfo,
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
     # output
-    particle_displacements: wp.array(dtype=wp.vec3),
+    particle_displacements: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     block_idx = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
@@ -3147,28 +3134,28 @@ def solve_elasticity_tile(
 @wp.kernel
 def solve_elasticity(
     dt: float,
-    particle_ids_in_color: wp.array(dtype=wp.int32),
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    mass: wp.array(dtype=float),
-    inertia: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    tri_poses: wp.array(dtype=wp.mat22),
-    tri_materials: wp.array(dtype=float, ndim=2),
-    tri_areas: wp.array(dtype=float),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_rest_angles: wp.array(dtype=float),
-    edge_rest_length: wp.array(dtype=float),
-    edge_bending_properties: wp.array(dtype=float, ndim=2),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    particle_ids_in_color: wp.array[wp.int32],
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    mass: wp.array[float],
+    inertia: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_materials: wp.array2d[float],
+    tri_areas: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angles: wp.array[float],
+    edge_rest_length: wp.array[float],
+    edge_bending_properties: wp.array2d[float],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     particle_adjacency: ParticleForceElementAdjacencyInfo,
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
     # output
-    particle_displacements: wp.array(dtype=wp.vec3),
+    particle_displacements: wp.array[wp.vec3],
 ):
     t_id = wp.tid()
 
@@ -3290,13 +3277,13 @@ def accumulate_contact_force_and_hessian(
     # inputs
     dt: float,
     current_color: int,
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    particle_colors: wp.array(dtype=int),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    tri_indices: wp.array2d[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
     # self contact
-    collision_info_array: wp.array(dtype=TriMeshCollisionInfo),
+    collision_info_array: wp.array[TriMeshCollisionInfo],
     collision_radius: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
@@ -3304,23 +3291,23 @@ def accumulate_contact_force_and_hessian(
     friction_epsilon: float,
     edge_edge_parallel_epsilon: float,
     # body-particle contact
-    particle_radius: wp.array(dtype=float),
-    soft_contact_particle: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
+    particle_radius: wp.array[float],
+    soft_contact_particle: wp.array[int],
+    contact_count: wp.array[int],
     contact_max: int,
-    shape_material_mu: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    contact_shape: wp.array(dtype=int),
-    contact_body_pos: wp.array(dtype=wp.vec3),
-    contact_body_vel: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
     collision_info = collision_info_array[0]

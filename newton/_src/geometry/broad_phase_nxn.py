@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """NxN (all-pairs) broad phase collision detection.
 
@@ -37,16 +25,16 @@ from .broad_phase_common import (
 )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _nxn_broadphase_precomputed_pairs(
     # Input arrays
-    shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
-    shape_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    shape_gap: wp.array(dtype=float, ndim=1),  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    nxn_shape_pair: wp.array(dtype=wp.vec2i, ndim=1),
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    nxn_shape_pair: wp.array[wp.vec2i],
     # Output arrays
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     elementid = wp.tid()
@@ -103,7 +91,7 @@ def _get_lower_triangular_indices(index: int, matrix_size: int) -> tuple[int, in
 @wp.func
 def _find_world_and_local_id(
     tid: int,
-    world_cumsum_lower_tri: wp.array(dtype=int, ndim=1),
+    world_cumsum_lower_tri: wp.array[int],
 ):
     """Binary search to find world ID and local ID from thread ID.
 
@@ -138,23 +126,23 @@ def _find_world_and_local_id(
     return world_id, local_id
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _nxn_broadphase_kernel(
     # Input arrays
-    shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
-    shape_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    shape_gap: wp.array(dtype=float, ndim=1),  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    collision_group: wp.array(dtype=int, ndim=1),  # per-shape
-    shape_world: wp.array(dtype=int, ndim=1),  # per-shape world indices
-    world_cumsum_lower_tri: wp.array(dtype=int, ndim=1),  # Cumulative sum of lower tri elements per world
-    world_slice_ends: wp.array(dtype=int, ndim=1),  # End indices of each world slice
-    world_index_map: wp.array(dtype=int, ndim=1),  # Index map into source geometry
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    collision_group: wp.array[int],  # per-shape
+    shape_world: wp.array[int],  # per-shape world indices
+    world_cumsum_lower_tri: wp.array[int],  # Cumulative sum of lower tri elements per world
+    world_slice_ends: wp.array[int],  # End indices of each world slice
+    world_index_map: wp.array[int],  # Index map into source geometry
     num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
-    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    filter_pairs: wp.array[wp.vec2i],  # Sorted excluded pairs (empty if none)
     num_filter_pairs: int,
     # Output arrays
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     tid = wp.tid()
@@ -244,8 +232,8 @@ class BroadPhaseAllPairs:
 
     def __init__(
         self,
-        shape_world: wp.array(dtype=wp.int32, ndim=1) | np.ndarray,
-        shape_flags: wp.array(dtype=wp.int32, ndim=1) | np.ndarray | None = None,
+        shape_world: wp.array[wp.int32] | np.ndarray,
+        shape_flags: wp.array[wp.int32] | np.ndarray | None = None,
         device: Devicelike | None = None,
     ) -> None:
         """Initialize the broad phase with world ID information.
@@ -316,17 +304,17 @@ class BroadPhaseAllPairs:
 
     def launch(
         self,
-        shape_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of shape bounding boxes
-        shape_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of shape bounding boxes
-        shape_gap: wp.array(dtype=float, ndim=1) | None,  # Optional per-shape effective gaps
-        shape_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        shape_world: wp.array(dtype=int, ndim=1),  # World index per box
+        shape_lower: wp.array[wp.vec3],  # Lower bounds of shape bounding boxes
+        shape_upper: wp.array[wp.vec3],  # Upper bounds of shape bounding boxes
+        shape_gap: wp.array[float] | None,  # Optional per-shape effective gaps
+        shape_collision_group: wp.array[int],  # Collision group ID per box
+        shape_world: wp.array[int],  # World index per box
         shape_count: int,  # Number of active bounding boxes
         # Outputs
-        candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
-        candidate_pair_count: wp.array(dtype=int, ndim=1),
+        candidate_pair: wp.array[wp.vec2i],  # Array to store overlapping shape pairs
+        candidate_pair_count: wp.array[int],
         device: Devicelike | None = None,  # Device to launch on
-        filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
+        filter_pairs: wp.array[wp.vec2i] | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
     ) -> None:
         """Launch the N x N broad phase collision detection.
@@ -393,6 +381,7 @@ class BroadPhaseAllPairs:
             ],
             outputs=[candidate_pair, candidate_pair_count, max_candidate_pair],
             device=device,
+            record_tape=False,
         )
 
 
@@ -412,14 +401,14 @@ class BroadPhaseExplicit:
 
     def launch(
         self,
-        shape_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of shape bounding boxes
-        shape_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of shape bounding boxes
-        shape_gap: wp.array(dtype=float, ndim=1) | None,  # Optional per-shape effective gaps
-        shape_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Precomputed pairs to check
+        shape_lower: wp.array[wp.vec3],  # Lower bounds of shape bounding boxes
+        shape_upper: wp.array[wp.vec3],  # Upper bounds of shape bounding boxes
+        shape_gap: wp.array[float] | None,  # Optional per-shape effective gaps
+        shape_pairs: wp.array[wp.vec2i],  # Precomputed pairs to check
         shape_pair_count: int,
         # Outputs
-        candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
-        candidate_pair_count: wp.array(dtype=int, ndim=1),
+        candidate_pair: wp.array[wp.vec2i],  # Array to store overlapping shape pairs
+        candidate_pair_count: wp.array[int],
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
         """Launch the explicit pairs broad phase collision detection.
@@ -467,4 +456,5 @@ class BroadPhaseExplicit:
                 max_candidate_pair,
             ],
             device=device,
+            record_tape=False,
         )

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
@@ -22,7 +10,7 @@ from ..core.types import Axis, AxisType
 def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float = 1.0e-8) -> wp.quat:
     """Robustly compute the quaternion that rotates ``from_vec`` to ``to_vec``.
 
-    This is a safer version of :func:`warp.quat_between_vectors` that handles the
+    This is a safer version of :obj:`warp.quat_between_vectors() <warp.quat_between_vectors>` that handles the
     anti-parallel (180-degree) singularity by selecting a deterministic axis
     orthogonal to ``from_vec``.
 
@@ -69,7 +57,7 @@ def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3) -> wp.vec3:
     In Newton, spatial twist vectors are stored as
     :math:`q_d = (v, \\omega)`, where :math:`v` is linear velocity and
     :math:`\\omega` is angular velocity. Warp's
-    :func:`wp.velocity_at_point` uses :math:`(\\omega, v)` ordering, so this
+    :func:`warp.velocity_at_point() <warp._src.lang.velocity_at_point>` uses :math:`(\\omega, v)` ordering, so this
     wrapper converts the layout before calling Warp.
 
     The kinematic relation is:
@@ -163,7 +151,7 @@ def _wrap_angle_pm_pi(theta: float) -> float:
 def quat_decompose(q: wp.quat) -> wp.vec3:
     """Decompose a quaternion into wrapped XYZ Euler coordinates.
 
-    This wrapper calls :func:`wp.quat_to_euler` with the Newton convention
+    This wrapper calls :func:`warp.quat_to_euler() <warp._src.lang.quat_to_euler>` with the Newton convention
     :math:`(i, j, k) = (2, 1, 0)`, then wraps each angle to the principal
     branch. Wrapping avoids equivalent representations that differ by
     :math:`2\\pi`,

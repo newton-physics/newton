@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import numpy as np
 import warp as wp
@@ -31,25 +19,25 @@ from ...sim import Model
 class TriMeshCollisionInfo:
     # size: 2 x sum(vertex_colliding_triangles_buffer_sizes)
     # every two elements records the vertex index and a triangle index it collides to
-    vertex_colliding_triangles: wp.array(dtype=wp.int32)
-    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32)
-    vertex_colliding_triangles_buffer_sizes: wp.array(dtype=wp.int32)
-    vertex_colliding_triangles_count: wp.array(dtype=wp.int32)
-    vertex_colliding_triangles_min_dist: wp.array(dtype=float)
+    vertex_colliding_triangles: wp.array[wp.int32]
+    vertex_colliding_triangles_offsets: wp.array[wp.int32]
+    vertex_colliding_triangles_buffer_sizes: wp.array[wp.int32]
+    vertex_colliding_triangles_count: wp.array[wp.int32]
+    vertex_colliding_triangles_min_dist: wp.array[float]
 
-    triangle_colliding_vertices: wp.array(dtype=wp.int32)
-    triangle_colliding_vertices_offsets: wp.array(dtype=wp.int32)
-    triangle_colliding_vertices_buffer_sizes: wp.array(dtype=wp.int32)
-    triangle_colliding_vertices_count: wp.array(dtype=wp.int32)
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float)
+    triangle_colliding_vertices: wp.array[wp.int32]
+    triangle_colliding_vertices_offsets: wp.array[wp.int32]
+    triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32]
+    triangle_colliding_vertices_count: wp.array[wp.int32]
+    triangle_colliding_vertices_min_dist: wp.array[float]
 
     # size: 2 x sum(edge_colliding_edges_buffer_sizes)
     # every two elements records the edge index and an edge index it collides to
-    edge_colliding_edges: wp.array(dtype=wp.int32)
-    edge_colliding_edges_offsets: wp.array(dtype=wp.int32)
-    edge_colliding_edges_buffer_sizes: wp.array(dtype=wp.int32)
-    edge_colliding_edges_count: wp.array(dtype=wp.int32)
-    edge_colliding_edges_min_dist: wp.array(dtype=float)
+    edge_colliding_edges: wp.array[wp.int32]
+    edge_colliding_edges_offsets: wp.array[wp.int32]
+    edge_colliding_edges_buffer_sizes: wp.array[wp.int32]
+    edge_colliding_edges_count: wp.array[wp.int32]
+    edge_colliding_edges_min_dist: wp.array[float]
 
 
 @wp.func
@@ -284,9 +272,7 @@ class TriMeshCollisionDetector:
 
         return collision_info
 
-    def compute_collision_buffer_offsets(
-        self, buffer_sizes: wp.array(dtype=wp.int32), offsets: wp.array(dtype=wp.int32)
-    ):
+    def compute_collision_buffer_offsets(self, buffer_sizes: wp.array[wp.int32], offsets: wp.array[wp.int32]):
         assert offsets.size == buffer_sizes.size + 1
         offsets_np = np.empty(shape=(offsets.size,), dtype=np.int32)
         offsets_np[1:] = np.cumsum(buffer_sizes.numpy())[:]

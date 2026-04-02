@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
@@ -61,7 +49,7 @@ class Collision:
         self.edge_bvh.build(model.particle_q, self.model.edge_indices, self.radius)
         self.tri_bvh.build(model.particle_q, self.model.tri_indices, self.radius)
 
-    def rebuild_bvh(self, pos: wp.array(dtype=wp.vec3)):
+    def rebuild_bvh(self, pos: wp.array[wp.vec3]):
         """
         Rebuild triangle and edge BVHs.
 
@@ -71,7 +59,7 @@ class Collision:
         self.tri_bvh.rebuild(pos, self.model.tri_indices, self.radius)
         self.edge_bvh.rebuild(pos, self.model.edge_indices, self.radius)
 
-    def refit_bvh(self, pos: wp.array(dtype=wp.vec3)):
+    def refit_bvh(self, pos: wp.array[wp.vec3]):
         """
         Refit (update) triangle and edge BVHs based on new positions without changing topology.
 
@@ -81,7 +69,7 @@ class Collision:
         self.tri_bvh.refit(pos, self.model.tri_indices, self.radius)
         self.edge_bvh.refit(pos, self.model.edge_indices, self.radius)
 
-    def frame_begin(self, particle_q: wp.array(dtype=wp.vec3), particle_qd: wp.array(dtype=wp.vec3), dt: float):
+    def frame_begin(self, particle_q: wp.array[wp.vec3], particle_qd: wp.array[wp.vec3], dt: float):
         """
         Perform broad-phase collision detection using BVHs.
 
@@ -137,9 +125,9 @@ class Collision:
         state_in: State,
         state_out: State,
         contacts: Contacts,
-        particle_forces: wp.array(dtype=wp.vec3),
-        particle_q_prev: wp.array(dtype=wp.vec3),
-        particle_stiff: wp.array(dtype=wp.vec3) = None,
+        particle_forces: wp.array[wp.vec3],
+        particle_q_prev: wp.array[wp.vec3],
+        particle_stiff: wp.array[wp.vec3] = None,
     ):
         """
         Evaluates contact forces and the diagonal of the Hessian for implicit time integration.
@@ -246,15 +234,15 @@ class Collision:
         """
         return self.contact_hessian_diags
 
-    def hessian_multiply(self, x: wp.array(dtype=wp.vec3)):
+    def hessian_multiply(self, x: wp.array[wp.vec3]):
         """Computes the Hessian-vector product for implicit integration."""
 
         @wp.kernel
         def hessian_multiply_kernel(
-            hessian_diags: wp.array(dtype=wp.mat33),
-            x: wp.array(dtype=wp.vec3),
+            hessian_diags: wp.array[wp.mat33],
+            x: wp.array[wp.vec3],
             # outputs
-            Hx: wp.array(dtype=wp.vec3),
+            Hx: wp.array[wp.vec3],
         ):
             tid = wp.tid()
             Hx[tid] = hessian_diags[tid] * x[tid]
@@ -268,10 +256,10 @@ class Collision:
         )
         return self.Hx
 
-    def linear_iteration_end(self, dx: wp.array(dtype=wp.vec3)):
+    def linear_iteration_end(self, dx: wp.array[wp.vec3]):
         """Displacement constraints"""
         pass
 
-    def frame_end(self, pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3), dt: float):
+    def frame_end(self, pos: wp.array[wp.vec3], vel: wp.array[wp.vec3], dt: float):
         """Apply post-processing"""
         pass

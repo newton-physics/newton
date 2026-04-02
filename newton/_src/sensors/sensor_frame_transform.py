@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Frame Transform Sensor - measures transforms relative to sites."""
 
@@ -25,12 +13,12 @@ from ..utils.selection import match_labels
 
 @wp.kernel
 def compute_shape_transforms_kernel(
-    shapes: wp.array(dtype=int),
-    shape_body: wp.array(dtype=int),
-    shape_transform: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
+    shapes: wp.array[int],
+    shape_body: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     # output
-    world_transforms: wp.array(dtype=wp.transform),
+    world_transforms: wp.array[wp.transform],
 ):
     """Compute world transforms for a list of shape indices.
 
@@ -57,11 +45,11 @@ def compute_shape_transforms_kernel(
 
 @wp.kernel
 def compute_relative_transforms_kernel(
-    all_shape_transforms: wp.array(dtype=wp.transform),
-    shapes: wp.array(dtype=int),
-    reference_sites: wp.array(dtype=int),
+    all_shape_transforms: wp.array[wp.transform],
+    shapes: wp.array[int],
+    reference_sites: wp.array[int],
     # output
-    relative_transforms: wp.array(dtype=wp.transform),
+    relative_transforms: wp.array[wp.transform],
 ):
     """Compute relative transforms expressing object poses in reference frame coordinates.
 

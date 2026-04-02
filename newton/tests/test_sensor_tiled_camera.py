@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import math
 import os
@@ -31,27 +19,29 @@ class TestSensorTiledCamera(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # add ground plane
-        builder.add_ground_plane()
+        builder.add_ground_plane(color=(0.91749084, 0.798277, 0.64443165))
 
         # SPHERE
         sphere_pos = wp.vec3(0.0, -2.0, 0.5)
         body_sphere = builder.add_body(xform=wp.transform(p=sphere_pos, q=wp.quat_identity()), label="sphere")
-        builder.add_shape_sphere(body_sphere, radius=0.5)
+        builder.add_shape_sphere(body_sphere, radius=0.5, color=(0.5214758, 0.9868272, 0.79823583))
 
         # CAPSULE
         capsule_pos = wp.vec3(0.0, 0.0, 0.75)
         body_capsule = builder.add_body(xform=wp.transform(p=capsule_pos, q=wp.quat_identity()), label="capsule")
-        builder.add_shape_capsule(body_capsule, radius=0.25, half_height=0.5)
+        builder.add_shape_capsule(body_capsule, radius=0.25, half_height=0.5, color=(0.8951316, 0.9551697, 0.8440772))
 
         # CYLINDER
         cylinder_pos = wp.vec3(0.0, -4.0, 0.5)
         body_cylinder = builder.add_body(xform=wp.transform(p=cylinder_pos, q=wp.quat_identity()), label="cylinder")
-        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.5)
+        builder.add_shape_cylinder(
+            body_cylinder, radius=0.4, half_height=0.5, color=(0.59499574, 0.99073946, 0.64237005)
+        )
 
         # BOX
         box_pos = wp.vec3(0.0, 2.0, 0.5)
         body_box = builder.add_body(xform=wp.transform(p=box_pos, q=wp.quat_identity()), label="box")
-        builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5)
+        builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5, color=(0.8146366, 0.7905182, 0.79995614))
 
         # MESH (bunny)
         bunny_filename = os.path.join(os.path.dirname(__file__), "..", "examples", "assets", "bunny.usd")
@@ -66,7 +56,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         mesh_pos = wp.vec3(0.0, 4.0, 0.0)
         body_mesh = builder.add_body(xform=wp.transform(p=mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), label="mesh")
-        builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
+        builder.add_shape_mesh(body_mesh, mesh=demo_mesh, color=(0.7676241, 0.99788857, 0.75097305))
 
         return builder.finalize()
 
@@ -108,15 +98,13 @@ class TestSensorTiledCamera(unittest.TestCase):
             [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
         )
 
-        tiled_camera_sensor = SensorTiledCamera(
-            model=model,
-            config=SensorTiledCamera.Config(
-                default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
-            ),
-        )
-        camera_rays = tiled_camera_sensor.compute_pinhole_camera_rays(width, height, math.radians(45.0))
-        color_image = tiled_camera_sensor.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, camera_count)
+        tiled_camera_sensor = SensorTiledCamera(model=model)
+        tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
+        tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
+
+        camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
+        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
+        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
 
         tiled_camera_sensor.update(
             model.state(), camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
@@ -145,34 +133,34 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
 
         tiled_camera_sensor = SensorTiledCamera(model=model)
-        camera_rays = tiled_camera_sensor.compute_pinhole_camera_rays(width, height, math.radians(45.0))
+        camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
 
-        color_image = tiled_camera_sensor.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, camera_count)
+        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
+        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
         tiled_camera_sensor.update(
             model.state(), camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
         )
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 
-        color_image = tiled_camera_sensor.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, camera_count)
+        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
+        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
         tiled_camera_sensor.update(
             model.state(), camera_transforms, camera_rays, color_image=color_image, depth_image=None
         )
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 
-        color_image = tiled_camera_sensor.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, camera_count)
+        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
+        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
         tiled_camera_sensor.update(
             model.state(), camera_transforms, camera_rays, color_image=None, depth_image=depth_image
         )
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 
-        color_image = tiled_camera_sensor.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, camera_count)
+        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
+        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
         tiled_camera_sensor.update(model.state(), camera_transforms, camera_rays, color_image=None, depth_image=None)
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")

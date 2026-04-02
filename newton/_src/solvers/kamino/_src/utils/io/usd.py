@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Provides mechanisms to import OpenUSD Physics models."""
 
@@ -23,7 +11,6 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ......core.types import nparray
 from ......geometry.flags import ShapeFlags
 from ......usd import utils as usd_utils
 from ......utils.topology import topological_sort_undirected
@@ -302,7 +289,7 @@ class USDImporter:
         return wp.quat_from_matrix(R_g)
 
     @staticmethod
-    def _make_faces_from_counts(indices: nparray, counts: Iterable[int], prim_path: str) -> nparray:
+    def _make_faces_from_counts(indices: np.ndarray, counts: Iterable[int], prim_path: str) -> np.ndarray:
         faces = []
         face_id = 0
         for count in counts:
@@ -396,7 +383,7 @@ class USDImporter:
     def _from_gfquat(gfquat) -> wp.quatf:
         return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
 
-    def _parse_quat(self, prim, name, default=None) -> nparray | None:
+    def _parse_quat(self, prim, name, default=None) -> np.ndarray | None:
         attr = self._get_attribute(prim, name)
         if not attr or not attr.HasAuthoredValue():
             return default
@@ -410,7 +397,7 @@ class USDImporter:
             return quat
         return default
 
-    def _parse_vec(self, prim, name, default=None) -> nparray | None:
+    def _parse_vec(self, prim, name, default=None) -> np.ndarray | None:
         attr = self._get_attribute(prim, name)
         if not attr or not attr.HasAuthoredValue():
             return default
@@ -1387,7 +1374,7 @@ class USDImporter:
             axis = Axis.from_string(capsule.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
             i_T_ig = transformf(i_r_ig, i_q_ig)
-            shape = CapsuleShape(radius=radius, height=height)
+            shape = CapsuleShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Capsule_1:
             raise NotImplementedError("Capsule1 UsdGeom is not yet supported.")
@@ -1399,11 +1386,11 @@ class USDImporter:
             axis = Axis.from_string(cone.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
             i_T_ig = transformf(i_r_ig, i_q_ig)
-            shape = ConeShape(radius=radius, height=height)
+            shape = ConeShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Cube:
             d, w, h = 2.0 * distance_unit * scale
-            shape = BoxShape(depth=d, width=w, height=h)
+            shape = BoxShape(hx=0.5 * d, hy=0.5 * w, hz=0.5 * h)
 
         elif geom_type == self.UsdGeom.Cylinder:
             cylinder = self.UsdGeom.Cylinder(geom_prim)
@@ -1412,7 +1399,7 @@ class USDImporter:
             axis = Axis.from_string(cylinder.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
             i_T_ig = transformf(i_r_ig, i_q_ig)
-            shape = CylinderShape(radius=radius, height=height)
+            shape = CylinderShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Cylinder_1:
             raise NotImplementedError("Cylinder1 UsdGeom is not yet supported.")
@@ -1565,22 +1552,31 @@ class USDImporter:
         is_mesh_shape = False
         if geom_type == self.UsdPhysics.ObjectType.CapsuleShape:
             # TODO: axis = geom_spec.axis, how can we use this?
-            shape = CapsuleShape(radius=geom_spec.radius, height=2.0 * geom_spec.halfHeight)
+            shape = CapsuleShape(
+                radius=distance_unit * geom_spec.radius,
+                half_height=distance_unit * geom_spec.halfHeight,
+            )
 
         elif geom_type == self.UsdPhysics.ObjectType.Capsule1Shape:
             raise NotImplementedError("Capsule1Shape is not yet supported.")
 
         elif geom_type == self.UsdPhysics.ObjectType.ConeShape:
             # TODO: axis = geom_spec.axis, how can we use this?
-            shape = ConeShape(radius=geom_spec.radius, height=2.0 * geom_spec.halfHeight)
+            shape = ConeShape(
+                radius=distance_unit * geom_spec.radius,
+                half_height=distance_unit * geom_spec.halfHeight,
+            )
 
         elif geom_type == self.UsdPhysics.ObjectType.CubeShape:
-            d, w, h = 2.0 * distance_unit * vec3f(geom_spec.halfExtents)
-            shape = BoxShape(depth=d, width=w, height=h)
+            he = distance_unit * vec3f(geom_spec.halfExtents)
+            shape = BoxShape(hx=he[0], hy=he[1], hz=he[2])
 
         elif geom_type == self.UsdPhysics.ObjectType.CylinderShape:
             # TODO: axis = geom_spec.axis, how can we use this?
-            shape = CylinderShape(radius=geom_spec.radius, height=2.0 * geom_spec.halfHeight)
+            shape = CylinderShape(
+                radius=distance_unit * geom_spec.radius,
+                half_height=distance_unit * geom_spec.halfHeight,
+            )
 
         elif geom_type == self.UsdPhysics.ObjectType.Cylinder1Shape:
             raise NotImplementedError("Cylinder1Shape is not yet supported.")

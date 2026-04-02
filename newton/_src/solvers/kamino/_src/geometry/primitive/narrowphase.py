@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Provides a narrow-phase Collision Detection (CD) backend optimized for geometric primitives.
@@ -39,10 +27,10 @@ from ......geometry.collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
+from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.materials import make_get_material_pair_properties
 from ...core.model import ModelKamino
-from ...core.shapes import ShapeType
 from ...core.types import (
     float32,
     int32,
@@ -81,19 +69,19 @@ wp.set_module_options({"enable_backward": False})
 ###
 
 
-PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS: list[tuple[ShapeType, ShapeType]] = [
-    (ShapeType.BOX, ShapeType.BOX),
-    (ShapeType.CAPSULE, ShapeType.BOX),
-    (ShapeType.CAPSULE, ShapeType.CAPSULE),
-    (ShapeType.PLANE, ShapeType.BOX),
-    (ShapeType.PLANE, ShapeType.CAPSULE),
-    (ShapeType.PLANE, ShapeType.CYLINDER),
-    (ShapeType.PLANE, ShapeType.ELLIPSOID),
-    (ShapeType.PLANE, ShapeType.SPHERE),
-    (ShapeType.SPHERE, ShapeType.BOX),
-    (ShapeType.SPHERE, ShapeType.CAPSULE),
-    (ShapeType.SPHERE, ShapeType.CYLINDER),
-    (ShapeType.SPHERE, ShapeType.SPHERE),
+PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS: list[tuple[GeoType, GeoType]] = [
+    (GeoType.BOX, GeoType.BOX),
+    (GeoType.CAPSULE, GeoType.BOX),
+    (GeoType.CAPSULE, GeoType.CAPSULE),
+    (GeoType.PLANE, GeoType.BOX),
+    (GeoType.PLANE, GeoType.CAPSULE),
+    (GeoType.PLANE, GeoType.CYLINDER),
+    (GeoType.PLANE, GeoType.ELLIPSOID),
+    (GeoType.PLANE, GeoType.SPHERE),
+    (GeoType.SPHERE, GeoType.BOX),
+    (GeoType.SPHERE, GeoType.CAPSULE),
+    (GeoType.SPHERE, GeoType.CYLINDER),
+    (GeoType.SPHERE, GeoType.SPHERE),
 ]
 """
 List of primitive shape combinations supported by the primitive narrow-phase collider.
@@ -169,7 +157,7 @@ def make_box(pose: transformf, params: vec4f, gid: int32, bid: int32) -> Box:
     box.bid = bid
     box.pos = wp.transform_get_translation(pose)
     box.rot = wp.quat_to_matrix(wp.transform_get_rotation(pose))
-    box.size = vec3f(0.5 * params[0], 0.5 * params[1], 0.5 * params[2])
+    box.size = vec3f(params[0], params[1], params[2])
     return box
 
 
@@ -195,7 +183,7 @@ def make_capsule(pose: transformf, params: vec4f, gid: int32, bid: int32) -> Cap
     # Capsule axis is along the local Z-axis
     capsule.axis = vec3f(rot_mat[0, 2], rot_mat[1, 2], rot_mat[2, 2])
     capsule.radius = params[0]
-    capsule.half_length = params[1] * 0.5
+    capsule.half_length = params[1]
     return capsule
 
 
@@ -210,7 +198,7 @@ def make_cylinder(pose: transformf, params: vec4f, gid: int32, bid: int32) -> Cy
     # Cylinder axis is along the local Z-axis
     cylinder.axis = vec3f(rot_mat[0, 2], rot_mat[1, 2], rot_mat[2, 2])
     cylinder.radius = params[0]
-    cylinder.half_height = params[1] * 0.5
+    cylinder.half_height = params[1]
     return cylinder
 
 
@@ -1446,7 +1434,7 @@ def _primitive_narrowphase(
     )
 
     # TODO(team): static loop unrolling to remove unnecessary branching
-    if sid1 == ShapeType.SPHERE and sid2 == ShapeType.SPHERE:
+    if sid1 == GeoType.SPHERE and sid2 == GeoType.SPHERE:
         sphere_sphere(
             model_max_contacts,
             world_max_contacts,
@@ -1471,7 +1459,7 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.SPHERE and sid2 == ShapeType.CYLINDER:
+    elif sid1 == GeoType.SPHERE and sid2 == GeoType.CYLINDER:
         sphere_cylinder(
             model_max_contacts,
             world_max_contacts,
@@ -1496,10 +1484,10 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.SPHERE and sid2 == ShapeType.CONE:
+    elif sid1 == GeoType.SPHERE and sid2 == GeoType.CONE:
         sphere_cone()
 
-    elif sid1 == ShapeType.SPHERE and sid2 == ShapeType.CAPSULE:
+    elif sid1 == GeoType.SPHERE and sid2 == GeoType.CAPSULE:
         sphere_capsule(
             model_max_contacts,
             world_max_contacts,
@@ -1524,7 +1512,7 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.SPHERE and sid2 == ShapeType.BOX:
+    elif sid1 == GeoType.SPHERE and sid2 == GeoType.BOX:
         sphere_box(
             model_max_contacts,
             world_max_contacts,
@@ -1549,37 +1537,37 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.SPHERE and sid2 == ShapeType.ELLIPSOID:
+    elif sid1 == GeoType.SPHERE and sid2 == GeoType.ELLIPSOID:
         sphere_ellipsoid()
 
-    elif sid1 == ShapeType.CYLINDER and sid2 == ShapeType.CYLINDER:
+    elif sid1 == GeoType.CYLINDER and sid2 == GeoType.CYLINDER:
         cylinder_cylinder()
 
-    elif sid1 == ShapeType.CYLINDER and sid2 == ShapeType.CONE:
+    elif sid1 == GeoType.CYLINDER and sid2 == GeoType.CONE:
         cylinder_cone()
 
-    elif sid1 == ShapeType.CYLINDER and sid2 == ShapeType.CAPSULE:
+    elif sid1 == GeoType.CYLINDER and sid2 == GeoType.CAPSULE:
         cylinder_capsule()
 
-    elif sid1 == ShapeType.CYLINDER and sid2 == ShapeType.BOX:
+    elif sid1 == GeoType.CYLINDER and sid2 == GeoType.BOX:
         cylinder_box()
 
-    elif sid1 == ShapeType.CYLINDER and sid2 == ShapeType.ELLIPSOID:
+    elif sid1 == GeoType.CYLINDER and sid2 == GeoType.ELLIPSOID:
         cylinder_ellipsoid()
 
-    elif sid1 == ShapeType.CONE and sid2 == ShapeType.CONE:
+    elif sid1 == GeoType.CONE and sid2 == GeoType.CONE:
         cone_cone()
 
-    elif sid1 == ShapeType.CONE and sid2 == ShapeType.CAPSULE:
+    elif sid1 == GeoType.CONE and sid2 == GeoType.CAPSULE:
         cone_capsule()
 
-    elif sid1 == ShapeType.CONE and sid2 == ShapeType.BOX:
+    elif sid1 == GeoType.CONE and sid2 == GeoType.BOX:
         cone_box()
 
-    elif sid1 == ShapeType.CONE and sid2 == ShapeType.ELLIPSOID:
+    elif sid1 == GeoType.CONE and sid2 == GeoType.ELLIPSOID:
         cone_ellipsoid()
 
-    elif sid1 == ShapeType.CAPSULE and sid2 == ShapeType.CAPSULE:
+    elif sid1 == GeoType.CAPSULE and sid2 == GeoType.CAPSULE:
         capsule_capsule(
             model_max_contacts,
             world_max_contacts,
@@ -1604,7 +1592,7 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.CAPSULE and sid2 == ShapeType.BOX:
+    elif sid1 == GeoType.CAPSULE and sid2 == GeoType.BOX:
         capsule_box(
             model_max_contacts,
             world_max_contacts,
@@ -1629,10 +1617,10 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.CAPSULE and sid2 == ShapeType.ELLIPSOID:
+    elif sid1 == GeoType.CAPSULE and sid2 == GeoType.ELLIPSOID:
         capsule_ellipsoid()
 
-    elif sid1 == ShapeType.BOX and sid2 == ShapeType.BOX:
+    elif sid1 == GeoType.BOX and sid2 == GeoType.BOX:
         box_box(
             model_max_contacts,
             world_max_contacts,
@@ -1657,14 +1645,14 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.BOX and sid2 == ShapeType.ELLIPSOID:
+    elif sid1 == GeoType.BOX and sid2 == GeoType.ELLIPSOID:
         box_ellipsoid()
 
-    elif sid1 == ShapeType.ELLIPSOID and sid2 == ShapeType.ELLIPSOID:
+    elif sid1 == GeoType.ELLIPSOID and sid2 == GeoType.ELLIPSOID:
         ellipsoid_ellipsoid()
 
     # Plane collisions (plane is always geometry 1, other shapes are geometry 2)
-    elif sid1 == ShapeType.PLANE and sid2 == ShapeType.SPHERE:
+    elif sid1 == GeoType.PLANE and sid2 == GeoType.SPHERE:
         plane_sphere(
             model_max_contacts,
             world_max_contacts,
@@ -1689,7 +1677,7 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.PLANE and sid2 == ShapeType.BOX:
+    elif sid1 == GeoType.PLANE and sid2 == GeoType.BOX:
         plane_box(
             model_max_contacts,
             world_max_contacts,
@@ -1714,7 +1702,7 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.PLANE and sid2 == ShapeType.ELLIPSOID:
+    elif sid1 == GeoType.PLANE and sid2 == GeoType.ELLIPSOID:
         plane_ellipsoid(
             model_max_contacts,
             world_max_contacts,
@@ -1739,7 +1727,7 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.PLANE and sid2 == ShapeType.CAPSULE:
+    elif sid1 == GeoType.PLANE and sid2 == GeoType.CAPSULE:
         plane_capsule(
             model_max_contacts,
             world_max_contacts,
@@ -1764,7 +1752,7 @@ def _primitive_narrowphase(
             contact_key,
         )
 
-    elif sid1 == ShapeType.PLANE and sid2 == ShapeType.CYLINDER:
+    elif sid1 == GeoType.PLANE and sid2 == GeoType.CYLINDER:
         plane_cylinder(
             model_max_contacts,
             world_max_contacts,

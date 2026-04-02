@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Custom attributes tests for ModelBuilder kwargs functionality.
@@ -910,7 +898,7 @@ class TestCustomAttributes(unittest.TestCase):
         )
         sub_builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="shape_color",
+                name="custom_shape_color",
                 frequency=AttributeFrequency.SHAPE,
                 dtype=wp.vec3,
                 assignment=AttributeAssignment.MODEL,
@@ -930,7 +918,7 @@ class TestCustomAttributes(unittest.TestCase):
             mass=1.0,
             custom_attributes={"robot_id": 100, "temperature": 37.5},
         )
-        sub_builder.add_shape_sphere(body1, radius=0.1, custom_attributes={"shape_color": [1.0, 0.0, 0.0]})
+        sub_builder.add_shape_sphere(body1, radius=0.1, custom_attributes={"custom_shape_color": [1.0, 0.0, 0.0]})
 
         body2 = sub_builder.add_link(
             mass=0.5,
@@ -941,7 +929,7 @@ class TestCustomAttributes(unittest.TestCase):
             hx=0.05,
             hy=0.05,
             hz=0.05,
-            custom_attributes={"shape_color": [0.0, 1.0, 0.0]},
+            custom_attributes={"custom_shape_color": [0.0, 1.0, 0.0]},
         )
 
         sub_joint = sub_builder.add_joint_revolute(
@@ -973,14 +961,14 @@ class TestCustomAttributes(unittest.TestCase):
         # Verify custom attributes were merged
         self.assertIn("robot_id", main_builder.custom_attributes)
         self.assertIn("temperature", main_builder.custom_attributes)
-        self.assertIn("shape_color", main_builder.custom_attributes)
+        self.assertIn("custom_shape_color", main_builder.custom_attributes)
         self.assertIn("gain_dof", main_builder.custom_attributes)
 
         # Verify frequencies and assignments
         self.assertEqual(main_builder.custom_attributes["robot_id"].frequency, AttributeFrequency.BODY)
         self.assertEqual(main_builder.custom_attributes["robot_id"].assignment, AttributeAssignment.MODEL)
         self.assertEqual(main_builder.custom_attributes["temperature"].assignment, AttributeAssignment.STATE)
-        self.assertEqual(main_builder.custom_attributes["shape_color"].frequency, AttributeFrequency.SHAPE)
+        self.assertEqual(main_builder.custom_attributes["custom_shape_color"].frequency, AttributeFrequency.SHAPE)
         self.assertEqual(main_builder.custom_attributes["gain_dof"].frequency, AttributeFrequency.JOINT_DOF)
 
         # Build model and verify values
@@ -997,7 +985,7 @@ class TestCustomAttributes(unittest.TestCase):
         np.testing.assert_array_almost_equal(temperatures, [0.0, 0.0, 37.5, 38.0, 37.5, 38.0], decimal=5)
 
         # Verify SHAPE attributes
-        shape_colors = model.shape_color.numpy()
+        shape_colors = model.custom_shape_color.numpy()
 
         np.testing.assert_array_almost_equal(shape_colors[0], [0.0, 0.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[1], [0.0, 0.0, 0.0], decimal=5)

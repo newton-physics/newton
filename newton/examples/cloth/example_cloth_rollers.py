@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Cloth Rollers
@@ -32,7 +20,7 @@ from newton import ParticleFlags
 
 
 @wp.kernel
-def increment_time(time: wp.array(dtype=float), dt: float):
+def increment_time(time: wp.array[float], dt: float):
     """Increment time by dt."""
     time[0] = time[0] + dt
 
@@ -41,12 +29,12 @@ def increment_time(time: wp.array(dtype=float), dt: float):
 def rotate_cylinder(
     angular_speed: float,
     dt: float,
-    time: wp.array(dtype=float),
+    time: wp.array[float],
     center_x: float,
     center_z: float,
-    q0: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int64),
-    q1: wp.array(dtype=wp.vec3),
+    q0: wp.array[wp.vec3],
+    indices: wp.array[wp.int64],
+    q1: wp.array[wp.vec3],
 ):
     """Rotate cylinder vertices around their center axis."""
     i = wp.tid()

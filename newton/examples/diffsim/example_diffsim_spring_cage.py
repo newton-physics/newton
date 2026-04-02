@@ -1,18 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 
 ###########################################################################
 # Example Diffsim Spring Cage
@@ -35,18 +22,18 @@ from newton.utils import bourke_color_map
 
 @wp.kernel
 def compute_loss_kernel(
-    pos: wp.array(dtype=wp.vec3),
+    pos: wp.array[wp.vec3],
     target_pos: wp.vec3,
-    loss: wp.array(dtype=float),
+    loss: wp.array[float],
 ):
     loss[0] = wp.length_sq(pos[0] - target_pos)
 
 
 @wp.kernel()
 def apply_gradient_kernel(
-    spring_rest_lengths_grad: wp.array(dtype=float),
+    spring_rest_lengths_grad: wp.array[float],
     train_rate: float,
-    spring_rest_lengths: wp.array(dtype=float),
+    spring_rest_lengths: wp.array[float],
 ):
     tid = wp.tid()
 

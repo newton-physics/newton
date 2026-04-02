@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Tiled Camera Sensor
@@ -50,13 +38,13 @@ SEMANTIC_COLOR_GROUND_PLANE = 0xFF444444
 @wp.kernel(enable_backward=False)
 def animate_franka(
     time: wp.float32,
-    joint_type: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_limit_lower: wp.array(dtype=wp.float32),
-    joint_limit_upper: wp.array(dtype=wp.float32),
-    joint_q: wp.array(dtype=wp.float32),
+    joint_type: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_limit_lower: wp.array[wp.float32],
+    joint_limit_upper: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
 ):
     tid = wp.tid()
 
@@ -76,9 +64,9 @@ def animate_franka(
 
 @wp.kernel
 def shape_index_to_semantic_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    colors: wp.array(dtype=wp.uint32),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
+    shape_indices: wp.array4d[wp.uint32],
+    colors: wp.array[wp.uint32],
+    rgba: wp.array4d[wp.uint32],
 ):
     world_id, camera_id, y, x = wp.tid()
     shape_index = shape_indices[world_id, camera_id, y, x]
@@ -90,8 +78,8 @@ def shape_index_to_semantic_rgb(
 
 @wp.kernel
 def shape_index_to_random_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
+    shape_indices: wp.array4d[wp.uint32],
+    rgba: wp.array4d[wp.uint32],
 ):
     world_id, camera_id, y, x = wp.tid()
     shape_index = shape_indices[world_id, camera_id, y, x]
@@ -113,6 +101,7 @@ class Example:
 
         self.viewer = viewer
         if isinstance(self.viewer, ViewerGL):
+            self.show_sensor_output = viewer.ui.is_available
             self.viewer.register_ui_callback(self.display, "free")
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
@@ -138,11 +127,14 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, 0.5), q=wp.quat_identity())),
                     radius=0.4,
                     half_height=0.5,
+                    color=(0.27, 0.47, 0.67),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_CYLINDER)
             if rng.random() < 0.5:
                 builder.add_shape_sphere(
-                    builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, -2.0, 0.5), q=wp.quat_identity())), radius=0.5
+                    builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, -2.0, 0.5), q=wp.quat_identity())),
+                    radius=0.5,
+                    color=(0.40, 0.80, 0.93),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_SPHERE)
             if rng.random() < 0.5:
@@ -150,6 +142,7 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(-4.0, 0.0, 0.75), q=wp.quat_identity())),
                     radius=0.25,
                     half_height=0.5,
+                    color=(0.13, 0.53, 0.20),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_CAPSULE)
             if rng.random() < 0.5:
@@ -158,6 +151,7 @@ class Example:
                     hx=0.5,
                     hy=0.35,
                     hz=0.5,
+                    color=(0.80, 0.73, 0.27),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_BOX)
             if rng.random() < 0.5:
@@ -165,6 +159,7 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 4.0, 0.0), q=wp.quat(0.5, 0.5, 0.5, 0.5))),
                     mesh=bunny_mesh,
                     scale=(0.5, 0.5, 0.5),
+                    color=(0.93, 0.40, 0.47),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_MESH)
 
@@ -179,7 +174,7 @@ class Example:
             semantic_colors.extend([SEMANTIC_COLOR_ROBOT] * robot_builder.shape_count)
             builder.end_world()
 
-        builder.add_ground_plane()
+        builder.add_ground_plane(color=(0.6, 0.6, 0.6))
         semantic_colors.append(SEMANTIC_COLOR_GROUND_PLANE)
 
         self.model = builder.finalize()
@@ -197,43 +192,37 @@ class Example:
         self.sensor_render_height = 64
 
         if isinstance(self.viewer, ViewerGL):
-            display_width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
-            display_height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
+            display_width = self.viewer.renderer.window.width - self.ui_side_panel_width - self.ui_padding * 4
+            display_height = self.viewer.renderer.window.height - self.ui_padding * 2
 
             self.sensor_render_width = int(display_width // self.worlds_per_row)
             self.sensor_render_height = int(display_height // self.worlds_per_col)
 
         # Setup Tiled Camera Sensor
-        self.tiled_camera_sensor = SensorTiledCamera(
-            model=self.model,
-            config=SensorTiledCamera.Config(
-                default_light=True,
-                default_light_shadows=True,
-                checkerboard_texture=True,
-                backface_culling=True,
-            ),
-        )
+        self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
+        self.tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
         fov = 45.0
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
+        self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(
             self.sensor_render_width, self.sensor_render_height, math.radians(fov)
         )
-        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output(
+        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output(
+        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output(
+        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.utils.create_normal_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.create_shape_index_image_output(
+        self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.utils.create_shape_index_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.create_albedo_image_output(
+        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.utils.create_albedo_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
         self.depth_range = wp.array([1.0, 100.0], dtype=wp.float32)
@@ -282,7 +271,7 @@ class Example:
         )
         self.update_texture()
 
-    def get_camera_transforms(self) -> wp.array(dtype=wp.transformf):
+    def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
             return wp.array(
                 [
@@ -342,26 +331,26 @@ class Example:
             ),
         )
         if self.image_output == 0:
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_color_image,
                 texture_buffer,
                 self.worlds_per_row,
             )
         elif self.image_output == 1:
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_albedo_image,
                 texture_buffer,
                 self.worlds_per_row,
             )
         elif self.image_output == 2:
-            self.tiled_camera_sensor.flatten_depth_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_depth_image_to_rgba(
                 self.tiled_camera_sensor_depth_image,
                 texture_buffer,
                 self.worlds_per_row,
                 self.depth_range,
             )
         elif self.image_output == 3:
-            self.tiled_camera_sensor.flatten_normal_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_normal_image_to_rgba(
                 self.tiled_camera_sensor_normal_image,
                 texture_buffer,
                 self.worlds_per_row,
@@ -373,7 +362,7 @@ class Example:
                 [self.tiled_camera_sensor_shape_index_image, self.semantic_colors],
                 [self.tiled_camera_sensor_shape_index_image],
             )
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_shape_index_image,
                 texture_buffer,
                 self.worlds_per_row,
@@ -385,7 +374,7 @@ class Example:
                 [self.tiled_camera_sensor_shape_index_image],
                 [self.tiled_camera_sensor_shape_index_image],
             )
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+            self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_shape_index_image,
                 texture_buffer,
                 self.worlds_per_row,
@@ -443,56 +432,45 @@ class Example:
         ui.separator()
         if ui.radio_button(
             "Gaussians: Fast",
-            self.tiled_camera_sensor.render_context.config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
+            self.tiled_camera_sensor.render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
         ):
-            if (
-                self.tiled_camera_sensor.render_context.config.gaussians_mode
-                != SensorTiledCamera.GaussianRenderMode.FAST
-            ):
-                self.tiled_camera_sensor.render_context.config.gaussians_mode = (
-                    SensorTiledCamera.GaussianRenderMode.FAST
-                )
+            if self.tiled_camera_sensor.render_config.gaussians_mode != SensorTiledCamera.GaussianRenderMode.FAST:
+                self.tiled_camera_sensor.render_config.gaussians_mode = SensorTiledCamera.GaussianRenderMode.FAST
                 show_compile_kernel_info = True
 
         if ui.radio_button(
             "Gaussians: Quality",
-            self.tiled_camera_sensor.render_context.config.gaussians_mode
-            == SensorTiledCamera.GaussianRenderMode.QUALITY,
+            self.tiled_camera_sensor.render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.QUALITY,
         ):
-            if (
-                self.tiled_camera_sensor.render_context.config.gaussians_mode
-                != SensorTiledCamera.GaussianRenderMode.QUALITY
-            ):
-                self.tiled_camera_sensor.render_context.config.gaussians_mode = (
-                    SensorTiledCamera.GaussianRenderMode.QUALITY
-                )
+            if self.tiled_camera_sensor.render_config.gaussians_mode != SensorTiledCamera.GaussianRenderMode.QUALITY:
+                self.tiled_camera_sensor.render_config.gaussians_mode = SensorTiledCamera.GaussianRenderMode.QUALITY
                 show_compile_kernel_info = True
 
         changed, value = ui.slider_float(
             "Min Transmittance",
-            self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance,
+            self.tiled_camera_sensor.render_config.gaussians_min_transmittance,
             0.0,
             1.0,
             "%.2f",
         )
         if changed:
-            self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance = value
+            self.tiled_camera_sensor.render_config.gaussians_min_transmittance = value
             show_compile_kernel_info = True
 
         changed, value = ui.slider_int(
             "Max Num Hits",
-            self.tiled_camera_sensor.render_context.config.gaussians_max_num_hits,
+            self.tiled_camera_sensor.render_config.gaussians_max_num_hits,
             1,
             40,
             "%d",
         )
         if changed:
-            self.tiled_camera_sensor.render_context.config.gaussians_max_num_hits = value
+            self.tiled_camera_sensor.render_config.gaussians_max_num_hits = value
             show_compile_kernel_info = True
 
         if show_compile_kernel_info:
-            display_width = self.viewer.ui.io.display_size[0]
-            display_height = self.viewer.ui.io.display_size[1]
+            display_width = self.viewer.renderer.window.width
+            display_height = self.viewer.renderer.window.height
 
             overlay_width = 200
             overlay_height = 100
@@ -522,8 +500,8 @@ class Example:
 
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
 
-        width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
-        height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
+        width = self.viewer.renderer.window.width - self.ui_side_panel_width - self.ui_padding * 4
+        height = self.viewer.renderer.window.height - self.ui_padding * 2
 
         imgui.set_next_window_pos(imgui.ImVec2(0, 0))
         imgui.set_next_window_size(self.viewer.ui.io.display_size)

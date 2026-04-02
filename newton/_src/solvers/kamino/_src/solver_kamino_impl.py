@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Defines the :class:`SolverKaminoImpl` class, providing a physics backend for
@@ -26,7 +14,7 @@ import warp as wp
 
 # Newton imports
 from ....core.types import override
-from ....sim import Contacts
+from ....sim import Contacts, State
 from ...solver import SolverBase
 
 # Kamino imports
@@ -604,11 +592,11 @@ class SolverKaminoImpl(SolverBase):
         self._write_step_output(state_out=state_out)
 
     @override
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         pass  # TODO: Migrate implementation when we fully integrate with Newton
 
     @override
-    def update_contacts(self, contacts: Contacts) -> None:
+    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         pass  # TODO: Migrate implementation when we fully integrate with Newton
 
     @override

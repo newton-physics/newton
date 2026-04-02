@@ -4,6 +4,7 @@
 newton
 ======
 
+.. py:module:: newton
 .. currentmodule:: newton
 
 .. toctree::

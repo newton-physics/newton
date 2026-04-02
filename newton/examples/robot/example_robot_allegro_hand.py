@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot Allegro Hand
@@ -40,15 +28,15 @@ from newton.solvers import SolverNotifyFlags
 
 @wp.kernel
 def move_hand(
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_limit_lower: wp.array(dtype=wp.float32),
-    joint_limit_upper: wp.array(dtype=wp.float32),
-    sim_time: wp.array(dtype=wp.float32),
+    joint_qd_start: wp.array[wp.int32],
+    joint_limit_lower: wp.array[wp.float32],
+    joint_limit_upper: wp.array[wp.float32],
+    sim_time: wp.array[wp.float32],
     sim_dt: float,
     hand_rotation: wp.quat,
     # outputs
-    joint_target_pos: wp.array(dtype=wp.float32),
-    joint_parent_xform: wp.array(dtype=wp.transform),
+    joint_target_pos: wp.array[wp.float32],
+    joint_parent_xform: wp.array[wp.transform],
 ):
     world_id = wp.tid()
     root_joint_id = world_id * 22

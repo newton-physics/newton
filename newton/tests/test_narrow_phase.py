@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Test NarrowPhase collision detection API.
 
@@ -1343,7 +1331,6 @@ class TestNarrowPhase(unittest.TestCase):
             contact_count=contact_count,
             contact_tangent=contact_tangent,
         )
-        wp.synchronize()
         self.assertEqual(contact_count.numpy()[0], 0, "Sphere A outside margin should have no contact")
 
         # Test 2: Sphere A at z=0.15 (inside margin) - contact!
@@ -1378,7 +1365,6 @@ class TestNarrowPhase(unittest.TestCase):
             contact_count=contact_count,
             contact_tangent=contact_tangent,
         )
-        wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere A inside margin should have contact")
 
         # Test 3: Sphere B at z=0.23 (inside its larger margin 0.07) - contact!
@@ -1414,7 +1400,6 @@ class TestNarrowPhase(unittest.TestCase):
             contact_count=contact_count,
             contact_tangent=contact_tangent,
         )
-        wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
 
     def _assert_mesh_mesh_scaled_separated_positive_penetration(self, narrow_phase: NarrowPhase):
@@ -1493,7 +1478,6 @@ class TestNarrowPhase(unittest.TestCase):
                 contact_count=contact_count,
                 contact_tangent=contact_tangent,
             )
-            wp.synchronize()
 
             count = int(contact_count.numpy()[0])
             penetrations = contact_penetration.numpy()[:count]

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import os
 import warnings
@@ -28,10 +16,10 @@ from ..geometry.types import Mesh
 
 @wp.kernel
 def accumulate_vertex_normals(
-    points: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int32),
+    points: wp.array[wp.vec3],
+    indices: wp.array[wp.int32],
     # output
-    normals: wp.array(dtype=wp.vec3),
+    normals: wp.array[wp.vec3],
 ):
     """Accumulate per-face normals into per-vertex normals (not normalized)."""
     face = wp.tid()
@@ -48,7 +36,7 @@ def accumulate_vertex_normals(
 
 
 @wp.kernel
-def normalize_vertex_normals(normals: wp.array(dtype=wp.vec3)):
+def normalize_vertex_normals(normals: wp.array[wp.vec3]):
     """Normalize per-vertex normals in-place."""
     tid = wp.tid()
     normals[tid] = wp.normalize(normals[tid])
@@ -1284,12 +1272,12 @@ def create_mesh_plane(
 
 @wp.kernel
 def solidify_mesh_kernel(
-    indices: wp.array(dtype=int, ndim=2),
-    vertices: wp.array(dtype=wp.vec3, ndim=1),
-    thickness: wp.array(dtype=float, ndim=1),
+    indices: wp.array2d[int],
+    vertices: wp.array[wp.vec3],
+    thickness: wp.array[float],
     # outputs
-    out_vertices: wp.array(dtype=wp.vec3, ndim=1),
-    out_indices: wp.array(dtype=int, ndim=2),
+    out_vertices: wp.array[wp.vec3],
+    out_indices: wp.array2d[int],
 ):
     """Extrude each triangle into a triangular prism (wedge) for solidification.
 

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Rigid body VBD solver kernels and utilities.
@@ -320,7 +308,7 @@ def compute_kappa_dot_analytic(
 @wp.func
 def build_joint_projectors(
     jt: int,
-    joint_axis: wp.array(dtype=wp.vec3),
+    joint_axis: wp.array[wp.vec3],
     qd_start: int,
     lin_count: int,
     ang_count: int,
@@ -629,8 +617,8 @@ class RigidForceElementAdjacencyInfo:
     """
 
     # Rigid body joint adjacency
-    body_adj_joints: wp.array(dtype=wp.int32)
-    body_adj_joints_offsets: wp.array(dtype=wp.int32)
+    body_adj_joints: wp.array[wp.int32]
+    body_adj_joints_offsets: wp.array[wp.int32]
 
     def to(self, device):
         if device == self.body_adj_joints.device:
@@ -660,9 +648,9 @@ def get_body_adjacent_joint_id(adjacency: RigidForceElementAdjacencyInfo, body: 
 def evaluate_rigid_contact_from_collision(
     body_a_index: int,
     body_b_index: int,
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     contact_point_a_local: wp.vec3,
     contact_point_b_local: wp.vec3,
     contact_normal: wp.vec3,
@@ -819,17 +807,17 @@ def evaluate_body_particle_contact(
     body_particle_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
-    particle_radius: wp.array(dtype=float),
-    shape_material_mu: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    contact_shape: wp.array(dtype=int),
-    contact_body_pos: wp.array(dtype=wp.vec3),
-    contact_body_vel: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    particle_radius: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     dt: float,
 ):
     """
@@ -1070,41 +1058,41 @@ def apply_linear_drive_limit_force(
 def evaluate_joint_force_hessian(
     body_index: int,
     joint_index: int,
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_q_rest: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_qd_start: wp.array(dtype=int),
-    joint_constraint_start: wp.array(dtype=int),
-    joint_penalty_k: wp.array(dtype=float),
-    joint_penalty_kd: wp.array(dtype=float),
-    joint_sigma_start: wp.array(dtype=wp.vec3),
-    joint_C_fric: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_q_rest: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_qd_start: wp.array[int],
+    joint_constraint_start: wp.array[int],
+    joint_penalty_k: wp.array[float],
+    joint_penalty_kd: wp.array[float],
+    joint_sigma_start: wp.array[wp.vec3],
+    joint_C_fric: wp.array[wp.vec3],
     # Drive parameters (DOF-indexed via joint_qd_start)
-    joint_target_ke: wp.array(dtype=float),
-    joint_target_kd: wp.array(dtype=float),
-    joint_target_pos: wp.array(dtype=float),
-    joint_target_vel: wp.array(dtype=float),
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    joint_target_pos: wp.array[float],
+    joint_target_vel: wp.array[float],
     # Limit parameters (DOF-indexed via joint_qd_start)
-    joint_limit_lower: wp.array(dtype=float),
-    joint_limit_upper: wp.array(dtype=float),
-    joint_limit_ke: wp.array(dtype=float),
-    joint_limit_kd: wp.array(dtype=float),
-    joint_lambda_lin: wp.array(dtype=wp.vec3),
-    joint_lambda_ang: wp.array(dtype=wp.vec3),
-    joint_C0_lin: wp.array(dtype=wp.vec3),
-    joint_C0_ang: wp.array(dtype=wp.vec3),
-    joint_is_hard: wp.array(dtype=wp.int32),
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
     avbd_alpha: float,
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_rest_angle: wp.array(dtype=float),
+    joint_dof_dim: wp.array2d[int],
+    joint_rest_angle: wp.array[float],
     dt: float,
 ):
     """Compute AVBD joint force and Hessian contributions for one body.
@@ -1794,9 +1782,9 @@ def evaluate_joint_force_hessian(
 # -----------------------------
 @wp.kernel
 def _count_num_adjacent_joints(
-    joint_parent: wp.array(dtype=wp.int32),
-    joint_child: wp.array(dtype=wp.int32),
-    num_body_adjacent_joints: wp.array(dtype=wp.int32),
+    joint_parent: wp.array[wp.int32],
+    joint_child: wp.array[wp.int32],
+    num_body_adjacent_joints: wp.array[wp.int32],
 ):
     joint_count = joint_parent.shape[0]
     for joint_id in range(joint_count):
@@ -1812,11 +1800,11 @@ def _count_num_adjacent_joints(
 
 @wp.kernel
 def _fill_adjacent_joints(
-    joint_parent: wp.array(dtype=wp.int32),
-    joint_child: wp.array(dtype=wp.int32),
-    body_adjacent_joints_offsets: wp.array(dtype=wp.int32),
-    body_adjacent_joints_fill_count: wp.array(dtype=wp.int32),
-    body_adjacent_joints: wp.array(dtype=wp.int32),
+    joint_parent: wp.array[wp.int32],
+    joint_child: wp.array[wp.int32],
+    body_adjacent_joints_offsets: wp.array[wp.int32],
+    body_adjacent_joints_fill_count: wp.array[wp.int32],
+    body_adjacent_joints: wp.array[wp.int32],
 ):
     joint_count = joint_parent.shape[0]
     for joint_id in range(joint_count):
@@ -1845,17 +1833,17 @@ def _fill_adjacent_joints(
 def forward_step_rigid_bodies(
     # Inputs
     dt: float,
-    gravity: wp.array(dtype=wp.vec3),
-    body_world: wp.array(dtype=wp.int32),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inertia: wp.array(dtype=wp.mat33),
-    body_inv_mass: wp.array(dtype=float),
-    body_inv_inertia: wp.array(dtype=wp.mat33),
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_inertia_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    body_f: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_inertia_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
 ):
     """
     Forward integration step for rigid bodies in the AVBD/VBD solver.
@@ -1922,14 +1910,14 @@ def forward_step_rigid_bodies(
 
 @wp.kernel
 def build_body_body_contact_lists(
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    shape_body: wp.array(dtype=wp.int32),
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    shape_body: wp.array[wp.int32],
     body_contact_buffer_pre_alloc: int,
-    body_contact_counts: wp.array(dtype=wp.int32),
-    body_contact_indices: wp.array(dtype=wp.int32),
-    body_contact_overflow_max: wp.array(dtype=wp.int32),
+    body_contact_counts: wp.array[wp.int32],
+    body_contact_indices: wp.array[wp.int32],
+    body_contact_overflow_max: wp.array[wp.int32],
 ):
     """
     Build per-body contact lists for body-centric per-color contact evaluation.
@@ -1961,13 +1949,13 @@ def build_body_body_contact_lists(
 
 @wp.kernel
 def build_body_particle_contact_lists(
-    body_particle_contact_count: wp.array(dtype=int),
-    body_particle_contact_shape: wp.array(dtype=int),
-    shape_body: wp.array(dtype=wp.int32),
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_shape: wp.array[int],
+    shape_body: wp.array[wp.int32],
     body_particle_contact_buffer_pre_alloc: int,
-    body_particle_contact_counts: wp.array(dtype=wp.int32),
-    body_particle_contact_indices: wp.array(dtype=wp.int32),
-    body_particle_contact_overflow_max: wp.array(dtype=wp.int32),
+    body_particle_contact_counts: wp.array[wp.int32],
+    body_particle_contact_indices: wp.array[wp.int32],
+    body_particle_contact_overflow_max: wp.array[wp.int32],
 ):
     """
     Build per-body contact lists for body-particle contacts.
@@ -1992,7 +1980,7 @@ def build_body_particle_contact_lists(
 
 @wp.kernel
 def check_contact_overflow(
-    overflow_max: wp.array(dtype=wp.int32),
+    overflow_max: wp.array[wp.int32],
     buffer_size: int,
     contact_type: int,
 ):
@@ -2015,21 +2003,21 @@ def check_contact_overflow(
 
 @wp.kernel
 def init_joint_avbd(
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_rest: wp.array(dtype=wp.transform),
-    joint_constraint_start: wp.array(dtype=wp.int32),
-    joint_constraint_dim: wp.array(dtype=wp.int32),
-    joint_is_hard: wp.array(dtype=wp.int32),
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_q_rest: wp.array[wp.transform],
+    joint_constraint_start: wp.array[wp.int32],
+    joint_constraint_dim: wp.array[wp.int32],
+    joint_is_hard: wp.array[wp.int32],
     gamma: float,
-    joint_C0_lin: wp.array(dtype=wp.vec3),
-    joint_C0_ang: wp.array(dtype=wp.vec3),
-    joint_lambda_lin: wp.array(dtype=wp.vec3),
-    joint_lambda_ang: wp.array(dtype=wp.vec3),
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
 ):
     """Per-step joint AVBD maintenance: C0 snapshot + lambda decay.
 
@@ -2093,16 +2081,16 @@ def init_joint_avbd(
 
 @wp.kernel
 def init_body_body_contacts(
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    shape_material_ke: wp.array(dtype=float),
-    shape_material_kd: wp.array(dtype=float),
-    shape_material_mu: wp.array(dtype=float),
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_material_mu: wp.array[float],
     # Outputs
-    contact_penalty_k: wp.array(dtype=float),
-    contact_material_kd: wp.array(dtype=float),
-    contact_material_mu: wp.array(dtype=float),
+    contact_penalty_k: wp.array[float],
+    contact_material_kd: wp.array[float],
+    contact_material_mu: wp.array[float],
 ):
     """
     Cold-start contact penalties and cache material properties.
@@ -2135,39 +2123,39 @@ def init_body_body_contacts(
 @wp.kernel
 def init_contact_avbd(
     # Dimensioning
-    rigid_contact_count: wp.array(dtype=int),
+    rigid_contact_count: wp.array[int],
     # Constraint data
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    rigid_contact_point0: wp.array(dtype=wp.vec3),
-    rigid_contact_point1: wp.array(dtype=wp.vec3),
-    rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_margin0: wp.array(dtype=float),
-    rigid_contact_margin1: wp.array(dtype=float),
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
     # Material
-    shape_material_ke: wp.array(dtype=float),
-    shape_material_kd: wp.array(dtype=float),
-    shape_material_mu: wp.array(dtype=float),
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_material_mu: wp.array[float],
     # Geometry
-    shape_body: wp.array(dtype=wp.int32),
-    body_q: wp.array(dtype=wp.transform),
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
     hard_contacts: int,
     # Cross-step state
-    ht_keys: wp.array(dtype=wp.uint64),
-    history_point0: wp.array(dtype=wp.vec3),
-    history_point1: wp.array(dtype=wp.vec3),
-    history_lambda: wp.array(dtype=wp.vec3),
-    history_normal: wp.array(dtype=wp.vec3),
-    history_stick_flag: wp.array(dtype=wp.int32),
+    ht_keys: wp.array[wp.uint64],
+    history_point0: wp.array[wp.vec3],
+    history_point1: wp.array[wp.vec3],
+    history_lambda: wp.array[wp.vec3],
+    history_normal: wp.array[wp.vec3],
+    history_stick_flag: wp.array[wp.int32],
     # Scalar parameters
     cell_size_inv: float,
     match_tolerance_sq: float,
     # Outputs
-    contact_penalty_k: wp.array(dtype=float),
-    contact_lambda: wp.array(dtype=wp.vec3),
-    contact_C0: wp.array(dtype=wp.vec3),
-    contact_material_kd: wp.array(dtype=float),
-    contact_material_mu: wp.array(dtype=float),
+    contact_penalty_k: wp.array[float],
+    contact_lambda: wp.array[wp.vec3],
+    contact_C0: wp.array[wp.vec3],
+    contact_material_kd: wp.array[float],
+    contact_material_mu: wp.array[float],
 ):
     """Warmstart body-body contacts using hash table-based contact history.
 
@@ -2263,26 +2251,26 @@ def init_contact_avbd(
 
 @wp.kernel
 def snapshot_contact_history(
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    rigid_contact_point0: wp.array(dtype=wp.vec3),
-    rigid_contact_point1: wp.array(dtype=wp.vec3),
-    rigid_contact_normal: wp.array(dtype=wp.vec3),
-    contact_lambda: wp.array(dtype=wp.vec3),
-    contact_stick_flag: wp.array(dtype=wp.int32),
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    contact_lambda: wp.array[wp.vec3],
+    contact_stick_flag: wp.array[wp.int32],
     # Hash table
-    ht_keys: wp.array(dtype=wp.uint64),
-    ht_active_slots: wp.array(dtype=wp.int32),
+    ht_keys: wp.array[wp.uint64],
+    ht_active_slots: wp.array[wp.int32],
     cell_size_inv: float,
     # Outputs
-    history_point0: wp.array(dtype=wp.vec3),
-    history_point1: wp.array(dtype=wp.vec3),
-    history_lambda: wp.array(dtype=wp.vec3),
-    history_normal: wp.array(dtype=wp.vec3),
-    history_stick_flag: wp.array(dtype=wp.int32),
-    history_age: wp.array(dtype=int),
-    cached_slots: wp.array(dtype=int),
+    history_point0: wp.array[wp.vec3],
+    history_point1: wp.array[wp.vec3],
+    history_lambda: wp.array[wp.vec3],
+    history_normal: wp.array[wp.vec3],
+    history_stick_flag: wp.array[wp.int32],
+    history_age: wp.array[int],
+    cached_slots: wp.array[int],
 ):
     """Snapshot converged contact state into the history hash table (post-solve).
 
@@ -2315,8 +2303,8 @@ def snapshot_contact_history(
 
 @wp.kernel
 def evict_contact_history(
-    ht_keys: wp.array(dtype=wp.uint64),
-    history_age: wp.array(dtype=int),
+    ht_keys: wp.array[wp.uint64],
+    history_age: wp.array[int],
     max_age: int,
 ):
     """Increment age for all occupied history slots and evict stale entries.
@@ -2339,13 +2327,13 @@ def evict_contact_history(
 
 @wp.kernel
 def snapshot_contact_history_light(
-    rigid_contact_count: wp.array(dtype=int),
-    cached_slots: wp.array(dtype=int),
-    contact_lambda: wp.array(dtype=wp.vec3),
-    contact_stick_flag: wp.array(dtype=wp.int32),
+    rigid_contact_count: wp.array[int],
+    cached_slots: wp.array[int],
+    contact_lambda: wp.array[wp.vec3],
+    contact_stick_flag: wp.array[wp.int32],
     # Outputs (hash table history arrays, indexed by cached slot)
-    history_lambda: wp.array(dtype=wp.vec3),
-    history_stick_flag: wp.array(dtype=wp.int32),
+    history_lambda: wp.array[wp.vec3],
+    history_stick_flag: wp.array[wp.int32],
 ):
     """Write latest lambda/stick state to the hash table at pre-cached slot positions.
 
@@ -2363,22 +2351,22 @@ def snapshot_contact_history_light(
 
 @wp.kernel
 def step_contact_C0_lambda(
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    rigid_contact_point0: wp.array(dtype=wp.vec3),
-    rigid_contact_point1: wp.array(dtype=wp.vec3),
-    rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_margin0: wp.array(dtype=float),
-    rigid_contact_margin1: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
     hard_contacts: int,
     gamma: float,
     recompute_C0: int,
     # In/out
-    contact_C0: wp.array(dtype=wp.vec3),
-    contact_lambda: wp.array(dtype=wp.vec3),
+    contact_C0: wp.array[wp.vec3],
+    contact_lambda: wp.array[wp.vec3],
 ):
     """Per-step lambda decay, plus optional vec3 C0 recompute.
 
@@ -2410,18 +2398,18 @@ def step_contact_C0_lambda(
 
 @wp.kernel
 def init_body_particle_contacts(
-    body_particle_contact_count: wp.array(dtype=int),
-    body_particle_contact_shape: wp.array(dtype=int),
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_shape: wp.array[int],
     soft_contact_ke: float,
     soft_contact_kd: float,
     soft_contact_mu: float,
-    shape_material_ke: wp.array(dtype=float),
-    shape_material_kd: wp.array(dtype=float),
-    shape_material_mu: wp.array(dtype=float),
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_material_mu: wp.array[float],
     # Outputs
-    body_particle_contact_penalty_k: wp.array(dtype=float),
-    body_particle_contact_material_kd: wp.array(dtype=float),
-    body_particle_contact_material_mu: wp.array(dtype=float),
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
 ):
     """
     Initialize body-particle (particle-rigid) contact penalties and cache material
@@ -2456,24 +2444,24 @@ def init_body_particle_contacts(
 @wp.kernel
 def compute_cable_dahl_parameters(
     # Inputs
-    joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_constraint_start: wp.array(dtype=int),
-    joint_penalty_k: wp.array(dtype=float),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_rest: wp.array(dtype=wp.transform),
-    joint_sigma_prev: wp.array(dtype=wp.vec3),
-    joint_kappa_prev: wp.array(dtype=wp.vec3),
-    joint_dkappa_prev: wp.array(dtype=wp.vec3),
-    joint_eps_max: wp.array(dtype=float),
-    joint_tau: wp.array(dtype=float),
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_constraint_start: wp.array[int],
+    joint_penalty_k: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_q_rest: wp.array[wp.transform],
+    joint_sigma_prev: wp.array[wp.vec3],
+    joint_kappa_prev: wp.array[wp.vec3],
+    joint_dkappa_prev: wp.array[wp.vec3],
+    joint_eps_max: wp.array[float],
+    joint_tau: wp.array[float],
     # Outputs
-    joint_sigma_start: wp.array(dtype=wp.vec3),
-    joint_C_fric: wp.array(dtype=wp.vec3),
+    joint_sigma_start: wp.array[wp.vec3],
+    joint_C_fric: wp.array[wp.vec3],
 ):
     """
     Compute Dahl hysteresis parameters (sigma0, C_fric) for cable bending,
@@ -2589,36 +2577,36 @@ def compute_cable_dahl_parameters(
 @wp.kernel
 def accumulate_body_body_contacts_per_body(
     dt: float,
-    color_group: wp.array(dtype=wp.int32),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inv_mass: wp.array(dtype=float),
+    color_group: wp.array[wp.int32],
+    body_q_prev: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
     friction_epsilon: float,
-    contact_penalty_k: wp.array(dtype=float),
-    contact_material_kd: wp.array(dtype=float),
-    contact_material_mu: wp.array(dtype=float),
-    contact_lambda: wp.array(dtype=wp.vec3),
-    contact_C0: wp.array(dtype=wp.vec3),
+    contact_penalty_k: wp.array[float],
+    contact_material_kd: wp.array[float],
+    contact_material_mu: wp.array[float],
+    contact_lambda: wp.array[wp.vec3],
+    contact_C0: wp.array[wp.vec3],
     avbd_alpha: float,
     hard_contacts: int,
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    rigid_contact_point0: wp.array(dtype=wp.vec3),
-    rigid_contact_point1: wp.array(dtype=wp.vec3),
-    rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_margin0: wp.array(dtype=float),
-    rigid_contact_margin1: wp.array(dtype=float),
-    shape_body: wp.array(dtype=wp.int32),
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    shape_body: wp.array[wp.int32],
     body_contact_buffer_pre_alloc: int,
-    body_contact_counts: wp.array(dtype=wp.int32),
-    body_contact_indices: wp.array(dtype=wp.int32),
-    body_forces: wp.array(dtype=wp.vec3),
-    body_torques: wp.array(dtype=wp.vec3),
-    body_hessian_ll: wp.array(dtype=wp.mat33),
-    body_hessian_al: wp.array(dtype=wp.mat33),
-    body_hessian_aa: wp.array(dtype=wp.mat33),
+    body_contact_counts: wp.array[wp.int32],
+    body_contact_indices: wp.array[wp.int32],
+    body_forces: wp.array[wp.vec3],
+    body_torques: wp.array[wp.vec3],
+    body_hessian_ll: wp.array[wp.mat33],
+    body_hessian_al: wp.array[wp.mat33],
+    body_hessian_aa: wp.array[wp.mat33],
 ):
     """
     Per-body augmented-Lagrangian contact accumulation with _NUM_CONTACT_THREADS_PER_BODY strided threads.
@@ -2764,35 +2752,35 @@ def accumulate_body_body_contacts_per_body(
 def compute_rigid_contact_forces(
     dt: float,
     # Contact data
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    rigid_contact_point0: wp.array(dtype=wp.vec3),
-    rigid_contact_point1: wp.array(dtype=wp.vec3),
-    rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_margin0: wp.array(dtype=float),
-    rigid_contact_margin1: wp.array(dtype=float),
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
     # Model/state
-    shape_body: wp.array(dtype=wp.int32),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inv_mass: wp.array(dtype=float),
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
     # Contact material properties (per-contact)
-    contact_penalty_k: wp.array(dtype=float),
-    contact_material_kd: wp.array(dtype=float),
-    contact_material_mu: wp.array(dtype=float),
-    contact_lambda: wp.array(dtype=wp.vec3),
-    contact_C0: wp.array(dtype=wp.vec3),
+    contact_penalty_k: wp.array[float],
+    contact_material_kd: wp.array[float],
+    contact_material_mu: wp.array[float],
+    contact_lambda: wp.array[wp.vec3],
+    contact_C0: wp.array[wp.vec3],
     avbd_alpha: float,
     hard_contacts: int,
     friction_epsilon: float,
     # Outputs (length = rigid_contact_max)
-    out_body0: wp.array(dtype=wp.int32),
-    out_body1: wp.array(dtype=wp.int32),
-    out_point0_world: wp.array(dtype=wp.vec3),
-    out_point1_world: wp.array(dtype=wp.vec3),
-    out_force_on_body1: wp.array(dtype=wp.vec3),
+    out_body0: wp.array[wp.int32],
+    out_body1: wp.array[wp.int32],
+    out_point0_world: wp.array[wp.vec3],
+    out_point1_world: wp.array[wp.vec3],
+    out_force_on_body1: wp.array[wp.vec3],
 ):
     """Compute per-contact augmented-Lagrangian forces in world space."""
     contact_idx = wp.tid()
@@ -2903,42 +2891,42 @@ def compute_rigid_contact_forces(
 @wp.kernel
 def accumulate_body_particle_contacts_per_body(
     dt: float,
-    color_group: wp.array(dtype=wp.int32),
+    color_group: wp.array[wp.int32],
     # Particle state
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_q_prev: wp.array(dtype=wp.vec3),
-    particle_radius: wp.array(dtype=float),
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
     # Rigid body state
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inv_mass: wp.array(dtype=float),
+    body_q_prev: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
-    body_particle_contact_penalty_k: wp.array(dtype=float),
-    body_particle_contact_material_kd: wp.array(dtype=float),
-    body_particle_contact_material_mu: wp.array(dtype=float),
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
-    body_particle_contact_count: wp.array(dtype=int),
-    body_particle_contact_particle: wp.array(dtype=int),
-    body_particle_contact_shape: wp.array(dtype=int),
-    body_particle_contact_body_pos: wp.array(dtype=wp.vec3),
-    body_particle_contact_body_vel: wp.array(dtype=wp.vec3),
-    body_particle_contact_normal: wp.array(dtype=wp.vec3),
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_particle: wp.array[int],
+    body_particle_contact_shape: wp.array[int],
+    body_particle_contact_body_pos: wp.array[wp.vec3],
+    body_particle_contact_body_vel: wp.array[wp.vec3],
+    body_particle_contact_normal: wp.array[wp.vec3],
     # Shape/material data
-    shape_material_mu: wp.array(dtype=float),
-    shape_body: wp.array(dtype=wp.int32),
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[wp.int32],
     # Per-body soft-contact adjacency (body-particle)
     body_particle_contact_buffer_pre_alloc: int,
-    body_particle_contact_counts: wp.array(dtype=wp.int32),
-    body_particle_contact_indices: wp.array(dtype=wp.int32),
+    body_particle_contact_counts: wp.array[wp.int32],
+    body_particle_contact_indices: wp.array[wp.int32],
     # Outputs
-    body_forces: wp.array(dtype=wp.vec3),
-    body_torques: wp.array(dtype=wp.vec3),
-    body_hessian_ll: wp.array(dtype=wp.mat33),
-    body_hessian_al: wp.array(dtype=wp.mat33),
-    body_hessian_aa: wp.array(dtype=wp.mat33),
+    body_forces: wp.array[wp.vec3],
+    body_torques: wp.array[wp.vec3],
+    body_hessian_ll: wp.array[wp.mat33],
+    body_hessian_al: wp.array[wp.mat33],
+    body_hessian_aa: wp.array[wp.mat33],
 ):
     """
     Per-body accumulation of body-particle (particle-rigid) soft contact forces and
@@ -3064,57 +3052,57 @@ def accumulate_body_particle_contacts_per_body(
 @wp.kernel
 def solve_rigid_body(
     dt: float,
-    body_ids_in_color: wp.array(dtype=wp.int32),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_q_rest: wp.array(dtype=wp.transform),
-    body_mass: wp.array(dtype=float),
-    body_inv_mass: wp.array(dtype=float),
-    body_inertia: wp.array(dtype=wp.mat33),
-    body_inertia_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
+    body_ids_in_color: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_q_rest: wp.array[wp.transform],
+    body_mass: wp.array[float],
+    body_inv_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_inertia_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     adjacency: RigidForceElementAdjacencyInfo,
     # Joint data
-    joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_qd_start: wp.array(dtype=int),
-    joint_constraint_start: wp.array(dtype=int),
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_qd_start: wp.array[int],
+    joint_constraint_start: wp.array[int],
     # AVBD per-constraint penalty state (scalar constraints indexed via joint_constraint_start)
-    joint_penalty_k: wp.array(dtype=float),
-    joint_penalty_kd: wp.array(dtype=float),
+    joint_penalty_k: wp.array[float],
+    joint_penalty_kd: wp.array[float],
     # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
-    joint_sigma_start: wp.array(dtype=wp.vec3),
-    joint_C_fric: wp.array(dtype=wp.vec3),
+    joint_sigma_start: wp.array[wp.vec3],
+    joint_C_fric: wp.array[wp.vec3],
     # Drive parameters (DOF-indexed via joint_qd_start)
-    joint_target_ke: wp.array(dtype=float),
-    joint_target_kd: wp.array(dtype=float),
-    joint_target_pos: wp.array(dtype=float),
-    joint_target_vel: wp.array(dtype=float),
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    joint_target_pos: wp.array[float],
+    joint_target_vel: wp.array[float],
     # Limit parameters (DOF-indexed via joint_qd_start)
-    joint_limit_lower: wp.array(dtype=float),
-    joint_limit_upper: wp.array(dtype=float),
-    joint_limit_ke: wp.array(dtype=float),
-    joint_limit_kd: wp.array(dtype=float),
-    joint_lambda_lin: wp.array(dtype=wp.vec3),
-    joint_lambda_ang: wp.array(dtype=wp.vec3),
-    joint_C0_lin: wp.array(dtype=wp.vec3),
-    joint_C0_ang: wp.array(dtype=wp.vec3),
-    joint_is_hard: wp.array(dtype=wp.int32),
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
     avbd_alpha: float,
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_rest_angle: wp.array(dtype=float),
-    external_forces: wp.array(dtype=wp.vec3),
-    external_torques: wp.array(dtype=wp.vec3),
-    external_hessian_ll: wp.array(dtype=wp.mat33),  # Linear-linear block from rigid contacts
-    external_hessian_al: wp.array(dtype=wp.mat33),  # Angular-linear coupling block from rigid contacts
-    external_hessian_aa: wp.array(dtype=wp.mat33),  # Angular-angular block from rigid contacts
+    joint_dof_dim: wp.array2d[int],
+    joint_rest_angle: wp.array[float],
+    external_forces: wp.array[wp.vec3],
+    external_torques: wp.array[wp.vec3],
+    external_hessian_ll: wp.array[wp.mat33],  # Linear-linear block from rigid contacts
+    external_hessian_al: wp.array[wp.mat33],  # Angular-linear coupling block from rigid contacts
+    external_hessian_aa: wp.array[wp.mat33],  # Angular-angular block from rigid contacts
     # Output
-    body_q_new: wp.array(dtype=wp.transform),
+    body_q_new: wp.array[wp.transform],
 ):
     """
     AVBD solve step for rigid bodies using block Cholesky decomposition.
@@ -3359,25 +3347,25 @@ def solve_rigid_body(
 
 @wp.kernel
 def update_duals_joint(
-    joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_qd_start: wp.array(dtype=int),
-    joint_constraint_start: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_rest: wp.array(dtype=wp.transform),
-    joint_penalty_k: wp.array(dtype=float),  # input
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_rest_angle: wp.array(dtype=float),
-    joint_lambda_lin: wp.array(dtype=wp.vec3),
-    joint_lambda_ang: wp.array(dtype=wp.vec3),
-    joint_C0_lin: wp.array(dtype=wp.vec3),
-    joint_C0_ang: wp.array(dtype=wp.vec3),
-    joint_is_hard: wp.array(dtype=wp.int32),
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_qd_start: wp.array[int],
+    joint_constraint_start: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_rest: wp.array[wp.transform],
+    joint_penalty_k: wp.array[float],  # input
+    joint_dof_dim: wp.array2d[int],
+    joint_rest_angle: wp.array[float],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
     avbd_alpha: float,
 ):
     """
@@ -3654,24 +3642,24 @@ def update_duals_joint(
 
 @wp.kernel
 def update_duals_body_body_contacts(
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    rigid_contact_point0: wp.array(dtype=wp.vec3),
-    rigid_contact_point1: wp.array(dtype=wp.vec3),
-    rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_margin0: wp.array(dtype=float),
-    rigid_contact_margin1: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    contact_material_mu: wp.array(dtype=float),
-    contact_penalty_k: wp.array(dtype=float),  # input
-    contact_lambda: wp.array(dtype=wp.vec3),  # input/output
-    contact_C0: wp.array(dtype=wp.vec3),
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    contact_material_mu: wp.array[float],
+    contact_penalty_k: wp.array[float],  # input
+    contact_lambda: wp.array[wp.vec3],  # input/output
+    contact_C0: wp.array[wp.vec3],
     avbd_alpha: float,
     hard_contacts: int,
-    body_inv_mass: wp.array(dtype=float),
-    contact_stick_flag: wp.array(dtype=wp.int32),  # output
+    body_inv_mass: wp.array[float],
+    contact_stick_flag: wp.array[wp.int32],  # output
 ):
     """
     Update AVBD augmented-Lagrangian duals for contact constraints (per-iteration).
@@ -3761,18 +3749,18 @@ def update_duals_body_body_contacts(
 @wp.kernel
 def update_body_velocity(
     dt: float,
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     body_contact_buffer_pre_alloc: int,
-    body_contact_counts: wp.array(dtype=wp.int32),
-    body_contact_indices: wp.array(dtype=wp.int32),
-    contact_stick_flag: wp.array(dtype=wp.int32),
+    body_contact_counts: wp.array[wp.int32],
+    body_contact_indices: wp.array[wp.int32],
+    contact_stick_flag: wp.array[wp.int32],
     apply_stick_deadzone: int,
     stick_freeze_translation_eps: float,
     stick_freeze_angular_eps: float,
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_q_out: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_out: wp.array[wp.transform],
 ):
     """
     Update body velocities from position changes (world frame).
@@ -3856,25 +3844,25 @@ def update_body_velocity(
 @wp.kernel
 def update_cable_dahl_state(
     # Joint geometry
-    joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_constraint_start: wp.array(dtype=int),
-    joint_penalty_k: wp.array(dtype=float),
-    joint_is_hard: wp.array(dtype=wp.int32),
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_constraint_start: wp.array[int],
+    joint_penalty_k: wp.array[float],
+    joint_is_hard: wp.array[wp.int32],
     # Body states (final, after solver convergence)
-    body_q: wp.array(dtype=wp.transform),
-    body_q_rest: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    body_q_rest: wp.array[wp.transform],
     # Dahl model parameters (PER-JOINT arrays, isotropic)
-    joint_eps_max: wp.array(dtype=float),
-    joint_tau: wp.array(dtype=float),
+    joint_eps_max: wp.array[float],
+    joint_tau: wp.array[float],
     # Dahl state (inputs - from previous timestep, outputs - to next timestep) - component-wise (vec3)
-    joint_sigma_prev: wp.array(dtype=wp.vec3),  # input/output
-    joint_kappa_prev: wp.array(dtype=wp.vec3),  # input/output
-    joint_dkappa_prev: wp.array(dtype=wp.vec3),  # input/output (stores Delta kappa)
+    joint_sigma_prev: wp.array[wp.vec3],  # input/output
+    joint_kappa_prev: wp.array[wp.vec3],  # input/output
+    joint_dkappa_prev: wp.array[wp.vec3],  # input/output (stores Delta kappa)
 ):
     """
     Post-iteration kernel: update Dahl hysteresis state after solver convergence (component-wise).

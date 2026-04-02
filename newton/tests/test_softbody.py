@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -49,13 +37,13 @@ def compute_neo_hookean_energy_and_force_and_hessian(
     # inputs
     tet_id: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     v_order = wp.tid()
     f, h = evaluate_volumetric_neo_hookean_force_and_hessian(
@@ -81,13 +69,13 @@ def compute_neo_hookean_energy_and_force(
     # inputs
     tet_id: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     # outputs: particle force and hessian
-    tet_energy: wp.array(dtype=float),
-    particle_forces: wp.array(dtype=float),
+    tet_energy: wp.array[float],
+    particle_forces: wp.array[float],
 ):
     v0_idx = tet_indices[tet_id, 0]
     v1_idx = tet_indices[tet_id, 1]

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot Cartpole
@@ -23,6 +11,7 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -45,13 +34,20 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(cartpole)
         cartpole.default_shape_cfg.density = 100.0
         cartpole.default_joint_cfg.armature = 0.1
-        cartpole.default_body_armature = 0.1
 
         cartpole.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             enable_self_collisions=False,
             collapse_fixed_joints=True,
         )
+
+        # apply additional inertia to the bodies for better stability
+        body_armature = 0.1
+        for body in range(cartpole.body_count):
+            inertia_np = np.asarray(cartpole.body_inertia[body], dtype=np.float32).reshape(3, 3)
+            inertia_np += np.eye(3, dtype=np.float32) * body_armature
+            cartpole.body_inertia[body] = wp.mat33(inertia_np)
+
         # set initial joint positions
         cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
 
@@ -167,25 +163,27 @@ class Example:
         world0_cart_vel = wp.spatial_vector(*qd[0])
         world0_pole1_vel = wp.spatial_vector(*qd[1])
         world0_pole2_vel = wp.spatial_vector(*qd[2])
+        # Replicated GPU worlds can drift by a few ulps in body twists.
+        world_velocity_atol = 1e-6
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cart velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_cart_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_cart_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole1 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole1_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole1_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world + 1 for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole2 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel, atol=1e-6),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
 

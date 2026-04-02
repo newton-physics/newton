@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # Configuration file for the Sphinx documentation builder.
 #
@@ -22,6 +10,7 @@ import datetime
 import importlib
 import inspect
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -44,25 +33,33 @@ project = "Newton Physics"
 copyright = f"{datetime.date.today().year}, The Newton Developers. Documentation licensed under CC-BY-4.0"
 author = "The Newton Developers"
 
-# Read version from _version.py
+# Read version from pyproject.toml
+# TODO: When minimum Python version is >=3.11, replace with:
+#   import tomllib
+#   with open(project_root / "pyproject.toml", "rb") as f:
+#       project_version = tomllib.load(f)["project"]["version"]
 project_root = Path(__file__).parent.parent
-version_file_path = project_root / "newton" / "_version.py"
 try:
-    # Get version from _version.py
-    version_globals: dict[str, str] = {}
-    with open(version_file_path, encoding="utf-8") as f:
-        exec(f.read(), version_globals)
-    project_version = version_globals["__version__"]
-    if not project_version:
-        raise ValueError("__version__ in _version.py is empty.")
-except FileNotFoundError:
-    print(f"Error: _version.py not found at {version_file_path}", file=sys.stderr)
-    sys.exit(1)
+    with open(project_root / "pyproject.toml", encoding="utf-8") as f:
+        content = f.read()
+    project_section = re.search(r"^\[project\]\s*\n(.*?)(?=^\[|\Z)", content, re.MULTILINE | re.DOTALL)
+    if not project_section:
+        raise ValueError("Could not find [project] section in pyproject.toml")
+    match = re.search(r'^version\s*=\s*"([^"]+)"', project_section.group(1), re.MULTILINE)
+    if not match:
+        raise ValueError("Could not find version in [project] section of pyproject.toml")
+    project_version = match.group(1)
 except Exception as e:
-    print(f"Error reading or parsing {version_file_path}: {e}", file=sys.stderr)
+    print(f"Error reading version from pyproject.toml: {e}", file=sys.stderr)
     sys.exit(1)
 
 release = project_version
+
+# -- Nitpicky mode -----------------------------------------------------------
+# Set nitpicky = True to warn about all broken cross-references (e.g. missing
+# intersphinx targets, typos in :class:/:func:/:attr: roles, etc.).  Useful for
+# auditing docs but noisy during regular development.
+nitpicky = False
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -117,8 +114,27 @@ exclude_patterns = [
     "sphinx-env",
     "**/site-packages/**",
     "**/lib/**",
-    "tutorials/**/*.ipynb",
 ]
+
+# nbsphinx requires pandoc to convert Jupyter notebooks.  When pandoc is not
+# installed we exclude the notebook tutorials so the rest of the docs can still
+# be built locally without a hard error.  CI workflows install pandoc explicitly
+# so published docs always include the tutorials.
+#
+# Set NEWTON_REQUIRE_PANDOC=1 to turn the missing-pandoc warning into an error
+# (used in CI to guarantee tutorials are never silently skipped).
+if shutil.which("pandoc") is None:
+    if os.environ.get("NEWTON_REQUIRE_PANDOC", "") == "1":
+        raise RuntimeError(
+            "pandoc is required but not found. Install pandoc "
+            "(https://pandoc.org/installing.html) or unset NEWTON_REQUIRE_PANDOC."
+        )
+    exclude_patterns.append("tutorials/**")
+    print(
+        "WARNING: pandoc not found - Jupyter notebook tutorials will be "
+        "skipped.  Install pandoc (https://pandoc.org/installing.html) to "
+        "build the complete documentation."
+    )
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
@@ -126,7 +142,21 @@ intersphinx_mapping = {
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://docs.pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp", None),
+    "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
 }
+
+# Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
+# ``pxr.*`` paths so intersphinx can resolve them against the USD inventory.
+# Note: this only affects annotations processed by autodoc, not autosummary stubs.
+autodoc_type_aliases = {
+    "Usd.Prim": "pxr.Usd.Prim",
+    "Usd.Stage": "pxr.Usd.Stage",
+    "UsdGeom.XformCache": "pxr.UsdGeom.XformCache",
+    "UsdGeom.Mesh": "pxr.UsdGeom.Mesh",
+    "UsdShade.Material": "pxr.UsdShade.Material",
+    "UsdShade.Shader": "pxr.UsdShade.Shader",
+}
+
 
 source_suffix = {
     ".rst": "restructuredtext",

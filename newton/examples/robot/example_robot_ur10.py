@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot UR10
@@ -36,11 +24,11 @@ from newton.selection import ArticulationView
 
 @wp.kernel
 def update_joint_target_trajectory_kernel(
-    joint_target_trajectory: wp.array3d(dtype=wp.float32),
-    time: wp.array(dtype=wp.float32),
+    joint_target_trajectory: wp.array3d[wp.float32],
+    time: wp.array[wp.float32],
     dt: wp.float32,
     # output
-    joint_target: wp.array3d(dtype=wp.float32),
+    joint_target: wp.array3d[wp.float32],
 ):
     world_idx = wp.tid()
     t = time[world_idx]

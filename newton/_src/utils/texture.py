@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -22,8 +10,6 @@ from urllib.parse import unquote, urlparse
 from urllib.request import urlopen
 
 import numpy as np
-
-from ..core.types import nparray
 
 _texture_url_cache: dict[str, bytes] = {}
 
@@ -53,7 +39,7 @@ def _download_texture_from_file_bytes(url: str) -> bytes | None:
         return None
 
 
-def load_texture_from_file(texture_path: str | None) -> nparray | None:
+def load_texture_from_file(texture_path: str | None) -> np.ndarray | None:
     """Load a texture image from disk or URL into a numpy array.
 
     Args:
@@ -84,7 +70,7 @@ def load_texture_from_file(texture_path: str | None) -> nparray | None:
         return None
 
 
-def load_texture(texture: str | os.PathLike[str] | nparray | None) -> nparray | None:
+def load_texture(texture: str | os.PathLike[str] | np.ndarray | None) -> np.ndarray | None:
     """Normalize a texture input into a contiguous image array.
 
     Args:
@@ -109,12 +95,12 @@ def load_texture(texture: str | os.PathLike[str] | nparray | None) -> nparray | 
 
 
 def normalize_texture(
-    texture_image: nparray | None,
+    texture_image: np.ndarray | None,
     *,
     flip_vertical: bool = False,
     require_channels: bool = False,
     scale_unit_range: bool = True,
-) -> nparray | None:
+) -> np.ndarray | None:
     """Normalize a texture array for rendering.
 
     Args:
@@ -150,7 +136,7 @@ def normalize_texture(
     return np.ascontiguousarray(image)
 
 
-def compute_texture_hash(texture: str | os.PathLike[str] | nparray | None) -> int:
+def compute_texture_hash(texture: str | os.PathLike[str] | np.ndarray | None) -> int:
     """Compute a stable hash for a texture (path or array).
 
     Args:

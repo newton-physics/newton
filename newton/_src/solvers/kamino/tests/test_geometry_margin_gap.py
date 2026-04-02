@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Unit tests for margin (rest offset) and gap (detection threshold) semantics.
@@ -329,7 +317,7 @@ def _build_sphere_on_ground(
     builder.add_geometry(
         body=-1,
         name="ground",
-        shape=BoxShape(4.0, 4.0, GROUND_HALF_H * 2.0),
+        shape=BoxShape(2.0, 2.0, GROUND_HALF_H),
         offset=transformf(vec3f(0.0, 0.0, 0.0), wp.quat_identity()),
         margin=margin,
         gap=gap,

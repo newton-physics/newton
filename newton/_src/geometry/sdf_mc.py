@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Marching Cubes utilities for SDF isosurface extraction.
 
@@ -145,14 +133,15 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
 
 @wp.func
 def mc_calc_face(
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
     tri_range_start: wp.int32,
     corner_vals: vec8f,
     sdf_a: wp.uint64,
     x_id: wp.int32,
     y_id: wp.int32,
     z_id: wp.int32,
+    isovalue: wp.float32 = 0.0,
 ) -> tuple[float, wp.vec3, wp.vec3, float, wp.mat33f]:
     """Extract a triangle face from a marching cubes voxel.
 
@@ -183,7 +172,7 @@ def mc_calc_face(
         if wp.abs(val_diff) < 1e-8:
             p = 0.5 * (p_0 + p_1)
         else:
-            t = (0.0 - val_0) / val_diff
+            t = (isovalue - val_0) / val_diff
             p = p_0 + t * (p_1 - p_0)
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)

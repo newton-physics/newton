@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import math
 import unittest
@@ -108,9 +96,11 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
 
     state = model.state()
 
-    sensor = SensorTiledCamera(model=model, config=SensorTiledCamera.Config())
-    sensor.render_context.config.max_distance = max_distance
-    camera_rays = sensor.compute_pinhole_camera_rays(width, height, fov)
+    sensor = SensorTiledCamera(
+        model=model,
+        config=SensorTiledCamera.RenderConfig(max_distance=max_distance),
+    )
+    camera_rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
 
     cam_quat = wp.quat_identity()
     camera_transforms = wp.array(
@@ -127,9 +117,8 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
         device=device,
     )
 
-    depth_image = sensor.create_depth_image_output(width, height, camera_count=1)
+    depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
     sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
-    wp.synchronize()
 
     depth_np = depth_image.numpy()  # (num_worlds, num_cameras, H, W)
 

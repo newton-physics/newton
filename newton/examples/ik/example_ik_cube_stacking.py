@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Cube Stacking
@@ -49,11 +37,11 @@ class TaskType(enum.IntEnum):
 
 @wp.kernel(enable_backward=False)
 def set_target_pose_kernel(
-    task_schedule: wp.array(dtype=wp.int32),
-    task_time_soft_limits: wp.array(dtype=float),
-    task_object: wp.array(dtype=int),
-    task_idx: wp.array(dtype=int),
-    task_time_elapsed: wp.array(dtype=float),
+    task_schedule: wp.array[wp.int32],
+    task_time_soft_limits: wp.array[float],
+    task_object: wp.array[int],
+    task_idx: wp.array[int],
+    task_time_elapsed: wp.array[float],
     task_dt: float,
     task_offset_approach: wp.vec3,
     task_offset_lift: wp.vec3,
@@ -61,17 +49,17 @@ def set_target_pose_kernel(
     task_drop_off_pos: wp.vec3,
     cube_size: float,
     home_pos: wp.vec3,
-    task_init_body_q: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
+    task_init_body_q: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     ee_index: int,
     robot_body_count: int,
     num_bodies_per_world: int,
     # outputs
-    ee_pos_target: wp.array(dtype=wp.vec3),
-    ee_pos_target_interpolated: wp.array(dtype=wp.vec3),
-    ee_rot_target: wp.array(dtype=wp.vec4),
-    ee_rot_target_interpolated: wp.array(dtype=wp.vec4),
-    gripper_target: wp.array2d(dtype=wp.float32),
+    ee_pos_target: wp.array[wp.vec3],
+    ee_pos_target_interpolated: wp.array[wp.vec3],
+    ee_rot_target: wp.array[wp.vec4],
+    ee_rot_target_interpolated: wp.array[wp.vec4],
+    gripper_target: wp.array2d[wp.float32],
 ):
     tid = wp.tid()
 
@@ -145,16 +133,16 @@ def set_target_pose_kernel(
 
 @wp.kernel(enable_backward=False)
 def advance_task_kernel(
-    task_time_soft_limits: wp.array(dtype=float),
-    ee_pos_target: wp.array(dtype=wp.vec3),
-    ee_rot_target: wp.array(dtype=wp.vec4),
-    body_q: wp.array(dtype=wp.transform),
+    task_time_soft_limits: wp.array[float],
+    ee_pos_target: wp.array[wp.vec3],
+    ee_rot_target: wp.array[wp.vec4],
+    body_q: wp.array[wp.transform],
     num_bodies_per_world: int,
     ee_index: int,
     # outputs
-    task_idx: wp.array(dtype=int),
-    task_time_elapsed: wp.array(dtype=float),
-    task_init_body_q: wp.array(dtype=wp.transform),
+    task_idx: wp.array[int],
+    task_time_elapsed: wp.array[float],
+    task_init_body_q: wp.array[wp.transform],
 ):
     tid = wp.tid()
     idx = task_idx[tid]
@@ -269,10 +257,6 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
-
-        # Set cube colors
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
-        self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.cube_colors.items()})
 
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_world_offsets(wp.vec3(1.5, 1.5, 0.0))
@@ -433,7 +417,6 @@ class Example:
         return builder
 
     def build_scene(self, franka_with_table: newton.ModelBuilder):
-        self.cube_colors = {}
         rng = np.random.default_rng(42)
 
         # Range of values for the cube properties
@@ -509,7 +492,24 @@ class Example:
 
             half_size = 0.5 * self.cube_size
             cube_shape_idx = scene.shape_count
-            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, label=key)
+            if i == 0:
+                cube_color = [0.8, 0.2, 0.2]
+            elif i == 1:
+                cube_color = [0.2, 0.8, 0.2]
+            elif i == 2:
+                cube_color = [0.2, 0.2, 0.8]
+            else:
+                cube_color = [0.2, 0.2, 0.2]
+
+            scene.add_shape_box(
+                body=mesh_body,
+                hx=half_size,
+                hy=half_size,
+                hz=half_size,
+                cfg=shape_cfg,
+                label=key,
+                color=cube_color,
+            )
 
             if self.use_mujoco_contacts:
                 # Set condim=4 (torsional friction) on cube shapes
@@ -517,16 +517,6 @@ class Example:
                 if condim_attr.values is None:
                     condim_attr.values = {}
                 condim_attr.values[cube_shape_idx] = 4
-
-            # Set the color of the cube based on the index
-            if i == 0:
-                self.cube_colors[key] = [0.8, 0.2, 0.2]
-            elif i == 1:
-                self.cube_colors[key] = [0.2, 0.8, 0.2]
-            elif i == 2:
-                self.cube_colors[key] = [0.2, 0.2, 0.8]
-            else:
-                self.cube_colors[key] = [0.2, 0.2, 0.2]
 
     def setup_ik(self):
         self.ee_index = 11

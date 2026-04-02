@@ -1,22 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 
 import warp as wp
 
 from ...geometry import raycast
+from .types import MeshData
 
 EPSILON = 1e-6
 
@@ -308,18 +296,18 @@ def ray_intersect_mesh_no_transform(
 
 
 @wp.func
-def ray_intersect_mesh(
+def ray_intersect_mesh_with_normal(
     transform: wp.transformf,
     scale: wp.vec3f,
     ray_origin: wp.vec3f,
     ray_direction: wp.vec3f,
     mesh_id: wp.uint64,
+    shape_mesh_data_id: wp.int32,
+    mesh_data: wp.array[MeshData],
     enable_backface_culling: wp.bool,
     max_t: wp.float32,
 ) -> tuple[GeomHit, wp.float32, wp.float32, wp.int32]:
-    """Returns intersection information at which a ray intersects with a mesh.
-
-    Requires wp.Mesh be constructed and their ids to be passed"""
+    """Returns intersection information at which a ray intersects with a mesh."""
 
     geom_hit = GeomHit()
     geom_hit.hit = False
@@ -332,8 +320,42 @@ def ray_intersect_mesh(
         if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
             geom_hit.hit = True
             geom_hit.distance = query.t
-            geom_hit.normal = wp.transform_vector(transform, safe_div_vec3(query.normal, scale))
+            geom_hit.normal = query.normal
+
+            if shape_mesh_data_id > -1:
+                normals = mesh_data[shape_mesh_data_id].normals
+                if normals.shape[0] > 0:
+                    n0 = wp.mesh_get_index(mesh_id, query.face * 3 + 0)
+                    n1 = wp.mesh_get_index(mesh_id, query.face * 3 + 1)
+                    n2 = wp.mesh_get_index(mesh_id, query.face * 3 + 2)
+
+                    geom_hit.normal = (
+                        normals[n0] * query.u + normals[n1] * query.v + normals[n2] * (1.0 - query.u - query.v)
+                    )
+
+            geom_hit.normal = wp.transform_vector(transform, safe_div_vec3(geom_hit.normal, scale))
             geom_hit.normal = wp.normalize(geom_hit.normal)
             return geom_hit, query.u, query.v, query.face
 
     return geom_hit, 0.0, 0.0, -1
+
+
+@wp.func
+def ray_intersect_mesh(
+    transform: wp.transformf,
+    scale: wp.vec3f,
+    ray_origin: wp.vec3f,
+    ray_direction: wp.vec3f,
+    mesh_id: wp.uint64,
+    enable_backface_culling: wp.bool,
+    max_t: wp.float32,
+) -> wp.float32:
+    """Returns intersection distance at which a ray intersects with a mesh."""
+
+    ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
+    query = wp.mesh_query_ray(mesh_id, ray_origin_local, ray_direction_local, max_t)
+
+    if query.result:
+        if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
+            return query.t
+    return -1.0

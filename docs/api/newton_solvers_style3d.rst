@@ -10,6 +10,7 @@ This module provides helper functions for setting up Style3D cloth assets.
 Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver
 import path.
 
+.. py:module:: newton.solvers.style3d
 .. currentmodule:: newton.solvers.style3d
 
 .. rubric:: Functions

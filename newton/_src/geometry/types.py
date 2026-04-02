@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import enum
 import os
@@ -22,7 +10,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override
+from ..core.types import Axis, Devicelike, Vec2, Vec3, override
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -30,7 +18,7 @@ if TYPE_CHECKING:
     from .sdf_utils import SDF
 
 
-def _normalize_texture_input(texture: str | os.PathLike[str] | nparray | None) -> str | nparray | None:
+def _normalize_texture_input(texture: str | os.PathLike[str] | np.ndarray | None) -> str | np.ndarray | None:
     """Normalize texture input for lazy storage.
 
     String paths and PathLike objects are stored as strings (no decoding).
@@ -126,17 +114,17 @@ class Mesh:
 
     def __init__(
         self,
-        vertices: Sequence[Vec3] | nparray,
-        indices: Sequence[int] | nparray,
-        normals: Sequence[Vec3] | nparray | None = None,
-        uvs: Sequence[Vec2] | nparray | None = None,
+        vertices: Sequence[Vec3] | np.ndarray,
+        indices: Sequence[int] | np.ndarray,
+        normals: Sequence[Vec3] | np.ndarray | None = None,
+        uvs: Sequence[Vec2] | np.ndarray | None = None,
         compute_inertia: bool = True,
         is_solid: bool = True,
         maxhullvert: int | None = None,
         color: Vec3 | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
-        texture: str | nparray | None = None,
+        texture: str | np.ndarray | None = None,
         *,
         sdf: "SDF | None" = None,
     ):
@@ -560,6 +548,8 @@ class Mesh:
         terrain_params: dict | None = None,
         seed: int | None = None,
         *,
+        compute_normals: bool = False,
+        compute_uvs: bool = False,
         compute_inertia: bool = True,
     ) -> "Mesh":
         """Create a procedural terrain mesh from terrain blocks.
@@ -570,6 +560,8 @@ class Mesh:
             terrain_types: Terrain type name(s) or callable generator(s).
             terrain_params: Optional per-terrain parameter dictionary.
             seed: Optional random seed for deterministic terrain generation.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
@@ -584,17 +576,34 @@ class Mesh:
             terrain_params=terrain_params,
             seed=seed,
         )
-        return Mesh(vertices, indices, compute_inertia=compute_inertia)
+        normals = None
+        uvs = None
+        if compute_normals:
+            from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+            normals = compute_vertex_normals(vertices, indices).astype(np.float32)
+        if compute_uvs:
+            total_x = grid_size[1] * block_size[0]
+            total_y = grid_size[0] * block_size[1]
+            uvs = np.column_stack(
+                [
+                    vertices[:, 0] / total_x if total_x > 0 else np.zeros(len(vertices)),
+                    vertices[:, 1] / total_y if total_y > 0 else np.zeros(len(vertices)),
+                ]
+            ).astype(np.float32)
+        return Mesh(vertices, indices, normals=normals, uvs=uvs, compute_inertia=compute_inertia)
 
     @staticmethod
     def create_heightfield(
-        heightfield: nparray,
+        heightfield: np.ndarray,
         extent_x: float,
         extent_y: float,
         center_x: float = 0.0,
         center_y: float = 0.0,
         ground_z: float = 0.0,
         *,
+        compute_normals: bool = False,
+        compute_uvs: bool = False,
         compute_inertia: bool = True,
     ) -> "Mesh":
         """Create a watertight mesh from a 2D heightfield.
@@ -607,6 +616,8 @@ class Mesh:
             center_x [m]: Heightfield center position along X.
             center_y [m]: Heightfield center position along Y.
             ground_z [m]: Bottom surface Z value for watertight side walls.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
@@ -622,12 +633,24 @@ class Mesh:
             center_y=center_y,
             ground_z=ground_z,
         )
-        return Mesh(vertices, indices, compute_inertia=compute_inertia)
+        normals = None
+        uvs = None
+        if compute_normals:
+            from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+            normals = compute_vertex_normals(vertices, indices).astype(np.float32)
+        if compute_uvs:
+            num_top = len(vertices) // 2
+            u = (vertices[:, 0] - (center_x - extent_x / 2)) / extent_x
+            v = (vertices[:, 1] - (center_y - extent_y / 2)) / extent_y
+            uvs = np.column_stack([u, v]).astype(np.float32)
+            uvs[:num_top] = np.clip(uvs[:num_top], 0.0, 1.0)
+        return Mesh(vertices, indices, normals=normals, uvs=uvs, compute_inertia=compute_inertia)
 
     def copy(
         self,
-        vertices: Sequence[Vec3] | nparray | None = None,
-        indices: Sequence[int] | nparray | None = None,
+        vertices: Sequence[Vec3] | np.ndarray | None = None,
+        indices: Sequence[int] | np.ndarray | None = None,
         recompute_inertia: bool = False,
     ):
         """
@@ -678,6 +701,7 @@ class Mesh:
         margin: float | None = None,
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
+        texture_format: str = "uint16",
     ) -> "SDF":
         """Build and attach an SDF for this mesh.
 
@@ -702,6 +726,11 @@ class Mesh:
                 and ``scale_baked`` is set to ``True`` in the resulting SDF.
                 Required for hydroelastic collision with non-unit shape scale.
                 Defaults to ``None`` (no scale baking, scale applied at runtime).
+            texture_format: Subgrid texture storage format for the SDF.
+                ``"uint16"`` (default) stores subgrid voxels in 16-bit
+                normalized textures (half the memory of float32).
+                ``"float32"`` stores full-precision values. ``"uint8"`` uses
+                8-bit textures for minimum memory at lower precision.
 
         Returns:
             The attached :class:`SDF` instance.
@@ -711,6 +740,10 @@ class Mesh:
         """
         if self.sdf is not None:
             raise RuntimeError("Mesh already has an SDF. Call clear_sdf() before rebuilding.")
+
+        _valid_tex_fmts = ("float32", "uint16", "uint8")
+        if texture_format not in _valid_tex_fmts:
+            raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_valid_tex_fmts)}.")
 
         from .sdf_utils import SDF  # noqa: PLC0415
 
@@ -723,6 +756,7 @@ class Mesh:
             margin=margin if margin is not None else 0.05,
             shape_margin=shape_margin,
             scale=scale,
+            texture_format=texture_format,
         )
         return self.sdf
 
@@ -762,6 +796,7 @@ class Mesh:
 
     @property
     def color(self) -> Vec3 | None:
+        """Optional display RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
@@ -769,15 +804,26 @@ class Mesh:
         self._color = value
 
     @property
-    def texture(self) -> str | nparray | None:
+    def texture(self) -> str | np.ndarray | None:
+        """Optional texture as a file path or a normalized RGBA array."""
         return self._texture
 
     @texture.setter
-    def texture(self, value: str | nparray | None):
+    def texture(self, value: str | np.ndarray | None):
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(value)
         self._texture_hash = None
         self._cached_hash = None
+
+    @property
+    def texture_hash(self) -> int:
+        """Content-based hash of the assigned texture.
+
+        Returns a stable integer hash derived from the texture data.
+        The value is lazily computed and cached until :attr:`~newton.Mesh.texture`
+        is reassigned.
+        """
+        return self._compute_texture_hash()
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
@@ -955,13 +1001,15 @@ class TetMesh:
 
     def __init__(
         self,
-        vertices: Sequence[Vec3] | nparray,
-        tet_indices: Sequence[int] | nparray,
-        k_mu: nparray | float | None = None,
-        k_lambda: nparray | float | None = None,
-        k_damp: nparray | float | None = None,
+        vertices: Sequence[Vec3] | np.ndarray,
+        tet_indices: Sequence[int] | np.ndarray,
+        k_mu: np.ndarray | float | None = None,
+        k_lambda: np.ndarray | float | None = None,
+        k_damp: np.ndarray | float | None = None,
         density: float | None = None,
-        custom_attributes: ("dict[str, nparray] | dict[str, tuple[nparray, Model.AttributeFrequency]] | None") = None,
+        custom_attributes: (
+            "dict[str, np.ndarray] | dict[str, tuple[np.ndarray, Model.AttributeFrequency]] | None"
+        ) = None,
     ):
         """Construct a TetMesh from vertex positions and tet connectivity.
 
@@ -1021,7 +1069,7 @@ class TetMesh:
         self._cached_hash: int | None = None
 
     @staticmethod
-    def _broadcast_material(value: nparray | float | None, tet_count: int, name: str) -> np.ndarray | None:
+    def _broadcast_material(value: np.ndarray | float | None, tet_count: int, name: str) -> np.ndarray | None:
         if value is None:
             return None
         arr = np.asarray(value, dtype=np.float32)
@@ -1077,7 +1125,7 @@ class TetMesh:
         )
 
     @staticmethod
-    def compute_surface_triangles(tet_indices: nparray) -> np.ndarray:
+    def compute_surface_triangles(tet_indices: np.ndarray) -> np.ndarray:
         """Extract boundary triangles from tetrahedral element indices.
 
         Finds faces that belong to exactly one tetrahedron (boundary faces)
@@ -1129,12 +1177,12 @@ class TetMesh:
     # ---- Properties --------------------------------------------------------
 
     @property
-    def vertices(self) -> nparray:
+    def vertices(self) -> np.ndarray:
         """Vertex positions [m], shape (N, 3), float32."""
         return self._vertices
 
     @property
-    def tet_indices(self) -> nparray:
+    def tet_indices(self) -> np.ndarray:
         """Tetrahedral element indices, flattened, 4 per tet."""
         return self._tet_indices
 
@@ -1149,7 +1197,7 @@ class TetMesh:
         return len(self._vertices)
 
     @property
-    def surface_tri_indices(self) -> nparray:
+    def surface_tri_indices(self) -> np.ndarray:
         """Surface triangle indices (open faces), flattened, 3 per tri.
 
         Automatically computed from tet connectivity at construction time
@@ -1158,17 +1206,17 @@ class TetMesh:
         return self._surface_tri_indices
 
     @property
-    def k_mu(self) -> nparray | None:
+    def k_mu(self) -> np.ndarray | None:
         """Per-element first Lame parameter [Pa], shape (tet_count,) or None."""
         return self._k_mu
 
     @property
-    def k_lambda(self) -> nparray | None:
+    def k_lambda(self) -> np.ndarray | None:
         """Per-element second Lame parameter [Pa], shape (tet_count,) or None."""
         return self._k_lambda
 
     @property
-    def k_damp(self) -> nparray | None:
+    def k_damp(self) -> np.ndarray | None:
         """Per-element Rayleigh damping coefficient [-], shape (tet_count,) or None."""
         return self._k_damp
 
@@ -1462,7 +1510,7 @@ class Heightfield:
 
     def __init__(
         self,
-        data: Sequence[Sequence[float]] | nparray,
+        data: Sequence[Sequence[float]] | np.ndarray,
         nrow: int,
         ncol: int,
         hx: float = 1.0,
@@ -1511,7 +1559,6 @@ class Heightfield:
 
         self.is_solid = True
         self.has_inertia = False
-        self.warp_array = None  # Will be set by finalize()
         self._cached_hash = None
 
         # Heightfields are always static
@@ -1536,21 +1583,6 @@ class Heightfield:
         self.min_z = d_min
         self.max_z = d_max
         self._cached_hash = None
-
-    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
-        """
-        Construct a simulation-ready Warp array from the heightfield data and return its ID.
-
-        Args:
-            device: Device on which to allocate heightfield buffers.
-            requires_grad: If True, data is allocated with gradient tracking.
-
-        Returns:
-            The ID (pointer) of the simulation-ready Warp array.
-        """
-        with wp.ScopedDevice(device):
-            self.warp_array = wp.array(self._data.flatten(), requires_grad=requires_grad, dtype=wp.float32)
-            return self.warp_array.ptr
 
     @override
     def __hash__(self) -> int:
@@ -1597,20 +1629,20 @@ class Gaussian:
     @wp.struct
     class Data:
         num_points: wp.int32
-        transforms: wp.array(dtype=wp.transformf)
-        scales: wp.array(dtype=wp.vec3f)
-        opacities: wp.array(dtype=wp.float32)
-        sh_coeffs: wp.array(dtype=wp.float32, ndim=2)
+        transforms: wp.array[wp.transformf]
+        scales: wp.array[wp.vec3f]
+        opacities: wp.array[wp.float32]
+        sh_coeffs: wp.array2d[wp.float32]
         bvh_id: wp.uint64
         min_response: wp.float32
 
     def __init__(
         self,
-        positions: nparray,
-        rotations: nparray | None = None,
-        scales: nparray | None = None,
-        opacities: nparray | None = None,
-        sh_coeffs: nparray | None = None,
+        positions: np.ndarray,
+        rotations: np.ndarray | None = None,
+        scales: np.ndarray | None = None,
+        opacities: np.ndarray | None = None,
+        sh_coeffs: np.ndarray | None = None,
         sh_degree: int | None = None,
         min_response: float = 0.1,
     ):
@@ -1689,27 +1721,27 @@ class Gaussian:
         return self._positions.shape[0]
 
     @property
-    def positions(self) -> nparray:
+    def positions(self) -> np.ndarray:
         """Gaussian centers in local space [m], shape ``(N, 3)``, float."""
         return self._positions
 
     @property
-    def rotations(self) -> nparray:
+    def rotations(self) -> np.ndarray:
         """Quaternion orientations ``(x, y, z, w)``, shape ``(N, 4)``, float."""
         return self._rotations
 
     @property
-    def scales(self) -> nparray:
+    def scales(self) -> np.ndarray:
         """Per-axis linear scales, shape ``(N, 3)``, float."""
         return self._scales
 
     @property
-    def opacities(self) -> nparray:
+    def opacities(self) -> np.ndarray:
         """Opacity values ``[0, 1]``, shape ``(N,)``, float."""
         return self._opacities
 
     @property
-    def sh_coeffs(self) -> nparray | None:
+    def sh_coeffs(self) -> np.ndarray | None:
         """Spherical harmonic coefficients, shape ``(N, C)``, float."""
         return self._sh_coeffs
 
@@ -1799,7 +1831,7 @@ class Gaussian:
             raise ValueError("PLY Gaussian point cloud is missing required 'positions' attribute")
         positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
 
-        def _get_point_attr(name: str, width: int | None = None) -> nparray | None:
+        def _get_point_attr(name: str, width: int | None = None) -> np.ndarray | None:
             values = point_attrs.get(name)
             if values is None:
                 return None
@@ -1809,7 +1841,7 @@ class Gaussian:
                 return np.ascontiguousarray(values.reshape(-1))
             return np.ascontiguousarray(values.reshape(-1, width))
 
-        def _require_point_attr(name: str, message: str) -> nparray:
+        def _require_point_attr(name: str, message: str) -> np.ndarray:
             values = _get_point_attr(name)
             if values is None:
                 raise ValueError(message)
@@ -1908,7 +1940,7 @@ class Gaussian:
 
     # ---- Utility -------------------------------------------------------------
 
-    def compute_aabb(self) -> tuple[nparray, nparray]:
+    def compute_aabb(self) -> tuple[np.ndarray, np.ndarray]:
         """Compute axis-aligned bounding box of Gaussian centers.
 
         Returns:

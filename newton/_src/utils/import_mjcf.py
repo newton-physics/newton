@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -1015,12 +1003,11 @@ def parse_mjcf(
                 shapes.append(s)
 
             elif geom_type == "ellipsoid":
-                # MuJoCo ellipsoid size is (rx, ry, rz) semi-axes, same as Newton a, b, c
                 s = builder.add_shape_ellipsoid(
                     xform=tf,
-                    a=geom_size[0],
-                    b=geom_size[1],
-                    c=geom_size[2],
+                    rx=geom_size[0],
+                    ry=geom_size[1],
+                    rz=geom_size[2],
                     **shape_kwargs,
                 )
                 shapes.append(s)

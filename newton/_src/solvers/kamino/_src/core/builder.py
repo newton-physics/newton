@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 KAMINO: Constrained Rigid Multi-Body Model Builder
@@ -37,7 +25,7 @@ from .joints import (
 from .materials import MaterialDescriptor, MaterialManager, MaterialPairProperties, MaterialPairsModel, MaterialsModel
 from .math import FLOAT32_EPS
 from .model import ModelKamino, ModelKaminoInfo
-from .shapes import ShapeDescriptorType, ShapeType, max_contacts_for_shape_pair
+from .shapes import ShapeDescriptorType, is_explicit_geo_type, max_contacts_for_shape_pair
 from .size import SizeKamino
 from .time import TimeModel
 from .types import Axis, float32, int32, mat33f, transformf, vec2i, vec3f, vec4f, vec6f
@@ -1142,7 +1130,7 @@ class ModelBuilderKamino:
         # NOTE: This also finalizes the mesh/SDF/HField data on the device
         def make_geometry_source_pointer(geom: GeometryDescriptor, mesh_geoms: dict, device) -> int:
             # Append to data pointers array of the shape has a Mesh, SDF or HField source
-            if geom.shape.type in (ShapeType.MESH, ShapeType.CONVEX, ShapeType.HFIELD):
+            if is_explicit_geo_type(geom.shape.type):
                 geom_uid = geom.uid
                 # If the geometry has a Mesh, SDF or HField source,
                 # finalize it and retrieve the mesh pointer/index

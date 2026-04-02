@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example MPM 2-Way Coupling
@@ -37,13 +25,13 @@ from newton.solvers import SolverImplicitMPM
 @wp.kernel
 def compute_body_forces(
     dt: float,
-    collider_ids: wp.array(dtype=int),
-    collider_impulses: wp.array(dtype=wp.vec3),
-    collider_impulse_pos: wp.array(dtype=wp.vec3),
-    body_ids: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_f: wp.array(dtype=wp.spatial_vector),
+    collider_ids: wp.array[int],
+    collider_impulses: wp.array[wp.vec3],
+    collider_impulse_pos: wp.array[wp.vec3],
+    body_ids: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_f: wp.array[wp.spatial_vector],
 ):
     """Compute forces applied by sand to rigid bodies.
 
@@ -70,13 +58,13 @@ def compute_body_forces(
 @wp.kernel
 def subtract_body_force(
     dt: float,
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_inv_inertia: wp.array(dtype=wp.mat33),
-    body_inv_mass: wp.array(dtype=float),
-    body_q_res: wp.array(dtype=wp.transform),
-    body_qd_res: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_q_res: wp.array[wp.transform],
+    body_qd_res: wp.array[wp.spatial_vector],
 ):
     """Update the rigid bodies velocity to remove the forces applied by sand at the last step.
 
@@ -132,7 +120,6 @@ class Example:
         # setup mpm solver
         mpm_options = SolverImplicitMPM.Config()
         mpm_options.voxel_size = voxel_size
-        mpm_options.tolerance = 1.0e-6
         mpm_options.grid_type = "fixed"  # fixed grid so we can graph-capture
         mpm_options.grid_padding = 50
         mpm_options.max_active_cell_count = 1 << 15
@@ -231,7 +218,7 @@ class Example:
         self.simulate_sand()
 
     def collect_collider_impulses(self):
-        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver._collect_collider_impulses(
+        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
             self.sand_state_0
         )
         self.collider_impulse_ids.fill_(-1)
@@ -300,7 +287,7 @@ class Example:
         )
 
         if self.show_impulses:
-            impulses, pos, _cid = self.mpm_solver._collect_collider_impulses(self.sand_state_0)
+            impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(self.sand_state_0)
             self.viewer.log_lines(
                 "/impulses",
                 starts=pos,

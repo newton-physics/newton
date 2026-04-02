@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Basic Conveyor
@@ -145,11 +133,11 @@ def create_annular_prism_mesh(
 def set_conveyor_belt_state(
     belt_joint_q_start: int,
     belt_joint_qd_start: int,
-    sim_time: wp.array(dtype=wp.float32),
+    sim_time: wp.array[wp.float32],
     belt_angular_speed: float,
     # outputs
-    joint_q: wp.array(dtype=wp.float32),
-    joint_qd: wp.array(dtype=wp.float32),
+    joint_q: wp.array[wp.float32],
+    joint_qd: wp.array[wp.float32],
 ):
     """Set prescribed state for the belt's revolute root joint."""
     angle = belt_angular_speed * sim_time[0]
@@ -158,7 +146,7 @@ def set_conveyor_belt_state(
 
 
 @wp.kernel
-def advance_time(sim_time: wp.array(dtype=wp.float32), dt: float):
+def advance_time(sim_time: wp.array[wp.float32], dt: float):
     sim_time[0] = sim_time[0] + dt
 
 

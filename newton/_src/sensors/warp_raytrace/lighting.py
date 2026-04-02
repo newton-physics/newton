@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -34,23 +22,22 @@ def create_compute_lighting_function(config: RenderContext.Config, state: Render
         world_index: wp.int32,
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array(dtype=wp.int32),
+        bvh_shapes_group_roots: wp.array[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array(dtype=wp.int32),
-        shape_enabled: wp.array(dtype=wp.uint32),
-        shape_types: wp.array(dtype=wp.int32),
-        shape_indices: wp.array(dtype=wp.int32),
-        shape_sizes: wp.array(dtype=wp.vec3f),
-        shape_transforms: wp.array(dtype=wp.transformf),
-        shape_source_ptr: wp.array(dtype=wp.uint64),
+        bvh_particles_group_roots: wp.array[wp.int32],
+        shape_enabled: wp.array[wp.uint32],
+        shape_types: wp.array[wp.int32],
+        shape_sizes: wp.array[wp.vec3f],
+        shape_transforms: wp.array[wp.transformf],
+        shape_source_ptr: wp.array[wp.uint64],
         light_active: wp.bool,
         light_type: wp.int32,
         light_cast_shadow: wp.bool,
         light_position: wp.vec3f,
         light_orientation: wp.vec3f,
-        particles_position: wp.array(dtype=wp.vec3f),
-        particles_radius: wp.array(dtype=wp.float32),
+        particles_position: wp.array[wp.vec3f],
+        particles_radius: wp.array[wp.float32],
         triangle_mesh_id: wp.uint64,
         normal: wp.vec3f,
         hit_point: wp.vec3f,
@@ -107,7 +94,6 @@ def create_compute_lighting_function(config: RenderContext.Config, state: Render
                 world_index,
                 shape_enabled,
                 shape_types,
-                shape_indices,
                 shape_sizes,
                 shape_transforms,
                 shape_source_ptr,

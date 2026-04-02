@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Unit tests for core geometry containers and operations"""
 
@@ -20,10 +8,10 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.geometry.types import GeoType
 from newton._src.solvers.kamino._src.core.geometry import GeometryDescriptor
 from newton._src.solvers.kamino._src.core.shapes import (
     MeshShape,
-    ShapeType,
     SphereShape,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -68,8 +56,7 @@ class TestGeometryDescriptor(unittest.TestCase):
         # Check default values
         self.assertEqual(geom.name, "sphere_geom")
         self.assertEqual(geom.body, -1)
-        self.assertEqual(geom.shape.type, ShapeType.SPHERE)
-        self.assertEqual(geom.shape.num_params, 1)
+        self.assertEqual(geom.shape.type, GeoType.SPHERE)
         self.assertEqual(geom.shape.params, 0.42)
         self.assertEqual(geom.shape.name, "sphere")
         self.assertEqual(geom.offset, wp.transform_identity(dtype=wp.float32))
@@ -111,8 +98,7 @@ class TestGeometryDescriptor(unittest.TestCase):
         # Check default values
         self.assertEqual(geom.name, "mesh_geom")
         self.assertEqual(geom.body, -1)
-        self.assertEqual(geom.shape.type, ShapeType.MESH)
-        self.assertEqual(geom.shape.num_params, -1)
+        self.assertEqual(geom.shape.type, GeoType.MESH)
         self.assertEqual(geom.shape.params, (1.0, 1.0, 1.0))
         self.assertEqual(geom.shape.name, "mesh")
         self.assertEqual(geom.offset, wp.transform_identity(dtype=wp.float32))

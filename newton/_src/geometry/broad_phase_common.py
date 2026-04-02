@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Common utilities for broad phase collision detection.
 
@@ -48,7 +36,7 @@ def check_aabb_overlap(
 
 
 @wp.func
-def binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: int) -> int:
+def binary_search(values: wp.array[Any], value: Any, lower: int, upper: int) -> int:
     while lower < upper:
         mid = (lower + upper) >> 1
         if values[mid] > value:
@@ -94,7 +82,7 @@ def _vec2i_equal(p: wp.vec2i, q: wp.vec2i) -> bool:
 @wp.func
 def is_pair_excluded(
     pair: wp.vec2i,
-    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),
+    filter_pairs: wp.array[wp.vec2i],
     num_filter_pairs: int,
 ) -> bool:
     """Check whether a shape pair is in the sorted exclusion list via binary search.
@@ -128,8 +116,8 @@ def is_pair_excluded(
 @wp.func
 def write_pair(
     pair: wp.vec2i,
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     pairid = wp.atomic_add(candidate_pair_count, 0, 1)

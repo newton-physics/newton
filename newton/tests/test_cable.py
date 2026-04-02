@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 from typing import Any
@@ -125,8 +113,8 @@ def _assert_surface_attachment(
 def _set_kinematic_body_pose(
     body_id: wp.int32,
     pose: wp.transform,
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
 ):
     body_q[body_id] = pose
     body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -136,8 +124,8 @@ def _set_kinematic_body_pose(
 def _drive_gripper_boxes_kernel(
     ramp_time: float,
     t: float,
-    body_ids: wp.array(dtype=wp.int32),
-    signs: wp.array(dtype=wp.float32),
+    body_ids: wp.array[wp.int32],
+    signs: wp.array[wp.float32],
     anchor_p: wp.vec3,
     anchor_q: wp.quat,
     seg_half_len: float,
@@ -146,7 +134,7 @@ def _drive_gripper_boxes_kernel(
     pull_start_time: float,
     pull_ramp_time: float,
     pull_distance: float,
-    body_q: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
 ):
     """Kinematically move two gripper boxes toward an anchor frame, then pull along anchor +Z.
 
