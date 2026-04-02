@@ -129,10 +129,10 @@ def flatten_depth_image(
 
 @wp.kernel(enable_backward=False)
 def convert_ray_depth_to_forward_depth_kernel(
-    depth_image: wp.array(dtype=wp.float32, ndim=4),
-    camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
-    out_depth: wp.array(dtype=wp.float32, ndim=4),
+    depth_image: wp.array4d[wp.float32],
+    camera_rays: wp.array4d[wp.vec3f],
+    camera_transforms: wp.array2d[wp.transformf],
+    out_depth: wp.array4d[wp.float32],
 ):
     world_index, camera_index, py, px = wp.tid()
 
@@ -279,11 +279,11 @@ class Utils:
 
     def convert_ray_depth_to_forward_depth(
         self,
-        depth_image: wp.array(dtype=wp.float32, ndim=4),
-        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
-        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-        out_depth: wp.array(dtype=wp.float32, ndim=4) | None = None,
-    ) -> wp.array(dtype=wp.float32, ndim=4):
+        depth_image: wp.array4d[wp.float32],
+        camera_transforms: wp.array2d[wp.transformf],
+        camera_rays: wp.array4d[wp.vec3f],
+        out_depth: wp.array4d[wp.float32] | None = None,
+    ) -> wp.array4d[wp.float32]:
         """Convert ray-distance depth to forward (planar) depth.
 
         Projects each pixel's hit distance along its ray onto the camera's
