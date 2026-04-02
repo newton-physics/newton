@@ -22,11 +22,11 @@ from .types import (
 # Warp kernel for inertia-based OBB computation
 @wp.kernel(enable_backward=False)
 def compute_obb_candidates(
-    vertices: wp.array(dtype=wp.vec3),
+    vertices: wp.array[wp.vec3],
     base_quat: wp.quat,
-    volumes: wp.array2d(dtype=float),
-    transforms: wp.array2d(dtype=wp.transform),
-    extents: wp.array2d(dtype=wp.vec3),
+    volumes: wp.array2d[float],
+    transforms: wp.array2d[wp.transform],
+    extents: wp.array2d[wp.vec3],
 ):
     """Compute OBB candidates for different rotations around principal axes."""
     angle_idx, axis_idx = wp.tid()
@@ -752,11 +752,11 @@ def transform_points(points: np.ndarray, transform: wp.transform, scale: Vec3 | 
 
 @wp.kernel(enable_backward=False)
 def get_total_kernel(
-    counts: wp.array(dtype=int),
-    prefix_sums: wp.array(dtype=int),
-    num_elements: wp.array(dtype=int),
+    counts: wp.array[int],
+    prefix_sums: wp.array[int],
+    num_elements: wp.array[int],
     max_elements: int,
-    total: wp.array(dtype=int),
+    total: wp.array[int],
 ):
     """
     Get the total of an array of counts and prefix sums.
@@ -772,10 +772,10 @@ def get_total_kernel(
 
 
 def scan_with_total(
-    counts: wp.array(dtype=int),
-    prefix_sums: wp.array(dtype=int),
-    num_elements: wp.array(dtype=int),
-    total: wp.array(dtype=int),
+    counts: wp.array[int],
+    prefix_sums: wp.array[int],
+    num_elements: wp.array[int],
+    total: wp.array[int],
 ):
     """
     Computes an exclusive prefix sum and total of a counts array.

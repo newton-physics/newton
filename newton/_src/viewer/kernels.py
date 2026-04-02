@@ -23,13 +23,13 @@ class PickingState:
 
 @wp.kernel
 def compute_pick_state_kernel(
-    body_q: wp.array(dtype=wp.transform),
-    body_flags: wp.array(dtype=int),
+    body_q: wp.array[wp.transform],
+    body_flags: wp.array[int],
     body_index: int,
     hit_point_world: wp.vec3,
     # output
-    pick_body: wp.array(dtype=int),
-    pick_state: wp.array(dtype=PickingState),
+    pick_body: wp.array[int],
+    pick_state: wp.array[PickingState],
 ):
     """
     Initialize the pick state when a body is first picked.
@@ -61,14 +61,14 @@ def compute_pick_state_kernel(
 
 @wp.kernel
 def apply_picking_force_kernel(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    pick_body_arr: wp.array(dtype=int),
-    pick_state: wp.array(dtype=PickingState),
-    body_flags: wp.array(dtype=int),
-    body_com: wp.array(dtype=wp.vec3),
-    body_mass: wp.array(dtype=float),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    pick_body_arr: wp.array[int],
+    pick_state: wp.array[PickingState],
+    body_flags: wp.array[int],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -117,7 +117,7 @@ def update_pick_target_kernel(
     d: wp.vec3,
     world_offset: wp.vec3,
     # read-write
-    pick_state: wp.array(dtype=PickingState),
+    pick_state: wp.array[PickingState],
 ):
     # get original mouse cursor target (in physics space)
     original_target = pick_state[0].picking_target_world
@@ -140,12 +140,12 @@ def update_pick_target_kernel(
 
 @wp.kernel
 def update_shape_xforms(
-    shape_xforms: wp.array(dtype=wp.transform),
-    shape_parents: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    shape_worlds: wp.array(dtype=int, ndim=1),
-    world_offsets: wp.array(dtype=wp.vec3, ndim=1),
-    world_xforms: wp.array(dtype=wp.transform),
+    shape_xforms: wp.array[wp.transform],
+    shape_parents: wp.array[int],
+    body_q: wp.array[wp.transform],
+    shape_worlds: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    world_xforms: wp.array[wp.transform],
 ):
     tid = wp.tid()
 
@@ -168,9 +168,9 @@ def update_shape_xforms(
 
 @wp.kernel
 def repack_shape_colors(
-    shape_colors: wp.array(dtype=wp.vec3),
-    slot_to_shape: wp.array(dtype=wp.int32),
-    packed_shape_colors: wp.array(dtype=wp.vec3),
+    shape_colors: wp.array[wp.vec3],
+    slot_to_shape: wp.array[wp.int32],
+    packed_shape_colors: wp.array[wp.vec3],
 ):
     """Repack model-order shape colors into viewer batch order."""
     tid = wp.tid()
@@ -179,15 +179,15 @@ def repack_shape_colors(
 
 @wp.kernel
 def estimate_world_extents(
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_collision_radius: wp.array(dtype=float),
-    shape_world: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_collision_radius: wp.array[float],
+    shape_world: wp.array[int],
+    body_q: wp.array[wp.transform],
     world_count: int,
     # outputs (world_count x 3 arrays for min/max xyz per world)
-    world_bounds_min: wp.array(dtype=float, ndim=2),
-    world_bounds_max: wp.array(dtype=float, ndim=2),
+    world_bounds_min: wp.array2d[float],
+    world_bounds_max: wp.array2d[float],
 ):
     tid = wp.tid()
 
@@ -237,20 +237,20 @@ def estimate_world_extents(
 
 @wp.kernel
 def compute_contact_lines(
-    body_q: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    contact_count: wp.array(dtype=int),
-    contact_shape0: wp.array(dtype=int),
-    contact_shape1: wp.array(dtype=int),
-    contact_point0: wp.array(dtype=wp.vec3),
-    contact_offset0: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     line_scale: float,
     # outputs
-    line_start: wp.array(dtype=wp.vec3),
-    line_end: wp.array(dtype=wp.vec3),
+    line_start: wp.array[wp.vec3],
+    line_end: wp.array[wp.vec3],
 ):
     """Create line segments along contact normals for visualization."""
     tid = wp.tid()
@@ -293,20 +293,20 @@ def compute_contact_lines(
 
 @wp.kernel
 def compute_joint_basis_lines(
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_transform: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
-    body_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    shape_collision_radius: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_transform: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    shape_collision_radius: wp.array[float],
+    shape_body: wp.array[int],
     line_scale: float,
     # outputs - unified buffers for all joint lines
-    line_starts: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
+    line_starts: wp.array[wp.vec3],
+    line_ends: wp.array[wp.vec3],
+    line_colors: wp.array[wp.vec3],
 ):
     """Create line segments for joint basis vectors for visualization.
     Each joint produces 3 lines (x, y, z axes).
@@ -381,11 +381,11 @@ def compute_joint_basis_lines(
 
 @wp.kernel
 def compute_com_positions(
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    com_positions: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    com_positions: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     body_tf = body_q[tid]
@@ -398,18 +398,18 @@ def compute_com_positions(
 
 @wp.kernel
 def compute_inertia_box_lines(
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inertia: wp.array(dtype=wp.mat33),
-    body_inv_mass: wp.array(dtype=float),
-    body_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
     max_worlds: int,
     color: wp.vec3,
     # outputs: 12 lines per body
-    line_starts: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
+    line_starts: wp.array[wp.vec3],
+    line_ends: wp.array[wp.vec3],
+    line_colors: wp.array[wp.vec3],
 ):
     """Compute wireframe edges for inertia boxes. 12 edges per body."""
     tid = wp.tid()
@@ -634,18 +634,18 @@ def depth_to_color(depth: float, min_depth: float, max_depth: float) -> wp.vec3:
 
 @wp.kernel(enable_backward=False)
 def compute_hydro_contact_surface_lines(
-    triangle_vertices: wp.array(dtype=wp.vec3),
-    face_depths: wp.array(dtype=wp.float32),
-    face_shape_pairs: wp.array(dtype=wp.vec2i),
-    shape_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
+    triangle_vertices: wp.array[wp.vec3],
+    face_depths: wp.array[wp.float32],
+    face_shape_pairs: wp.array[wp.vec2i],
+    shape_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
     num_faces: int,
     min_depth: float,
     max_depth: float,
     penetrating_only: bool,
-    line_starts: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
+    line_starts: wp.array[wp.vec3],
+    line_ends: wp.array[wp.vec3],
+    line_colors: wp.array[wp.vec3],
 ):
     """Convert hydroelastic contact surface triangle vertices to line segments for wireframe rendering."""
     tid = wp.tid()

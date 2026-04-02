@@ -21,11 +21,11 @@ import newton.examples
 
 @wp.kernel
 def spin_first_capsules_kernel(
-    body_indices: wp.array(dtype=wp.int32),
-    twist_rates: wp.array(dtype=float),  # radians per second per body
+    body_indices: wp.array[wp.int32],
+    twist_rates: wp.array[float],  # radians per second per body
     dt: float,
-    body_q0: wp.array(dtype=wp.transform),
-    body_q1: wp.array(dtype=wp.transform),
+    body_q0: wp.array[wp.transform],
+    body_q1: wp.array[wp.transform],
 ):
     """Apply continuous twist to the first segment of each cable."""
     tid = wp.tid()

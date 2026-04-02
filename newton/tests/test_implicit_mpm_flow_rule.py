@@ -33,11 +33,11 @@ devices = get_test_devices()
 
 @wp.kernel
 def test_flow_rule_impl_kernel(
-    D: wp.array(dtype=vec6),
-    b: wp.array(dtype=vec6),
-    r: wp.array(dtype=vec6),
-    yp: wp.array(dtype=YieldParamVec),
-    u_out: wp.array(dtype=vec6),
+    D: wp.array[vec6],
+    b: wp.array[vec6],
+    r: wp.array[vec6],
+    yp: wp.array[YieldParamVec],
+    u_out: wp.array[vec6],
 ):
     i = wp.tid()
     u_out[i] = solve_flow_rule(D[i], b[i], r[i], yp[i], 1.0)
@@ -45,11 +45,11 @@ def test_flow_rule_impl_kernel(
 
 @wp.kernel
 def test_flow_rule_camclay_kernel(
-    D: wp.array(dtype=vec6),
-    b: wp.array(dtype=vec6),
-    r: wp.array(dtype=vec6),
-    yp: wp.array(dtype=YieldParamVec),
-    u_out: wp.array(dtype=vec6),
+    D: wp.array[vec6],
+    b: wp.array[vec6],
+    r: wp.array[vec6],
+    yp: wp.array[YieldParamVec],
+    u_out: wp.array[vec6],
 ):
     i = wp.tid()
     u_out[i] = solve_flow_rule_camclay(D[i], b[i], r[i], yp[i])
@@ -57,12 +57,12 @@ def test_flow_rule_camclay_kernel(
 
 @wp.kernel
 def test_flow_rule_dispatch_kernel(
-    D: wp.array(dtype=vec6),
-    b: wp.array(dtype=vec6),
-    r: wp.array(dtype=vec6),
-    yp: wp.array(dtype=YieldParamVec),
-    volume: wp.array(dtype=float),
-    u_out: wp.array(dtype=vec6),
+    D: wp.array[vec6],
+    b: wp.array[vec6],
+    r: wp.array[vec6],
+    yp: wp.array[YieldParamVec],
+    volume: wp.array[float],
+    u_out: wp.array[vec6],
 ):
     i = wp.tid()
     u_out[i] = solve_flow_rule_viscous(D[i], b[i], r[i], yp[i], volume[i])
@@ -70,11 +70,11 @@ def test_flow_rule_dispatch_kernel(
 
 @wp.kernel
 def eval_shear_yield_kernel(
-    yp: wp.array(dtype=YieldParamVec),
-    r_N: wp.array(dtype=float),
-    ys_out: wp.array(dtype=float),
-    pmin_out: wp.array(dtype=float),
-    pmax_out: wp.array(dtype=float),
+    yp: wp.array[YieldParamVec],
+    r_N: wp.array[float],
+    ys_out: wp.array[float],
+    pmin_out: wp.array[float],
+    pmax_out: wp.array[float],
 ):
     i = wp.tid()
     ys, _dys, pmin, pmax = shear_yield_stress(yp[i], r_N[i])
@@ -85,11 +85,11 @@ def eval_shear_yield_kernel(
 
 @wp.kernel
 def eval_shear_yield_camclay_kernel(
-    yp: wp.array(dtype=YieldParamVec),
-    r_N: wp.array(dtype=float),
-    ys_out: wp.array(dtype=float),
-    pmin_out: wp.array(dtype=float),
-    pmax_out: wp.array(dtype=float),
+    yp: wp.array[YieldParamVec],
+    r_N: wp.array[float],
+    ys_out: wp.array[float],
+    pmin_out: wp.array[float],
+    pmax_out: wp.array[float],
 ):
     i = wp.tid()
     ys, _dys, pmin, pmax = shear_yield_stress_camclay(yp[i], r_N[i])
@@ -624,7 +624,7 @@ def eval_flow_rule_residual(
 
 
 @wp.kernel
-def test_random_flow_rule_impl_kernel(errors: wp.array(dtype=float)):
+def test_random_flow_rule_impl_kernel(errors: wp.array[float]):
     tid = wp.tid()
 
     rng = wp.rand_init(42, tid)

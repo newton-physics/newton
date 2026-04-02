@@ -16,6 +16,7 @@ on:
 
 jobs:
   minimal-import-test:
+    if: github.event_name != 'push' || github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)

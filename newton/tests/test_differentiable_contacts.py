@@ -399,9 +399,9 @@ def test_finite_difference_two_body_gradient(test, device):
 
 @wp.kernel
 def _body_position_loss_kernel(
-    body_q: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
     target: wp.vec3,
-    loss: wp.array(dtype=float),
+    loss: wp.array[float],
 ):
     pos = wp.transform_get_translation(body_q[0])
     delta = pos - target

@@ -1426,7 +1426,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
 
 @wp.kernel
-def _sum_float_3d_kernel(src: wp.array3d(dtype=float), out: wp.array(dtype=float)):
+def _sum_float_3d_kernel(src: wp.array3d[float], out: wp.array[float]):
     i, j, k = wp.tid()
     wp.atomic_add(out, 0, src[i, j, k])
 

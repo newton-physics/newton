@@ -25,13 +25,13 @@ from newton.solvers import SolverImplicitMPM
 @wp.kernel
 def compute_body_forces(
     dt: float,
-    collider_ids: wp.array(dtype=int),
-    collider_impulses: wp.array(dtype=wp.vec3),
-    collider_impulse_pos: wp.array(dtype=wp.vec3),
-    body_ids: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_f: wp.array(dtype=wp.spatial_vector),
+    collider_ids: wp.array[int],
+    collider_impulses: wp.array[wp.vec3],
+    collider_impulse_pos: wp.array[wp.vec3],
+    body_ids: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_f: wp.array[wp.spatial_vector],
 ):
     """Compute forces applied by sand to rigid bodies.
 
@@ -58,13 +58,13 @@ def compute_body_forces(
 @wp.kernel
 def subtract_body_force(
     dt: float,
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_inv_inertia: wp.array(dtype=wp.mat33),
-    body_inv_mass: wp.array(dtype=float),
-    body_q_res: wp.array(dtype=wp.transform),
-    body_qd_res: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_q_res: wp.array[wp.transform],
+    body_qd_res: wp.array[wp.spatial_vector],
 ):
     """Update the rigid bodies velocity to remove the forces applied by sand at the last step.
 
