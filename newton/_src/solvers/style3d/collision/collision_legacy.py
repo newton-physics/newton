@@ -21,7 +21,7 @@ def particle_conservative_bounds_kernel(
     conservative_bound_relaxation: float,
     collision_info: TriMeshCollisionInfo,
     # outputs
-    particle_dx: wp.array(dtype=wp.vec3),
+    particle_dx: wp.array[wp.vec3],
 ):
     """
     Ensures particle displacements remain within a conservative bound to prevent penetration.
@@ -51,10 +51,10 @@ def particle_conservative_bounds_kernel(
 
 @wp.kernel
 def hessian_multiply_kernel(
-    hessian_diags: wp.array(dtype=wp.mat33),
-    x: wp.array(dtype=wp.vec3),
+    hessian_diags: wp.array[wp.mat33],
+    x: wp.array[wp.vec3],
     # outputs
-    Hx: wp.array(dtype=wp.vec3),
+    Hx: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     Hx[tid] = hessian_diags[tid] * x[tid]
@@ -146,11 +146,11 @@ class CollisionHandler:
             model.shape_count * model.particle_count,
         )
 
-    def rebuild_bvh(self, pos: wp.array(dtype=wp.vec3)):
+    def rebuild_bvh(self, pos: wp.array[wp.vec3]):
         """Rebuilds the BVH for collision detection using updated particle positions."""
         self.trimesh_collision_detector.rebuild(pos)
 
-    def frame_begin(self, particle_q: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3), dt: float):
+    def frame_begin(self, particle_q: wp.array[wp.vec3], vel: wp.array[wp.vec3], dt: float):
         """Initializes collision detection for a new simulation frame."""
         pass
 
@@ -161,9 +161,9 @@ class CollisionHandler:
         state_in: State,
         state_out: State,
         contacts: Contacts,
-        particle_forces: wp.array(dtype=wp.vec3),
-        particle_q_prev: wp.array(dtype=wp.vec3) = None,
-        particle_stiff: wp.array(dtype=wp.vec3) = None,
+        particle_forces: wp.array[wp.vec3],
+        particle_q_prev: wp.array[wp.vec3] = None,
+        particle_stiff: wp.array[wp.vec3] = None,
     ):
         """
         Evaluates contact forces and the diagonal of the Hessian for implicit time integration.
@@ -239,7 +239,7 @@ class CollisionHandler:
         """
         return self.contact_hessian_diags
 
-    def hessian_multiply(self, x: wp.array(dtype=wp.vec3)):
+    def hessian_multiply(self, x: wp.array[wp.vec3]):
         """Computes the Hessian-vector product for implicit integration."""
         wp.launch(
             hessian_multiply_kernel,
@@ -250,7 +250,7 @@ class CollisionHandler:
         )
         return self.Hx
 
-    def linear_iteration_end(self, dx: wp.array(dtype=wp.vec3)):
+    def linear_iteration_end(self, dx: wp.array[wp.vec3]):
         """
         Enforces conservative displacement bounds after each solver iteration to maintain stability
         and prevent excessive motion leading to penetration.
@@ -270,6 +270,6 @@ class CollisionHandler:
             device=self.model.device,
         )
 
-    def frame_end(self, pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3), dt: float):
+    def frame_end(self, pos: wp.array[wp.vec3], vel: wp.array[wp.vec3], dt: float):
         """Applies final collision response and velocity damping."""
         pass

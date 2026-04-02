@@ -471,15 +471,15 @@ class TestVoxelHashGrid(unittest.TestCase):
             point: wp.vec3,
             normal: wp.vec3,
             inv_voxel_size: float,
-            keys: wp.array(dtype=wp.uint64),
-            active_slots: wp.array(dtype=wp.int32),
-            sum_pos_x: wp.array(dtype=wp.float32),
-            sum_pos_y: wp.array(dtype=wp.float32),
-            sum_pos_z: wp.array(dtype=wp.float32),
-            sum_norm_x: wp.array(dtype=wp.float32),
-            sum_norm_y: wp.array(dtype=wp.float32),
-            sum_norm_z: wp.array(dtype=wp.float32),
-            counts: wp.array(dtype=wp.int32),
+            keys: wp.array[wp.uint64],
+            active_slots: wp.array[wp.int32],
+            sum_pos_x: wp.array[wp.float32],
+            sum_pos_y: wp.array[wp.float32],
+            sum_pos_z: wp.array[wp.float32],
+            sum_norm_x: wp.array[wp.float32],
+            sum_norm_y: wp.array[wp.float32],
+            sum_norm_z: wp.array[wp.float32],
+            counts: wp.array[wp.int32],
         ):
             key = compute_voxel_key(point, inv_voxel_size)
             idx = hashtable_find_or_insert(key, keys, active_slots)
@@ -555,18 +555,18 @@ class TestVoxelHashGrid(unittest.TestCase):
 
         @wp.kernel
         def accumulate_points(
-            points: wp.array(dtype=wp.vec3),
-            normals: wp.array(dtype=wp.vec3),
+            points: wp.array[wp.vec3],
+            normals: wp.array[wp.vec3],
             inv_voxel_size: float,
-            keys: wp.array(dtype=wp.uint64),
-            active_slots: wp.array(dtype=wp.int32),
-            sum_pos_x: wp.array(dtype=wp.float32),
-            sum_pos_y: wp.array(dtype=wp.float32),
-            sum_pos_z: wp.array(dtype=wp.float32),
-            sum_norm_x: wp.array(dtype=wp.float32),
-            sum_norm_y: wp.array(dtype=wp.float32),
-            sum_norm_z: wp.array(dtype=wp.float32),
-            counts: wp.array(dtype=wp.int32),
+            keys: wp.array[wp.uint64],
+            active_slots: wp.array[wp.int32],
+            sum_pos_x: wp.array[wp.float32],
+            sum_pos_y: wp.array[wp.float32],
+            sum_pos_z: wp.array[wp.float32],
+            sum_norm_x: wp.array[wp.float32],
+            sum_norm_y: wp.array[wp.float32],
+            sum_norm_z: wp.array[wp.float32],
+            counts: wp.array[wp.int32],
         ):
             tid = wp.tid()
             point = points[tid]
@@ -657,18 +657,18 @@ class TestVoxelHashGrid(unittest.TestCase):
 
         @wp.kernel
         def accumulate_points(
-            points: wp.array(dtype=wp.vec3),
-            normals: wp.array(dtype=wp.vec3),
+            points: wp.array[wp.vec3],
+            normals: wp.array[wp.vec3],
             inv_voxel_size: float,
-            keys: wp.array(dtype=wp.uint64),
-            active_slots: wp.array(dtype=wp.int32),
-            sum_pos_x: wp.array(dtype=wp.float32),
-            sum_pos_y: wp.array(dtype=wp.float32),
-            sum_pos_z: wp.array(dtype=wp.float32),
-            sum_norm_x: wp.array(dtype=wp.float32),
-            sum_norm_y: wp.array(dtype=wp.float32),
-            sum_norm_z: wp.array(dtype=wp.float32),
-            counts: wp.array(dtype=wp.int32),
+            keys: wp.array[wp.uint64],
+            active_slots: wp.array[wp.int32],
+            sum_pos_x: wp.array[wp.float32],
+            sum_pos_y: wp.array[wp.float32],
+            sum_pos_z: wp.array[wp.float32],
+            sum_norm_x: wp.array[wp.float32],
+            sum_norm_y: wp.array[wp.float32],
+            sum_norm_z: wp.array[wp.float32],
+            counts: wp.array[wp.int32],
         ):
             tid = wp.tid()
             point = points[tid]
@@ -723,10 +723,10 @@ class TestVoxelHashGrid(unittest.TestCase):
         @wp.kernel
         def add_point(
             inv_voxel_size: float,
-            keys: wp.array(dtype=wp.uint64),
-            active_slots: wp.array(dtype=wp.int32),
-            sum_pos_x: wp.array(dtype=wp.float32),
-            counts: wp.array(dtype=wp.int32),
+            keys: wp.array[wp.uint64],
+            active_slots: wp.array[wp.int32],
+            sum_pos_x: wp.array[wp.float32],
+            counts: wp.array[wp.int32],
         ):
             point = wp.vec3(0.5, 0.5, 0.5)
             key = compute_voxel_key(point, inv_voxel_size)
@@ -786,18 +786,18 @@ class TestVoxelHashGrid(unittest.TestCase):
 
         @wp.kernel
         def accumulate_points(
-            points: wp.array(dtype=wp.vec3),
-            normals: wp.array(dtype=wp.vec3),
+            points: wp.array[wp.vec3],
+            normals: wp.array[wp.vec3],
             inv_voxel_size: float,
-            keys: wp.array(dtype=wp.uint64),
-            active_slots: wp.array(dtype=wp.int32),
-            sum_pos_x: wp.array(dtype=wp.float32),
-            sum_pos_y: wp.array(dtype=wp.float32),
-            sum_pos_z: wp.array(dtype=wp.float32),
-            sum_norm_x: wp.array(dtype=wp.float32),
-            sum_norm_y: wp.array(dtype=wp.float32),
-            sum_norm_z: wp.array(dtype=wp.float32),
-            counts: wp.array(dtype=wp.int32),
+            keys: wp.array[wp.uint64],
+            active_slots: wp.array[wp.int32],
+            sum_pos_x: wp.array[wp.float32],
+            sum_pos_y: wp.array[wp.float32],
+            sum_pos_z: wp.array[wp.float32],
+            sum_norm_x: wp.array[wp.float32],
+            sum_norm_y: wp.array[wp.float32],
+            sum_norm_z: wp.array[wp.float32],
+            counts: wp.array[wp.int32],
         ):
             tid = wp.tid()
             point = points[tid]
@@ -889,18 +889,18 @@ class TestVoxelHashGrid(unittest.TestCase):
 
         @wp.kernel
         def accumulate_points(
-            points: wp.array(dtype=wp.vec3),
-            normals: wp.array(dtype=wp.vec3),
+            points: wp.array[wp.vec3],
+            normals: wp.array[wp.vec3],
             inv_voxel_size: float,
-            keys: wp.array(dtype=wp.uint64),
-            active_slots: wp.array(dtype=wp.int32),
-            sum_pos_x: wp.array(dtype=wp.float32),
-            sum_pos_y: wp.array(dtype=wp.float32),
-            sum_pos_z: wp.array(dtype=wp.float32),
-            sum_norm_x: wp.array(dtype=wp.float32),
-            sum_norm_y: wp.array(dtype=wp.float32),
-            sum_norm_z: wp.array(dtype=wp.float32),
-            counts: wp.array(dtype=wp.int32),
+            keys: wp.array[wp.uint64],
+            active_slots: wp.array[wp.int32],
+            sum_pos_x: wp.array[wp.float32],
+            sum_pos_y: wp.array[wp.float32],
+            sum_pos_z: wp.array[wp.float32],
+            sum_norm_x: wp.array[wp.float32],
+            sum_norm_y: wp.array[wp.float32],
+            sum_norm_z: wp.array[wp.float32],
+            counts: wp.array[wp.int32],
         ):
             tid = wp.tid()
             point = points[tid]

@@ -21,13 +21,13 @@ _OBJ_TYPE_BODY = 2
 
 @wp.kernel(enable_backward=False)
 def compute_sensing_obj_transforms_kernel(
-    indices: wp.array(dtype=wp.int32),
-    obj_types: wp.array(dtype=wp.int32),
-    shape_body: wp.array(dtype=wp.int32),
-    shape_transform: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
+    indices: wp.array[wp.int32],
+    obj_types: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     # output
-    transforms: wp.array(dtype=wp.transform),
+    transforms: wp.array[wp.transform],
 ):
     tid = wp.tid()
     idx = indices[tid]
@@ -44,15 +44,15 @@ def compute_sensing_obj_transforms_kernel(
 
 @wp.kernel(enable_backward=False)
 def accumulate_contact_forces_kernel(
-    num_contacts: wp.array(dtype=wp.int32),
-    contact_shape0: wp.array(dtype=wp.int32),
-    contact_shape1: wp.array(dtype=wp.int32),
-    contact_force: wp.array(dtype=wp.spatial_vector),
-    sensing_shape_to_row: wp.array(dtype=wp.int32),
-    counterpart_shape_to_col: wp.array(dtype=wp.int32),
+    num_contacts: wp.array[wp.int32],
+    contact_shape0: wp.array[wp.int32],
+    contact_shape1: wp.array[wp.int32],
+    contact_force: wp.array[wp.spatial_vector],
+    sensing_shape_to_row: wp.array[wp.int32],
+    counterpart_shape_to_col: wp.array[wp.int32],
     # output
-    force_matrix: wp.array2d(dtype=wp.vec3),
-    total_force: wp.array(dtype=wp.vec3),
+    force_matrix: wp.array2d[wp.vec3],
+    total_force: wp.array[wp.vec3],
 ):
     """Accumulate per-contact forces into total and/or per-counterpart arrays. Parallelizes over contacts."""
     con_idx = wp.tid()
@@ -86,12 +86,12 @@ def accumulate_contact_forces_kernel(
 
 @wp.kernel(enable_backward=False)
 def expand_body_to_shape_kernel(
-    body_to_row: wp.array(dtype=wp.int32),
-    body_to_col: wp.array(dtype=wp.int32),
-    shape_body: wp.array(dtype=wp.int32),
+    body_to_row: wp.array[wp.int32],
+    body_to_col: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
     # output
-    shape_to_row: wp.array(dtype=wp.int32),
-    shape_to_col: wp.array(dtype=wp.int32),
+    shape_to_row: wp.array[wp.int32],
+    shape_to_col: wp.array[wp.int32],
 ):
     """Expand body-indexed maps to shape-indexed arrays. Parallelizes over shapes."""
     tid = wp.tid()
@@ -288,16 +288,16 @@ class SensorContact:
     counterpart_indices: list[list[int]]
     """Counterpart body or shape indices per sensing object. ``counterpart_indices[i]`` lists the counterparts for row ``i``. Global counterparts appear first, followed by per-world locals in ascending index order."""
 
-    total_force: wp.array(dtype=wp.vec3) | None
+    total_force: wp.array[wp.vec3] | None
     """Total contact force [N] per sensing object, shape ``(n_sensing_objs,)``, dtype :class:`vec3`.
     ``None`` when ``measure_total=False``."""
 
-    force_matrix: wp.array2d(dtype=wp.vec3) | None
+    force_matrix: wp.array2d[wp.vec3] | None
     """Per-counterpart contact forces [N], shape ``(n_sensing_objs, max_counterparts)``, dtype :class:`vec3`.
     Entry ``[i, j]`` is the force on sensing object ``i`` from counterpart ``counterpart_indices[i][j]``, in world
     frame. ``None`` when no counterparts are specified."""
 
-    sensing_obj_transforms: wp.array(dtype=wp.transform)
+    sensing_obj_transforms: wp.array[wp.transform]
     """World-frame transforms of sensing objects [m, unitless quaternion],
     shape ``(n_sensing_objs,)``, dtype :class:`transform`."""
 

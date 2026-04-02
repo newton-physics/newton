@@ -2830,33 +2830,33 @@ class SolverMuJoCo(SolverBase):
             SolverMuJoCo._convert_mjw_contacts_to_newton_kernel = create_convert_mjw_contacts_to_newton_kernel()
 
         # --- New unified mappings: MuJoCo[world, entity] -> Newton[entity] ---
-        self.mjc_body_to_newton: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_body_to_newton: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
-        self.mjc_geom_to_newton_shape: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
-        self.mjc_jnt_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_jnt_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
-        self.mjc_jnt_to_newton_dof: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_jnt_to_newton_dof: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton DOF index. Shape [nworld, njnt], dtype int32."""
-        self.mjc_dof_to_newton_dof: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_dof_to_newton_dof: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, dof] to Newton DOF index. Shape [nworld, nv], dtype int32."""
-        self.newton_dof_to_body: wp.array(dtype=wp.int32) | None = None
+        self.newton_dof_to_body: wp.array[wp.int32] | None = None
         """Mapping from Newton DOF index to child body index. Shape [joint_dof_count], dtype int32."""
-        self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_mocap_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
-        self.mjc_actuator_ctrl_source: wp.array(dtype=wp.int32) | None = None
+        self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
 
         Values: 0=JOINT_TARGET (uses joint_target_pos/vel), 1=CTRL_DIRECT (uses mujoco.ctrl)
         Shape [nu], dtype int32."""
-        self.mjc_actuator_to_newton_idx: wp.array(dtype=wp.int32) | None = None
+        self.mjc_actuator_to_newton_idx: wp.array[wp.int32] | None = None
         """Mapping from MuJoCo actuator to Newton index.
 
         For JOINT_TARGET: sign-encoded DOF index (>=0: position, -1: unmapped, <=-2: velocity with -(idx+2))
         For CTRL_DIRECT: MJCF-order index into control.mujoco.ctrl array
 
         Shape [nu], dtype int32."""
-        self.mjc_eq_to_newton_eq: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_eq_to_newton_eq: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton's equality constraints.
@@ -2864,7 +2864,7 @@ class SolverMuJoCo(SolverBase):
         for the corresponding joint index.
 
         Shape [nworld, neq], dtype int32."""
-        self.mjc_eq_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_eq_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton joint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton joints that have no associated articulation,
@@ -2873,22 +2873,22 @@ class SolverMuJoCo(SolverBase):
         see :attr:`mjc_eq_to_newton_eq` for the corresponding equality constraint index.
 
         Shape [nworld, neq], dtype int32."""
-        self.mjc_eq_to_newton_mimic: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_eq_to_newton_mimic: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton mimic constraint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton's mimic constraints.
         A value of -1 indicates that the MuJoCo equality constraint is not associated with a Newton mimic constraint.
 
         Shape [nworld, neq], dtype int32."""
-        self.mjc_tendon_to_newton_tendon: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_tendon_to_newton_tendon: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, tendon] to Newton tendon index.
 
         Shape [nworld, ntendon], dtype int32."""
-        self.body_free_qd_start: wp.array(dtype=wp.int32) | None = None
+        self.body_free_qd_start: wp.array[wp.int32] | None = None
         """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
         # --- Conditional/lazy mappings ---
-        self.newton_shape_to_mjc_geom: wp.array(dtype=wp.int32) | None = None
+        self.newton_shape_to_mjc_geom: wp.array[wp.int32] | None = None
         """Inverse mapping from Newton shape index to MuJoCo geom index. Only created when use_mujoco_contacts=False. Shape [nshape], dtype int32."""
 
         # --- Helper arrays for actuator types ---

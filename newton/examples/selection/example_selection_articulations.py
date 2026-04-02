@@ -27,15 +27,13 @@ VERBOSE = True
 
 
 @wp.kernel
-def compute_middle_kernel(
-    lower: wp.array3d(dtype=float), upper: wp.array3d(dtype=float), middle: wp.array3d(dtype=float)
-):
+def compute_middle_kernel(lower: wp.array3d[float], upper: wp.array3d[float], middle: wp.array3d[float]):
     world, arti, dof = wp.tid()
     middle[world, arti, dof] = 0.5 * (lower[world, arti, dof] + upper[world, arti, dof])
 
 
 @wp.kernel
-def init_masks(mask_0: wp.array(dtype=bool), mask_1: wp.array(dtype=bool)):
+def init_masks(mask_0: wp.array[bool], mask_1: wp.array[bool]):
     tid = wp.tid()
     yes = tid % 2 == 0
     mask_0[tid] = yes
@@ -44,9 +42,9 @@ def init_masks(mask_0: wp.array(dtype=bool), mask_1: wp.array(dtype=bool)):
 
 @wp.kernel
 def reset_kernel(
-    ant_root_velocities: wp.array2d(dtype=wp.spatial_vector),
-    hum_root_velocities: wp.array2d(dtype=wp.spatial_vector),
-    mask: wp.array(dtype=bool),  # optional, can be None
+    ant_root_velocities: wp.array2d[wp.spatial_vector],
+    hum_root_velocities: wp.array2d[wp.spatial_vector],
+    mask: wp.array[bool],  # optional, can be None
     seed: int,
 ):
     world = wp.tid()
@@ -66,7 +64,7 @@ def reset_kernel(
 
 @wp.kernel
 def random_forces_kernel(
-    dof_forces: wp.array3d(dtype=float),  # dof forces (output)
+    dof_forces: wp.array3d[float],  # dof forces (output)
     max_magnitude: float,  # maximum force magnitude
     seed: int,  # random seed
 ):

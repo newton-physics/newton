@@ -22,15 +22,15 @@ class NonZeroEntry:
 class SparseMatrixELL:
     """Represents a sparse matrix in ELLPACK (ELL) format."""
 
-    num_nz: wp.array(dtype=int)  # Non-zeros count per column
-    nz_ell: wp.array2d(dtype=NonZeroEntry)  # Padded ELL storage [row-major, fixed-height]
+    num_nz: wp.array[int]  # Non-zeros count per column
+    nz_ell: wp.array2d[NonZeroEntry]  # Padded ELL storage [row-major, fixed-height]
 
 
 @wp.func
 def ell_mat_vec_mul(
-    num_nz: wp.array(dtype=int),
-    nz_ell: wp.array2d(dtype=NonZeroEntry),
-    x: wp.array(dtype=wp.vec3),
+    num_nz: wp.array[int],
+    nz_ell: wp.array2d[NonZeroEntry],
+    x: wp.array[wp.vec3],
     tid: int,
 ):
     Mx = wp.vec3(0.0)
@@ -43,11 +43,11 @@ def ell_mat_vec_mul(
 @wp.kernel
 def eval_residual_kernel(
     A_non_diag: SparseMatrixELL,
-    A_diag: wp.array(dtype=Any),
-    x: wp.array(dtype=wp.vec3),
-    b: wp.array(dtype=wp.vec3),
+    A_diag: wp.array[Any],
+    x: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
     # outputs
-    r: wp.array(dtype=wp.vec3),
+    r: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     Ax = A_diag[tid] * x[tid]
@@ -56,19 +56,19 @@ def eval_residual_kernel(
 
 
 # Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
-wp.overload(eval_residual_kernel, {"A_diag": wp.array(dtype=wp.float32)})
-wp.overload(eval_residual_kernel, {"A_diag": wp.array(dtype=wp.mat33)})
+wp.overload(eval_residual_kernel, {"A_diag": wp.array[wp.float32]})
+wp.overload(eval_residual_kernel, {"A_diag": wp.array[wp.mat33]})
 
 
 @wp.kernel
 def eval_residual_kernel_with_additional_Ax(
     A_non_diag: SparseMatrixELL,
-    A_diag: wp.array(dtype=Any),
-    x: wp.array(dtype=wp.vec3),
-    b: wp.array(dtype=wp.vec3),
-    additional_Ax: wp.array(dtype=wp.vec3),
+    A_diag: wp.array[Any],
+    x: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
+    additional_Ax: wp.array[wp.vec3],
     # outputs
-    r: wp.array(dtype=wp.vec3),
+    r: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     Ax = A_diag[tid] * x[tid] + additional_Ax[tid]
@@ -77,51 +77,51 @@ def eval_residual_kernel_with_additional_Ax(
 
 
 # Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
-wp.overload(eval_residual_kernel_with_additional_Ax, {"A_diag": wp.array(dtype=wp.float32)})
-wp.overload(eval_residual_kernel_with_additional_Ax, {"A_diag": wp.array(dtype=wp.mat33)})
+wp.overload(eval_residual_kernel_with_additional_Ax, {"A_diag": wp.array[wp.float32]})
+wp.overload(eval_residual_kernel_with_additional_Ax, {"A_diag": wp.array[wp.mat33]})
 
 
 @wp.kernel
 def array_mul_kernel(
-    a: wp.array(dtype=Any),
-    b: wp.array(dtype=wp.vec3),
+    a: wp.array[Any],
+    b: wp.array[wp.vec3],
     # outputs
-    out: wp.array(dtype=wp.vec3),
+    out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     out[tid] = a[tid] * b[tid]
 
 
 # Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
-wp.overload(array_mul_kernel, {"a": wp.array(dtype=wp.float32)})
-wp.overload(array_mul_kernel, {"a": wp.array(dtype=wp.mat33)})
+wp.overload(array_mul_kernel, {"a": wp.array[wp.float32]})
+wp.overload(array_mul_kernel, {"a": wp.array[wp.mat33]})
 
 
 @wp.kernel
 def ell_mat_vec_mul_kernel(
     M_non_diag: SparseMatrixELL,
-    M_diag: wp.array(dtype=Any),
-    x: wp.array(dtype=wp.vec3),
+    M_diag: wp.array[Any],
+    x: wp.array[wp.vec3],
     # outputs
-    Mx: wp.array(dtype=wp.vec3),
+    Mx: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     Mx[tid] = (M_diag[tid] * x[tid]) + ell_mat_vec_mul(M_non_diag.num_nz, M_non_diag.nz_ell, x, tid)
 
 
 # Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
-wp.overload(ell_mat_vec_mul_kernel, {"M_diag": wp.array(dtype=wp.float32)})
-wp.overload(ell_mat_vec_mul_kernel, {"M_diag": wp.array(dtype=wp.mat33)})
+wp.overload(ell_mat_vec_mul_kernel, {"M_diag": wp.array[wp.float32]})
+wp.overload(ell_mat_vec_mul_kernel, {"M_diag": wp.array[wp.mat33]})
 
 
 @wp.kernel
 def ell_mat_vec_mul_add_kernel(
     M_non_diag: SparseMatrixELL,
-    M_diag: wp.array(dtype=Any),
-    x: wp.array(dtype=wp.vec3),
-    additional_Mx: wp.array(dtype=wp.vec3),
+    M_diag: wp.array[Any],
+    x: wp.array[wp.vec3],
+    additional_Mx: wp.array[wp.vec3],
     # outputs
-    Mx: wp.array(dtype=wp.vec3),
+    Mx: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     result = (M_diag[tid] * x[tid]) + additional_Mx[tid]
@@ -130,18 +130,18 @@ def ell_mat_vec_mul_add_kernel(
 
 
 # Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
-wp.overload(ell_mat_vec_mul_add_kernel, {"M_diag": wp.array(dtype=wp.float32)})
-wp.overload(ell_mat_vec_mul_add_kernel, {"M_diag": wp.array(dtype=wp.mat33)})
+wp.overload(ell_mat_vec_mul_add_kernel, {"M_diag": wp.array[wp.float32]})
+wp.overload(ell_mat_vec_mul_add_kernel, {"M_diag": wp.array[wp.mat33]})
 
 
 @wp.kernel
 def update_cg_direction_kernel(
     iter: int,
-    z: wp.array(dtype=wp.vec3),
-    rTz: wp.array(dtype=float),
-    p_prev: wp.array(dtype=wp.vec3),
+    z: wp.array[wp.vec3],
+    rTz: wp.array[float],
+    p_prev: wp.array[wp.vec3],
     # outputs
-    p: wp.array(dtype=wp.vec3),
+    p: wp.array[wp.vec3],
 ):
     # p = r + (rz_new / rz_old) * p;
     i = wp.tid()
@@ -159,13 +159,13 @@ def update_cg_direction_kernel(
 @wp.kernel
 def step_cg_kernel(
     iter: int,
-    rTz: wp.array(dtype=float),
-    pTAp: wp.array(dtype=float),
-    p: wp.array(dtype=wp.vec3),
-    Ap: wp.array(dtype=wp.vec3),
+    rTz: wp.array[float],
+    pTAp: wp.array[float],
+    p: wp.array[wp.vec3],
+    Ap: wp.array[wp.vec3],
     # outputs
-    x: wp.array(dtype=wp.vec3),
-    r: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    r: wp.array[wp.vec3],
 ):
     i = wp.tid()
     num = rTz[iter]
@@ -182,9 +182,9 @@ def generate_test_data_kernel(
     dim: int,
     diag_term: float,
     A_non_diag: SparseMatrixELL,
-    A_diag: wp.array(dtype=Any),
-    b: wp.array(dtype=wp.vec3),
-    x0: wp.array(dtype=wp.vec3),
+    A_diag: wp.array[Any],
+    b: wp.array[wp.vec3],
+    x0: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 
@@ -211,8 +211,8 @@ def generate_test_data_kernel(
 
 
 def array_inner(
-    a: wp.array(dtype=wp.vec3),
-    b: wp.array(dtype=wp.vec3),
+    a: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
     out_ptr: wp.uint64,
 ):
     from warp._src.context import runtime  # noqa: PLC0415
@@ -262,10 +262,10 @@ class PcgSolver:
     def step1_update_r(
         self,
         A_non_diag: SparseMatrixELL,
-        A_diag: wp.array(dtype=Any),
-        b: wp.array(dtype=wp.vec3),
-        x: wp.array(dtype=wp.vec3) = None,  # Pass `None` if x[:] == 0.0
-        additional_Ax: wp.array(dtype=wp.vec3) = None,  # Pass `None` if additional_Ax[:] == 0.0
+        A_diag: wp.array[Any],
+        b: wp.array[wp.vec3],
+        x: wp.array[wp.vec3] = None,  # Pass `None` if x[:] == 0.0
+        additional_Ax: wp.array[wp.vec3] = None,  # Pass `None` if additional_Ax[:] == 0.0
     ):
         """Update residual: r = b - A * x"""
         if x is None:
@@ -287,7 +287,7 @@ class PcgSolver:
                 device=self.device,
             )
 
-    def step2_update_z(self, inv_M: wp.array(dtype=Any)):
+    def step2_update_z(self, inv_M: wp.array[Any]):
         wp.launch(array_mul_kernel, dim=self.dim, inputs=[inv_M, self.r], outputs=[self.z], device=self.device)
 
     def step3_update_rTz(self, iter: int):
@@ -305,8 +305,8 @@ class PcgSolver:
     def step5_update_Ap(
         self,
         A_non_diag: SparseMatrixELL,
-        A_diag: wp.array(dtype=Any),
-        additional_Ap: wp.array(dtype=wp.vec3) = None,
+        A_diag: wp.array[Any],
+        additional_Ap: wp.array[wp.vec3] = None,
     ):
         if additional_Ap is None:
             wp.launch(
@@ -328,7 +328,7 @@ class PcgSolver:
     def step6_update_pTAp(self, iter: int):
         array_inner(self.p, self.Ap, self.pTAp.ptr + iter * self.pTAp.strides[0])
 
-    def step7_update_x_r(self, x: wp.array(dtype=wp.vec3), iter: int):
+    def step7_update_x_r(self, x: wp.array[wp.vec3], iter: int):
         wp.launch(
             step_cg_kernel,
             dim=self.dim,
@@ -340,11 +340,11 @@ class PcgSolver:
     def solve(
         self,
         A_non_diag: SparseMatrixELL,
-        A_diag: wp.array(dtype=Any),
-        x0: wp.array(dtype=wp.vec3),  # Pass `None` means x0[:] == 0.0
-        b: wp.array(dtype=wp.vec3),
-        inv_M: wp.array(dtype=Any),
-        x1: wp.array(dtype=wp.vec3),
+        A_diag: wp.array[Any],
+        x0: wp.array[wp.vec3],  # Pass `None` means x0[:] == 0.0
+        b: wp.array[wp.vec3],
+        inv_M: wp.array[Any],
+        x1: wp.array[wp.vec3],
         iterations: int,
         additional_multiplier: Callable | None = None,
     ):

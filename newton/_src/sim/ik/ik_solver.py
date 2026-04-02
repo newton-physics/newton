@@ -47,10 +47,10 @@ class IKSampler(str, Enum):
 
 @wp.kernel
 def _sample_none_kernel(
-    joint_q_in: wp.array2d(dtype=wp.float32),
+    joint_q_in: wp.array2d[wp.float32],
     n_seeds: int,
     n_coords: int,
-    joint_q_out: wp.array2d(dtype=wp.float32),
+    joint_q_out: wp.array2d[wp.float32],
 ):
     expanded_idx = wp.tid()
     problem_idx = expanded_idx // n_seeds
@@ -61,15 +61,15 @@ def _sample_none_kernel(
 
 @wp.kernel
 def _sample_gauss_kernel(
-    joint_q_in: wp.array2d(dtype=wp.float32),
+    joint_q_in: wp.array2d[wp.float32],
     n_seeds: int,
     n_coords: int,
     noise_std: float,
-    joint_lower: wp.array1d(dtype=wp.float32),
-    joint_upper: wp.array1d(dtype=wp.float32),
-    joint_bounded: wp.array1d(dtype=wp.int32),
-    base_seed: wp.array1d(dtype=wp.uint32),
-    joint_q_out: wp.array2d(dtype=wp.float32),
+    joint_lower: wp.array[wp.float32],
+    joint_upper: wp.array[wp.float32],
+    joint_bounded: wp.array[wp.int32],
+    base_seed: wp.array[wp.uint32],
+    joint_q_out: wp.array2d[wp.float32],
 ):
     expanded_idx = wp.tid()
     problem_idx = expanded_idx // n_seeds
@@ -94,11 +94,11 @@ def _sample_gauss_kernel(
 @wp.kernel
 def _sample_uniform_kernel(
     n_coords: int,
-    joint_lower: wp.array1d(dtype=wp.float32),
-    joint_upper: wp.array1d(dtype=wp.float32),
-    joint_bounded: wp.array1d(dtype=wp.int32),
-    base_seed: wp.array1d(dtype=wp.uint32),
-    joint_q_out: wp.array2d(dtype=wp.float32),
+    joint_lower: wp.array[wp.float32],
+    joint_upper: wp.array[wp.float32],
+    joint_bounded: wp.array[wp.int32],
+    base_seed: wp.array[wp.uint32],
+    joint_q_out: wp.array2d[wp.float32],
 ):
     expanded_idx = wp.tid()
 
@@ -120,11 +120,11 @@ def _sample_uniform_kernel(
 def _sample_roberts_kernel(
     n_seeds: int,
     n_coords: int,
-    roberts_basis: wp.array1d(dtype=wp.float32),
-    joint_lower: wp.array1d(dtype=wp.float32),
-    joint_upper: wp.array1d(dtype=wp.float32),
-    joint_bounded: wp.array1d(dtype=wp.int32),
-    joint_q_out: wp.array2d(dtype=wp.float32),
+    roberts_basis: wp.array[wp.float32],
+    joint_lower: wp.array[wp.float32],
+    joint_upper: wp.array[wp.float32],
+    joint_bounded: wp.array[wp.int32],
+    joint_q_out: wp.array2d[wp.float32],
 ):
     expanded_idx = wp.tid()
     seed_idx = expanded_idx % n_seeds
@@ -143,9 +143,9 @@ def _sample_roberts_kernel(
 
 @wp.kernel
 def _select_best_seed_indices(
-    costs: wp.array1d(dtype=wp.float32),
+    costs: wp.array[wp.float32],
     n_seeds: int,
-    best: wp.array1d(dtype=wp.int32),
+    best: wp.array[wp.int32],
 ):
     problem_idx = wp.tid()
     base = problem_idx * n_seeds
@@ -164,11 +164,11 @@ def _select_best_seed_indices(
 
 @wp.kernel
 def _gather_best_seed(
-    joint_q_expanded: wp.array2d(dtype=wp.float32),
-    best: wp.array1d(dtype=wp.int32),
+    joint_q_expanded: wp.array2d[wp.float32],
+    best: wp.array[wp.int32],
     n_seeds: int,
     n_coords: int,
-    joint_q_out: wp.array2d(dtype=wp.float32),
+    joint_q_out: wp.array2d[wp.float32],
 ):
     problem_idx, coord_idx = wp.tid()
     best_seed = best[problem_idx]
@@ -178,8 +178,8 @@ def _gather_best_seed(
 
 @wp.kernel
 def _pull_seed(
-    seed_state: wp.array1d(dtype=wp.uint32),
-    out_seed: wp.array1d(dtype=wp.uint32),
+    seed_state: wp.array[wp.uint32],
+    out_seed: wp.array[wp.uint32],
 ):
     out_seed[0] = seed_state[0]
     seed_state[0] = seed_state[0] + wp.uint32(1)
@@ -187,7 +187,7 @@ def _pull_seed(
 
 @wp.kernel
 def _set_seed(
-    seed_state: wp.array1d(dtype=wp.uint32),
+    seed_state: wp.array[wp.uint32],
     value: wp.uint32,
 ):
     seed_state[0] = value
@@ -331,8 +331,8 @@ class IKSolver:
 
     def step(
         self,
-        joint_q_in: wp.array2d(dtype=wp.float32),
-        joint_q_out: wp.array2d(dtype=wp.float32),
+        joint_q_in: wp.array2d[wp.float32],
+        joint_q_out: wp.array2d[wp.float32],
         iterations: int = 50,
         step_size: float = 1.0,
     ) -> None:
@@ -398,19 +398,19 @@ class IKSolver:
         )
 
     @property
-    def joint_q(self) -> wp.array2d(dtype=wp.float32):
+    def joint_q(self) -> wp.array2d[wp.float32]:
         """Expanded joint-coordinate buffer that stores all sampled seeds."""
         return self.joint_q_expanded
 
     @property
-    def costs(self) -> wp.array(dtype=wp.float32):
+    def costs(self) -> wp.array[wp.float32]:
         """Expanded per-seed objective costs from the most recent solve."""
         return self.costs_expanded
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._impl, name)
 
-    def _sample(self, joint_q_in: wp.array2d(dtype=wp.float32)) -> None:
+    def _sample(self, joint_q_in: wp.array2d[wp.float32]) -> None:
         wp.launch(
             _pull_seed,
             dim=1,

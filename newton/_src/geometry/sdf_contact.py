@@ -303,11 +303,11 @@ def add_to_shared_buffer_atomic(
     thread_id: int,
     add_triangle: bool,
     tri_idx: int,
-    buffer: wp.array(dtype=wp.int32),
+    buffer: wp.array[wp.int32],
     v0: wp.vec3,
     v1: wp.vec3,
     v2: wp.vec3,
-    vertex_cache: wp.array(dtype=wp.vec3),
+    vertex_cache: wp.array[wp.vec3],
     vertex_cache_offset: int,
 ):
     """Add a triangle index to a shared memory buffer using atomic operations.
@@ -361,7 +361,7 @@ def add_to_shared_buffer_atomic(
 @wp.func
 def get_triangle_from_heightfield(
     hfd: HeightfieldData,
-    elevation_data: wp.array(dtype=wp.float32),
+    elevation_data: wp.array[wp.float32],
     mesh_scale: wp.vec3,
     X_ws: wp.transform,
     tri_idx: int,
@@ -455,7 +455,7 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
         use_bvh_for_sdf: bool,
         sdf_is_heightfield: bool,
         hfd_sdf: HeightfieldData,
-        elevation_data: wp.array(dtype=wp.float32),
+        elevation_data: wp.array[wp.float32],
     ) -> tuple[float, wp.vec3, wp.vec3]:
         """Compute the deepest contact between a triangle and an SDF volume.
 
@@ -590,7 +590,7 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
         mesh_id: wp.uint64,
         texture_sdf: TextureSDFData,
         sdf_mesh_id: wp.uint64,
-        buffer: wp.array(dtype=wp.int32),
+        buffer: wp.array[wp.int32],
         contact_distance: float,
         use_bvh_for_sdf: bool,
         inv_sdf_scale: wp.vec3,
@@ -599,8 +599,8 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
         sdf_shape_type: int,
         hfd_tri: HeightfieldData,
         hfd_sdf: HeightfieldData,
-        elevation_data: wp.array(dtype=wp.float32),
-        vertex_cache: wp.array(dtype=wp.vec3),
+        elevation_data: wp.array[wp.float32],
+        vertex_cache: wp.array[wp.vec3],
     ):
         """Midphase triangle culling for mesh-SDF collision.
 
@@ -702,12 +702,12 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
 
 @wp.kernel(enable_backward=False)
 def compute_mesh_mesh_tri_counts(
-    shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
-    shape_pairs_mesh_mesh_count: wp.array(dtype=int),
-    shape_source: wp.array(dtype=wp.uint64),
-    shape_heightfield_index: wp.array(dtype=wp.int32),
-    heightfield_data: wp.array(dtype=HeightfieldData),
-    tri_counts: wp.array(dtype=wp.int32),
+    shape_pairs_mesh_mesh: wp.array[wp.vec2i],
+    shape_pairs_mesh_mesh_count: wp.array[int],
+    shape_source: wp.array[wp.uint64],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    tri_counts: wp.array[wp.int32],
 ):
     """Compute per-pair triangle counts for mesh-mesh (or heightfield-mesh) pairs.
 
@@ -741,12 +741,12 @@ def compute_mesh_mesh_tri_counts(
 
 @wp.kernel(enable_backward=False)
 def compute_block_counts_from_weights(
-    weight_prefix_sums: wp.array(dtype=wp.int32),
-    weights: wp.array(dtype=wp.int32),
-    pair_count_arr: wp.array(dtype=int),
+    weight_prefix_sums: wp.array[wp.int32],
+    weights: wp.array[wp.int32],
+    pair_count_arr: wp.array[int],
     max_pairs: int,
     target_blocks: int,
-    block_counts: wp.array(dtype=wp.int32),
+    block_counts: wp.array[wp.int32],
 ):
     """Convert per-pair weights to block counts using adaptive load balancing.
 
@@ -840,20 +840,20 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
     @wp.kernel(enable_backward=False, module="unique")
     def mesh_sdf_collision_kernel(
-        shape_data: wp.array(dtype=wp.vec4),
-        shape_transform: wp.array(dtype=wp.transform),
-        shape_source: wp.array(dtype=wp.uint64),
-        texture_sdf_table: wp.array(dtype=TextureSDFData),
-        shape_sdf_index: wp.array(dtype=wp.int32),
-        shape_gap: wp.array(dtype=float),
-        _shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
-        _shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
-        _shape_voxel_resolution: wp.array(dtype=wp.vec3i),
-        shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
-        shape_pairs_mesh_mesh_count: wp.array(dtype=int),
-        shape_heightfield_index: wp.array(dtype=wp.int32),
-        heightfield_data: wp.array(dtype=HeightfieldData),
-        heightfield_elevations: wp.array(dtype=wp.float32),
+        shape_data: wp.array[wp.vec4],
+        shape_transform: wp.array[wp.transform],
+        shape_source: wp.array[wp.uint64],
+        texture_sdf_table: wp.array[TextureSDFData],
+        shape_sdf_index: wp.array[wp.int32],
+        shape_gap: wp.array[float],
+        _shape_collision_aabb_lower: wp.array[wp.vec3],
+        _shape_collision_aabb_upper: wp.array[wp.vec3],
+        _shape_voxel_resolution: wp.array[wp.vec3i],
+        shape_pairs_mesh_mesh: wp.array[wp.vec2i],
+        shape_pairs_mesh_mesh_count: wp.array[int],
+        shape_heightfield_index: wp.array[wp.int32],
+        heightfield_data: wp.array[HeightfieldData],
+        heightfield_elevations: wp.array[wp.float32],
         writer_data: Any,
         total_num_blocks: int,
     ):
@@ -1063,21 +1063,21 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
     @wp.kernel(enable_backward=False, module="unique")
     def mesh_sdf_collision_global_reduce_kernel(
-        shape_data: wp.array(dtype=wp.vec4),
-        shape_transform: wp.array(dtype=wp.transform),
-        shape_source: wp.array(dtype=wp.uint64),
-        texture_sdf_table: wp.array(dtype=TextureSDFData),
-        shape_sdf_index: wp.array(dtype=wp.int32),
-        shape_gap: wp.array(dtype=float),
-        shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
-        shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
-        shape_voxel_resolution: wp.array(dtype=wp.vec3i),
-        shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
-        shape_pairs_mesh_mesh_count: wp.array(dtype=int),
-        shape_heightfield_index: wp.array(dtype=wp.int32),
-        heightfield_data: wp.array(dtype=HeightfieldData),
-        heightfield_elevations: wp.array(dtype=wp.float32),
-        block_offsets: wp.array(dtype=wp.int32),
+        shape_data: wp.array[wp.vec4],
+        shape_transform: wp.array[wp.transform],
+        shape_source: wp.array[wp.uint64],
+        texture_sdf_table: wp.array[TextureSDFData],
+        shape_sdf_index: wp.array[wp.int32],
+        shape_gap: wp.array[float],
+        shape_collision_aabb_lower: wp.array[wp.vec3],
+        shape_collision_aabb_upper: wp.array[wp.vec3],
+        shape_voxel_resolution: wp.array[wp.vec3i],
+        shape_pairs_mesh_mesh: wp.array[wp.vec2i],
+        shape_pairs_mesh_mesh_count: wp.array[int],
+        shape_heightfield_index: wp.array[wp.int32],
+        heightfield_data: wp.array[HeightfieldData],
+        heightfield_elevations: wp.array[wp.float32],
+        block_offsets: wp.array[wp.int32],
         reducer_data: GlobalContactReducerData,
         total_num_blocks: int,
     ):

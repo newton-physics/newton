@@ -492,9 +492,9 @@ def create_empty_sdf_data() -> SDFData:
 
 @wp.kernel
 def compute_mesh_signed_volume_kernel(
-    points: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int32),
-    volume_sum: wp.array(dtype=wp.float32),
+    points: wp.array[wp.vec3],
+    indices: wp.array[wp.int32],
+    volume_sum: wp.array[wp.float32],
 ):
     """Compute signed volume contribution from each triangle."""
     tri_idx = wp.tid()
@@ -531,7 +531,7 @@ def get_distance_to_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32, 
 def sdf_from_mesh_kernel(
     mesh: wp.uint64,
     sdf: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3i),
+    tile_points: wp.array[wp.vec3i],
     shape_margin: wp.float32,
     winding_threshold: wp.float32,
 ):
@@ -558,7 +558,7 @@ def sdf_from_primitive_kernel(
     shape_type: wp.int32,
     shape_scale: wp.vec3,
     sdf: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3i),
+    tile_points: wp.array[wp.vec3i],
     shape_margin: wp.float32,
 ):
     """
@@ -593,10 +593,10 @@ def sdf_from_primitive_kernel(
 @wp.kernel
 def check_tile_occupied_mesh_kernel(
     mesh: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3f),
+    tile_points: wp.array[wp.vec3f],
     threshold: wp.vec2f,
     winding_threshold: wp.float32,
-    tile_occupied: wp.array(dtype=bool),
+    tile_occupied: wp.array[bool],
 ):
     tid = wp.tid()
     sample_pos = tile_points[tid]
@@ -614,9 +614,9 @@ def check_tile_occupied_mesh_kernel(
 def check_tile_occupied_primitive_kernel(
     shape_type: wp.int32,
     shape_scale: wp.vec3,
-    tile_points: wp.array(dtype=wp.vec3f),
+    tile_points: wp.array[wp.vec3f],
     threshold: wp.vec2f,
-    tile_occupied: wp.array(dtype=bool),
+    tile_occupied: wp.array[bool],
 ):
     tid = wp.tid()
     sample_pos = tile_points[tid]
@@ -1133,11 +1133,11 @@ def compute_offset_mesh(
 @wp.kernel(enable_backward=False)
 def count_isomesh_faces_kernel(
     sdf: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3i),
-    tri_range_table: wp.array(dtype=wp.int32),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    tile_points: wp.array[wp.vec3i],
+    tri_range_table: wp.array[wp.int32],
+    corner_offsets_table: wp.array[wp.vec3ub],
     isovalue: wp.float32,
-    face_count: wp.array(dtype=int),
+    face_count: wp.array[int],
 ):
     """Count isosurface faces without generating vertices (first pass of two-pass approach).
     Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
@@ -1174,14 +1174,14 @@ def count_isomesh_faces_kernel(
 @wp.kernel(enable_backward=False)
 def generate_isomesh_kernel(
     sdf: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3i),
-    tri_range_table: wp.array(dtype=wp.int32),
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    tile_points: wp.array[wp.vec3i],
+    tri_range_table: wp.array[wp.int32],
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
     isovalue: wp.float32,
-    face_count: wp.array(dtype=int),
-    vertices: wp.array(dtype=wp.vec3),
-    face_normals: wp.array(dtype=wp.vec3),
+    face_count: wp.array[int],
+    vertices: wp.array[wp.vec3],
+    face_normals: wp.array[wp.vec3],
 ):
     """Generate isosurface mesh vertices and normals using marching cubes.
     Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
@@ -1267,7 +1267,7 @@ def _populate_dense_sdf_kernel(
     ny: wp.int32,
     nz: wp.int32,
     shape_offset: wp.float32,
-    sdf_values: wp.array(dtype=wp.float32),
+    sdf_values: wp.array[wp.float32],
 ):
     """Evaluate analytical SDF at every point of a dense regular grid."""
     x, y, z = wp.tid()
@@ -1294,12 +1294,12 @@ def _populate_dense_sdf_kernel(
 
 @wp.kernel(enable_backward=False)
 def _count_dense_mc_faces_kernel(
-    sdf_values: wp.array(dtype=wp.float32),
+    sdf_values: wp.array[wp.float32],
     ny: wp.int32,
     nz: wp.int32,
-    tri_range_table: wp.array(dtype=wp.int32),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
-    face_count: wp.array(dtype=int),
+    tri_range_table: wp.array[wp.int32],
+    corner_offsets_table: wp.array[wp.vec3ub],
+    face_count: wp.array[int],
 ):
     """Count marching-cubes faces on a dense SDF grid (first MC pass)."""
     x, y, z = wp.tid()
@@ -1318,17 +1318,17 @@ def _count_dense_mc_faces_kernel(
 
 @wp.kernel(enable_backward=False)
 def _generate_dense_mc_kernel(
-    sdf_values: wp.array(dtype=wp.float32),
+    sdf_values: wp.array[wp.float32],
     ny: wp.int32,
     nz: wp.int32,
     origin: wp.vec3,
     voxel_size: wp.vec3,
-    tri_range_table: wp.array(dtype=wp.int32),
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
-    face_count: wp.array(dtype=int),
-    vertices: wp.array(dtype=wp.vec3),
-    face_normals: wp.array(dtype=wp.vec3),
+    tri_range_table: wp.array[wp.int32],
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
+    face_count: wp.array[int],
+    vertices: wp.array[wp.vec3],
+    face_normals: wp.array[wp.vec3],
 ):
     """Generate marching-cubes vertices on a dense SDF grid (second MC pass)."""
     x, y, z = wp.tid()

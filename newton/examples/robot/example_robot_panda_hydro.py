@@ -40,8 +40,8 @@ def quat_to_vec4(q: wp.quat) -> wp.vec4:
 
 @wp.kernel
 def broadcast_ik_solution_kernel(
-    ik_solution: wp.array2d(dtype=wp.float32),
-    joint_targets: wp.array2d(dtype=wp.float32),
+    ik_solution: wp.array2d[wp.float32],
+    joint_targets: wp.array2d[wp.float32],
     gripper_value: float,
 ):
     world_idx = wp.tid()

@@ -26,7 +26,7 @@ COLLAPSE_FIXED_JOINTS = False
 
 
 @wp.kernel
-def randomize_states_kernel(joint_q: wp.array3d(dtype=float), seed: int):
+def randomize_states_kernel(joint_q: wp.array3d[float], seed: int):
     tid = wp.tid()
     rng = wp.rand_init(seed, tid)
     joint_q[tid, 0, 0] = 2.0 - 4.0 * wp.randf(rng)
@@ -35,7 +35,7 @@ def randomize_states_kernel(joint_q: wp.array3d(dtype=float), seed: int):
 
 
 @wp.kernel
-def apply_forces_kernel(joint_q: wp.array3d(dtype=float), joint_f: wp.array3d(dtype=float)):
+def apply_forces_kernel(joint_q: wp.array3d[float], joint_f: wp.array3d[float]):
     tid = wp.tid()
     if joint_q[tid, 0, 0] > 0.0:
         joint_f[tid, 0, 0] = -20.0
