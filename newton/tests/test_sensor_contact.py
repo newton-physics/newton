@@ -602,7 +602,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
                 solver.step(state_out, state_in, control, None, sim_dt)
             graph = capture.graph
 
-        remaining = num_steps - (4 if use_cuda_graph else 0)
+        avg_steps = 10  # average forces over last few steps for stability
+        remaining = num_steps - avg_steps - (4 if use_cuda_graph else 0)
         for _ in range(remaining // 2 if use_cuda_graph else remaining):
             if use_cuda_graph:
                 wp.capture_launch(graph)
@@ -612,10 +613,16 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         if use_cuda_graph and remaining % 2 == 1:
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
-        solver.update_contacts(contacts, state_in)
-        sensor.update(state_in, contacts)
 
-        total = sensor.total_force.numpy()
+        forces_acc = np.zeros((2, 3))
+        for _ in range(avg_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+            solver.update_contacts(contacts, state_in)
+            sensor.update(state_in, contacts)
+            forces_acc += sensor.total_force.numpy()
+        total = forces_acc / avg_steps
+
         g = 9.81
         self.assertAlmostEqual(total[0, 2], mass_a * g, delta=mass_a * g * 0.01)
         self.assertAlmostEqual(total[1, 2], mass_b * g, delta=mass_b * g * 0.01)
@@ -649,14 +656,24 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         state_in, state_out, control = model.state(), model.state(), model.control()
         sim_dt = 1.0 / 240.0
-        for _ in range(240 * 2):
+        num_steps = 240 * 2
+        avg_steps = 10  # average forces over last few steps for stability
+        for _ in range(num_steps - avg_steps):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
-        solver.update_contacts(contacts, state_in)
-        sensor.update(state_in, contacts)
 
-        total = sensor.total_force.numpy()
-        friction = sensor.total_force_friction.numpy()
+        total_acc = np.zeros((1, 3))
+        friction_acc = np.zeros((1, 3))
+        for _ in range(avg_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+            solver.update_contacts(contacts, state_in)
+            sensor.update(state_in, contacts)
+            total_acc += sensor.total_force.numpy()
+            friction_acc += sensor.total_force_friction.numpy()
+        total = total_acc / avg_steps
+        friction = friction_acc / avg_steps
+
         g = 9.81
         # Normal force should match weight
         self.assertAlmostEqual(total[0, 2], mass_a * g, delta=mass_a * g * 0.02)
