@@ -3,8 +3,9 @@
 
 """Test examples in the newton.examples package.
 
-Currently, this script mainly checks that the examples can run. There are no
-correctness checks.
+Currently, this script mainly checks that the examples can run. It also treats
+deprecation warnings as failures by default so examples do not regress onto
+deprecated APIs.
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -105,12 +106,20 @@ def add_example_test(
         if usd_required and not USD_AVAILABLE:
             test.skipTest("Requires usd-core")
 
+        # Deprecations should fail example tests by default. Opt out only for
+        # a known third-party or asset issue that still needs follow-up.
+        allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
+
         # Find the current Warp cache
         warp_cache_path = wp.config.kernel_cache_dir
 
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = warp_cache_path
+        if not allow_deprecation_warnings:
+            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
+        else:
+            env_vars.pop("PYTHONWARNINGS", None)
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory

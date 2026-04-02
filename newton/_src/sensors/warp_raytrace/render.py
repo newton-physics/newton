@@ -34,48 +34,48 @@ def create_kernel(
         img_width: wp.int32,
         img_height: wp.int32,
         # Camera
-        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+        camera_rays: wp.array4d[wp.vec3f],
+        camera_transforms: wp.array2d[wp.transformf],
         # Shapes BVH
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array(dtype=wp.int32),
+        bvh_shapes_group_roots: wp.array[wp.int32],
         # Shapes
-        shape_enabled: wp.array(dtype=wp.uint32),
-        shape_types: wp.array(dtype=wp.int32),
-        shape_sizes: wp.array(dtype=wp.vec3f),
-        shape_colors: wp.array(dtype=wp.vec3f),
-        shape_transforms: wp.array(dtype=wp.transformf),
-        shape_source_ptr: wp.array(dtype=wp.uint64),
-        shape_texture_ids: wp.array(dtype=wp.int32),
-        shape_mesh_data_ids: wp.array(dtype=wp.int32),
+        shape_enabled: wp.array[wp.uint32],
+        shape_types: wp.array[wp.int32],
+        shape_sizes: wp.array[wp.vec3f],
+        shape_colors: wp.array[wp.vec3f],
+        shape_transforms: wp.array[wp.transformf],
+        shape_source_ptr: wp.array[wp.uint64],
+        shape_texture_ids: wp.array[wp.int32],
+        shape_mesh_data_ids: wp.array[wp.int32],
         # Particle BVH
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array(dtype=wp.int32),
+        bvh_particles_group_roots: wp.array[wp.int32],
         # Particles
-        particles_position: wp.array(dtype=wp.vec3f),
-        particles_radius: wp.array(dtype=wp.float32),
+        particles_position: wp.array[wp.vec3f],
+        particles_radius: wp.array[wp.float32],
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
         # Meshes
-        mesh_data: wp.array(dtype=MeshData),
+        mesh_data: wp.array[MeshData],
         # Gaussians
-        gaussians_data: wp.array(dtype=Gaussian.Data),
+        gaussians_data: wp.array[Gaussian.Data],
         # Textures
-        texture_data: wp.array(dtype=TextureData),
+        texture_data: wp.array[TextureData],
         # Lights
-        light_active: wp.array(dtype=wp.bool),
-        light_type: wp.array(dtype=wp.int32),
-        light_cast_shadow: wp.array(dtype=wp.bool),
-        light_positions: wp.array(dtype=wp.vec3f),
-        light_orientations: wp.array(dtype=wp.vec3f),
+        light_active: wp.array[wp.bool],
+        light_type: wp.array[wp.int32],
+        light_cast_shadow: wp.array[wp.bool],
+        light_positions: wp.array[wp.vec3f],
+        light_orientations: wp.array[wp.vec3f],
         # Outputs
-        out_color: wp.array(dtype=wp.uint32),
-        out_depth: wp.array(dtype=wp.float32),
-        out_shape_index: wp.array(dtype=wp.uint32),
-        out_normal: wp.array(dtype=wp.vec3f),
-        out_albedo: wp.array(dtype=wp.uint32),
+        out_color: wp.array[wp.uint32],
+        out_depth: wp.array[wp.float32],
+        out_shape_index: wp.array[wp.uint32],
+        out_normal: wp.array[wp.vec3f],
+        out_albedo: wp.array[wp.uint32],
     ):
         tid = wp.tid()
 

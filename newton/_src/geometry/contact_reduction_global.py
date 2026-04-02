@@ -148,7 +148,7 @@ def reduction_update_slot(
     entry_idx: int,
     slot_id: int,
     value: wp.uint64,
-    values: wp.array(dtype=wp.uint64),
+    values: wp.array[wp.uint64],
     capacity: int,
 ):
     """Update a reduction slot using atomic max.
@@ -174,9 +174,9 @@ def reduction_insert_slot(
     key: wp.uint64,
     slot_id: int,
     value: wp.uint64,
-    keys: wp.array(dtype=wp.uint64),
-    values: wp.array(dtype=wp.uint64),
-    active_slots: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    values: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
 ) -> bool:
     """Insert or update a value in a specific reduction slot.
 
@@ -331,48 +331,48 @@ class GlobalContactReducerData:
     """
 
     # Contact buffer arrays
-    position_depth: wp.array(dtype=wp.vec4)
-    normal: wp.array(dtype=wp.vec2)  # Octahedral-encoded unit normal (see encode_oct/decode_oct)
-    shape_pairs: wp.array(dtype=wp.vec2i)
-    contact_count: wp.array(dtype=wp.int32)
+    position_depth: wp.array[wp.vec4]
+    normal: wp.array[wp.vec2]  # Octahedral-encoded unit normal (see encode_oct/decode_oct)
+    shape_pairs: wp.array[wp.vec2i]
+    contact_count: wp.array[wp.int32]
     capacity: int
 
     # Optional hydroelastic data
     # contact_area: area of contact surface element (per contact)
-    contact_area: wp.array(dtype=wp.float32)
+    contact_area: wp.array[wp.float32]
 
     # Cached normal-bin hashtable entry index per contact
-    contact_nbin_entry: wp.array(dtype=wp.int32)
+    contact_nbin_entry: wp.array[wp.int32]
 
     # Effective stiffness coefficient k_a*k_b/(k_a+k_b) per hashtable entry
     # Constant for a given shape pair, stored once per entry instead of per contact
-    entry_k_eff: wp.array(dtype=wp.float32)
+    entry_k_eff: wp.array[wp.float32]
 
     # Aggregate force per hashtable entry (indexed by ht_capacity)
     # Used for hydroelastic stiffness calculation: c_stiffness = k_eff * |agg_force| / total_depth
     # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
-    agg_force: wp.array(dtype=wp.vec3)
+    agg_force: wp.array[wp.vec3]
 
     # Weighted position sum per hashtable entry (for anchor contact computation)
     # Accumulates sum(area * depth * position) for penetrating contacts
     # Divide by weight_sum to get center of pressure (anchor position)
-    weighted_pos_sum: wp.array(dtype=wp.vec3)
+    weighted_pos_sum: wp.array[wp.vec3]
 
     # Weight sum per hashtable entry (for anchor contact normalization)
     # Accumulates sum(area * depth) for penetrating contacts
-    weight_sum: wp.array(dtype=wp.float32)
+    weight_sum: wp.array[wp.float32]
 
     # Total depth of reduced (winning) contacts per normal bin entry.
-    total_depth_reduced: wp.array(dtype=wp.float32)
+    total_depth_reduced: wp.array[wp.float32]
 
     # Total depth-weighted normal of reduced (winning) contacts per normal bin entry.
-    total_normal_reduced: wp.array(dtype=wp.vec3)
+    total_normal_reduced: wp.array[wp.vec3]
 
     # Hashtable arrays
-    ht_keys: wp.array(dtype=wp.uint64)
-    ht_values: wp.array(dtype=wp.uint64)
-    ht_active_slots: wp.array(dtype=wp.int32)
-    ht_insert_failures: wp.array(dtype=wp.int32)
+    ht_keys: wp.array[wp.uint64]
+    ht_values: wp.array[wp.uint64]
+    ht_active_slots: wp.array[wp.int32]
+    ht_insert_failures: wp.array[wp.int32]
     ht_capacity: int
     ht_values_per_key: int
 
@@ -380,19 +380,19 @@ class GlobalContactReducerData:
 @wp.kernel(enable_backward=False)
 def _clear_active_kernel(
     # Hashtable arrays
-    ht_keys: wp.array(dtype=wp.uint64),
-    ht_values: wp.array(dtype=wp.uint64),
-    ht_active_slots: wp.array(dtype=wp.int32),
+    ht_keys: wp.array[wp.uint64],
+    ht_values: wp.array[wp.uint64],
+    ht_active_slots: wp.array[wp.int32],
     # Hydroelastic per-entry arrays
-    agg_force: wp.array(dtype=wp.vec3),
-    weighted_pos_sum: wp.array(dtype=wp.vec3),
-    weight_sum: wp.array(dtype=wp.float32),
-    entry_k_eff: wp.array(dtype=wp.float32),
-    total_depth_reduced: wp.array(dtype=wp.float32),
-    total_normal_reduced: wp.array(dtype=wp.vec3),
-    agg_moment_unreduced: wp.array(dtype=wp.float32),
-    agg_moment_reduced: wp.array(dtype=wp.float32),
-    agg_moment2_reduced: wp.array(dtype=wp.float32),
+    agg_force: wp.array[wp.vec3],
+    weighted_pos_sum: wp.array[wp.vec3],
+    weight_sum: wp.array[wp.float32],
+    entry_k_eff: wp.array[wp.float32],
+    total_depth_reduced: wp.array[wp.float32],
+    total_normal_reduced: wp.array[wp.vec3],
+    agg_moment_unreduced: wp.array[wp.float32],
+    agg_moment_reduced: wp.array[wp.float32],
+    agg_moment2_reduced: wp.array[wp.float32],
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
@@ -445,9 +445,9 @@ def _clear_active_kernel(
 
 @wp.kernel(enable_backward=False)
 def _zero_count_and_contacts_kernel(
-    ht_active_slots: wp.array(dtype=wp.int32),
-    contact_count: wp.array(dtype=wp.int32),
-    ht_insert_failures: wp.array(dtype=wp.int32),
+    ht_active_slots: wp.array[wp.int32],
+    contact_count: wp.array[wp.int32],
+    ht_insert_failures: wp.array[wp.int32],
     ht_capacity: int,
 ):
     """Zero the active slots count and contact count."""
@@ -715,10 +715,10 @@ def reduce_contact_in_hashtable(
     contact_id: int,
     reducer_data: GlobalContactReducerData,
     beta: float,
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
-    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
-    shape_voxel_resolution: wp.array(dtype=wp.vec3i),
+    shape_transform: wp.array[wp.transform],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_voxel_resolution: wp.array[wp.vec3i],
 ):
     """Register a buffered contact in the reduction hashtable.
 
@@ -824,10 +824,10 @@ def export_and_reduce_contact(
     depth: float,
     reducer_data: GlobalContactReducerData,
     beta: float,
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
-    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
-    shape_voxel_resolution: wp.array(dtype=wp.vec3i),
+    shape_transform: wp.array[wp.transform],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_voxel_resolution: wp.array[wp.vec3i],
 ) -> int:
     """Export contact to buffer and register in hashtable for reduction."""
     contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, reducer_data)
@@ -972,10 +972,10 @@ def export_and_reduce_contact_centered(
 @wp.kernel(enable_backward=False)
 def reduce_buffered_contacts_kernel(
     reducer_data: GlobalContactReducerData,
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
-    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
-    shape_voxel_resolution: wp.array(dtype=wp.vec3i),
+    shape_transform: wp.array[wp.transform],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_voxel_resolution: wp.array[wp.vec3i],
     total_num_threads: int,
 ):
     """Register buffered contacts in the hashtable for reduction.
@@ -1016,8 +1016,8 @@ def reduce_buffered_contacts_kernel(
 @wp.func
 def unpack_contact(
     contact_id: int,
-    position_depth: wp.array(dtype=wp.vec4),
-    normal: wp.array(dtype=wp.vec2),
+    position_depth: wp.array[wp.vec4],
+    normal: wp.array[wp.vec2],
 ):
     """Unpack contact data from the buffer.
 
@@ -1104,20 +1104,20 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     @wp.kernel(enable_backward=False, module="unique")
     def export_reduced_contacts_kernel(
         # Hashtable arrays
-        ht_keys: wp.array(dtype=wp.uint64),
-        ht_values: wp.array(dtype=wp.uint64),
-        ht_active_slots: wp.array(dtype=wp.int32),
+        ht_keys: wp.array[wp.uint64],
+        ht_values: wp.array[wp.uint64],
+        ht_active_slots: wp.array[wp.int32],
         # Contact buffer arrays
-        position_depth: wp.array(dtype=wp.vec4),
-        normal: wp.array(dtype=wp.vec2),  # Octahedral-encoded
-        shape_pairs: wp.array(dtype=wp.vec2i),
+        position_depth: wp.array[wp.vec4],
+        normal: wp.array[wp.vec2],  # Octahedral-encoded
+        shape_pairs: wp.array[wp.vec2i],
         # Global dedup flags: one int per buffer contact, for cross-entry deduplication
-        exported_flags: wp.array(dtype=wp.int32),
+        exported_flags: wp.array[wp.int32],
         # Shape data for extracting margin and effective radius
-        shape_types: wp.array(dtype=int),
-        shape_data: wp.array(dtype=wp.vec4),
+        shape_types: wp.array[int],
+        shape_data: wp.array[wp.vec4],
         # Per-shape contact gaps
-        shape_gap: wp.array(dtype=float),
+        shape_gap: wp.array[float],
         # Writer data (custom struct)
         writer_data: Any,
         # Grid stride parameters
@@ -1216,16 +1216,16 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
 
 @wp.kernel(enable_backward=False, module="unique")
 def mesh_triangle_contacts_to_reducer_kernel(
-    shape_types: wp.array(dtype=int),
-    shape_data: wp.array(dtype=wp.vec4),
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_source: wp.array(dtype=wp.uint64),
-    shape_gap: wp.array(dtype=float),
-    shape_heightfield_index: wp.array(dtype=wp.int32),
-    heightfield_data: wp.array(dtype=HeightfieldData),
-    heightfield_elevations: wp.array(dtype=wp.float32),
-    triangle_pairs: wp.array(dtype=wp.vec3i),
-    triangle_pairs_count: wp.array(dtype=int),
+    shape_types: wp.array[int],
+    shape_data: wp.array[wp.vec4],
+    shape_transform: wp.array[wp.transform],
+    shape_source: wp.array[wp.uint64],
+    shape_gap: wp.array[float],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
+    triangle_pairs: wp.array[wp.vec3i],
+    triangle_pairs_count: wp.array[int],
     reducer_data: GlobalContactReducerData,
     total_num_threads: int,
 ):

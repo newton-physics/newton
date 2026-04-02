@@ -28,17 +28,17 @@ import newton.utils
 # -------------------------------------------------------------------------
 @wp.kernel
 def _collision_residuals(
-    body_q: wp.array2d(dtype=wp.transform),  # (batch_rows, n_bodies)
-    obstacle_centers: wp.array1d(dtype=wp.vec3),  # (n_problems,)
-    obstacle_radii: wp.array1d(dtype=wp.float32),  # (n_problems,)
+    body_q: wp.array2d[wp.transform],  # (batch_rows, n_bodies)
+    obstacle_centers: wp.array[wp.vec3],  # (n_problems,)
+    obstacle_radii: wp.array[wp.float32],  # (n_problems,)
     link_index: int,
     link_offset: wp.vec3,
     link_radius: float,
     start_idx: int,  # start row in the global residual vector
     weight: float,
-    problem_idx: wp.array1d(dtype=wp.int32),  # (batch_rows,)
+    problem_idx: wp.array[wp.int32],  # (batch_rows,)
     # outputs
-    residuals: wp.array2d(dtype=wp.float32),  # (batch_rows, total_residuals)
+    residuals: wp.array2d[wp.float32],  # (batch_rows, total_residuals)
 ):
     row_idx = wp.tid()
     base = problem_idx[row_idx]
@@ -65,7 +65,7 @@ def _update_center_target(
     problem_idx: int,
     new_center: wp.vec3,
     # outputs
-    centers: wp.array1d(dtype=wp.vec3),  # (n_problems,)
+    centers: wp.array[wp.vec3],  # (n_problems,)
 ):
     centers[problem_idx] = new_center
 

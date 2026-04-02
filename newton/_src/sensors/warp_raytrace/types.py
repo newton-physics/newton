@@ -102,8 +102,8 @@ class MeshData:
         normals: Per-vertex normals for smooth shading, shape ``[vertex_count, 3]``, dtype ``vec3f``.
     """
 
-    uvs: wp.array(dtype=wp.vec2f)
-    normals: wp.array(dtype=wp.vec3f)
+    uvs: wp.array[wp.vec2f]
+    normals: wp.array[wp.vec3f]
 
 
 @wp.struct

@@ -13,18 +13,18 @@ from ..utils.selection import match_labels
 
 @wp.kernel
 def compute_sensor_imu_kernel(
-    gravity: wp.array(dtype=wp.vec3),
-    body_world: wp.array(dtype=wp.int32),
-    body_com: wp.array(dtype=wp.vec3),
-    shape_body: wp.array(dtype=int),
-    shape_transform: wp.array(dtype=wp.transform),
-    sensor_sites: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_qdd: wp.array(dtype=wp.spatial_vector),
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    shape_body: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    sensor_sites: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_qdd: wp.array[wp.spatial_vector],
     # output
-    accelerometer: wp.array(dtype=wp.vec3),
-    gyroscope: wp.array(dtype=wp.vec3),
+    accelerometer: wp.array[wp.vec3],
+    gyroscope: wp.array[wp.vec3],
 ):
     """Compute accelerations and angular velocities at sensor sites."""
     sensor_idx = wp.tid()
@@ -105,10 +105,10 @@ class SensorIMU:
             gyro = imu.gyroscope.numpy()
     """
 
-    accelerometer: wp.array(dtype=wp.vec3)
+    accelerometer: wp.array[wp.vec3]
     """Linear acceleration readings [m/s²] in sensor frame, shape ``(n_sensors,)``."""
 
-    gyroscope: wp.array(dtype=wp.vec3)
+    gyroscope: wp.array[wp.vec3]
     """Angular velocity readings [rad/s] in sensor frame, shape ``(n_sensors,)``."""
 
     def __init__(

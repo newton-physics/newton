@@ -18,6 +18,7 @@
 # to run the example with a PhysX-trained policy run with --physx
 ###########################################################################
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -70,7 +71,6 @@ ROBOT_CONFIGS = {
 }
 
 
-@torch.jit.script
 def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     """Rotate a vector by the inverse of a quaternion.
 
@@ -91,6 +91,15 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     else:
         c = q_vec * torch.einsum("...i,...i->...", q_vec, v).unsqueeze(-1) * 2.0
     return a - b + c
+
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"`torch\.jit\.script` is deprecated\. Please switch to `torch\.compile` or `torch\.export`\.",
+        category=DeprecationWarning,
+    )
+    quat_rotate_inverse = torch.jit.script(quat_rotate_inverse)
 
 
 def compute_obs(
@@ -149,7 +158,13 @@ def load_policy_and_setup_tensors(example: Any, policy_path: str, num_dofs: int,
     """
     device = example.torch_device
     print("[INFO] Loading policy from:", policy_path)
-    example.policy = torch.jit.load(policy_path, map_location=device)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"`torch\.jit\.load` is deprecated\. Please switch to `torch\.export`\.",
+            category=DeprecationWarning,
+        )
+        example.policy = torch.jit.load(policy_path, map_location=device)
 
     # Handle potential None state
     joint_q = example.state_0.joint_q if example.state_0.joint_q is not None else []

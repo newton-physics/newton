@@ -517,7 +517,7 @@ def collide_plane_cylinder(
     # In:
     plane_normal: wp.vec3,
     plane_pos: wp.vec3,
-    cylinder_center: wp.vec3,
+    cylinder_pos: wp.vec3,
     cylinder_axis: wp.vec3,
     cylinder_radius: float,
     cylinder_half_height: float,
@@ -535,7 +535,7 @@ def collide_plane_cylinder(
     Args:
       plane_normal: Normal vector of the plane.
       plane_pos: Position point on the plane.
-      cylinder_center: Center position of the cylinder.
+      cylinder_pos: Center position of the cylinder.
       cylinder_axis: Axis direction of the cylinder.
       cylinder_radius: Radius of the cylinder.
       cylinder_half_height: Half height of the cylinder.
@@ -559,7 +559,7 @@ def collide_plane_cylinder(
         dot_na = -dot_na
 
     # Near cap center (the cap closer to the plane)
-    cap_center = cylinder_center + axis * cylinder_half_height
+    cap_center = cylinder_pos + axis * cylinder_half_height
 
     # Build cap-plane directions.
     # perp_align tracks the deepest radial direction wrt the plane.
@@ -634,7 +634,7 @@ def collide_plane_cylinder(
         v = wp.cross(axis, perp_roll) * cylinder_radius
 
         # Candidate 0: top side generator (+u)
-        pt = cylinder_center + axis * cylinder_half_height + u
+        pt = cylinder_pos + axis * cylinder_half_height + u
         d = wp.dot(pt - plane_pos, n)
         pos = pt - n * (d * 0.5)
         if ncontact < 4 and wp.length_sq(pos - deepest_pos) > merge_threshold_sq:
@@ -643,7 +643,7 @@ def collide_plane_cylinder(
             ncontact += 1
 
         # Candidate 1: bottom side generator (+u)
-        pt = cylinder_center - axis * cylinder_half_height + u
+        pt = cylinder_pos - axis * cylinder_half_height + u
         d = wp.dot(pt - plane_pos, n)
         pos = pt - n * (d * 0.5)
         if ncontact < 4 and wp.length_sq(pos - deepest_pos) > merge_threshold_sq:
