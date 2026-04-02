@@ -170,8 +170,8 @@ def _create_sphere_mesh(radius: float = 0.5, subdivisions: int = 3) -> Mesh:
 @wp.kernel
 def _sample_texture_sdf_kernel(
     sdf: TextureSDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf, query_points[tid])
@@ -180,9 +180,9 @@ def _sample_texture_sdf_kernel(
 @wp.kernel
 def _sample_texture_sdf_grad_kernel(
     sdf: TextureSDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, grad = texture_sample_sdf_grad(sdf, query_points[tid])
@@ -193,8 +193,8 @@ def _sample_texture_sdf_grad_kernel(
 @wp.kernel
 def _sample_nanovdb_value_kernel(
     sdf_data: SDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = sample_sdf_extrapolated(sdf_data, query_points[tid])
@@ -203,9 +203,9 @@ def _sample_nanovdb_value_kernel(
 @wp.kernel
 def _sample_nanovdb_grad_kernel(
     sdf_data: SDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, grad = sample_sdf_grad_extrapolated(sdf_data, query_points[tid])
@@ -215,10 +215,10 @@ def _sample_nanovdb_grad_kernel(
 
 @wp.kernel
 def _sample_texture_sdf_from_array_kernel(
-    sdf_table: wp.array(dtype=TextureSDFData),
+    sdf_table: wp.array[TextureSDFData],
     sdf_idx: int,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf_table[sdf_idx], query_points[tid])
@@ -227,8 +227,8 @@ def _sample_texture_sdf_from_array_kernel(
 @wp.kernel
 def _bvh_ground_truth_kernel(
     mesh: wp.uint64,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = get_distance_to_mesh(mesh, query_points[tid], 10000.0, 0.5)
@@ -237,9 +237,9 @@ def _bvh_ground_truth_kernel(
 @wp.kernel
 def _bvh_ground_truth_grad_kernel(
     mesh: wp.uint64,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     """Compute BVH ground truth distance and finite-difference gradient."""
     tid = wp.tid()
@@ -477,7 +477,7 @@ def test_texture_sdf_extrapolation(test, device):
 
 
 def test_texture_sdf_array_indexing(test, device):
-    """Create wp.array(dtype=TextureSDFData) with 2 entries, sample from kernel via index."""
+    """Create wp.array[TextureSDFData] with 2 entries, sample from kernel via index."""
     mesh1 = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
     mesh2 = _create_box_mesh(half_extents=(0.3, 0.3, 0.3))
 
@@ -748,6 +748,60 @@ def test_texture_sdf_isomesh_extraction(test, device):
     test.assertIsNotNone(iso_mesh, "Isomesh should not be None for a box mesh")
     test.assertGreater(len(iso_mesh.vertices), 0, "Isomesh should have vertices")
     test.assertGreater(len(iso_mesh.indices), 0, "Isomesh should have faces")
+
+
+def test_texture_sdf_isomesh_with_isovalue(test, device):
+    """Extract offset isosurface from texture SDF and validate vertex positions.
+
+    Every vertex of the offset mesh should sit at approximately ``isovalue``
+    signed distance from the original box surface, measured with the analytical
+    box SDF as ground truth.
+    """
+    half = 0.3
+    mesh = _create_box_mesh(half_extents=(half, half, half))
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    tex_sdf, _coarse_tex, _subgrid_tex, _block_coords = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=32,
+        device=device,
+    )
+
+    tex_array = wp.array([tex_sdf], dtype=TextureSDFData, device=device)
+    coarse_dims = (_coarse_tex.width - 1, _coarse_tex.height - 1, _coarse_tex.depth - 1)
+
+    offset = 0.03
+    iso_mesh = compute_isomesh_from_texture_sdf(
+        tex_array,
+        0,
+        tex_sdf.subgrid_start_slots,
+        coarse_dims,
+        device=device,
+        isovalue=offset,
+    )
+
+    test.assertIsNotNone(iso_mesh, "Offset isomesh should not be None")
+    test.assertGreater(len(iso_mesh.vertices), 0, "Offset isomesh should have vertices")
+
+    def box_sdf(v):
+        q = np.abs(v) - np.array([half, half, half])
+        return float(np.linalg.norm(np.maximum(q, 0.0)) + min(max(q[0], q[1], q[2]), 0.0))
+
+    errors = np.array([abs(box_sdf(v) - offset) for v in iso_mesh.vertices])
+    max_err = float(errors.max())
+    atol = 0.04
+    test.assertLess(
+        max_err,
+        atol,
+        f"Max vertex SDF error {max_err:.4f} exceeds {atol} for isovalue={offset} "
+        f"(mean {errors.mean():.4f}, {len(iso_mesh.vertices)} verts)",
+    )
 
 
 def test_block_coords_from_subgrid_required(test, device):
@@ -1185,6 +1239,9 @@ add_function_test(
 )
 add_function_test(
     TestTextureSDF, "test_texture_sdf_isomesh_extraction", test_texture_sdf_isomesh_extraction, devices=devices
+)
+add_function_test(
+    TestTextureSDF, "test_texture_sdf_isomesh_with_isovalue", test_texture_sdf_isomesh_with_isovalue, devices=devices
 )
 add_function_test(
     TestTextureSDF,

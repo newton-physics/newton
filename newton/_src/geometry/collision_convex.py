@@ -68,7 +68,7 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
         if collision:
             signed_distance = -penetration + enlarge
         else:
-            # GJK fallback for separated shapes -- Nesterov-accelerated.
+            # GJK fallback for separated shapes -- proven accurate normals/distances.
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
@@ -161,7 +161,7 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
         if collision:
             signed_distance = -penetration + enlarge
         else:
-            # GJK fallback for separated shapes -- Nesterov-accelerated.
+            # GJK fallback for separated shapes.
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,

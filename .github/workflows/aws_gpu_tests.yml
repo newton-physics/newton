@@ -5,7 +5,7 @@ name: GPU Unit Tests on AWS EC2 (Reusable)
 #   - pr_target_aws_gpu_tests.yml (for pull requests)
 #   - merge_queue_aws_gpu.yml (for merge groups)
 #   - push_aws_gpu.yml (for pushes to main/release branches)
-#   - scheduled_weekly_gpu_tests.yml (for weekly multi-GPU tests)
+#   - scheduled_nightly.yml (for nightly multi-GPU tests)
 
 # Workflow configuration variables
 env:
@@ -42,6 +42,12 @@ on:
       CODECOV_TOKEN:
         required: true
   workflow_dispatch:
+    inputs:
+      instance-type:
+        description: 'EC2 instance type'
+        required: false
+        type: string
+        default: 'g7e.2xlarge'
 
 jobs:
   start-runner:
@@ -215,7 +221,7 @@ jobs:
     needs:
       - start-runner
       - gpu-unit-tests
-    if: always() && github.repository == 'newton-physics/newton'
+    if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0

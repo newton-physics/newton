@@ -174,13 +174,15 @@ def _setup_h1(articulation_builder):
 def _setup_cartpole(articulation_builder):
     articulation_builder.default_shape_cfg.density = 100.0
     articulation_builder.default_joint_cfg.armature = 0.1
-    articulation_builder.default_body_armature = 0.1
 
     articulation_builder.add_usd(
         newton.examples.get_asset("cartpole_single_pendulum.usda"),
         enable_self_collisions=False,
         collapse_fixed_joints=True,
     )
+    armature_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * 0.1
+    for i in range(articulation_builder.body_count):
+        articulation_builder.body_inertia[i] = articulation_builder.body_inertia[i] + armature_inertia
     # set initial joint positions (cartpole has 2 joints: prismatic slider + revolute pole)
     # joint_q[0] = slider position, joint_q[1] = pole angle
     articulation_builder.joint_q[0] = 0.0  # slider at origin
@@ -206,7 +208,6 @@ def _setup_ant(articulation_builder):
 
 
 def _setup_quadruped(articulation_builder):
-    articulation_builder.default_body_armature = 0.01
     articulation_builder.default_joint_cfg.armature = 0.01
     articulation_builder.default_shape_cfg.ke = 1.0e4
     articulation_builder.default_shape_cfg.kd = 1.0e2
@@ -218,6 +219,9 @@ def _setup_quadruped(articulation_builder):
         floating=True,
         enable_self_collisions=False,
     )
+    armature_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * 0.01
+    for i in range(articulation_builder.body_count):
+        articulation_builder.body_inertia[i] = articulation_builder.body_inertia[i] + armature_inertia
     root_dofs = 7
 
     return root_dofs

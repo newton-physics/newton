@@ -50,10 +50,10 @@ def bourke_color_map(low: float, high: float, v: float) -> list[float]:
 
 @wp.kernel
 def copy_rgb_frame_uint8(
-    input_img: wp.array(dtype=wp.uint8),
+    input_img: wp.array[wp.uint8],
     width: int,
     height: int,
-    output_img: wp.array(dtype=wp.uint8, ndim=3),
+    output_img: wp.array3d[wp.uint8],
 ):
     """Copy a flat RGB buffer to a 3D array with vertical flip.
 

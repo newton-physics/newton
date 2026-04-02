@@ -967,9 +967,7 @@ def volume_grad(volume: wp.uint64, p: wp.vec3):
 
 
 @wp.func
-def counter_increment(
-    counter: wp.array(dtype=int), counter_index: int, tids: wp.array(dtype=int), tid: int, index_limit: int = -1
-):
+def counter_increment(counter: wp.array[int], counter_index: int, tids: wp.array[int], tid: int, index_limit: int = -1):
     """
     Increment the counter but only if it is smaller than index_limit, remember which thread received which counter value.
     This allows the counter increment function to be used in differentiable computations where the backward pass will
@@ -994,39 +992,39 @@ def counter_increment(
 
 @wp.func_replay(counter_increment)
 def counter_increment_replay(
-    counter: wp.array(dtype=int), counter_index: int, tids: wp.array(dtype=int), tid: int, index_limit: int
+    counter: wp.array[int], counter_index: int, tids: wp.array[int], tid: int, index_limit: int
 ):
     return tids[tid]
 
 
 @wp.kernel
 def create_soft_contacts(
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_radius: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    particle_world: wp.array(dtype=int),  # World indices for particles
-    body_q: wp.array(dtype=wp.transform),
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_type: wp.array(dtype=int),
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_source_ptr: wp.array(dtype=wp.uint64),
-    shape_world: wp.array(dtype=int),  # World indices for shapes
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[int],  # World indices for particles
+    body_q: wp.array[wp.transform],
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_world: wp.array[int],  # World indices for shapes
     margin: float,
     soft_contact_max: int,
     shape_count: int,
-    shape_flags: wp.array(dtype=wp.int32),
-    shape_heightfield_index: wp.array(dtype=wp.int32),
-    heightfield_data: wp.array(dtype=HeightfieldData),
-    heightfield_elevations: wp.array(dtype=wp.float32),
+    shape_flags: wp.array[wp.int32],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
     # outputs
-    soft_contact_count: wp.array(dtype=int),
-    soft_contact_particle: wp.array(dtype=int),
-    soft_contact_shape: wp.array(dtype=int),
-    soft_contact_body_pos: wp.array(dtype=wp.vec3),
-    soft_contact_body_vel: wp.array(dtype=wp.vec3),
-    soft_contact_normal: wp.array(dtype=wp.vec3),
-    soft_contact_tids: wp.array(dtype=int),
+    soft_contact_count: wp.array[int],
+    soft_contact_particle: wp.array[int],
+    soft_contact_shape: wp.array[int],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_tids: wp.array[int],
 ):
     tid = wp.tid()
     particle_index, shape_index = tid // shape_count, tid % shape_count
@@ -1175,10 +1173,10 @@ def compute_tri_aabb(
 
 @wp.kernel
 def compute_tri_aabbs(
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     t_id = wp.tid()
 
@@ -1194,10 +1192,10 @@ def compute_tri_aabbs(
 
 @wp.kernel
 def compute_edge_aabbs(
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     e_id = wp.tid()
 
@@ -1234,9 +1232,9 @@ def vertex_adjacent_to_triangle(v: wp.int32, a: wp.int32, b: wp.int32, c: wp.int
 def init_triangle_collision_data_kernel(
     query_radius: float,
     # outputs
-    triangle_colliding_vertices_count: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    triangle_colliding_vertices_count: wp.array[wp.int32],
+    triangle_colliding_vertices_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     tri_index = wp.tid()
 
@@ -1253,23 +1251,23 @@ def vertex_triangle_collision_detection_kernel(
     max_query_radius: float,
     min_query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_buffer_sizes: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_offsets: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_buffer_sizes: wp.array(dtype=wp.int32),
-    vertex_triangle_filtering_list: wp.array(dtype=wp.int32),
-    vertex_triangle_filtering_list_offsets: wp.array(dtype=wp.int32),
-    min_distance_filtering_ref_pos: wp.array(dtype=wp.vec3),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    vertex_colliding_triangles_offsets: wp.array[wp.int32],
+    vertex_colliding_triangles_buffer_sizes: wp.array[wp.int32],
+    triangle_colliding_vertices_offsets: wp.array[wp.int32],
+    triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32],
+    vertex_triangle_filtering_list: wp.array[wp.int32],
+    vertex_triangle_filtering_list_offsets: wp.array[wp.int32],
+    min_distance_filtering_ref_pos: wp.array[wp.vec3],
     # outputs
-    vertex_colliding_triangles: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_min_dist: wp.array(dtype=float),
-    triangle_colliding_vertices: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_count: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    vertex_colliding_triangles: wp.array[wp.int32],
+    vertex_colliding_triangles_count: wp.array[wp.int32],
+    vertex_colliding_triangles_min_dist: wp.array[float],
+    triangle_colliding_vertices: wp.array[wp.int32],
+    triangle_colliding_vertices_count: wp.array[wp.int32],
+    triangle_colliding_vertices_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     """
     This function applies discrete collision detection between vertices and triangles. It uses pre-allocated spaces to
@@ -1392,19 +1390,19 @@ def edge_colliding_edges_detection_kernel(
     max_query_radius: float,
     min_query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_colliding_edges_offsets: wp.array(dtype=wp.int32),
-    edge_colliding_edges_buffer_sizes: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_colliding_edges_offsets: wp.array[wp.int32],
+    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
-    edge_filtering_list: wp.array(dtype=wp.int32),
-    edge_filtering_list_offsets: wp.array(dtype=wp.int32),
-    min_distance_filtering_ref_pos: wp.array(dtype=wp.vec3),
+    edge_filtering_list: wp.array[wp.int32],
+    edge_filtering_list_offsets: wp.array[wp.int32],
+    min_distance_filtering_ref_pos: wp.array[wp.vec3],
     # outputs
-    edge_colliding_edges: wp.array(dtype=wp.int32),
-    edge_colliding_edges_count: wp.array(dtype=wp.int32),
-    edge_colliding_edges_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    edge_colliding_edges: wp.array[wp.int32],
+    edge_colliding_edges_count: wp.array[wp.int32],
+    edge_colliding_edges_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     """
     bvh_id (int): the bvh id you want to do collision detection on
@@ -1500,13 +1498,13 @@ def edge_colliding_edges_detection_kernel(
 @wp.kernel
 def triangle_triangle_collision_detection_kernel(
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    triangle_intersecting_triangles_offsets: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    triangle_intersecting_triangles_offsets: wp.array[wp.int32],
     # outputs
-    triangle_intersecting_triangles: wp.array(dtype=wp.int32),
-    triangle_intersecting_triangles_count: wp.array(dtype=wp.int32),
-    resize_flags: wp.array(dtype=wp.int32),
+    triangle_intersecting_triangles: wp.array[wp.int32],
+    triangle_intersecting_triangles_count: wp.array[wp.int32],
+    resize_flags: wp.array[wp.int32],
 ):
     tri_index = wp.tid()
     t1_v1 = tri_indices[tri_index, 0]

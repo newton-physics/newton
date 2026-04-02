@@ -36,8 +36,8 @@ def compute_gaussian_bounds(gaussians_data: Gaussian.Data, tid: wp.int32) -> tup
 @wp.kernel
 def compute_gaussian_bvh_bounds(
     gaussians_data: Gaussian.Data,
-    lowers: wp.array(dtype=wp.vec3f),
-    uppers: wp.array(dtype=wp.vec3f),
+    lowers: wp.array[wp.vec3f],
+    uppers: wp.array[wp.vec3f],
 ):
     tid = wp.tid()
     lower, upper = compute_gaussian_bounds(gaussians_data, tid)

@@ -23,21 +23,21 @@ import warp as wp
 
 @wp.kernel
 def differentiable_contact_augment_kernel(
-    body_q: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_shape0: wp.array(dtype=int),
-    contact_shape1: wp.array(dtype=int),
-    contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
-    contact_margin0: wp.array(dtype=float),
-    contact_margin1: wp.array(dtype=float),
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_margin0: wp.array[float],
+    contact_margin1: wp.array[float],
     # outputs
-    out_distance: wp.array(dtype=float),
-    out_normal: wp.array(dtype=wp.vec3),
-    out_point0_world: wp.array(dtype=wp.vec3),
-    out_point1_world: wp.array(dtype=wp.vec3),
+    out_distance: wp.array[float],
+    out_normal: wp.array[wp.vec3],
+    out_point0_world: wp.array[wp.vec3],
+    out_point1_world: wp.array[wp.vec3],
 ):
     """Differentiable contact augmentation.
 

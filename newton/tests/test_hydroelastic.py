@@ -386,7 +386,7 @@ def test_reduce_contacts_with_pre_prune_disabled_no_crash(test, device):
 
 @wp.kernel
 def _set_body_z_kernel(
-    body_q: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
     body_idx: int,
     z: float,
 ):
