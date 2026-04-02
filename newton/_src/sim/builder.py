@@ -6219,7 +6219,7 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
 
         # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
-        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        stretch_stiffness = 1.0e4 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)

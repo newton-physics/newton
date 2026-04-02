@@ -207,7 +207,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, friction_epsilon=0.1)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

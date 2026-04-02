@@ -50,7 +50,7 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 5
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -59,14 +59,12 @@ class Example:
         num_segments_per_branch = 20
         segment_length = 0.03
 
-        bend_stiffness = 1.0e0
+        bend_stiffness = 1.0e6
         bend_damping = 1.0e-1
-        stretch_stiffness = 1.0e9
-        stretch_damping = 0.0
 
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1.0e4
-        builder.default_shape_cfg.kd = 1.0e-1
+        builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.mu = 1.0
 
         cable_cfg = builder.default_shape_cfg.copy()
@@ -94,8 +92,6 @@ class Example:
             edges=edges,
             radius=cable_radius,
             cfg=cable_cfg,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,
             label="y_graph",
@@ -123,7 +119,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            friction_epsilon=float(getattr(args, "friction_epsilon", 0.1)),
         )
 
         self.state_0 = self.model.state()

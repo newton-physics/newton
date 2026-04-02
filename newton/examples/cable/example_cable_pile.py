@@ -60,7 +60,7 @@ class Example:
         cable_radius = 0.012
 
         # Layers and lanes
-        layers = 10
+        layers = 16
         lanes_per_layer = 10
         lane_spacing = max(8.0 * cable_radius, 0.15)
         layer_gap = cable_radius * 6.0

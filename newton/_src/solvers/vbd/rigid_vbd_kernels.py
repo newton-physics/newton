@@ -66,6 +66,12 @@ _NUM_CONTACT_THREADS_PER_BODY = wp.constant(16)
 _CONTACT_HASH_GRID_DIM = wp.constant(128)
 """Grid dimension per axis for contact spatial hashing (128^3 = ~2M cells, fits in 21 bits)"""
 
+_STICK_FLAG_ANCHOR = wp.constant(1)
+"""contact_stick_flag value: frozen anchor (kinematic-dynamic contacts)"""
+
+_STICK_FLAG_DEADZONE = wp.constant(2)
+"""contact_stick_flag value: anti-creep deadzone (dynamic-dynamic contacts)"""
+
 # ---------------------------------
 # Contact history hash helpers
 # ---------------------------------
@@ -669,11 +675,13 @@ def evaluate_rigid_contact_from_collision(
     friction_mu: float,
     friction_epsilon: float,
     hard_contact: int,
+    is_kinematic_contact: int,
     dt: float,
 ):
     """Compute augmented-Lagrangian contact forces and 3x3 Hessian blocks for a rigid contact pair.
 
-    Hard contacts: AL friction with vec3 lambda, cone clamping, tangential penalty.
+    Hard contacts (dynamic-dynamic): AL friction with vec3 lambda, cone clamping, tangential penalty.
+    Hard contacts (kinematic-dynamic): ALM normal + velocity-based IPC friction (no tangential lambda).
     Soft contacts: velocity-based IPC friction with scalar penalty.
     """
     lam_n = wp.dot(contact_lam, contact_normal)
@@ -728,18 +736,30 @@ def evaluate_rigid_contact_from_collision(
     v_dot_n = wp.dot(contact_normal, v_rel)
 
     if hard_contact == 1:
-        lam_t = contact_lam - contact_normal * lam_n
-        f_t_vec = contact_ke_t * tangential_constraint + lam_t
-        f_t_len = wp.length(f_t_vec)
-        cone_limit = friction_mu * f_n
-        if f_t_len > cone_limit and f_t_len > 0.0:
-            cone_ratio = cone_limit / f_t_len
-            f_t_vec = f_t_vec * cone_ratio
-            contact_ke_t = contact_ke_t * cone_ratio
+        if is_kinematic_contact == 0:
+            lam_t = contact_lam - contact_normal * lam_n
+            f_t_vec = contact_ke_t * tangential_constraint + lam_t
+            f_t_len = wp.length(f_t_vec)
+            cone_limit = friction_mu * f_n
+            if f_t_len > cone_limit and f_t_len > 0.0:
+                cone_ratio = cone_limit / f_t_len
+                f_t_vec = f_t_vec * cone_ratio
+                contact_ke_t = contact_ke_t * cone_ratio
 
-        f_total = contact_normal * f_n + f_t_vec
-        I3 = wp.identity(n=3, dtype=float)
-        K_total = contact_ke * n_outer + contact_ke_t * (I3 - n_outer)
+            f_total = contact_normal * f_n + f_t_vec
+            I3 = wp.identity(n=3, dtype=float)
+            K_total = contact_ke * n_outer + contact_ke_t * (I3 - n_outer)
+        else:
+            f_total = contact_normal * f_n
+            K_total = contact_ke * n_outer
+
+            if friction_mu > 0.0 and f_n > 0.0:
+                v_t = v_rel - contact_normal * v_dot_n
+                f_friction, K_friction = compute_projected_isotropic_friction(
+                    friction_mu, f_n, contact_normal, v_t * dt, friction_epsilon * dt
+                )
+                f_total = f_total + f_friction
+                K_total = K_total + K_friction
 
         if contact_kd > 0.0 and v_dot_n < 0.0 and f_n > 0.0:
             damping_coeff = contact_kd * contact_ke
@@ -2130,7 +2150,7 @@ def init_contact_avbd(
     shape_material_mu: wp.array(dtype=float),
     # Geometry
     shape_body: wp.array(dtype=wp.int32),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q: wp.array(dtype=wp.transform),
     hard_contacts: int,
     # Cross-step state
     ht_keys: wp.array(dtype=wp.uint64),
@@ -2151,10 +2171,11 @@ def init_contact_avbd(
 ):
     """Warmstart body-body contacts using hash table-based contact history.
 
-    Matched contacts copy lambda from history (no decay — decay is handled by
+    Matched contacts copy lambda from history (no decay - decay is handled by
     step_contact_C0_lambda). For hard contacts, lambda is rotated from the old
-    contact frame to the new one. C0 is computed as a vec3 constraint from
-    body_q_prev.
+    contact frame to the new one. C0 is a vec3 constraint snapshot at the
+    collide-frame pose (body_q, before forward integration), used for both
+    normal and tangential ALM stabilization.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -2221,7 +2242,7 @@ def init_contact_avbd(
         else:
             contact_lambda[i] = lam_hist
 
-        if hard_contacts == 1 and history_stick_flag[best_slot] == 1:
+        if hard_contacts == 1 and history_stick_flag[best_slot] == _STICK_FLAG_ANCHOR:
             rigid_contact_point0[i] = history_point0[best_slot]
             rigid_contact_point1[i] = history_point1[best_slot]
     else:
@@ -2231,8 +2252,8 @@ def init_contact_avbd(
         b0 = shape_body[s0] if s0 >= 0 else -1
         b1 = shape_body[s1] if s1 >= 0 else -1
         n = rigid_contact_normal[i]
-        cp0 = wp.transform_point(body_q_prev[b0], rigid_contact_point0[i]) if b0 >= 0 else rigid_contact_point0[i]
-        cp1 = wp.transform_point(body_q_prev[b1], rigid_contact_point1[i]) if b1 >= 0 else rigid_contact_point1[i]
+        cp0 = wp.transform_point(body_q[b0], rigid_contact_point0[i]) if b0 >= 0 else rigid_contact_point0[i]
+        cp1 = wp.transform_point(body_q[b1], rigid_contact_point1[i]) if b1 >= 0 else rigid_contact_point1[i]
         thickness = rigid_contact_margin0[i] + rigid_contact_margin1[i]
         d_vec = cp1 - cp0
         contact_C0[i] = n * thickness - d_vec
@@ -2351,7 +2372,7 @@ def step_contact_C0_lambda(
     rigid_contact_margin0: wp.array(dtype=float),
     rigid_contact_margin1: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q: wp.array(dtype=wp.transform),
     hard_contacts: int,
     gamma: float,
     recompute_C0: int,
@@ -2359,11 +2380,12 @@ def step_contact_C0_lambda(
     contact_C0: wp.array(dtype=wp.vec3),
     contact_lambda: wp.array(dtype=wp.vec3),
 ):
-    """Per-step lambda decay, plus optional C0 recompute.
+    """Per-step lambda decay, plus optional vec3 C0 recompute.
 
     Runs every step. On refresh steps (recompute_C0=0), only applies lambda decay
     (C0 was already set by init_contact_avbd). On non-refresh steps
-    (recompute_C0=1), also recomputes vec3 C0 from body_q_prev.
+    (recompute_C0=1), recomputes vec3 C0 at the collide-frame pose
+    (body_q, before forward integration).
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -2379,8 +2401,8 @@ def step_contact_C0_lambda(
         p0 = rigid_contact_point0[i]
         p1 = rigid_contact_point1[i]
         n = rigid_contact_normal[i]
-        cp0 = wp.transform_point(body_q_prev[b0], p0) if b0 >= 0 else p0
-        cp1 = wp.transform_point(body_q_prev[b1], p1) if b1 >= 0 else p1
+        cp0 = wp.transform_point(body_q[b0], p0) if b0 >= 0 else p0
+        cp1 = wp.transform_point(body_q[b1], p1) if b1 >= 0 else p1
         thickness = rigid_contact_margin0[i] + rigid_contact_margin1[i]
         d = cp1 - cp0
         contact_C0[i] = n * thickness - d
@@ -2660,9 +2682,9 @@ def accumulate_body_body_contacts_per_body(
             lam_n = wp.dot(lam_vec, contact_normal)
             C0_vec = contact_C0[contact_idx]
             C_vec = contact_normal * thickness - d
-            C_stab = C_vec - avbd_alpha * C0_vec
-            C_stab_n = wp.dot(C_stab, contact_normal)
-            C_stab_t = C_stab - contact_normal * C_stab_n
+            C_stab_vec = C_vec - avbd_alpha * C0_vec
+            C_stab_n = wp.dot(C_stab_vec, contact_normal)
+            C_stab_t = C_stab_vec - contact_normal * C_stab_n
             C_eff = C_stab_n
 
         if C_n <= _SMALL_LENGTH_EPS and lam_n <= 0.0:
@@ -2676,6 +2698,13 @@ def accumulate_body_body_contacts_per_body(
 
         contact_kd = contact_material_kd[contact_idx]
         contact_mu = contact_material_mu[contact_idx]
+
+        is_kin = int(0)
+        if b0 >= 0 and body_inv_mass[b0] == 0.0:
+            is_kin = int(1)
+        if b1 >= 0 and body_inv_mass[b1] == 0.0:
+            is_kin = int(1)
+
         (
             force_0,
             torque_0,
@@ -2705,6 +2734,7 @@ def accumulate_body_body_contacts_per_body(
             contact_mu,
             friction_epsilon,
             hard_contacts,
+            is_kin,
             dt,
         )
 
@@ -2747,6 +2777,7 @@ def compute_rigid_contact_forces(
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
+    body_inv_mass: wp.array(dtype=float),
     # Contact material properties (per-contact)
     contact_penalty_k: wp.array(dtype=float),
     contact_material_kd: wp.array(dtype=float),
@@ -2815,9 +2846,9 @@ def compute_rigid_contact_forces(
         lam_n = wp.dot(lam_vec, contact_normal)
         C0_vec = contact_C0[contact_idx]
         C_vec = contact_normal * thickness - d
-        C_stab = C_vec - avbd_alpha * C0_vec
-        C_stab_n = wp.dot(C_stab, contact_normal)
-        C_stab_t = C_stab - contact_normal * C_stab_n
+        C_stab_vec = C_vec - avbd_alpha * C0_vec
+        C_stab_n = wp.dot(C_stab_vec, contact_normal)
+        C_stab_t = C_stab_vec - contact_normal * C_stab_n
         C_eff = C_stab_n
 
     if C_n <= _SMALL_LENGTH_EPS and lam_n <= 0.0:
@@ -2826,6 +2857,12 @@ def compute_rigid_contact_forces(
 
     contact_kd = contact_material_kd[contact_idx]
     contact_mu = contact_material_mu[contact_idx]
+
+    is_kin = int(0)
+    if b0 >= 0 and body_inv_mass[b0] == 0.0:
+        is_kin = int(1)
+    if b1 >= 0 and body_inv_mass[b1] == 0.0:
+        is_kin = int(1)
 
     (
         _force_0,
@@ -2856,6 +2893,7 @@ def compute_rigid_contact_forces(
         contact_mu,
         friction_epsilon,
         hard_contacts,
+        is_kin,
         dt,
     )
 
@@ -3632,7 +3670,7 @@ def update_duals_body_body_contacts(
     contact_C0: wp.array(dtype=wp.vec3),
     avbd_alpha: float,
     hard_contacts: int,
-    stick_tangential_eps: float,
+    body_inv_mass: wp.array(dtype=float),
     contact_stick_flag: wp.array(dtype=wp.int32),  # output
 ):
     """
@@ -3673,30 +3711,46 @@ def update_duals_body_body_contacts(
         mu = contact_material_mu[idx]
 
         C_vec = n * thickness_total - d
-        C_stab = C_vec - avbd_alpha * C0_vec
-        C_stab_n = wp.dot(C_stab, n)
-        C_stab_t = C_stab - n * C_stab_n
+        C_stab_vec = C_vec - avbd_alpha * C0_vec
+        C_stab_n = wp.dot(C_stab_vec, n)
 
         lam_n_old = wp.dot(lam_vec, n)
-        lam_t_old = lam_vec - n * lam_n_old
 
         lam_n_new = wp.max(lam_n_old + k * C_stab_n, 0.0)
 
-        lam_t_new = lam_t_old + k * C_stab_t
-        lam_t_len = wp.length(lam_t_new)
-        cone_limit = mu * lam_n_new
-        inside_cone = lam_t_len <= cone_limit
-        if lam_t_len > cone_limit and lam_t_len > 0.0:
-            lam_t_new = lam_t_new * (cone_limit / lam_t_len)
+        # Detect inv_mass==0 kinematic contacts (not ground).
+        # These use velocity IPC friction in the primal and ignore lam_t.
+        is_kin = int(0)
+        if body_id_0 >= 0 and body_inv_mass[body_id_0] == 0.0:
+            is_kin = int(1)
+        if body_id_1 >= 0 and body_inv_mass[body_id_1] == 0.0:
+            is_kin = int(1)
 
-        contact_lambda[idx] = n * lam_n_new + lam_t_new
+        if is_kin == 0:
+            C_stab_t = C_stab_vec - n * C_stab_n
+            lam_t_old = lam_vec - n * lam_n_old
+            lam_t_new = lam_t_old + k * C_stab_t
+            lam_t_len = wp.length(lam_t_new)
+            cone_limit = mu * lam_n_new
+            if lam_t_len > cone_limit and lam_t_len > 0.0:
+                lam_t_new = lam_t_new * (cone_limit / lam_t_len)
+            contact_lambda[idx] = n * lam_n_new + lam_t_new
+        else:
+            contact_lambda[idx] = n * lam_n_new
 
-        C_stab_t_len = wp.length(C_stab_t)
+        has_kinematic = int(0)
+        if body_id_0 < 0 or body_id_1 < 0:
+            has_kinematic = int(1)
+        elif is_kin == 1:
+            has_kinematic = int(1)
 
-        stick = int(0)
-        if inside_cone and C_stab_t_len < stick_tangential_eps and lam_n_new > 0.0:
-            stick = int(1)
-        contact_stick_flag[idx] = stick
+        flag = int(0)
+        if lam_n_new > 0.0:
+            if has_kinematic == 1:
+                flag = _STICK_FLAG_ANCHOR
+            else:
+                flag = _STICK_FLAG_DEADZONE
+        contact_stick_flag[idx] = flag
     else:
         contact_stick_flag[idx] = int(0)
 
@@ -3739,11 +3793,11 @@ def update_body_velocity(
         body_contact_buffer_pre_alloc: Per-body contact-list capacity.
         body_contact_counts: Number of body-body contacts adjacent to each body.
         body_contact_indices: Flat per-body contact index lists.
-        contact_stick_flag: Final per-contact stick classification for this step.
-        apply_stick_deadzone: If nonzero, snap tiny sticky body motion back to the
-            previous pose before computing velocity.
-        stick_freeze_translation_eps: Translation deadzone [m] for snapping tiny sticky motion.
-        stick_freeze_angular_eps: Angular deadzone [rad] for snapping tiny sticky motion.
+        contact_stick_flag: Per-contact flag (0=none, ANCHOR=kinematic, DEADZONE=dynamic-dynamic).
+        apply_stick_deadzone: If nonzero, enable anti-creep deadzone for bodies whose
+            contacts carry DEADZONE but not ANCHOR.
+        stick_freeze_translation_eps: Translation deadzone [m] for anti-creep snapping.
+        stick_freeze_angular_eps: Angular deadzone [rad] for anti-creep snapping.
         body_q_prev: Previous body transforms (input/output, advanced to current pose for next step).
         body_qd: Output body velocities (spatial vectors, world frame).
         body_q_out: Output body transforms (state_out), fused copy of body_q.
@@ -3762,16 +3816,18 @@ def update_body_velocity(
     if apply_stick_deadzone != 0:
         count = wp.min(body_contact_counts[tid], body_contact_buffer_pre_alloc)
         offset = tid * body_contact_buffer_pre_alloc
-        sticky = int(0)
+        has_anchor = int(0)
+        has_deadzone = int(0)
         for i in range(count):
             contact_idx = body_contact_indices[offset + i]
-            if contact_stick_flag[contact_idx] != 0:
-                sticky = int(1)
-                break
+            f = contact_stick_flag[contact_idx]
+            if f == _STICK_FLAG_ANCHOR:
+                has_anchor = int(1)
+            elif f == _STICK_FLAG_DEADZONE:
+                has_deadzone = int(1)
 
-        if sticky != 0:
+        if has_deadzone != 0 and has_anchor == 0:
             translation_delta = wp.length(x - x_prev)
-            # Use dt=1 to measure quaternion delta magnitude as an angular step proxy.
             angular_delta = wp.length(quat_velocity(q, q_prev, 1.0))
             if translation_delta < stick_freeze_translation_eps and angular_delta < stick_freeze_angular_eps:
                 pose = pose_prev

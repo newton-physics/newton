@@ -91,10 +91,10 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
         if self.solver_type == "vbd":
-            self.update_step_interval = 10
+            self.update_step_interval = 1
             self.solver = newton.solvers.SolverVBD(
                 self.model,
-                iterations=2,
+                iterations=1,
                 rigid_joint_linear_ke=1.0e5,
             )
         else:

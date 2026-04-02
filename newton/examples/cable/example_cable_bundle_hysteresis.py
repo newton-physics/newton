@@ -174,7 +174,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 10
+        self.sim_iterations = 5
         self.update_step_interval = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -186,8 +186,6 @@ class Example:
         self.cable_gap_multiplier = 1.1
         bend_stiffness = 1.0e1
         bend_damping = 5.0e-2
-        stretch_stiffness = 1.0e6
-        stretch_damping = 0.0
 
         builder = newton.ModelBuilder()
         builder.rigid_gap = 0.05
@@ -233,16 +231,12 @@ class Example:
                 radius=self.cable_radius,
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
-                stretch_stiffness=stretch_stiffness,
-                stretch_damping=stretch_damping,
                 label=f"bundle_cable_{i}",
             )
 
         # Create moving obstacles (capsules arranged along X axis)
         obstacle_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
-            ke=1.0e6,
-            kd=1.0e-2,
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
             mu=0.0,  # Frictionless obstacles
@@ -284,8 +278,6 @@ class Example:
         # Add ground plane
         ground_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
-            ke=1.0e4,
-            kd=1.0e-1,
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
             mu=2.5,

@@ -195,22 +195,22 @@ class Example:
 
         belt_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.2,
-            ke=1.0e3,  # vbd only
-            kd=1.0e-1,  # vbd only
+            ke=1.0e4,  # vbd only
+            kd=0.0,  # vbd only
             collision_group=BELT_COLLISION_GROUP,
         )
         rail_cfg = newton.ModelBuilder.ShapeConfig(
             mu=0.8,
-            ke=1.0e3,  # vbd only
-            kd=1.0e-1,  # vbd only
+            ke=1.0e4,  # vbd only
+            kd=0.0,  # vbd only
             collision_group=RAIL_COLLISION_GROUP,
         )
         bag_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.0,
-            ke=1.0e3,  # vbd only
-            kd=1.0e-1,  # vbd only
+            ke=1.0e4,  # vbd only
+            kd=0.0,  # vbd only
             restitution=0.0,
-        )  # xpbd only
+        )
 
         belt_inner_radius = BELT_RING_RADIUS - BELT_HALF_WIDTH
         belt_outer_radius = BELT_RING_RADIUS + BELT_HALF_WIDTH
@@ -339,7 +339,7 @@ class Example:
 
         solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
         if solver_type == "vbd":
-            self.solver = newton.solvers.SolverVBD(self.model)
+            self.solver = newton.solvers.SolverVBD(self.model, rigid_contact_buffer_size=512)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
 
