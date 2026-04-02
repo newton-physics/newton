@@ -840,14 +840,6 @@
 <div class="nboutput docutils container">
 <div class="prompt empty docutils container">
 </div>
-<div class="output_area stderr docutils container">
-<div class="highlight"><pre>
-Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.
-</pre></div></div>
-</div>
-<div class="nboutput nblast docutils container">
-<div class="prompt empty docutils container">
-</div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
 Warp 1.12.0 initialized:
@@ -856,6 +848,14 @@ Warp 1.12.0 initialized:
      &#34;cpu&#34;      : &#34;x86_64&#34;
    Kernel cache:
      /home/runner/.cache/warp/1.12.0
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.
 </pre></div></div>
 </div>
 </section>
@@ -967,7 +967,7 @@ Added 4 bodies with collision shapes
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.geometry.inertia 00f7330 load on device &#39;cpu&#39; took 2563.42 ms  (compiled)
+Module newton._src.geometry.inertia 00f7330 load on device &#39;cpu&#39; took 2460.69 ms  (compiled)
 Added mesh body with 6102 vertices
 </pre></div></div>
 </div>
@@ -1000,7 +1000,7 @@ Added mesh body with 6102 vertices
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module validate_and_correct_inertia_kernel_7693acc3 815ae9a load on device &#39;cpu&#39; took 2102.22 ms  (compiled)
+Module validate_and_correct_inertia_kernel_7693acc3 815ae9a load on device &#39;cpu&#39; took 2090.23 ms  (compiled)
 Model finalized for device cpu:
   Bodies: 5
   Shapes: 7
@@ -1075,7 +1075,7 @@ State, Contacts and Control objects created
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.solvers.solver b737a24 load on device &#39;cpu&#39; took 2524.76 ms  (compiled)
+Module newton._src.solvers.solver b737a24 load on device &#39;cpu&#39; took 2516.82 ms  (compiled)
 Solver created: SolverXPBD
 </pre></div></div>
 </div>
@@ -1215,7 +1215,7 @@ Running on CPU (no CUDA graph)
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.viewer.kernels 83b9b8a load on device &#39;cpu&#39; took 3783.84 ms  (compiled)
+Module newton._src.viewer.kernels 83b9b8a load on device &#39;cpu&#39; took 3777.83 ms  (compiled)
 </pre></div></div>
 </div>
 </section>
@@ -1258,14 +1258,14 @@ Module newton._src.viewer.kernels 83b9b8a load on device &#39;cpu&#39; took 3783
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.sim.collide 2f8a5b5 load on device &#39;cpu&#39; took 2340.41 ms  (compiled)
-Module newton._src.geometry.broad_phase_nxn bbeb0be load on device &#39;cpu&#39; took 2080.56 ms  (compiled)
-Module create_narrow_phase_primitive_kernel__locals__narrow_phase_primitive_kernel_86c47931 0137023 load on device &#39;cpu&#39; took 2934.24 ms  (compiled)
-Module create_narrow_phase_kernel_gjk_mpr__locals__narrow_phase_kernel_gjk_mpr_1950c4bc f6a43b3 load on device &#39;cpu&#39; took 4143.51 ms  (compiled)
-Module create_narrow_phase_process_mesh_plane_contacts_kernel__locals__narrow_phase_process_mesh_plane_contacts_kernel_59fcd4fa c06c1c5 load on device &#39;cpu&#39; took 2176.46 ms  (compiled)
-Module newton._src.geometry.narrow_phase fcdff89 load on device &#39;cpu&#39; took 2573.42 ms  (compiled)
-Module create_narrow_phase_process_mesh_triangle_contacts_kernel__locals__narrow_phase_process_mesh_triangle_contacts_kernel_89c7a079 1d56f8f load on device &#39;cpu&#39; took 4168.26 ms  (compiled)
-Module newton._src.solvers.xpbd.kernels ac74028 load on device &#39;cpu&#39; took 11363.68 ms  (compiled)
+Module newton._src.sim.collide 2f8a5b5 load on device &#39;cpu&#39; took 2314.00 ms  (compiled)
+Module newton._src.geometry.broad_phase_nxn bbeb0be load on device &#39;cpu&#39; took 2069.54 ms  (compiled)
+Module create_narrow_phase_primitive_kernel__locals__narrow_phase_primitive_kernel_86c47931 0137023 load on device &#39;cpu&#39; took 2894.36 ms  (compiled)
+Module create_narrow_phase_kernel_gjk_mpr__locals__narrow_phase_kernel_gjk_mpr_1950c4bc f6a43b3 load on device &#39;cpu&#39; took 4113.49 ms  (compiled)
+Module create_narrow_phase_process_mesh_plane_contacts_kernel__locals__narrow_phase_process_mesh_plane_contacts_kernel_59fcd4fa c06c1c5 load on device &#39;cpu&#39; took 2171.90 ms  (compiled)
+Module newton._src.geometry.narrow_phase fcdff89 load on device &#39;cpu&#39; took 2501.46 ms  (compiled)
+Module create_narrow_phase_process_mesh_triangle_contacts_kernel__locals__narrow_phase_process_mesh_triangle_contacts_kernel_89c7a079 1d56f8f load on device &#39;cpu&#39; took 4107.99 ms  (compiled)
+Module newton._src.solvers.xpbd.kernels ac74028 load on device &#39;cpu&#39; took 11297.98 ms  (compiled)
 
 Simulation complete! Total time: 8.33 seconds
 </pre></div></div>
