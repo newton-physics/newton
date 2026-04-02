@@ -33,26 +33,26 @@ class ContactWriterData:
 
     contact_max: int
     # Body information arrays (for transforming to body-local coordinates)
-    body_q: wp.array(dtype=wp.transform)
-    shape_body: wp.array(dtype=int)
-    shape_gap: wp.array(dtype=float)
+    body_q: wp.array[wp.transform]
+    shape_body: wp.array[int]
+    shape_gap: wp.array[float]
     # Output arrays
-    contact_count: wp.array(dtype=int)
-    out_shape0: wp.array(dtype=int)
-    out_shape1: wp.array(dtype=int)
-    out_point0: wp.array(dtype=wp.vec3)
-    out_point1: wp.array(dtype=wp.vec3)
-    out_offset0: wp.array(dtype=wp.vec3)
-    out_offset1: wp.array(dtype=wp.vec3)
-    out_normal: wp.array(dtype=wp.vec3)
-    out_margin0: wp.array(dtype=float)
-    out_margin1: wp.array(dtype=float)
-    out_tids: wp.array(dtype=int)
+    contact_count: wp.array[int]
+    out_shape0: wp.array[int]
+    out_shape1: wp.array[int]
+    out_point0: wp.array[wp.vec3]
+    out_point1: wp.array[wp.vec3]
+    out_offset0: wp.array[wp.vec3]
+    out_offset1: wp.array[wp.vec3]
+    out_normal: wp.array[wp.vec3]
+    out_margin0: wp.array[float]
+    out_margin1: wp.array[float]
+    out_tids: wp.array[int]
     # Per-contact shape properties, empty arrays if not enabled.
     # Zero-values indicate that no per-contact shape properties are set for this contact
-    out_stiffness: wp.array(dtype=float)
-    out_damping: wp.array(dtype=float)
-    out_friction: wp.array(dtype=float)
+    out_stiffness: wp.array[float]
+    out_damping: wp.array[float]
+    out_friction: wp.array[float]
 
 
 @wp.func
@@ -140,20 +140,20 @@ def write_contact(
 
 @wp.kernel(enable_backward=False)
 def compute_shape_aabbs(
-    body_q: wp.array(dtype=wp.transform),
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_type: wp.array(dtype=int),
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_collision_radius: wp.array(dtype=float),
-    shape_source_ptr: wp.array(dtype=wp.uint64),
-    shape_margin: wp.array(dtype=float),
-    shape_gap: wp.array(dtype=float),
-    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
-    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_collision_radius: wp.array[float],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
     # outputs
-    aabb_lower: wp.array(dtype=wp.vec3),
-    aabb_upper: wp.array(dtype=wp.vec3),
+    aabb_lower: wp.array[wp.vec3],
+    aabb_upper: wp.array[wp.vec3],
 ):
     """Compute axis-aligned bounding boxes for each shape in world space.
 
@@ -241,15 +241,15 @@ def compute_shape_aabbs(
 
 @wp.kernel(enable_backward=False)
 def prepare_geom_data_kernel(
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_type: wp.array(dtype=int),
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_margin: wp.array(dtype=float),
-    body_q: wp.array(dtype=wp.transform),
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    body_q: wp.array[wp.transform],
     # Outputs
-    geom_data: wp.array(dtype=wp.vec4),  # scale xyz, margin w
-    geom_transform: wp.array(dtype=wp.transform),  # world space transform
+    geom_data: wp.array[wp.vec4],  # scale xyz, margin w
+    geom_transform: wp.array[wp.transform],  # world space transform
 ):
     """Prepare geometry data arrays for NarrowPhase API."""
     idx = wp.tid()
@@ -417,7 +417,7 @@ class CollisionPipeline:
         reduce_contacts: bool = True,
         rigid_contact_max: int | None = None,
         max_triangle_pairs: int = 1000000,
-        shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
+        shape_pairs_filtered: wp.array[wp.vec2i] | None = None,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         requires_grad: bool | None = None,
@@ -698,7 +698,7 @@ class CollisionPipeline:
         return contacts
 
     @staticmethod
-    def _build_excluded_pairs(model: Model) -> wp.array(dtype=wp.vec2i) | None:
+    def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
         if not hasattr(model, "shape_collision_filter_pairs"):
             return None
         filters = model.shape_collision_filter_pairs

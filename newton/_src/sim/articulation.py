@@ -169,24 +169,24 @@ def invert_3d_rotational_dofs(
 def eval_single_articulation_fk(
     joint_start: int,
     joint_end: int,
-    joint_articulation: wp.array(dtype=int),
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    body_com: wp.array(dtype=wp.vec3),
-    body_flags: wp.array(dtype=wp.int32),
+    joint_articulation: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
+    body_flags: wp.array[wp.int32],
     body_flag_filter: int,
     # outputs
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
 ):
     for i in range(joint_start, joint_end):
         articulation = joint_articulation[i]
@@ -343,30 +343,30 @@ def eval_single_articulation_fk(
 
 @wp.kernel
 def eval_articulation_fk(
-    articulation_start: wp.array(dtype=int),
+    articulation_start: wp.array[int],
     articulation_count: int,  # total number of articulations
-    articulation_mask: wp.array(
-        dtype=bool
-    ),  # used to enable / disable FK for an articulation, if None then treat all as enabled
-    articulation_indices: wp.array(dtype=int),  # can be None, articulation indices to process
-    joint_articulation: wp.array(dtype=int),
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    body_com: wp.array(dtype=wp.vec3),
-    body_flags: wp.array(dtype=wp.int32),
+    articulation_mask: wp.array[
+        bool
+    ],  # used to enable / disable FK for an articulation, if None then treat all as enabled
+    articulation_indices: wp.array[int],  # can be None, articulation indices to process
+    joint_articulation: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
+    body_flags: wp.array[wp.int32],
     body_flag_filter: int,
     # outputs
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -416,11 +416,11 @@ def eval_articulation_fk(
 
 def eval_fk(
     model: Model,
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
     state: State | Model | object,
-    mask: wp.array(dtype=bool) | None = None,
-    indices: wp.array(dtype=int) | None = None,
+    mask: wp.array[bool] | None = None,
+    indices: wp.array[int] | None = None,
     body_flag_filter: int = BodyFlags.ALL,
 ):
     """
@@ -482,11 +482,11 @@ def eval_fk(
 
 @wp.kernel
 def compute_shape_world_transforms(
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
     # outputs
-    shape_world_transform: wp.array(dtype=wp.transform),
+    shape_world_transform: wp.array[wp.transform],
 ):
     """Compute world-space transforms for shapes by concatenating local shape
     transforms with body transforms.
@@ -546,26 +546,26 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
 
 @wp.kernel
 def eval_articulation_ik(
-    articulation_start: wp.array(dtype=int),
+    articulation_start: wp.array[int],
     articulation_count: int,  # total number of articulations
-    articulation_mask: wp.array(dtype=bool),  # can be None, mask to filter articulations
-    articulation_indices: wp.array(dtype=int),  # can be None, articulation indices to process
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    body_flags: wp.array(dtype=wp.int32),
+    articulation_mask: wp.array[bool],  # can be None, mask to filter articulations
+    articulation_indices: wp.array[int],  # can be None, articulation indices to process
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    body_flags: wp.array[wp.int32],
     body_flag_filter: int,
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
 ):
     art_idx, joint_offset = wp.tid()  # articulation index and joint offset within articulation
 
@@ -766,10 +766,10 @@ def eval_articulation_ik(
 def eval_ik(
     model: Model,
     state: State | Model | object,
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    mask: wp.array(dtype=bool) | None = None,
-    indices: wp.array(dtype=int) | None = None,
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    mask: wp.array[bool] | None = None,
+    indices: wp.array[int] | None = None,
     body_flag_filter: int = BodyFlags.ALL,
 ):
     """
@@ -831,13 +831,13 @@ def eval_ik(
 @wp.func
 def jcalc_motion_subspace(
     type: int,
-    joint_axis: wp.array(dtype=wp.vec3),
+    joint_axis: wp.array[wp.vec3],
     lin_axis_count: int,
     ang_axis_count: int,
     X_sc: wp.transform,
     qd_start: int,
     # outputs
-    joint_S_s: wp.array(dtype=wp.spatial_vector),
+    joint_S_s: wp.array[wp.spatial_vector],
 ):
     """Compute motion subspace (joint Jacobian columns) for a joint.
 
@@ -905,20 +905,20 @@ def jcalc_motion_subspace(
 
 @wp.kernel
 def eval_articulation_jacobian(
-    articulation_start: wp.array(dtype=int),
+    articulation_start: wp.array[int],
     articulation_count: int,
-    articulation_mask: wp.array(dtype=bool),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_ancestor: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    body_q: wp.array(dtype=wp.transform),
+    articulation_mask: wp.array[bool],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_ancestor: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_q: wp.array[wp.transform],
     # outputs
-    J: wp.array3d(dtype=float),
-    joint_S_s: wp.array(dtype=wp.spatial_vector),
+    J: wp.array3d[float],
+    joint_S_s: wp.array[wp.spatial_vector],
 ):
     """Compute spatial Jacobian for articulations.
 
@@ -1098,12 +1098,12 @@ def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
 
 @wp.kernel
 def compute_body_spatial_inertia(
-    body_inertia: wp.array(dtype=wp.mat33),
-    body_mass: wp.array(dtype=float),
-    body_com: wp.array(dtype=wp.vec3),
-    body_q: wp.array(dtype=wp.transform),
+    body_inertia: wp.array[wp.mat33],
+    body_mass: wp.array[float],
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
     # outputs
-    body_I_s: wp.array(dtype=wp.spatial_matrix),
+    body_I_s: wp.array[wp.spatial_matrix],
 ):
     """Compute spatial inertia for each body in world frame."""
     tid = wp.tid()
@@ -1135,15 +1135,15 @@ def compute_body_spatial_inertia(
 
 @wp.kernel
 def eval_articulation_mass_matrix(
-    articulation_start: wp.array(dtype=int),
+    articulation_start: wp.array[int],
     articulation_count: int,
-    articulation_mask: wp.array(dtype=bool),
-    joint_child: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    body_I_s: wp.array(dtype=wp.spatial_matrix),
-    J: wp.array3d(dtype=float),
+    articulation_mask: wp.array[bool],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    body_I_s: wp.array[wp.spatial_matrix],
+    J: wp.array3d[float],
     # outputs
-    H: wp.array3d(dtype=float),
+    H: wp.array3d[float],
 ):
     """Compute generalized mass matrix H = J^T * M * J.
 

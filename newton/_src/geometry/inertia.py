@@ -248,12 +248,12 @@ def triangle_inertia(
 
 @wp.kernel
 def compute_solid_mesh_inertia(
-    indices: wp.array(dtype=int),
-    vertices: wp.array(dtype=wp.vec3),
+    indices: wp.array[int],
+    vertices: wp.array[wp.vec3],
     # outputs
-    volume: wp.array(dtype=float),
-    first: wp.array(dtype=wp.vec3),
-    second: wp.array(dtype=wp.mat33),
+    volume: wp.array[float],
+    first: wp.array[wp.vec3],
+    second: wp.array[wp.mat33],
 ):
     i = wp.tid()
     p = vertices[indices[i * 3 + 0]]
@@ -268,13 +268,13 @@ def compute_solid_mesh_inertia(
 
 @wp.kernel
 def compute_hollow_mesh_inertia(
-    indices: wp.array(dtype=int),
-    vertices: wp.array(dtype=wp.vec3),
-    thickness: wp.array(dtype=float),
+    indices: wp.array[int],
+    vertices: wp.array[wp.vec3],
+    thickness: wp.array[float],
     # outputs
-    volume: wp.array(dtype=float),
-    first: wp.array(dtype=wp.vec3),
-    second: wp.array(dtype=wp.mat33),
+    volume: wp.array[float],
+    first: wp.array[wp.vec3],
+    second: wp.array[wp.mat33],
 ):
     tid = wp.tid()
     i = indices[tid * 3 + 0]
@@ -804,14 +804,14 @@ def verify_and_correct_inertia(
 
 @wp.kernel(enable_backward=False, module="unique")
 def validate_and_correct_inertia_kernel(
-    body_mass: wp.array(dtype=wp.float32),
-    body_inertia: wp.array(dtype=wp.mat33),
-    body_inv_mass: wp.array(dtype=wp.float32),
-    body_inv_inertia: wp.array(dtype=wp.mat33),
+    body_mass: wp.array[wp.float32],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[wp.float32],
+    body_inv_inertia: wp.array[wp.mat33],
     balance_inertia: wp.bool,
     bound_mass: wp.float32,
     bound_inertia: wp.float32,
-    correction_count: wp.array(dtype=wp.int32),  # Output: atomic counter of corrected bodies
+    correction_count: wp.array[wp.int32],  # Output: atomic counter of corrected bodies
 ):
     """Warp kernel for parallel inertia validation and correction.
 

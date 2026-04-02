@@ -133,11 +133,11 @@ def create_annular_prism_mesh(
 def set_conveyor_belt_state(
     belt_joint_q_start: int,
     belt_joint_qd_start: int,
-    sim_time: wp.array(dtype=wp.float32),
+    sim_time: wp.array[wp.float32],
     belt_angular_speed: float,
     # outputs
-    joint_q: wp.array(dtype=wp.float32),
-    joint_qd: wp.array(dtype=wp.float32),
+    joint_q: wp.array[wp.float32],
+    joint_qd: wp.array[wp.float32],
 ):
     """Set prescribed state for the belt's revolute root joint."""
     angle = belt_angular_speed * sim_time[0]
@@ -146,7 +146,7 @@ def set_conveyor_belt_state(
 
 
 @wp.kernel
-def advance_time(sim_time: wp.array(dtype=wp.float32), dt: float):
+def advance_time(sim_time: wp.array[wp.float32], dt: float):
     sim_time[0] = sim_time[0] + dt
 
 

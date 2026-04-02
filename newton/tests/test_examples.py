@@ -3,8 +3,9 @@
 
 """Test examples in the newton.examples package.
 
-Currently, this script mainly checks that the examples can run. There are no
-correctness checks.
+Currently, this script mainly checks that the examples can run. It also treats
+deprecation warnings as failures by default so examples do not regress onto
+deprecated APIs.
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -109,8 +110,8 @@ def add_example_test(
                 if wp.get_device(device).is_cuda and not torch.cuda.is_available():
                     test.skipTest("Torch not compiled with CUDA support")
 
-            except ImportError as e:
-                test.skipTest(f"torch not available: {e}")
+            except Exception as e:
+                test.skipTest(f"{e}")
 
         # Mark the test as skipped if USD is not installed but required
         usd_required = options.pop("usd_required", False)

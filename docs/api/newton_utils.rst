@@ -4,6 +4,7 @@
 newton.utils
 ============
 
+.. py:module:: newton.utils
 .. currentmodule:: newton.utils
 
 .. rubric:: Classes

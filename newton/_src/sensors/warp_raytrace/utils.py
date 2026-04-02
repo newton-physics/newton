@@ -21,8 +21,8 @@ if TYPE_CHECKING:
 def compute_pinhole_camera_rays(
     width: int,
     height: int,
-    camera_fovs: wp.array(dtype=wp.float32),
-    out_rays: wp.array(dtype=wp.vec3f, ndim=4),
+    camera_fovs: wp.array[wp.float32],
+    out_rays: wp.array4d[wp.vec3f],
 ):
     camera_index, py, px = wp.tid()
     aspect_ratio = float(width) / float(height)
@@ -36,8 +36,8 @@ def compute_pinhole_camera_rays(
 
 @wp.kernel(enable_backward=False)
 def flatten_color_image(
-    color_image: wp.array(dtype=wp.uint32, ndim=4),
-    buffer: wp.array(dtype=wp.uint8, ndim=3),
+    color_image: wp.array4d[wp.uint32],
+    buffer: wp.array3d[wp.uint8],
     width: wp.int32,
     height: wp.int32,
     camera_count: wp.int32,
@@ -62,8 +62,8 @@ def flatten_color_image(
 
 @wp.kernel(enable_backward=False)
 def flatten_normal_image(
-    normal_image: wp.array(dtype=wp.vec3f, ndim=4),
-    buffer: wp.array(dtype=wp.uint8, ndim=3),
+    normal_image: wp.array4d[wp.vec3f],
+    buffer: wp.array3d[wp.uint8],
     width: wp.int32,
     height: wp.int32,
     camera_count: wp.int32,
@@ -87,7 +87,7 @@ def flatten_normal_image(
 
 
 @wp.kernel(enable_backward=False)
-def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=4), depth_range: wp.array(dtype=wp.float32)):
+def find_depth_range(depth_image: wp.array4d[wp.float32], depth_range: wp.array[wp.float32]):
     world_id, camera_id, y, x = wp.tid()
     depth = depth_image[world_id, camera_id, y, x]
     if depth > 0:
@@ -97,9 +97,9 @@ def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=4), depth_rang
 
 @wp.kernel(enable_backward=False)
 def flatten_depth_image(
-    depth_image: wp.array(dtype=wp.float32, ndim=4),
-    buffer: wp.array(dtype=wp.uint8, ndim=3),
-    depth_range: wp.array(dtype=wp.float32),
+    depth_image: wp.array4d[wp.float32],
+    buffer: wp.array3d[wp.uint8],
+    depth_range: wp.array[wp.float32],
     width: wp.int32,
     height: wp.int32,
     camera_count: wp.int32,
@@ -133,10 +133,8 @@ class Utils:
     def __init__(self, render_context: RenderContext):
         self.__render_context = render_context
 
-    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        """Create a color output array for :meth:`update`.
+    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
+        """Create a color output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -152,10 +150,8 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.float32, ndim=4
-    ):
-        """Create a depth output array for :meth:`update`.
+    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
+        """Create a depth output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -171,10 +167,8 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        """Create a shape-index output array for :meth:`update`.
+    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
+        """Create a shape-index output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -190,10 +184,8 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.vec3f, ndim=4
-    ):
-        """Create a normal output array for :meth:`update`.
+    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
+        """Create a normal output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -209,10 +201,8 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        """Create an albedo output array for :meth:`update`.
+    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
+        """Create an albedo output array for :meth:`~SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -229,8 +219,8 @@ class Utils:
         )
 
     def compute_pinhole_camera_rays(
-        self, width: int, height: int, camera_fovs: float | list[float] | np.ndarray | wp.array(dtype=wp.float32)
-    ) -> wp.array(dtype=wp.vec3f, ndim=4):
+        self, width: int, height: int, camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32]
+    ) -> wp.array4d[wp.vec3f]:
         """Compute camera-space ray directions for pinhole cameras.
 
         Generates rays in camera space (origin at the camera center, direction normalized) for each pixel based on the
@@ -271,16 +261,16 @@ class Utils:
 
     def flatten_color_image_to_rgba(
         self,
-        image: wp.array(dtype=wp.uint32, ndim=4),
-        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
+        image: wp.array4d[wp.uint32],
+        out_buffer: wp.array3d[wp.uint8] | None = None,
         worlds_per_row: int | None = None,
-    ) -> wp.array(dtype=wp.uint8, ndim=3):
+    ) -> wp.array3d[wp.uint8]:
         """Flatten rendered color image to a tiled RGBA buffer.
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
         Args:
-            image: Color output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Color output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
@@ -314,16 +304,16 @@ class Utils:
 
     def flatten_normal_image_to_rgba(
         self,
-        image: wp.array(dtype=wp.vec3f, ndim=4),
-        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
+        image: wp.array4d[wp.vec3f],
+        out_buffer: wp.array3d[wp.uint8] | None = None,
         worlds_per_row: int | None = None,
-    ) -> wp.array(dtype=wp.uint8, ndim=3):
+    ) -> wp.array3d[wp.uint8]:
         """Flatten rendered normal image to a tiled RGBA buffer.
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
         Args:
-            image: Normal output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Normal output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
@@ -357,18 +347,18 @@ class Utils:
 
     def flatten_depth_image_to_rgba(
         self,
-        image: wp.array(dtype=wp.float32, ndim=4),
-        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
+        image: wp.array4d[wp.float32],
+        out_buffer: wp.array3d[wp.uint8] | None = None,
         worlds_per_row: int | None = None,
-        depth_range: wp.array(dtype=wp.float32) | None = None,
-    ) -> wp.array(dtype=wp.uint8, ndim=3):
+        depth_range: wp.array[wp.float32] | None = None,
+    ) -> wp.array3d[wp.uint8]:
         """Flatten rendered depth image to a tiled RGBA buffer.
 
         Encodes depth as grayscale: inverts values (closer = brighter) and normalizes to the ``[50, 255]``
         range. Background pixels (no hit) remain black.
 
         Args:
-            image: Depth output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
+            image: Depth output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
             depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.

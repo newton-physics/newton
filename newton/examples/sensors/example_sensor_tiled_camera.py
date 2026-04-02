@@ -38,13 +38,13 @@ SEMANTIC_COLOR_GROUND_PLANE = 0xFF444444
 @wp.kernel(enable_backward=False)
 def animate_franka(
     time: wp.float32,
-    joint_type: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_limit_lower: wp.array(dtype=wp.float32),
-    joint_limit_upper: wp.array(dtype=wp.float32),
-    joint_q: wp.array(dtype=wp.float32),
+    joint_type: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_limit_lower: wp.array[wp.float32],
+    joint_limit_upper: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
 ):
     tid = wp.tid()
 
@@ -64,9 +64,9 @@ def animate_franka(
 
 @wp.kernel
 def shape_index_to_semantic_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    colors: wp.array(dtype=wp.uint32),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
+    shape_indices: wp.array4d[wp.uint32],
+    colors: wp.array[wp.uint32],
+    rgba: wp.array4d[wp.uint32],
 ):
     world_id, camera_id, y, x = wp.tid()
     shape_index = shape_indices[world_id, camera_id, y, x]
@@ -78,8 +78,8 @@ def shape_index_to_semantic_rgb(
 
 @wp.kernel
 def shape_index_to_random_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
+    shape_indices: wp.array4d[wp.uint32],
+    rgba: wp.array4d[wp.uint32],
 ):
     world_id, camera_id, y, x = wp.tid()
     shape_index = shape_indices[world_id, camera_id, y, x]
@@ -271,7 +271,7 @@ class Example:
         )
         self.update_texture()
 
-    def get_camera_transforms(self) -> wp.array(dtype=wp.transformf):
+    def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
             return wp.array(
                 [

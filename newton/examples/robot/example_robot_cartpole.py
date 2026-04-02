@@ -11,6 +11,7 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -33,13 +34,20 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(cartpole)
         cartpole.default_shape_cfg.density = 100.0
         cartpole.default_joint_cfg.armature = 0.1
-        cartpole.default_body_armature = 0.1
 
         cartpole.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             enable_self_collisions=False,
             collapse_fixed_joints=True,
         )
+
+        # apply additional inertia to the bodies for better stability
+        body_armature = 0.1
+        for body in range(cartpole.body_count):
+            inertia_np = np.asarray(cartpole.body_inertia[body], dtype=np.float32).reshape(3, 3)
+            inertia_np += np.eye(3, dtype=np.float32) * body_armature
+            cartpole.body_inertia[body] = wp.mat33(inertia_np)
+
         # set initial joint positions
         cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
 

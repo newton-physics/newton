@@ -17,6 +17,79 @@ from newton._src.geometry.utils import transform_points
 from newton.tests.unittest_utils import assert_np_equal
 
 
+class TestModelBuilderDeprecations(unittest.TestCase):
+    def test_default_body_armature_get_and_set_warn(self):
+        builder = ModelBuilder()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.default_body_armature = 0.25
+            value = builder.default_body_armature
+
+        self.assertAlmostEqual(value, 0.25)
+        self.assertEqual(len(caught), 2)
+        self.assertTrue(all(issubclass(item.category, DeprecationWarning) for item in caught))
+        self.assertTrue(all("default_body_armature" in str(item.message) for item in caught))
+        self.assertTrue(all(item.filename.endswith("test_model.py") for item in caught))
+
+    def test_add_link_armature_warns_and_preserves_inertia(self):
+        builder = ModelBuilder()
+        inertia = np.diag([1.0, 2.0, 3.0]).astype(np.float32)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            body = builder.add_link(mass=1.0, inertia=inertia, armature=0.5)
+
+        self.assertEqual(body, 0)
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertIn("add_link(..., armature=...)", str(caught[0].message))
+        self.assertTrue(caught[0].filename.endswith("test_model.py"))
+        np.testing.assert_allclose(
+            np.asarray(builder.body_inertia[body]).reshape(3, 3),
+            inertia + np.eye(3, dtype=np.float32) * 0.5,
+            atol=1e-6,
+        )
+
+    def test_add_body_armature_warns_and_preserves_inertia(self):
+        builder = ModelBuilder()
+        inertia = np.diag([1.5, 2.5, 3.5]).astype(np.float32)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            body = builder.add_body(mass=1.0, inertia=inertia, armature=0.25)
+
+        self.assertEqual(body, 0)
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertIn("add_body(..., armature=...)", str(caught[0].message))
+        self.assertTrue(caught[0].filename.endswith("test_model.py"))
+        np.testing.assert_allclose(
+            np.asarray(builder.body_inertia[body]).reshape(3, 3),
+            inertia + np.eye(3, dtype=np.float32) * 0.25,
+            atol=1e-6,
+        )
+
+    def test_add_link_uses_default_body_armature_without_extra_warning(self):
+        builder = ModelBuilder()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.default_body_armature = 0.125
+            body = builder.add_link()
+
+        self.assertEqual(body, 0)
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertIn("default_body_armature", str(caught[0].message))
+        self.assertTrue(caught[0].filename.endswith("test_model.py"))
+        np.testing.assert_allclose(
+            np.asarray(builder.body_inertia[body]).reshape(3, 3),
+            np.eye(3, dtype=np.float32) * 0.125,
+            atol=1e-6,
+        )
+
+
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
         rng = np.random.default_rng(123)

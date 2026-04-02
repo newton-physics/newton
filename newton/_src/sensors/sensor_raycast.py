@@ -12,7 +12,7 @@ from ..sim import Model, State
 
 
 @wp.kernel
-def clamp_no_hits_kernel(depth_image: wp.array(dtype=float), max_dist: float):
+def clamp_no_hits_kernel(depth_image: wp.array[float], max_dist: float):
     """Kernel to replace max_distance values with -1.0 to indicate no intersection."""
     tid = wp.tid()
     if depth_image[tid] >= max_dist:
