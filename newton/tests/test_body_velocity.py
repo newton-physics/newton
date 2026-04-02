@@ -33,6 +33,79 @@ class TestBodyVelocity(unittest.TestCase):
     pass
 
 
+def _add_free_distance_joint(builder, joint_type, parent, child, parent_xform, child_xform):
+    if joint_type == newton.JointType.FREE:
+        return builder.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+    if joint_type == newton.JointType.DISTANCE:
+        return builder.add_joint_distance(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            min_distance=-1.0,
+            max_distance=-1.0,
+        )
+    raise AssertionError(f"Unsupported joint type: {joint_type}")
+
+
+def _joint_type_name(joint_type):
+    if joint_type == newton.JointType.FREE:
+        return "free"
+    if joint_type == newton.JointType.DISTANCE:
+        return "distance"
+    raise AssertionError(f"Unsupported joint type: {joint_type}")
+
+
+def _build_rotated_anchor_descendant_model(device, joint_type, parent_kinematic):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    base = builder.add_link(is_kinematic=parent_kinematic, mass=1.0)
+    child = builder.add_link(mass=1.0)
+    builder.add_shape_sphere(base, radius=0.1)
+    builder.add_shape_sphere(child, radius=0.1)
+    builder.body_com[child] = wp.vec3(0.25, 0.11, -0.17)
+
+    root_parent_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, -0.2, 1.0)), 0.55)
+    if parent_kinematic:
+        j0 = builder.add_joint_fixed(
+            parent=-1,
+            child=base,
+            parent_xform=wp.transform(wp.vec3(0.2, -0.1, 0.3), root_parent_rot),
+            child_xform=wp.transform_identity(),
+        )
+    else:
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=base,
+            axis=newton.Axis.Z,
+            parent_xform=wp.transform(wp.vec3(0.2, -0.1, 0.3), root_parent_rot),
+            child_xform=wp.transform_identity(),
+        )
+
+    parent_xform = wp.transform(
+        wp.vec3(0.7, -0.2, 0.4),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, 1.0, -0.3)), 0.7),
+    )
+    child_xform = wp.transform(
+        wp.vec3(0.15, -0.05, 0.2),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -0.2, 0.4)), -0.9),
+    )
+    j1 = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=base,
+        child=child,
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+    )
+    builder.add_articulation([j0, j1])
+    return builder.finalize(device=device), base, child, j0, j1
+
+
 def compute_com_world_position(body_q, body_com, body_world, world_offsets=None, body_index: int = 0) -> np.ndarray:
     """Compute the center of mass position in world frame."""
     com_world = wp.zeros(body_q.shape[0], dtype=wp.vec3, device=body_q.device)
@@ -296,20 +369,332 @@ def test_combined_velocity(
     test.assertLess(quat_diff, 0.9999, "Body should have rotated")
 
 
+def test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent(
+    test: TestBodyVelocity,
+    device,
+):
+    """Featherstone should preserve descendant FREE joint_qd in parent-frame coordinates."""
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    parent = builder.add_link(mass=1.0)
+    child = builder.add_link(mass=1.0)
+    builder.body_com[child] = wp.vec3(0.2, 0.0, 0.0)
+    builder.add_shape_sphere(parent, radius=0.1)
+    builder.add_shape_sphere(child, radius=0.1)
+
+    j0 = builder.add_joint_revolute(parent=-1, child=parent, axis=newton.Axis.Z)
+    j1 = builder.add_joint_free(
+        parent=parent,
+        child=child,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1])
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    state_0 = model.state()
+    state_1 = model.state()
+
+    q = state_0.joint_q.numpy()
+    qd = state_0.joint_qd.numpy()
+    q[:] = 0.0
+    q[0] = np.pi / 2.0
+    q[4:8] = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    qd[:] = 0.0
+    qd[1:7] = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    state_0.joint_q.assign(q)
+    state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    solver.step(state_0, state_1, model.control(), None, 0.01)
+
+    np.testing.assert_allclose(state_1.joint_qd.numpy()[1:7], qd[1:7], atol=1.0e-6, rtol=1.0e-6)
+    np.testing.assert_allclose(
+        state_1.body_qd.numpy()[child],
+        np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        atol=1.0e-5,
+        rtol=1.0e-6,
+    )
+
+
+def test_featherstone_free_distance_descendant_angular_velocity_keeps_com_stationary_with_rotated_anchors(
+    test: TestBodyVelocity,
+    device,
+    joint_type,
+):
+    """A rotated-anchor FREE/DISTANCE child with pure angular velocity should rotate about its COM."""
+    model, _base, child, _j0, j1 = _build_rotated_anchor_descendant_model(
+        device=device,
+        joint_type=joint_type,
+        parent_kinematic=True,
+    )
+    solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    state_0 = model.state()
+    state_1 = model.state()
+
+    q = model.joint_q.numpy().copy()
+    qd = model.joint_qd.numpy().copy()
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+
+    q[q_start[j1] : q_start[j1] + 3] = np.array([0.4, -0.25, 0.3], dtype=np.float32)
+    q_child_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.5, -0.2)), 0.35)
+    q[q_start[j1] + 3 : q_start[j1] + 7] = np.array(
+        [q_child_rot[0], q_child_rot[1], q_child_rot[2], q_child_rot[3]],
+        dtype=np.float32,
+    )
+    qd[qd_start[j1] : qd_start[j1] + 6] = np.array([0.0, 0.0, 0.0, 0.3, -0.4, 0.5], dtype=np.float32)
+
+    state_0.joint_q.assign(q)
+    state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world, body_index=child)
+
+    for _ in range(10):
+        solver.step(state_0, state_1, None, None, 0.01)
+        state_0, state_1 = state_1, state_0
+
+    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world, body_index=child)
+    com_drift = np.linalg.norm(com_final - com_initial)
+    test.assertLess(
+        com_drift,
+        2.0e-4,
+        f"{_joint_type_name(joint_type)} child COM drifted under pure angular velocity: {com_drift}",
+    )
+
+    body_qd = state_0.body_qd.numpy()[child]
+    np.testing.assert_allclose(body_qd[:3], np.zeros(3, dtype=np.float32), atol=2.0e-4, rtol=1.0e-6)
+    np.testing.assert_allclose(
+        state_0.joint_qd.numpy()[qd_start[j1] : qd_start[j1] + 6],
+        qd[qd_start[j1] : qd_start[j1] + 6],
+        atol=2.0e-4,
+        rtol=1.0e-6,
+    )
+
+
+def test_featherstone_free_distance_descendant_stays_inertial_under_parent_torque(
+    test: TestBodyVelocity,
+    device,
+    joint_type,
+):
+    """A FREE/DISTANCE descendant should stay inertial in world space while its parent accelerates."""
+    model, base, child, j0, j1 = _build_rotated_anchor_descendant_model(
+        device=device,
+        joint_type=joint_type,
+        parent_kinematic=False,
+    )
+    solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    q = model.joint_q.numpy().copy()
+    qd = model.joint_qd.numpy().copy()
+    joint_f = control.joint_f.numpy().copy()
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+
+    q[q_start[j1] : q_start[j1] + 3] = np.array([0.4, -0.25, 0.3], dtype=np.float32)
+    q_child_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.5, -0.2)), 0.35)
+    q[q_start[j1] + 3 : q_start[j1] + 7] = np.array(
+        [q_child_rot[0], q_child_rot[1], q_child_rot[2], q_child_rot[3]],
+        dtype=np.float32,
+    )
+    qd[:] = 0.0
+    joint_f[:] = 0.0
+    joint_f[qd_start[j0]] = 7.5
+
+    state_0.joint_q.assign(q)
+    state_0.joint_qd.assign(qd)
+    control.joint_f.assign(joint_f)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    child_q_initial = state_0.body_q.numpy()[child].copy()
+
+    solver.step(state_0, state_1, control, None, 0.01)
+
+    base_qd = state_1.body_qd.numpy()[base]
+    test.assertGreater(np.linalg.norm(base_qd[3:]), 1.0e-2, "Parent torque did not drive the base as intended")
+
+    child_qd = state_1.body_qd.numpy()[child]
+    np.testing.assert_allclose(child_qd, np.zeros(6, dtype=np.float32), atol=3.0e-4, rtol=1.0e-6)
+
+    child_q_final = state_1.body_q.numpy()[child]
+    np.testing.assert_allclose(child_q_final[:3], child_q_initial[:3], atol=1.0e-5, rtol=1.0e-6)
+
+    quat_dot = abs(np.dot(child_q_initial[3:7], child_q_final[3:7]))
+    test.assertGreater(quat_dot, 1.0 - 1.0e-5, f"{_joint_type_name(joint_type)} child orientation drifted in world")
+
+    child_joint_qd = state_1.joint_qd.numpy()[qd_start[j1] : qd_start[j1] + 6]
+    test.assertGreater(
+        np.linalg.norm(child_joint_qd),
+        1.0e-1,
+        "Descendant joint state did not pick up the compensating relative motion",
+    )
+
+
+def test_featherstone_free_distance_descendant_matches_ping_pong_when_stepping_in_place(
+    test: TestBodyVelocity,
+    device,
+    joint_type,
+):
+    """In-place stepping should match ping-pong stepping for descendant FREE/DISTANCE motion."""
+    model, _base, child, j0, j1 = _build_rotated_anchor_descendant_model(
+        device=device,
+        joint_type=joint_type,
+        parent_kinematic=False,
+    )
+    solver_ping_pong = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    solver_in_place = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    control_ping_pong = model.control()
+    control_in_place = model.control()
+
+    def _initialize_state(state, control):
+        q = model.joint_q.numpy().copy()
+        qd = model.joint_qd.numpy().copy()
+        joint_f = control.joint_f.numpy().copy()
+        q_start = model.joint_q_start.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        q[q_start[j1] : q_start[j1] + 3] = np.array([0.4, -0.25, 0.3], dtype=np.float32)
+        q_child_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.5, -0.2)), 0.35)
+        q[q_start[j1] + 3 : q_start[j1] + 7] = np.array(
+            [q_child_rot[0], q_child_rot[1], q_child_rot[2], q_child_rot[3]],
+            dtype=np.float32,
+        )
+        qd[:] = 0.0
+        joint_f[:] = 0.0
+        joint_f[qd_start[j0]] = 7.5
+
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        control.joint_f.assign(joint_f)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    state_pp_0 = model.state()
+    state_pp_1 = model.state()
+    state_in_place = model.state()
+    _initialize_state(state_pp_0, control_ping_pong)
+    _initialize_state(state_in_place, control_in_place)
+
+    steps = 20
+    for _ in range(steps):
+        solver_ping_pong.step(state_pp_0, state_pp_1, control_ping_pong, None, 0.01)
+        state_pp_0, state_pp_1 = state_pp_1, state_pp_0
+        solver_in_place.step(state_in_place, state_in_place, control_in_place, None, 0.01)
+
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+    np.testing.assert_allclose(
+        state_in_place.body_q.numpy()[child],
+        state_pp_0.body_q.numpy()[child],
+        atol=5.0e-5,
+        rtol=1.0e-6,
+    )
+    np.testing.assert_allclose(
+        state_in_place.joint_q.numpy()[q_start[j1] : q_start[j1] + 7],
+        state_pp_0.joint_q.numpy()[q_start[j1] : q_start[j1] + 7],
+        atol=5.0e-5,
+        rtol=1.0e-6,
+    )
+    np.testing.assert_allclose(
+        state_in_place.joint_qd.numpy()[qd_start[j1] : qd_start[j1] + 6],
+        state_pp_0.joint_qd.numpy()[qd_start[j1] : qd_start[j1] + 6],
+        atol=5.0e-4,
+        rtol=1.0e-6,
+    )
+
+
+def test_featherstone_free_distance_descendant_correction_path_refreshes_stale_body_pose(
+    test: TestBodyVelocity,
+    device,
+    joint_type,
+):
+    """The descendant FREE/DISTANCE correction path should ignore stale body poses."""
+    model, _base, child, j0, j1 = _build_rotated_anchor_descendant_model(
+        device=device,
+        joint_type=joint_type,
+        parent_kinematic=False,
+    )
+    solver_fresh = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    solver_stale = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    control_fresh = model.control()
+    control_stale = model.control()
+
+    def _initialize(state, control, refresh_fk):
+        q = model.joint_q.numpy().copy()
+        qd = model.joint_qd.numpy().copy()
+        joint_f = control.joint_f.numpy().copy()
+        q_start = model.joint_q_start.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        q[q_start[j1] : q_start[j1] + 3] = np.array([0.4, -0.25, 0.3], dtype=np.float32)
+        q_child_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.5, -0.2)), 0.35)
+        q[q_start[j1] + 3 : q_start[j1] + 7] = np.array(
+            [q_child_rot[0], q_child_rot[1], q_child_rot[2], q_child_rot[3]],
+            dtype=np.float32,
+        )
+        qd[:] = 0.0
+        joint_f[:] = 0.0
+        joint_f[qd_start[j0]] = 7.5
+
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        control.joint_f.assign(joint_f)
+        if refresh_fk:
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        else:
+            stale_body_q = np.full_like(state.body_q.numpy(), 123.0, dtype=np.float32)
+            stale_body_qd = np.full_like(state.body_qd.numpy(), -321.0, dtype=np.float32)
+            state.body_q.assign(stale_body_q)
+            state.body_qd.assign(stale_body_qd)
+
+    state_fresh_0 = model.state()
+    state_fresh_1 = model.state()
+    state_stale_0 = model.state()
+    state_stale_1 = model.state()
+    _initialize(state_fresh_0, control_fresh, refresh_fk=True)
+    _initialize(state_stale_0, control_stale, refresh_fk=False)
+
+    solver_fresh.step(state_fresh_0, state_fresh_1, control_fresh, None, 0.01)
+    solver_stale.step(state_stale_0, state_stale_1, control_stale, None, 0.01)
+
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+    np.testing.assert_allclose(
+        state_stale_1.body_q.numpy()[child],
+        state_fresh_1.body_q.numpy()[child],
+        atol=5.0e-5,
+        rtol=1.0e-6,
+    )
+    np.testing.assert_allclose(
+        state_stale_1.body_qd.numpy()[child],
+        state_fresh_1.body_qd.numpy()[child],
+        atol=5.0e-4,
+        rtol=1.0e-6,
+    )
+    np.testing.assert_allclose(
+        state_stale_1.joint_q.numpy()[q_start[j1] : q_start[j1] + 7],
+        state_fresh_1.joint_q.numpy()[q_start[j1] : q_start[j1] + 7],
+        atol=5.0e-5,
+        rtol=1.0e-6,
+    )
+    np.testing.assert_allclose(
+        state_stale_1.joint_qd.numpy()[qd_start[j1] : qd_start[j1] + 6],
+        state_fresh_1.joint_qd.numpy()[qd_start[j1] : qd_start[j1] + 6],
+        atol=5.0e-4,
+        rtol=1.0e-6,
+    )
+
+
 devices = get_test_devices()
 
 solvers = {
-    # NOTE: Featherstone currently has issues with angular velocity and non-zero CoM offsets.
-    # The Featherstone algorithm uses body origin velocity internally, and while we have
-    # conversion kernels at the solver boundary, the dynamics equations don't correctly
-    # compute the centripetal acceleration needed to keep the CoM stationary when rotating.
-    # Linear velocity tests pass, but angular velocity tests fail.
-    # This requires deeper changes to the Featherstone algorithm.
-    # "featherstone": (
-    #     lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    #     True,
-    #     1e-3,
-    # ),
+    "featherstone": (
+        lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
+        True,
+        1e-3,  # Internal free-joint speeds differ, but the public boundary is COM-based.
+    ),
     "mujoco_cpu": (
         lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
         True,
@@ -399,6 +784,43 @@ for device in devices:
                 com_offset=com_offset,
                 tolerance=tolerance,
             )
+
+    add_function_test(
+        TestBodyVelocity,
+        "test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent",
+        test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent,
+        devices=[device],
+    )
+    for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
+        joint_name = _joint_type_name(joint_type)
+        add_function_test(
+            TestBodyVelocity,
+            f"test_featherstone_{joint_name}_descendant_angular_velocity_keeps_com_stationary_with_rotated_anchors",
+            test_featherstone_free_distance_descendant_angular_velocity_keeps_com_stationary_with_rotated_anchors,
+            devices=[device],
+            joint_type=joint_type,
+        )
+        add_function_test(
+            TestBodyVelocity,
+            f"test_featherstone_{joint_name}_descendant_stays_inertial_under_parent_torque",
+            test_featherstone_free_distance_descendant_stays_inertial_under_parent_torque,
+            devices=[device],
+            joint_type=joint_type,
+        )
+        add_function_test(
+            TestBodyVelocity,
+            f"test_featherstone_{joint_name}_descendant_matches_ping_pong_when_stepping_in_place",
+            test_featherstone_free_distance_descendant_matches_ping_pong_when_stepping_in_place,
+            devices=[device],
+            joint_type=joint_type,
+        )
+        add_function_test(
+            TestBodyVelocity,
+            f"test_featherstone_{joint_name}_descendant_correction_path_refreshes_stale_body_pose",
+            test_featherstone_free_distance_descendant_correction_path_refreshes_stale_body_pose,
+            devices=[device],
+            joint_type=joint_type,
+        )
 
 
 if __name__ == "__main__":
