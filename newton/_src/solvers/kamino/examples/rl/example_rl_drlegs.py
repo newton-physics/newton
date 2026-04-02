@@ -253,7 +253,8 @@ class Example:
                     break
 
         if color_overrides:
-            self.sim_wrapper.viewer.update_shape_colors(color_overrides)
+            for s_idx, color in color_overrides.items():
+                model.shape_color[s_idx : s_idx + 1].fill_(wp.vec3(color))
 
     # Convenience accessors
     @property

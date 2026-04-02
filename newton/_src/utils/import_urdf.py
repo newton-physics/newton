@@ -650,7 +650,7 @@ def parse_urdf(
                 I_m[2, 0] = I_m[0, 2]
                 I_m[2, 1] = I_m[1, 2]
                 rot = wp.quat_to_matrix(inertial_frame.q)
-                I_m = rot @ wp.mat33(I_m)
+                I_m = rot @ wp.mat33(I_m) @ wp.transpose(rot)
                 builder.body_inertia[link] = I_m
                 if any(x for x in I_m):
                     builder.body_inv_inertia[link] = wp.inverse(I_m)

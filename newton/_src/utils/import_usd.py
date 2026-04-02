@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import collections
 import datetime
+import inspect
 import itertools
 import os
 import posixpath
@@ -36,6 +37,24 @@ from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
 
 AttributeFrequency = Model.AttributeFrequency
+
+_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
+
+def _external_stacklevel() -> int:
+    """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
+    frame = inspect.currentframe()
+    if frame is None:
+        return 2
+    frame = frame.f_back
+    stacklevel = 1
+    try:
+        while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
+            frame = frame.f_back
+            stacklevel += 1
+        return stacklevel
+    finally:
+        del frame
 
 
 def parse_usd(
@@ -165,12 +184,10 @@ def parse_usd(
         load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes: If True, collision shapes on bodies that already
-            have visual-only geometry are hidden. Collision shapes on bodies
-            without visual-only geometry remain visible as a rendering fallback.
-            Mesh colliders with authored PBR material data (texture,
-            roughness, or metallic) also remain visible so collision-only
-            render meshes are not lost.
-            Default is False.
+            have visual-only geometry are hidden unconditionally, regardless of
+            whether the collider has authored PBR material data. Collision
+            shapes on bodies without visual-only geometry remain visible as a
+            rendering fallback. Default is False.
         force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
@@ -183,7 +200,7 @@ def parse_usd(
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
             are authored in the USD but not strictly required to build the simulation. This is useful for
             inspection, experimentation, or custom pipelines that read these values via
-            ``result["schema_attrs"]`` returned from :func:`parse_usd`.
+            ``result["schema_attrs"]`` returned from ``parse_usd()``.
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
@@ -431,6 +448,7 @@ def parse_usd(
         return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
 
     bodies_with_visual_shapes: set[int] = set()
+    warned_deprecated_body_armature_paths: set[str] = set()
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -629,7 +647,7 @@ def parse_usd(
         prim: Usd.Prim,
         xform: wp.transform,
         label: str,
-        armature: float,
+        armature: float | None,
         articulation_root_xform: wp.transform | None = None,
         is_kinematic: bool = False,
     ) -> int:
@@ -638,11 +656,13 @@ def parse_usd(
         body_custom_attrs = usd.get_custom_attribute_values(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
+        body_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * armature if armature is not None else None
 
         b = builder.add_link(
             xform=xform,
             label=label,
-            armature=armature,
+            inertia=body_inertia,
+            armature=0.0 if armature is not None else None,
             is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
@@ -674,9 +694,27 @@ def parse_usd(
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
 
-        body_armature = usd.get_float_with_fallback(
-            (prim, physics_scene_prim), "newton:armature", builder.default_body_armature
-        )
+        body_armature_source_path: str | None = None
+        body_armature = usd.get_float(prim, "newton:armature", None)
+        if body_armature is not None:
+            body_armature_source_path = path
+        if body_armature is None and physics_scene_prim:
+            body_armature = usd.get_float(physics_scene_prim, "newton:armature", None)
+            if body_armature is not None:
+                body_armature_source_path = str(physics_scene_prim.GetPath())
+
+        if (
+            body_armature_source_path is not None
+            and body_armature_source_path not in warned_deprecated_body_armature_paths
+        ):
+            warnings.warn(
+                f"USD-authored 'newton:armature' on {body_armature_source_path} is deprecated and will be "
+                "removed in a future release. Add any isotropic artificial inertia directly to the body's "
+                "inertia instead.",
+                DeprecationWarning,
+                stacklevel=_external_stacklevel(),
+            )
+            warned_deprecated_body_armature_paths.add(body_armature_source_path)
 
         is_kinematic = rigid_body_desc.kinematicBody
 
@@ -2085,9 +2123,9 @@ def parse_usd(
                     and _has_visual_material_properties(_get_material_props_cached(prim))
                 )
 
-                hide_collider_for_body = (
-                    hide_collision_shapes and has_body_visual_shapes and not collider_has_visual_material
-                )
+                # Explicit hide_collision_shapes overrides material-based visibility:
+                # if the body already has visual shapes, hide its colliders unconditionally.
+                hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
                 show_collider_by_policy = should_show_collider(
                     force_show_colliders,
                     has_visual_shapes=has_body_visual_shapes,

@@ -21,16 +21,16 @@ import newton.examples
 
 @wp.kernel
 def move_obstacles_triwave(
-    bodies: wp.array(dtype=int),
-    init_y: wp.array(dtype=float),
-    init_z: wp.array(dtype=float),
+    bodies: wp.array[int],
+    init_y: wp.array[float],
+    init_z: wp.array[float],
     amp_scale: float,
     period: float,
-    t: wp.array(dtype=float),
+    t: wp.array[float],
     stop_time: float,
     release_time: float,
-    body_q0: wp.array(dtype=wp.transform),
-    body_q1: wp.array(dtype=wp.transform),
+    body_q0: wp.array[wp.transform],
+    body_q1: wp.array[wp.transform],
 ):
     """Move obstacles in a triangle wave pattern in Y direction with phase transitions."""
     i = wp.tid()
@@ -78,7 +78,7 @@ def move_obstacles_triwave(
 
 
 @wp.kernel
-def advance_time(t: wp.array(dtype=float), dt: float):
+def advance_time(t: wp.array[float], dt: float):
     """Advance a device-side time accumulator (single-threaded, graph-capture friendly)."""
     i = wp.tid()
     if i == 0:

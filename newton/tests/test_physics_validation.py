@@ -823,8 +823,8 @@ def test_restitution_mujoco(test, device, solver_fn, use_mujoco_cpu):
 # ---------------------------------------------------------------------------
 @wp.kernel
 def _velocity_pd_kernel(
-    joint_qd: wp.array(dtype=wp.float32),
-    joint_f: wp.array(dtype=wp.float32),
+    joint_qd: wp.array[wp.float32],
+    joint_f: wp.array[wp.float32],
     qd_idx: int,
     f_idx: int,
     kp: float,

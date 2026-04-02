@@ -11,11 +11,11 @@ from newton.solvers import SolverImplicitMPM
 
 @wp.kernel
 def apply_twist(
-    indices: wp.array(dtype=int),
-    rel_pos: wp.array(dtype=wp.vec3),
-    out_pos: wp.array(dtype=wp.vec3),
-    out_vel: wp.array(dtype=wp.vec3),
-    out_vel_grad: wp.array(dtype=wp.mat33),
+    indices: wp.array[int],
+    rel_pos: wp.array[wp.vec3],
+    out_pos: wp.array[wp.vec3],
+    out_vel: wp.array[wp.vec3],
+    out_vel_grad: wp.array[wp.mat33],
     center: wp.vec3,
     angle: float,
     speed: float,
@@ -110,6 +110,10 @@ class Example:
         self.solver = SolverImplicitMPM(self.model, mpm_options)
 
         self.viewer.set_model(self.model)
+
+        # Position camera for a 3/4 elevated view of the beam
+        if hasattr(self.viewer, "set_camera"):
+            self.viewer.set_camera(pos=wp.vec3(2.5, -5.0, 2.5), pitch=-15.0, yaw=90.0)
 
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             self.viewer.register_ui_callback(self.render_ui, position="side")

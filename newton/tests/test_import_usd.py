@@ -5,6 +5,7 @@ import math
 import os
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -69,6 +70,40 @@ def Xform "Root" (
             i for i in range(builder.shape_count) if builder.shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
         ]
         self.assertEqual(len(collision_shapes), 13)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_body_newton_armature_warns_deprecated(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        body.GetPrim().CreateAttribute("newton:armature", Sdf.ValueTypeNames.Float, True).Set(0.125)
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collision")
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+
+        deprecations = [item for item in caught if issubclass(item.category, DeprecationWarning)]
+        self.assertEqual(len(deprecations), 1)
+        message = str(deprecations[0].message)
+        self.assertIn("newton:armature", message)
+        self.assertIn("/World/Body", message)
+        self.assertNotIn("add_link(..., armature=...)", message)
+
+        # Verify the armature was applied to body inertia (default cube: half-extents
+        # (1,1,1), density 1000 → mass 8000, diagonal = 16000/3; plus armature 0.125)
+        inertia = builder.body_inertia[0]
+        expected_diag = 16000.0 / 3.0 + 0.125
+        for j in range(3):
+            self.assertAlmostEqual(float(inertia[j, j]), expected_diag, places=2)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_non_articulated_joints(self):
@@ -6533,8 +6568,8 @@ def Xform "BodyWithoutVisuals" (
         self.assertAlmostEqual(mesh.mass, physics_mesh.mass, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_visualized_collision_mesh_remains_visible_when_body_has_visual_shapes(self):
-        """Mesh colliders with visual material data stay visible even when body visuals exist."""
+    def test_hide_collision_shapes_overrides_visual_material(self):
+        """hide_collision_shapes=True hides colliders even when they have visual material data."""
         stage = self._create_stage_with_pbr_collision_mesh(
             color=(0.9, 0.1, 0.2), roughness=0.55, metallic=0.25, add_visual_sphere=True
         )
@@ -6550,13 +6585,22 @@ def Xform "BodyWithoutVisuals" (
         collision_shape = path_shape_map["/Body/CollisionMesh"]
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags & ShapeFlags.VISIBLE)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
 
-        mesh = builder.shape_source[collision_shape]
-        self.assertIsNotNone(mesh)
-        np.testing.assert_allclose(np.array(mesh.color), np.array([0.9, 0.1, 0.2]), atol=1e-6, rtol=1e-6)
-        self.assertAlmostEqual(mesh.roughness, 0.55, places=6)
-        self.assertAlmostEqual(mesh.metallic, 0.25, places=6)
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_hide_collision_shapes_fallback_with_material(self):
+        """Colliders with material stay visible when the body has no other visual shapes."""
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75, add_visual_sphere=False
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
 
 
 class TestImportUsdMimicJoint(unittest.TestCase):
@@ -7543,6 +7587,29 @@ class TestTetMesh(unittest.TestCase):
         # Check tet indices (flattened)
         assert_np_equal(tm.tet_indices[:4], np.array([0, 1, 2, 3], dtype=np.int32))
         assert_np_equal(tm.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_left_handed(self):
+        """Test that left-handed TetMesh orientation flips winding order."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def TetMesh "LeftHandedTet" ()
+{
+    uniform token orientation = "leftHanded"
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)]
+    int4[] tetVertexIndices = [(0, 1, 2, 3), (1, 2, 3, 4)]
+}
+"""
+        )
+        prim = stage.GetPrimAtPath("/LeftHandedTet")
+        tm = usd.get_tetmesh(prim)
+
+        # Indices 1 and 2 of each tet should be swapped compared to the original
+        assert_np_equal(tm.tet_indices[:4], np.array([0, 2, 1, 3], dtype=np.int32))
+        assert_np_equal(tm.tet_indices[4:], np.array([1, 3, 2, 4], dtype=np.int32))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_tetmesh_create_from_usd(self):

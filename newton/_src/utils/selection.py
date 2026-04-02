@@ -19,9 +19,9 @@ AttributeFrequency = Model.AttributeFrequency
 
 @wp.kernel
 def set_model_articulation_mask_kernel(
-    world_arti_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
-    view_to_model_map: wp.array2d(dtype=int),  # map (world, arti) indices to Model articulation id
-    model_articulation_mask: wp.array(dtype=bool),  # output: mask of Model articulation indices
+    world_arti_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
+    view_to_model_map: wp.array2d[int],  # map (world, arti) indices to Model articulation id
+    model_articulation_mask: wp.array[bool],  # output: mask of Model articulation indices
 ):
     """
     Set Model articulation mask from a 2D (world, arti) mask in an ArticulationView.
@@ -33,9 +33,9 @@ def set_model_articulation_mask_kernel(
 
 @wp.kernel
 def set_model_articulation_mask_per_world_kernel(
-    world_mask: wp.array(dtype=bool),  # world mask in ArticulationView
-    view_to_model_map: wp.array2d(dtype=int),  # map (world, arti) indices to Model articulation id
-    model_articulation_mask: wp.array(dtype=bool),  # output: mask of Model articulation indices
+    world_mask: wp.array[bool],  # world mask in ArticulationView
+    view_to_model_map: wp.array2d[int],  # map (world, arti) indices to Model articulation id
+    model_articulation_mask: wp.array[bool],  # output: mask of Model articulation indices
 ):
     """
     Set Model articulation mask from a 1D world mask in an ArticulationView.
@@ -47,7 +47,7 @@ def set_model_articulation_mask_per_world_kernel(
 
 # @wp.kernel
 # def set_articulation_attribute_1d_kernel(
-#     view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+#     view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
 #     values: Any,  # 1d array or indexedarray
 #     attrib: Any,  # 1d array or indexedarray
 # ):
@@ -58,7 +58,7 @@ def set_model_articulation_mask_per_world_kernel(
 
 # @wp.kernel
 # def set_articulation_attribute_2d_kernel(
-#     view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+#     view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
 #     values: Any,  # 2d array or indexedarray
 #     attrib: Any,  # 2d array or indexedarray
 # ):
@@ -69,7 +69,7 @@ def set_model_articulation_mask_per_world_kernel(
 
 @wp.kernel
 def set_articulation_attribute_3d_kernel(
-    view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+    view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
     values: Any,  # 3d array or indexedarray
     attrib: Any,  # 3d array or indexedarray
 ):
@@ -80,7 +80,7 @@ def set_articulation_attribute_3d_kernel(
 
 @wp.kernel
 def set_articulation_attribute_4d_kernel(
-    view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+    view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
     values: Any,  # 4d array or indexedarray
     attrib: Any,  # 4d array or indexedarray
 ):
@@ -91,7 +91,7 @@ def set_articulation_attribute_4d_kernel(
 
 # @wp.kernel
 # def set_articulation_attribute_1d_per_world_kernel(
-#     view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+#     view_mask: wp.array[bool],  # world mask in ArticulationView
 #     values: Any,  # 1d array or indexedarray
 #     attrib: Any,  # 1d array or indexedarray
 # ):
@@ -102,7 +102,7 @@ def set_articulation_attribute_4d_kernel(
 
 # @wp.kernel
 # def set_articulation_attribute_2d_per_world_kernel(
-#     view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+#     view_mask: wp.array[bool],  # world mask in ArticulationView
 #     values: Any,  # 2d array or indexedarray
 #     attrib: Any,  # 2d array or indexedarray
 # ):
@@ -113,7 +113,7 @@ def set_articulation_attribute_4d_kernel(
 
 @wp.kernel
 def set_articulation_attribute_3d_per_world_kernel(
-    view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+    view_mask: wp.array[bool],  # world mask in ArticulationView
     values: Any,  # 3d array or indexedarray
     attrib: Any,  # 3d array or indexedarray
 ):
@@ -124,7 +124,7 @@ def set_articulation_attribute_3d_per_world_kernel(
 
 @wp.kernel
 def set_articulation_attribute_4d_per_world_kernel(
-    view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+    view_mask: wp.array[bool],  # world mask in ArticulationView
     values: Any,  # 4d array or indexedarray
     attrib: Any,  # 4d array or indexedarray
 ):
@@ -164,12 +164,47 @@ for dtype in [float, int, wp.transform, wp.spatial_vector]:
 
 
 # ========================================================================================
+# Differentiable gather kernels for indexed -> contiguous copy
+
+
+@wp.kernel
+def _gather_indexed_3d_kernel(
+    src: Any,  # 3d wp.array (pre-indexed, has .grad)
+    indices: wp.array[int],  # index mapping for dimension 2
+    dst: Any,  # 3d wp.array (contiguous staging buffer, has .grad)
+):
+    i, j, k = wp.tid()
+    dst[i, j, k] = src[i, j, indices[k]]
+
+
+@wp.kernel
+def _gather_indexed_4d_kernel(
+    src: Any,  # 4d wp.array
+    indices: wp.array[int],
+    dst: Any,  # 4d wp.array
+):
+    i, j, k, l = wp.tid()
+    dst[i, j, k, l] = src[i, j, indices[k], l]
+
+
+for _dtype in [float, wp.transform, wp.spatial_vector]:
+    wp.overload(
+        _gather_indexed_3d_kernel,
+        {"src": wp.array3d[_dtype], "dst": wp.array3d[_dtype]},
+    )
+    wp.overload(
+        _gather_indexed_4d_kernel,
+        {"src": wp.array4d[_dtype], "dst": wp.array4d[_dtype]},
+    )
+
+
+# ========================================================================================
 # Actuator scatter/gather kernels
 
 
 @wp.kernel
 def build_actuator_dof_mapping_slice_kernel(
-    actuator_input_indices: wp.array(dtype=wp.uint32),
+    actuator_input_indices: wp.array[wp.uint32],
     actuators_per_world: int,
     base_offset: int,
     slice_start: int,
@@ -179,7 +214,7 @@ def build_actuator_dof_mapping_slice_kernel(
     dofs_per_arti: int,
     dofs_per_world: int,
     num_worlds: int,
-    mapping: wp.array(dtype=int),
+    mapping: wp.array[int],
 ):
     """Build DOF-to-actuator mapping for slice-based view selection.
 
@@ -207,8 +242,8 @@ def build_actuator_dof_mapping_slice_kernel(
 
 @wp.kernel
 def build_actuator_dof_mapping_indices_kernel(
-    actuator_input_indices: wp.array(dtype=wp.uint32),
-    view_dof_indices: wp.array(dtype=int),
+    actuator_input_indices: wp.array[wp.uint32],
+    view_dof_indices: wp.array[int],
     base_offset: int,
     stride_within_worlds: int,
     count_per_world: int,
@@ -216,7 +251,7 @@ def build_actuator_dof_mapping_indices_kernel(
     dofs_per_arti: int,
     dofs_per_world: int,
     num_worlds: int,
-    mapping: wp.array(dtype=int),
+    mapping: wp.array[int],
 ):
     """Build DOF-to-actuator mapping for index-array-based view selection.
 
@@ -244,9 +279,9 @@ def build_actuator_dof_mapping_indices_kernel(
 
 @wp.kernel
 def gather_actuator_by_indices_kernel(
-    src: wp.array(dtype=float),
-    indices: wp.array(dtype=int),
-    dst: wp.array(dtype=float),
+    src: wp.array[float],
+    indices: wp.array[int],
+    dst: wp.array[float],
 ):
     """Gather values from src at specified indices into dst. Index -1 means skip (leave dst unchanged)."""
     tid = wp.tid()
@@ -257,11 +292,11 @@ def gather_actuator_by_indices_kernel(
 
 @wp.kernel
 def scatter_actuator_with_mask_kernel(
-    values: wp.array2d(dtype=float),
-    mapping: wp.array(dtype=int),
-    mask: wp.array(dtype=bool),
+    values: wp.array2d[float],
+    mapping: wp.array[int],
+    mask: wp.array[bool],
     dofs_per_world: int,
-    dst: wp.array(dtype=float),
+    dst: wp.array[float],
 ):
     """Scatter actuator values with articulation mask support.
 
@@ -1166,7 +1201,25 @@ class ArticulationView:
             result.ptr = None
             return result
 
-        # construct reshaped attribute array
+        # construct reshaped attribute array, preserving grad connectivity
+        source_grad = attrib.grad if attrib.requires_grad else None
+        grad_view = None
+        if source_grad is not None:
+            grad_stride = source_grad.strides[0]
+            grad_view = wp.array(
+                ptr=int(source_grad.ptr) + layout.offset * grad_stride,
+                dtype=source_grad.dtype,
+                shape=shape,
+                strides=(
+                    layout.stride_between_worlds * grad_stride,
+                    layout.stride_within_worlds * grad_stride,
+                    grad_stride,
+                    *source_grad.strides[1:],
+                ),
+                device=source_grad.device,
+                copy=False,
+            )
+
         attrib = wp.array(
             ptr=int(attrib.ptr) + layout.offset * value_stride,
             dtype=attrib.dtype,
@@ -1174,14 +1227,19 @@ class ArticulationView:
             strides=strides,
             device=attrib.device,
             copy=False,
+            grad=grad_view,
         )
 
         # apply selection (slices or indices)
+        pre_indexed = attrib
         attrib = attrib[slices]
 
         if is_indexed:
-            # create a contiguous staging array
             attrib._staging_array = wp.empty_like(attrib)
+            if grad_view is not None:
+                attrib._staging_array.requires_grad = True
+                attrib._gather_src = pre_indexed
+                attrib._gather_indices = layout.indices
         else:
             # fixup for empty slices - FIXME: this should be handled by Warp, above
             if attrib.size == 0:
@@ -1192,10 +1250,23 @@ class ArticulationView:
     def _get_attribute_values(self, name: str, source: Model | State | Control, _slice: slice | None = None):
         attrib = self._get_attribute_array(name, source, _slice=_slice)
         if hasattr(attrib, "_staging_array"):
-            wp.copy(attrib._staging_array, attrib)
+            if hasattr(attrib, "_gather_src"):
+                kernel = _gather_indexed_4d_kernel if attrib.ndim == 4 else _gather_indexed_3d_kernel
+                wp.launch(
+                    kernel,
+                    dim=attrib._staging_array.shape,
+                    inputs=[attrib._gather_src, attrib._gather_indices],
+                    outputs=[attrib._staging_array],
+                )
+                src_grad = attrib._gather_src.grad
+                dst_grad = attrib._staging_array.grad
+                if src_grad is not None and dst_grad is not None:
+                    grad_slices = tuple(attrib._gather_indices if d == 2 else slice(None) for d in range(src_grad.ndim))
+                    wp.copy(dst_grad, src_grad[grad_slices])
+            else:
+                wp.copy(attrib._staging_array, attrib)
             return attrib._staging_array
-        else:
-            return attrib
+        return attrib
 
     def _set_attribute_values(
         self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None

@@ -105,7 +105,7 @@ def integrate_mass(
     phi: fem.Field,
     domain: fem.Domain,
     inv_cell_volume: float,
-    particle_density: wp.array(dtype=float),
+    particle_density: wp.array[float],
 ):
     # Particles with density == 0 are kinematic boundary conditions: they contribute
     # infinite mass so the grid velocity at their location is prescribed.
@@ -120,12 +120,12 @@ def integrate_velocity(
     s: fem.Sample,
     domain: fem.Domain,
     u: fem.Field,
-    velocities: wp.array(dtype=wp.vec3),
+    velocities: wp.array[wp.vec3],
     dt: float,
-    gravity: wp.array(dtype=wp.vec3),
-    particle_world: wp.array(dtype=wp.int32),
+    gravity: wp.array[wp.vec3],
+    particle_world: wp.array[wp.int32],
     inv_cell_volume: float,
-    particle_density: wp.array(dtype=float),
+    particle_density: wp.array[float],
 ):
     vel_adv = velocities[s.qp_index]
     world_idx = particle_world[s.qp_index]
@@ -145,9 +145,9 @@ def integrate_velocity_apic(
     s: fem.Sample,
     domain: fem.Domain,
     u: fem.Field,
-    velocity_gradients: wp.array(dtype=wp.mat33),
+    velocity_gradients: wp.array[wp.mat33],
     inv_cell_volume: float,
-    particle_density: wp.array(dtype=float),
+    particle_density: wp.array[float],
 ):
     # APIC velocity prediction
     node_offset = domain(fem.at_node(u, s)) - domain(s)
@@ -160,11 +160,11 @@ def integrate_velocity_apic(
 
 @wp.kernel
 def free_velocity(
-    velocity_int: wp.array(dtype=wp.vec3),
-    node_particle_mass: wp.array(dtype=float),
+    velocity_int: wp.array[wp.vec3],
+    node_particle_mass: wp.array[float],
     drag: float,
-    inv_mass_matrix: wp.array(dtype=float),
-    velocity_avg: wp.array(dtype=wp.vec3),
+    inv_mass_matrix: wp.array[float],
+    velocity_avg: wp.array[wp.vec3],
 ):
     i = wp.tid()
 
@@ -246,7 +246,7 @@ def integrate_yield_parameters(
     u: fem.Field,
     inv_cell_volume: float,
     material_parameters: MaterialParameters,
-    particle_Jp: wp.array(dtype=float),
+    particle_Jp: wp.array[float],
     dt: float,
 ):
     i = s.qp_index
@@ -259,7 +259,7 @@ def integrate_particle_stress(
     s: fem.Sample,
     tau: fem.Field,
     inv_cell_volume: float,
-    particle_stress: wp.array(dtype=wp.mat33),
+    particle_stress: wp.array[wp.mat33],
 ):
     i = s.qp_index
 
@@ -268,9 +268,9 @@ def integrate_particle_stress(
 
 @wp.kernel
 def average_yield_parameters(
-    yield_parameters_int: wp.array(dtype=YieldParamVec),
-    particle_volume: wp.array(dtype=float),
-    yield_parameters_avg: wp.array(dtype=YieldParamVec),
+    yield_parameters_int: wp.array[YieldParamVec],
+    particle_volume: wp.array[float],
+    yield_parameters_avg: wp.array[YieldParamVec],
 ):
     i = wp.tid()
     pvol = particle_volume[i]
@@ -279,9 +279,9 @@ def average_yield_parameters(
 
 @wp.kernel
 def average_elastic_parameters(
-    elastic_parameters_int: wp.array(dtype=wp.vec3),
-    particle_volume: wp.array(dtype=float),
-    elastic_parameters_avg: wp.array(dtype=wp.vec3),
+    elastic_parameters_int: wp.array[wp.vec3],
+    particle_volume: wp.array[float],
+    elastic_parameters_avg: wp.array[wp.vec3],
 ):
     i = wp.tid()
     pvol = particle_volume[i]
@@ -295,11 +295,11 @@ def advect_particles(
     grid_vel: fem.Field,
     dt: float,
     max_vel: float,
-    particle_flags: wp.array(dtype=wp.int32),
-    particle_volume: wp.array(dtype=float),
-    pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
-    vel_grad: wp.array(dtype=wp.mat33),
+    particle_flags: wp.array[wp.int32],
+    particle_volume: wp.array[float],
+    pos: wp.array[wp.vec3],
+    vel: wp.array[wp.vec3],
+    vel_grad: wp.array[wp.mat33],
 ):
     if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
         return
@@ -328,15 +328,15 @@ def update_particle_strains(
     elastic_strain_delta: fem.Field,
     stress: fem.Field,
     dt: float,
-    particle_flags: wp.array(dtype=wp.int32),
-    particle_density: wp.array(dtype=float),
-    particle_volume: wp.array(dtype=float),
+    particle_flags: wp.array[wp.int32],
+    particle_density: wp.array[float],
+    particle_volume: wp.array[float],
     material_parameters: MaterialParameters,
-    elastic_strain_prev: wp.array(dtype=wp.mat33),
-    particle_Jp_prev: wp.array(dtype=float),
-    elastic_strain: wp.array(dtype=wp.mat33),
-    particle_Jp: wp.array(dtype=float),
-    particle_stress: wp.array(dtype=wp.mat33),
+    elastic_strain_prev: wp.array[wp.mat33],
+    particle_Jp_prev: wp.array[float],
+    elastic_strain: wp.array[wp.mat33],
+    particle_Jp: wp.array[float],
+    particle_stress: wp.array[wp.mat33],
 ):
     if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
         elastic_strain[s.qp_index] = elastic_strain_prev[s.qp_index]
@@ -405,9 +405,9 @@ def update_particle_frames(
     dt: float,
     min_stretch: float,
     max_stretch: float,
-    vel_grad: wp.array(dtype=wp.mat33),
-    transform_prev: wp.array(dtype=wp.mat33),
-    transform: wp.array(dtype=wp.mat33),
+    vel_grad: wp.array[wp.mat33],
+    transform_prev: wp.array[wp.mat33],
+    transform: wp.array[wp.mat33],
 ):
     i = wp.tid()
 
@@ -447,10 +447,10 @@ def strain_delta_form(
 @wp.kernel
 def compute_unilateral_strain_offset(
     max_fraction: float,
-    particle_volume: wp.array(dtype=float),
-    collider_volume: wp.array(dtype=float),
-    node_volume: wp.array(dtype=float),
-    unilateral_strain_offset: wp.array(dtype=float),
+    particle_volume: wp.array[float],
+    collider_volume: wp.array[float],
+    node_volume: wp.array[float],
+    unilateral_strain_offset: wp.array[float],
 ):
     i = wp.tid()
 
@@ -469,7 +469,7 @@ def strain_rhs(
     s: fem.Sample,
     tau: fem.Field,
     elastic_parameters: fem.Field,
-    elastic_strains: wp.array(dtype=wp.mat33),
+    elastic_strains: wp.array[wp.mat33],
     inv_cell_volume: float,
     dt: float,
 ):
@@ -499,7 +499,7 @@ def compliance_form(
     tau: fem.Field,
     sig: fem.Field,
     elastic_parameters: fem.Field,
-    elastic_strains: wp.array(dtype=wp.mat33),
+    elastic_strains: wp.array[wp.mat33],
     inv_cell_volume: float,
     dt: float,
 ):
@@ -548,12 +548,12 @@ def mass_form(
 
 @wp.kernel(module="unique")
 def compute_eigenvalues(
-    offsets: wp.array(dtype=int),
-    columns: wp.array(dtype=int),
-    values: wp.array(dtype=Any),
-    yield_parameters: wp.array(dtype=YieldParamVec),
-    eigenvalues: wp.array2d(dtype=float),
-    eigenvectors: wp.array3d(dtype=float),
+    offsets: wp.array[int],
+    columns: wp.array[int],
+    values: wp.array[Any],
+    yield_parameters: wp.array[YieldParamVec],
+    eigenvalues: wp.array2d[float],
+    eigenvectors: wp.array3d[float],
 ):
     row = wp.tid()
 
@@ -602,11 +602,11 @@ def compute_eigenvalues(
 
 @wp.kernel(module="unique")
 def rotate_matrix_rows(
-    eigenvectors: wp.array3d(dtype=float),
-    mat_offsets: wp.array(dtype=int),
-    mat_columns: wp.array(dtype=int),
-    mat_values: wp.array(dtype=Any),
-    mat_values_out: wp.array(dtype=Any),
+    eigenvectors: wp.array3d[float],
+    mat_offsets: wp.array[int],
+    mat_columns: wp.array[int],
+    mat_values: wp.array[Any],
+    mat_values_out: wp.array[Any],
 ):
     block = wp.tid()
 
@@ -636,11 +636,11 @@ def rotate_matrix_rows(
 def make_rotate_vectors(nodes_per_element: int):
     @fem.cache.dynamic_kernel(suffix=nodes_per_element, kernel_options={"enable_mathdx_gemm": False})
     def rotate_vectors(
-        eigenvectors: wp.array3d(dtype=float),
-        strain_rhs: wp.array2d(dtype=float),
-        stress: wp.array2d(dtype=float),
-        yield_parameters: wp.array2d(dtype=float),
-        unilateral_strain_offset: wp.array2d(dtype=float),
+        eigenvectors: wp.array3d[float],
+        strain_rhs: wp.array2d[float],
+        stress: wp.array2d[float],
+        yield_parameters: wp.array2d[float],
+        unilateral_strain_offset: wp.array2d[float],
     ):
         elem = wp.tid()
         ev = wp.tile_load(eigenvectors[elem], shape=(nodes_per_element, nodes_per_element))
@@ -671,10 +671,10 @@ def make_rotate_vectors(nodes_per_element: int):
 def make_inverse_rotate_vectors(nodes_per_element: int):
     @fem.cache.dynamic_kernel(suffix=nodes_per_element)
     def inverse_rotate_vectors(
-        eigenvectors: wp.array3d(dtype=float),
-        plastic_strain: wp.array2d(dtype=float),
-        elastic_strain: wp.array2d(dtype=float),
-        stress: wp.array2d(dtype=float),
+        eigenvectors: wp.array3d[float],
+        plastic_strain: wp.array2d[float],
+        elastic_strain: wp.array2d[float],
+        stress: wp.array2d[float],
     ):
         elem = wp.tid()
 
@@ -701,8 +701,8 @@ def make_inverse_rotate_vectors(nodes_per_element: int):
 
 @wp.kernel(module="unique")
 def inverse_scale_vector(
-    eigenvalues: wp.array(dtype=float),
-    vector: wp.array(dtype=Any),
+    eigenvalues: wp.array[float],
+    vector: wp.array[Any],
 ):
     node = wp.tid()
     scale = eigenvalues[node]
@@ -711,13 +711,13 @@ def inverse_scale_vector(
     vector[node] = wp.where(scale == 0.0, zero, vector[node] / scale)
 
 
-wp.overload(inverse_scale_vector, {"vector": wp.array(dtype=YieldParamVec)})
+wp.overload(inverse_scale_vector, {"vector": wp.array[YieldParamVec]})
 
 
 @wp.kernel
 def inverse_scale_sym_tensor(
-    eigenvalues: wp.array(dtype=float),
-    vector: wp.array(dtype=vec6),
+    eigenvalues: wp.array[float],
+    vector: wp.array[vec6],
 ):
     node = wp.tid()
 
@@ -729,11 +729,11 @@ def inverse_scale_sym_tensor(
 
 @wp.kernel(module="unique")
 def rotate_matrix_columns(
-    eigenvectors: wp.array3d(dtype=float),
-    mat_offsets: wp.array(dtype=int),
-    mat_columns: wp.array(dtype=int),
-    mat_values: wp.array(dtype=Any),
-    mat_values_out: wp.array(dtype=Any),
+    eigenvectors: wp.array3d[float],
+    mat_offsets: wp.array[int],
+    mat_columns: wp.array[int],
+    mat_values: wp.array[Any],
+    mat_values_out: wp.array[Any],
 ):
     block = wp.tid()
 
@@ -763,10 +763,10 @@ def rotate_matrix_columns(
 
 @wp.kernel
 def compute_bounds(
-    pos: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    pos: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     block_id, lane = wp.tid()
     i = block_id * wp.block_dim() + lane
@@ -813,14 +813,14 @@ def compute_bounds(
 
 @wp.kernel
 def clamp_coordinates(
-    coords: wp.array(dtype=wp.vec3),
+    coords: wp.array[wp.vec3],
 ):
     i = wp.tid()
     coords[i] = wp.min(wp.max(coords[i], wp.vec3(0.0)), wp.vec3(1.0))
 
 
 @wp.kernel
-def pad_voxels(particle_q: wp.array(dtype=wp.vec3i), padded_q: wp.array4d(dtype=wp.vec3i)):
+def pad_voxels(particle_q: wp.array[wp.vec3i], padded_q: wp.array4d[wp.vec3i]):
     pid = wp.tid()
 
     for i in range(3):
@@ -857,12 +857,12 @@ def allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
 
 @wp.kernel
 def node_color(
-    space_node_indices: wp.array(dtype=int),
+    space_node_indices: wp.array[int],
     stencil_size: int,
-    voxels: wp.array(dtype=wp.vec3i),
+    voxels: wp.array[wp.vec3i],
     res: wp.vec3i,
-    colors: wp.array(dtype=int),
-    color_indices: wp.array(dtype=int),
+    colors: wp.array[int],
+    color_indices: wp.array[int],
 ):
     nid = wp.tid()
     vid = space_node_indices[nid]
@@ -890,10 +890,10 @@ def make_cell_color_kernel(geo_partition: fem.GeometryPartition):
     def cell_color(
         partition_arg: geo_partition.CellArg,
         stencil_size: int,
-        voxels: wp.array(dtype=wp.vec3i),
+        voxels: wp.array[wp.vec3i],
         res: wp.vec3i,
-        colors: wp.array(dtype=int),
-        color_indices: wp.array(dtype=int),
+        colors: wp.array[int],
+        color_indices: wp.array[int],
     ):
         pid = wp.tid()
 
@@ -921,7 +921,7 @@ def make_cell_color_kernel(geo_partition: fem.GeometryPartition):
 @wp.kernel
 def fill_uniform_color_block_indices(
     nodes_per_element: int,
-    color_indices: wp.array2d(dtype=int),
+    color_indices: wp.array2d[int],
 ):
     i = wp.tid()
     elem_idx = color_indices[0, i]
@@ -933,8 +933,8 @@ def make_dynamic_color_block_indices_kernel(geo_partition: fem.GeometryPartition
     @fem.cache.dynamic_kernel(geo_partition.name)
     def fill_dynamic_color_block_indices(
         partition_arg: geo_partition.CellArg,
-        cell_node_offsets: wp.array(dtype=int),
-        color_indices: wp.array2d(dtype=int),
+        cell_node_offsets: wp.array[int],
+        color_indices: wp.array2d[int],
     ):
         i = wp.tid()
         elem_idx = color_indices[0, i]
@@ -955,10 +955,10 @@ _NULL_COLOR = (1 << 31) - 1  # color for null nodes. make sure it is sorted last
 @wp.kernel
 def compute_color_offsets(
     max_color_count: int,
-    unique_count: wp.array(dtype=int),
-    unique_colors: wp.array(dtype=int),
-    color_counts: wp.array(dtype=int),
-    color_offsets: wp.array(dtype=int),
+    unique_count: wp.array[int],
+    unique_colors: wp.array[int],
+    color_counts: wp.array[int],
+    color_offsets: wp.array[int],
 ):
     current_sum = int(0)
     count = unique_count[0]
@@ -977,9 +977,9 @@ def compute_color_offsets(
 def mark_active_cells(
     s: fem.Sample,
     domain: fem.Domain,
-    positions: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=int),
-    active_cells: wp.array(dtype=int),
+    positions: wp.array[wp.vec3],
+    particle_flags: wp.array[int],
+    active_cells: wp.array[int],
 ):
     if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
         return
@@ -993,9 +993,9 @@ def mark_active_cells(
 
 @wp.kernel(module="unique")
 def scatter_field_dof_values(
-    space_node_indices: wp.array(dtype=int),
-    src: wp.array(dtype=Any),
-    dest: wp.array(dtype=Any),
+    space_node_indices: wp.array[int],
+    src: wp.array[Any],
+    dest: wp.array[Any],
 ):
     nid = wp.tid()
 
@@ -1004,5 +1004,5 @@ def scatter_field_dof_values(
         dest[sid] = src[nid]
 
 
-wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=wp.vec3), "dest": wp.array(dtype=wp.vec3)})
-wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=vec6), "dest": wp.array(dtype=vec6)})
+wp.overload(scatter_field_dof_values, {"src": wp.array[wp.vec3], "dest": wp.array[wp.vec3]})
+wp.overload(scatter_field_dof_values, {"src": wp.array[vec6], "dest": wp.array[vec6]})

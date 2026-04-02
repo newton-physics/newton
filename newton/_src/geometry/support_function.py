@@ -326,10 +326,10 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
 @wp.func
 def extract_shape_data(
     shape_idx: int,
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_types: wp.array(dtype=int),
-    shape_data: wp.array(dtype=wp.vec4),  # scale (xyz), margin_offset (w) or other data
-    shape_source: wp.array(dtype=wp.uint64),
+    shape_transform: wp.array[wp.transform],
+    shape_types: wp.array[int],
+    shape_data: wp.array[wp.vec4],  # scale (xyz), margin_offset (w) or other data
+    shape_source: wp.array[wp.uint64],
 ):
     """
     Extract shape data from the narrow phase API arrays.

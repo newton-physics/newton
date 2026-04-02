@@ -591,7 +591,7 @@ class SolverVBD(SolverBase):
             )
 
     @override
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
@@ -1358,7 +1358,7 @@ class SolverVBD(SolverBase):
             state_in: Input state.
             state_out: Output state.
             control: Control inputs.
-            contacts: Contact data produced by :meth:`Model.collide` (rigid-rigid and rigid-particle contacts).
+            contacts: Contact data produced by :meth:`~newton.Model.collide` (rigid-rigid and rigid-particle contacts).
                 If None, rigid contact handling is skipped. Note that particle self-contact (if enabled) does not
                 depend on this argument.
             dt: Time step size.
@@ -1391,14 +1391,14 @@ class SolverVBD(SolverBase):
                 kernel=apply_truncation_ts,
                 dim=self.model.particle_count,
                 inputs=[
-                    self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
-                    self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
-                    self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
+                    self.pos_prev_collision_detection,  # pos: wp.array[wp.vec3],
+                    self.particle_displacements,  # displacement_in: wp.array[wp.vec3],
+                    self.truncation_ts,  # truncation_ts: wp.array[float],
                     wp.inf,  # max_displacement: float (input threshold)
                 ],
                 outputs=[
-                    self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
-                    particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
+                    self.particle_displacements,  # displacement_out: wp.array[wp.vec3],
+                    particle_q_out,  # pos_out: wp.array[wp.vec3],
                 ],
                 device=self.device,
             )
@@ -1409,8 +1409,8 @@ class SolverVBD(SolverBase):
             wp.launch(
                 kernel=apply_planar_truncation_parallel_by_collision,
                 inputs=[
-                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array[wp.vec3],
+                    self.particle_displacements,  # particle_displacements: wp.array[wp.vec3],
                     self.model.tri_indices,
                     self.model.edge_indices,
                     self.trimesh_collision_info,
@@ -2199,12 +2199,12 @@ class SolverVBD(SolverBase):
 
         Returns:
             tuple[
-                wp.array(dtype=wp.int32),
-                wp.array(dtype=wp.int32),
-                wp.array(dtype=wp.vec3),
-                wp.array(dtype=wp.vec3),
-                wp.array(dtype=wp.vec3),
-                wp.array(dtype=wp.int32),
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.vec3],
+                wp.array[wp.vec3],
+                wp.array[wp.vec3],
+                wp.array[wp.int32],
             ]: Tuple of per-contact outputs:
                 - body0: Body index for shape0, int32.
                 - body1: Body index for shape1, int32.
@@ -2395,7 +2395,7 @@ class SolverVBD(SolverBase):
         quality. In these cases, rebuilding the entire tree is necessary to achieve better querying efficiency.
 
         Args:
-            state (newton.State):  The state whose particle positions (:attr:`State.particle_q`) will be used for rebuilding the BVHs.
+            state (newton.State):  The state whose particle positions (:attr:`~newton.State.particle_q`) will be used for rebuilding the BVHs.
         """
         if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
