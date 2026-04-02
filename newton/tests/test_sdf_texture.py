@@ -170,8 +170,8 @@ def _create_sphere_mesh(radius: float = 0.5, subdivisions: int = 3) -> Mesh:
 @wp.kernel
 def _sample_texture_sdf_kernel(
     sdf: TextureSDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf, query_points[tid])
@@ -180,9 +180,9 @@ def _sample_texture_sdf_kernel(
 @wp.kernel
 def _sample_texture_sdf_grad_kernel(
     sdf: TextureSDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, grad = texture_sample_sdf_grad(sdf, query_points[tid])
@@ -193,8 +193,8 @@ def _sample_texture_sdf_grad_kernel(
 @wp.kernel
 def _sample_nanovdb_value_kernel(
     sdf_data: SDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = sample_sdf_extrapolated(sdf_data, query_points[tid])
@@ -203,9 +203,9 @@ def _sample_nanovdb_value_kernel(
 @wp.kernel
 def _sample_nanovdb_grad_kernel(
     sdf_data: SDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, grad = sample_sdf_grad_extrapolated(sdf_data, query_points[tid])
@@ -215,10 +215,10 @@ def _sample_nanovdb_grad_kernel(
 
 @wp.kernel
 def _sample_texture_sdf_from_array_kernel(
-    sdf_table: wp.array(dtype=TextureSDFData),
+    sdf_table: wp.array[TextureSDFData],
     sdf_idx: int,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf_table[sdf_idx], query_points[tid])
@@ -227,8 +227,8 @@ def _sample_texture_sdf_from_array_kernel(
 @wp.kernel
 def _bvh_ground_truth_kernel(
     mesh: wp.uint64,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = get_distance_to_mesh(mesh, query_points[tid], 10000.0, 0.5)
@@ -237,9 +237,9 @@ def _bvh_ground_truth_kernel(
 @wp.kernel
 def _bvh_ground_truth_grad_kernel(
     mesh: wp.uint64,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     """Compute BVH ground truth distance and finite-difference gradient."""
     tid = wp.tid()
@@ -477,7 +477,7 @@ def test_texture_sdf_extrapolation(test, device):
 
 
 def test_texture_sdf_array_indexing(test, device):
-    """Create wp.array(dtype=TextureSDFData) with 2 entries, sample from kernel via index."""
+    """Create wp.array[TextureSDFData] with 2 entries, sample from kernel via index."""
     mesh1 = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
     mesh2 = _create_box_mesh(half_extents=(0.3, 0.3, 0.3))
 

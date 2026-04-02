@@ -579,7 +579,7 @@ class SolverKamino(SolverBase):
         )
 
     @override
-    def notify_model_changed(self, flags: int):
+    def notify_model_changed(self, flags: int) -> None:
         """Propagate Newton model property changes to Kamino's internal ModelKamino.
 
         Args:
@@ -626,7 +626,7 @@ class SolverKamino(SolverBase):
             )
 
     @override
-    def update_contacts(self, contacts: Contacts, state: State) -> None:
+    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """
         Converts Kamino contacts to Newton's Contacts format.
 

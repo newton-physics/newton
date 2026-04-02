@@ -163,12 +163,12 @@ def get_reduce_hydroelastic_contacts_kernel():
     @wp.kernel(enable_backward=False)
     def reduce_hydroelastic_contacts_kernel(
         reducer_data: GlobalContactReducerData,
-        shape_material_k_hydro: wp.array(dtype=wp.float32),
-        shape_transform: wp.array(dtype=wp.transform),
-        shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
-        shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
-        shape_voxel_resolution: wp.array(dtype=wp.vec3i),
-        agg_moment_unreduced: wp.array(dtype=wp.float32),
+        shape_material_k_hydro: wp.array[wp.float32],
+        shape_transform: wp.array[wp.transform],
+        shape_collision_aabb_lower: wp.array[wp.vec3],
+        shape_collision_aabb_upper: wp.array[wp.vec3],
+        shape_voxel_resolution: wp.array[wp.vec3i],
+        agg_moment_unreduced: wp.array[wp.float32],
         total_num_threads: int,
     ):
         """Register hydroelastic contacts in the hashtable for reduction.
@@ -293,14 +293,14 @@ def _create_accumulate_reduced_depth_kernel():
 
     @wp.kernel(enable_backward=False)
     def accumulate_reduced_depth_kernel(
-        ht_keys: wp.array(dtype=wp.uint64),
-        ht_values: wp.array(dtype=wp.uint64),
-        ht_active_slots: wp.array(dtype=wp.int32),
-        position_depth: wp.array(dtype=wp.vec4),
-        normal: wp.array(dtype=wp.vec2),
-        contact_nbin_entry: wp.array(dtype=wp.int32),
-        total_depth_reduced: wp.array(dtype=wp.float32),
-        total_normal_reduced: wp.array(dtype=wp.vec3),
+        ht_keys: wp.array[wp.uint64],
+        ht_values: wp.array[wp.uint64],
+        ht_active_slots: wp.array[wp.int32],
+        position_depth: wp.array[wp.vec4],
+        normal: wp.array[wp.vec2],
+        contact_nbin_entry: wp.array[wp.int32],
+        total_depth_reduced: wp.array[wp.float32],
+        total_normal_reduced: wp.array[wp.vec3],
         total_num_threads: int,
     ):
         """Accumulate winning contact depths and normals per normal bin.
@@ -366,18 +366,18 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
 
     @wp.kernel(enable_backward=False)
     def accumulate_moments_kernel(
-        ht_keys: wp.array(dtype=wp.uint64),
-        ht_values: wp.array(dtype=wp.uint64),
-        ht_active_slots: wp.array(dtype=wp.int32),
-        position_depth: wp.array(dtype=wp.vec4),
-        normal: wp.array(dtype=wp.vec2),
-        contact_nbin_entry: wp.array(dtype=wp.int32),
-        weighted_pos_sum: wp.array(dtype=wp.vec3),
-        weight_sum: wp.array(dtype=wp.float32),
-        agg_force: wp.array(dtype=wp.vec3),
-        total_normal_reduced: wp.array(dtype=wp.vec3),
-        agg_moment_reduced: wp.array(dtype=wp.float32),
-        agg_moment2_reduced: wp.array(dtype=wp.float32),
+        ht_keys: wp.array[wp.uint64],
+        ht_values: wp.array[wp.uint64],
+        ht_active_slots: wp.array[wp.int32],
+        position_depth: wp.array[wp.vec4],
+        normal: wp.array[wp.vec2],
+        contact_nbin_entry: wp.array[wp.int32],
+        weighted_pos_sum: wp.array[wp.vec3],
+        weight_sum: wp.array[wp.float32],
+        agg_force: wp.array[wp.vec3],
+        total_normal_reduced: wp.array[wp.vec3],
+        agg_moment_reduced: wp.array[wp.float32],
+        agg_moment2_reduced: wp.array[wp.float32],
         total_num_threads: int,
     ):
         """Accumulate reduced friction moments per normal bin."""
@@ -496,31 +496,31 @@ def create_export_hydroelastic_reduced_contacts_kernel(
     @wp.kernel(enable_backward=False)
     def export_hydroelastic_reduced_contacts_kernel(
         # Hashtable arrays
-        ht_keys: wp.array(dtype=wp.uint64),
-        ht_values: wp.array(dtype=wp.uint64),
-        ht_active_slots: wp.array(dtype=wp.int32),
+        ht_keys: wp.array[wp.uint64],
+        ht_values: wp.array[wp.uint64],
+        ht_active_slots: wp.array[wp.int32],
         # Aggregate data per entry (from generate kernel)
-        agg_force: wp.array(dtype=wp.vec3),
-        weighted_pos_sum: wp.array(dtype=wp.vec3),
-        weight_sum: wp.array(dtype=wp.float32),
+        agg_force: wp.array[wp.vec3],
+        weighted_pos_sum: wp.array[wp.vec3],
+        weight_sum: wp.array[wp.float32],
         # Contact buffer arrays
-        position_depth: wp.array(dtype=wp.vec4),
-        normal: wp.array(dtype=wp.vec2),  # Octahedral-encoded
-        shape_pairs: wp.array(dtype=wp.vec2i),
-        contact_area: wp.array(dtype=wp.float32),
-        entry_k_eff: wp.array(dtype=wp.float32),
-        contact_nbin_entry: wp.array(dtype=wp.int32),
+        position_depth: wp.array[wp.vec4],
+        normal: wp.array[wp.vec2],  # Octahedral-encoded
+        shape_pairs: wp.array[wp.vec2i],
+        contact_area: wp.array[wp.float32],
+        entry_k_eff: wp.array[wp.float32],
+        contact_nbin_entry: wp.array[wp.int32],
         # Pre-accumulated total depth of winning contacts per normal bin
-        total_depth_reduced: wp.array(dtype=wp.float32),
+        total_depth_reduced: wp.array[wp.float32],
         # Pre-accumulated depth-weighted normal sum of winning contacts per normal bin
-        total_normal_reduced: wp.array(dtype=wp.vec3),
+        total_normal_reduced: wp.array[wp.vec3],
         # Pre-accumulated friction moments per normal bin (for moment matching)
-        agg_moment_unreduced: wp.array(dtype=wp.float32),
-        agg_moment_reduced: wp.array(dtype=wp.float32),
-        agg_moment2_reduced: wp.array(dtype=wp.float32),
+        agg_moment_unreduced: wp.array[wp.float32],
+        agg_moment_reduced: wp.array[wp.float32],
+        agg_moment2_reduced: wp.array[wp.float32],
         # Shape data for margin
-        shape_gap: wp.array(dtype=float),
-        shape_transform: wp.array(dtype=wp.transform),
+        shape_gap: wp.array[float],
+        shape_transform: wp.array[wp.transform],
         # Writer data (custom struct)
         writer_data: Any,
         # Grid stride parameters

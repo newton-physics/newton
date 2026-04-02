@@ -12,7 +12,7 @@ from .linear_solver import NonZeroEntry
 
 
 @wp.func
-def add_connection(v0: int, v1: int, counts: wp.array(dtype=int), neighbors: wp.array2d(dtype=int)):
+def add_connection(v0: int, v1: int, counts: wp.array[int], neighbors: wp.array2d[int]):
     """
     Adds a connection from vertex v0 to vertex v1 in a sparse matrix format.
     If the connection already exists, returns its slot index.
@@ -45,13 +45,13 @@ def add_connection(v0: int, v1: int, counts: wp.array(dtype=int), neighbors: wp.
 @wp.kernel
 def add_bend_constraints_kernel(
     num_edge: int,
-    edge_inds: wp.array2d(dtype=int),
-    bend_hess: wp.array3d(dtype=float),
+    edge_inds: wp.array2d[int],
+    bend_hess: wp.array3d[float],
     # outputs
-    neighbors: wp.array2d(dtype=int),
-    neighbor_counts: wp.array(dtype=int),
-    nz_values: wp.array2d(dtype=float),
-    diags: wp.array(dtype=float),
+    neighbors: wp.array2d[int],
+    neighbor_counts: wp.array[int],
+    nz_values: wp.array2d[float],
+    diags: wp.array[float],
 ):
     """Accumulate contributions from bending constraints into a sparse matrix structure."""
     for eid in range(num_edge):
@@ -79,15 +79,15 @@ def add_bend_constraints_kernel(
 @wp.kernel
 def add_stretch_constraints_kernel(
     num_tri: int,
-    tri_indices: wp.array2d(dtype=int),
-    tri_areas: wp.array(dtype=float),
-    tri_poses: wp.array3d(dtype=float),
-    tri_aniso_ke: wp.array2d(dtype=float),
+    tri_indices: wp.array2d[int],
+    tri_areas: wp.array[float],
+    tri_poses: wp.array3d[float],
+    tri_aniso_ke: wp.array2d[float],
     # outputs
-    neighbors: wp.array2d(dtype=int),
-    neighbor_counts: wp.array(dtype=int),
-    nz_values: wp.array2d(dtype=float),
-    diags: wp.array(dtype=float),
+    neighbors: wp.array2d[int],
+    neighbor_counts: wp.array[int],
+    nz_values: wp.array2d[float],
+    diags: wp.array[float],
 ):
     """Accumulate contributions from stretch constraints into the sparse matrix."""
     for fid in range(num_tri):
@@ -121,11 +121,11 @@ def add_stretch_constraints_kernel(
 
 @wp.kernel
 def assemble_nz_ell_kernel(
-    neighbors: wp.array2d(dtype=int),
-    nz_values: wp.array2d(dtype=float),
-    neighbor_counts: wp.array(dtype=int),
+    neighbors: wp.array2d[int],
+    nz_values: wp.array2d[float],
+    neighbor_counts: wp.array[int],
     # outputs
-    nz_ell: wp.array2d(dtype=NonZeroEntry),
+    nz_ell: wp.array2d[NonZeroEntry],
 ):
     tid = wp.tid()
     for k in range(neighbor_counts[tid]):

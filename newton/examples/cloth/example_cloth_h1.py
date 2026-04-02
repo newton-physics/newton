@@ -197,10 +197,10 @@ class Example:
     @wp.kernel
     def transform_interpolate(
         ratio: float,
-        transform0: wp.array(dtype=wp.transform),
-        transform1: wp.array(dtype=wp.transform),
+        transform0: wp.array[wp.transform],
+        transform1: wp.array[wp.transform],
         # outputs
-        new_transform: wp.array(dtype=wp.transform),
+        new_transform: wp.array[wp.transform],
     ):
         tid = wp.tid()
         tf0 = transform0[tid]

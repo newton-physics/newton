@@ -117,10 +117,10 @@ class LineVertex:
 
 @wp.kernel
 def fill_vertex_data(
-    points: wp.array(dtype=wp.vec3),
-    normals: wp.array(dtype=wp.vec3),
-    uvs: wp.array(dtype=wp.vec2),
-    vertices: wp.array(dtype=RenderVertex),
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    uvs: wp.array[wp.vec2],
+    vertices: wp.array[RenderVertex],
 ):
     tid = wp.tid()
 
@@ -135,10 +135,10 @@ def fill_vertex_data(
 
 @wp.kernel
 def fill_line_vertex_data(
-    starts: wp.array(dtype=wp.vec3),
-    ends: wp.array(dtype=wp.vec3),
-    colors: wp.array(dtype=wp.vec3),
-    vertices: wp.array(dtype=LineVertex),
+    starts: wp.array[wp.vec3],
+    ends: wp.array[wp.vec3],
+    colors: wp.array[wp.vec3],
+    vertices: wp.array[LineVertex],
 ):
     tid = wp.tid()
 
@@ -568,9 +568,9 @@ class WireframeShapeGL:
 
 @wp.kernel
 def update_vbo_transforms(
-    instance_transforms: wp.array(dtype=wp.transform),
-    instance_scalings: wp.array(dtype=wp.vec3),
-    vbo_transforms: wp.array(dtype=wp.mat44),
+    instance_transforms: wp.array[wp.transform],
+    instance_scalings: wp.array[wp.vec3],
+    vbo_transforms: wp.array[wp.mat44],
 ):
     """Update VBO with simple instance transformation matrices."""
     tid = wp.tid()
@@ -613,9 +613,9 @@ def update_vbo_transforms(
 
 @wp.kernel
 def update_vbo_transforms_from_points(
-    points: wp.array(dtype=wp.vec3),
-    widths: wp.array(dtype=wp.float32),
-    vbo_transforms: wp.array(dtype=wp.mat44),
+    points: wp.array[wp.vec3],
+    widths: wp.array[wp.float32],
+    vbo_transforms: wp.array[wp.mat44],
 ):
     """Update VBO with simple instance transformation matrices."""
     tid = wp.tid()

@@ -134,15 +134,15 @@ def compute_ellipsoid_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[
 def compute_shape_bvh_bounds(
     shape_count_enabled: wp.int32,
     world_count: wp.int32,
-    shape_world_index: wp.array(dtype=wp.int32),
-    shape_enabled: wp.array(dtype=wp.uint32),
-    shape_types: wp.array(dtype=wp.int32),
-    shape_sizes: wp.array(dtype=wp.vec3f),
-    shape_transforms: wp.array(dtype=wp.transformf),
-    shape_bounds: wp.array2d(dtype=wp.vec3f),
-    out_bvh_lowers: wp.array(dtype=wp.vec3f),
-    out_bvh_uppers: wp.array(dtype=wp.vec3f),
-    out_bvh_groups: wp.array(dtype=wp.int32),
+    shape_world_index: wp.array[wp.int32],
+    shape_enabled: wp.array[wp.uint32],
+    shape_types: wp.array[wp.int32],
+    shape_sizes: wp.array[wp.vec3f],
+    shape_transforms: wp.array[wp.transformf],
+    shape_bounds: wp.array2d[wp.vec3f],
+    out_bvh_lowers: wp.array[wp.vec3f],
+    out_bvh_uppers: wp.array[wp.vec3f],
+    out_bvh_groups: wp.array[wp.int32],
 ):
     tid = wp.tid()
     bvh_index_local = tid % shape_count_enabled
@@ -193,12 +193,12 @@ def compute_shape_bvh_bounds(
 def compute_particle_bvh_bounds(
     num_particles: wp.int32,
     world_count: wp.int32,
-    particle_world_index: wp.array(dtype=wp.int32),
-    particle_position: wp.array(dtype=wp.vec3f),
-    particle_radius: wp.array(dtype=wp.float32),
-    out_bvh_lowers: wp.array(dtype=wp.vec3f),
-    out_bvh_uppers: wp.array(dtype=wp.vec3f),
-    out_bvh_groups: wp.array(dtype=wp.int32),
+    particle_world_index: wp.array[wp.int32],
+    particle_position: wp.array[wp.vec3f],
+    particle_radius: wp.array[wp.float32],
+    out_bvh_lowers: wp.array[wp.vec3f],
+    out_bvh_uppers: wp.array[wp.vec3f],
+    out_bvh_groups: wp.array[wp.int32],
 ):
     tid = wp.tid()
     bvh_index_local = tid % num_particles
@@ -222,6 +222,6 @@ def compute_particle_bvh_bounds(
 
 
 @wp.kernel(enable_backward=False)
-def compute_bvh_group_roots(bvh_id: wp.uint64, out_bvh_group_roots: wp.array(dtype=wp.int32)):
+def compute_bvh_group_roots(bvh_id: wp.uint64, out_bvh_group_roots: wp.array[wp.int32]):
     tid = wp.tid()
     out_bvh_group_roots[tid] = wp.bvh_get_group_root(bvh_id, tid)

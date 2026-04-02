@@ -134,7 +134,7 @@ class ViewerBase(ABC):
         self._hydro_surface_line_colors: wp.array | None = None
 
         # Per-shape color buffer and indexing
-        self.model_shape_color: wp.array(dtype=wp.vec3) = None
+        self.model_shape_color: wp.array[wp.vec3] = None
         self._shape_to_slot: np.ndarray | None = None
         self._slot_to_shape: np.ndarray | None = None
         self._slot_to_shape_wp: wp.array | None = None
@@ -646,9 +646,9 @@ class ViewerBase(ABC):
         name: str,
         geo_type: int,
         geo_scale: float | tuple[float, ...] | list[float] | np.ndarray,
-        xforms: wp.array(dtype=wp.transform),
-        colors: wp.array(dtype=wp.vec3) | None = None,
-        materials: wp.array(dtype=wp.vec4) | None = None,
+        xforms: wp.array[wp.transform],
+        colors: wp.array[wp.vec3] | None = None,
+        materials: wp.array[wp.vec4] | None = None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
@@ -666,9 +666,9 @@ class ViewerBase(ABC):
                 - Capsule/Cylinder/Cone: (radius, height)
                 - Plane: (width, length) or float for both
                 - Box: (x_extent, y_extent, z_extent) or float for all
-            xforms: wp.array(dtype=wp.transform) of instance transforms
-            colors: wp.array(dtype=wp.vec3) or None (broadcasted if length 1)
-            materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
+            xforms: wp.array[wp.transform] of instance transforms
+            colors: wp.array[wp.vec3] or None (broadcasted if length 1)
+            materials: wp.array[wp.vec4] or None (broadcasted if length 1)
             geo_thickness: Optional thickness used for hashing and solidification.
             geo_is_solid: If False, use shell-thickening for mesh-based geometry.
             geo_src: Source geometry to use only when ``geo_type`` is
@@ -907,10 +907,10 @@ class ViewerBase(ABC):
     def log_mesh(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
-        normals: wp.array(dtype=wp.vec3) | None = None,
-        uvs: wp.array(dtype=wp.vec2) | None = None,
+        points: wp.array[wp.vec3],
+        indices: wp.array[wp.int32] | wp.array[wp.uint32],
+        normals: wp.array[wp.vec3] | None = None,
+        uvs: wp.array[wp.vec2] | None = None,
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
@@ -935,10 +935,10 @@ class ViewerBase(ABC):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -959,10 +959,10 @@ class ViewerBase(ABC):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -986,11 +986,9 @@ class ViewerBase(ABC):
     def log_lines(
         self,
         name: str,
-        starts: wp.array(dtype=wp.vec3) | None,
-        ends: wp.array(dtype=wp.vec3) | None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ),
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
         width: float = 0.01,
         hidden: bool = False,
     ):
@@ -1035,11 +1033,9 @@ class ViewerBase(ABC):
     def log_points(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3) | None,
-        radii: wp.array(dtype=wp.float32) | float | None = None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ) = None,
+        points: wp.array[wp.vec3] | None,
+        radii: wp.array[wp.float32] | float | None = None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
         """
@@ -1080,7 +1076,7 @@ class ViewerBase(ABC):
         return
 
     @abstractmethod
-    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
         """
         Log a numeric array for backend-specific visualization utilities.
 
@@ -1185,7 +1181,7 @@ class ViewerBase(ABC):
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
 
-        def finalize(self, shape_colors: wp.array(dtype=wp.vec3) | None = None):
+        def finalize(self, shape_colors: wp.array[wp.vec3] | None = None):
             """
             Allocates the batch of shape instances as Warp arrays.
 
@@ -1205,7 +1201,7 @@ class ViewerBase(ABC):
 
             self.world_xforms = wp.zeros_like(self.xforms)
 
-        def update(self, state: newton.State, world_offsets: wp.array(dtype=wp.vec3)):
+        def update(self, state: newton.State, world_offsets: wp.array[wp.vec3]):
             """
             Update the world transforms of the shape instances.
 

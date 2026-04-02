@@ -238,13 +238,13 @@ class TaskType(enum.IntEnum):
 
 @wp.kernel(enable_backward=False)
 def set_target_pose_kernel(
-    task_schedule: wp.array(dtype=wp.int32),
-    task_time_limits: wp.array(dtype=float),
-    task_pick_body: wp.array(dtype=int),
-    task_drop_body: wp.array(dtype=int),
-    task_drop_layer: wp.array(dtype=int),
-    task_idx: wp.array(dtype=int),
-    task_time_elapsed: wp.array(dtype=float),
+    task_schedule: wp.array[wp.int32],
+    task_time_limits: wp.array[float],
+    task_pick_body: wp.array[int],
+    task_drop_body: wp.array[int],
+    task_drop_layer: wp.array[int],
+    task_idx: wp.array[int],
+    task_time_elapsed: wp.array[float],
     task_dt: float,
     offset_approach: wp.vec3,
     offset_lift: wp.vec3,
@@ -252,15 +252,15 @@ def set_target_pose_kernel(
     drop_z_offset: wp.vec3,
     brick_stack_height: float,
     home_pos: wp.vec3,
-    task_init_body_q: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
+    task_init_body_q: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     ee_index: int,
     # outputs
-    ee_pos_target: wp.array(dtype=wp.vec3),
-    ee_pos_interp: wp.array(dtype=wp.vec3),
-    ee_rot_target: wp.array(dtype=wp.vec4),
-    ee_rot_interp: wp.array(dtype=wp.vec4),
-    gripper_target: wp.array2d(dtype=wp.float32),
+    ee_pos_target: wp.array[wp.vec3],
+    ee_pos_interp: wp.array[wp.vec3],
+    ee_rot_target: wp.array[wp.vec4],
+    ee_rot_interp: wp.array[wp.vec4],
+    gripper_target: wp.array2d[wp.float32],
 ):
     tid = wp.tid()
 
@@ -350,15 +350,15 @@ def set_target_pose_kernel(
 
 @wp.kernel(enable_backward=False)
 def advance_task_kernel(
-    task_time_limits: wp.array(dtype=float),
-    ee_pos_target: wp.array(dtype=wp.vec3),
-    ee_rot_target: wp.array(dtype=wp.vec4),
-    body_q: wp.array(dtype=wp.transform),
+    task_time_limits: wp.array[float],
+    ee_pos_target: wp.array[wp.vec3],
+    ee_rot_target: wp.array[wp.vec4],
+    body_q: wp.array[wp.transform],
     ee_index: int,
     # outputs
-    task_idx: wp.array(dtype=int),
-    task_time_elapsed: wp.array(dtype=float),
-    task_init_body_q: wp.array(dtype=wp.transform),
+    task_idx: wp.array[int],
+    task_time_elapsed: wp.array[float],
+    task_init_body_q: wp.array[wp.transform],
 ):
     tid = wp.tid()
     idx = task_idx[tid]

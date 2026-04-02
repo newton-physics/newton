@@ -25,10 +25,10 @@ def _gjk_kernel(
     pos_b: wp.vec3,
     quat_b: wp.quat,
     # Outputs:
-    collision_out: wp.array(dtype=int),
-    dist_out: wp.array(dtype=float),
-    point_out: wp.array(dtype=wp.vec3),
-    normal_out: wp.array(dtype=wp.vec3),
+    collision_out: wp.array[int],
+    dist_out: wp.array[float],
+    point_out: wp.array[wp.vec3],
+    normal_out: wp.array[wp.vec3],
 ):
     """Kernel to compute GJK distance between two shapes."""
     # Create shape data for both geometries

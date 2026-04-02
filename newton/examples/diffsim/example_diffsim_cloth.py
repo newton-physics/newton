@@ -24,7 +24,7 @@ from newton.utils import bourke_color_map
 
 
 @wp.kernel
-def com_kernel(positions: wp.array(dtype=wp.vec3), n: int, com: wp.array(dtype=wp.vec3)):
+def com_kernel(positions: wp.array[wp.vec3], n: int, com: wp.array[wp.vec3]):
     tid = wp.tid()
 
     # compute center of mass
@@ -32,7 +32,7 @@ def com_kernel(positions: wp.array(dtype=wp.vec3), n: int, com: wp.array(dtype=w
 
 
 @wp.kernel
-def loss_kernel(com: wp.array(dtype=wp.vec3), target: wp.vec3, loss: wp.array(dtype=float)):
+def loss_kernel(com: wp.array[wp.vec3], target: wp.vec3, loss: wp.array[float]):
     # sq. distance to target
     delta = com[0] - target
 
@@ -40,7 +40,7 @@ def loss_kernel(com: wp.array(dtype=wp.vec3), target: wp.vec3, loss: wp.array(dt
 
 
 @wp.kernel
-def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha: float):
+def step_kernel(x: wp.array[wp.vec3], grad: wp.array[wp.vec3], alpha: float):
     tid = wp.tid()
 
     # gradient descent step
