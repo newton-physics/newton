@@ -56,7 +56,7 @@ from newton.examples.mpc.dial_mpc import (
 
 N_JOINTS = 12
 BOX_X = 1.0          # box center X position [m]
-BOX_HALF_HEIGHT = 0.10  # box half-height [m] (full height = 20cm)
+BOX_HALF_HEIGHT = 0.15  # box half-height [m] (full height = 30cm)
 BOX_HALF_LEN = 0.5   # box half-length in X [m]
 BOX_HALF_WIDTH = 0.5  # box half-width in Y [m]
 
