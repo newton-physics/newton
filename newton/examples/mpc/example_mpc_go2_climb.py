@@ -135,48 +135,55 @@ def build_go2_with_box_visual():
 
 
 # ============================================================
-# Climb Reward — Paper-style: head position goal + foot contact
+# Climb Reward Kernel (GPU) — Paper-style goal reaching
 # ============================================================
 
 
-def climb_reward(rollout_sim, config, t, actions=None, n_actual=None):
-    """Reward for climbing onto a box (paper-style goal reaching).
+@wp.kernel
+def climb_reward_kernel(
+    body_q: wp.array(dtype=wp.transformf),
+    body_qd: wp.array(dtype=wp.spatial_vectorf),
+    rewards: wp.array(dtype=wp.float32),
+    bodies_per_world: int,
+    n_worlds: int,
+    target_x: float,
+    target_y: float,
+    target_z: float,
+):
+    """GPU reward: CoM-to-target distance + light upright + yaw."""
+    world_id = wp.tid()
+    if world_id >= n_worlds:
+        return
 
-    Following DIAL-MPC paper: dominant term is negative squared distance
-    from head to target position on top of the box. Very light upright
-    penalty. No velocity or height tracking.
-    """
-    bp, bq, bv, ba = rollout_sim.get_base_states()
-    N = n_actual or bp.shape[0]
-    bp, bq, bv, ba = bp[:N], bq[:N], bv[:N], ba[:N]
+    base_idx = world_id * bodies_per_world
+    xform = body_q[base_idx]
+    pos = wp.transform_get_translation(xform)
+    rot = wp.transform_get_rotation(xform)
 
-    # Target: robot CoM centered on box top
-    target_pos = np.array([BOX_X, 0.0, 2 * BOX_HALF_HEIGHT + config.standing_height],
-                          dtype=np.float32)
+    # Position goal (dominant)
+    dx = pos[0] - target_x
+    dy = pos[1] - target_y
+    dz = pos[2] - target_z
+    reward_pos = -(dx * dx + dy * dy + dz * dz)
 
-    # === Primary: body-to-target distance (weight 1.0, paper-style) ===
-    reward_pos = -1.0 * np.sum((bp - target_pos[None, :]) ** 2, axis=1)
+    # Upright (very light)
+    rot_inv = wp.quat_inverse(rot)
+    up_world = wp.vec3(0.0, 0.0, 1.0)
+    up_body = wp.quat_rotate(rot_inv, up_world)
+    diff = up_body - up_world
+    reward_upright = -0.01 * wp.dot(diff, diff)
 
-    # === Upright (very light, weight 0.01 in paper) ===
-    up_body = compute_up_in_body(bq)
-    up_world = np.zeros_like(up_body)
-    up_world[:, 2] = 1.0
-    reward_upright = -0.01 * np.sum((up_body - up_world) ** 2, axis=1)
+    # Yaw
+    qx = rot[0]; qy = rot[1]; qz = rot[2]; qw = rot[3]
+    yaw = wp.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    reward_yaw = -0.3 * yaw * yaw
 
-    # === Yaw (weight 0.3 in paper) ===
-    yaw = quat_to_yaw(bq)
-    reward_yaw = -0.3 * (np.arctan2(np.sin(yaw), np.cos(yaw)) ** 2)
+    reward = reward_pos + reward_upright + reward_yaw
 
-    # === Action regularization ===
-    reward_action = np.zeros(N, dtype=np.float32)
-    if actions is not None:
-        reward_action = -0.005 * np.mean(actions ** 2, axis=1)
+    if pos[2] < 0.05:
+        reward = -100.0
 
-    reward = reward_pos + reward_upright + reward_yaw + reward_action
-
-    # Termination: only if robot falls completely
-    terminated = bp[:, 2] < 0.05
-    return np.where(terminated, -100.0, reward)
+    rewards[world_id] = reward
 
 
 # ============================================================
@@ -259,7 +266,8 @@ class Example:
         self.controller = DIALMPCController(
             self.mpc_config, self.rollout_sim, N_JOINTS,
             self.joint_range_low, self.joint_range_high,
-            reward_fn=climb_reward,
+            reward_kernel=climb_reward_kernel,
+            reward_params=[float(BOX_X), 0.0, float(target_z)],
         )
 
         self.trajectory = {

@@ -111,12 +111,73 @@ def build_go2_visual():
 
 
 # ============================================================
-# Turn Reward Function
+# Turn Reward Kernel (GPU)
 # ============================================================
 
 
+@wp.kernel
+def turn_reward_kernel(
+    body_q: wp.array(dtype=wp.transformf),
+    body_qd: wp.array(dtype=wp.spatial_vectorf),
+    rewards: wp.array(dtype=wp.float32),
+    bodies_per_world: int,
+    n_worlds: int,
+    target_vyaw: float,
+    target_height: float,
+):
+    """GPU reward: yaw rate tracking + stay in place + stability."""
+    world_id = wp.tid()
+    if world_id >= n_worlds:
+        return
+
+    base_idx = world_id * bodies_per_world
+    xform = body_q[base_idx]
+    twist = body_qd[base_idx]
+
+    pos = wp.transform_get_translation(xform)
+    rot = wp.transform_get_rotation(xform)
+    vel = wp.vec3(twist[0], twist[1], twist[2])
+    ang = wp.vec3(twist[3], twist[4], twist[5])
+
+    rot_inv = wp.quat_inverse(rot)
+    ab = wp.quat_rotate(rot_inv, ang)
+
+    # Yaw rate tracking (primary)
+    reward_yaw_rate = -3.0 * (ab[2] - target_vyaw) * (ab[2] - target_vyaw)
+
+    # Penalize linear velocity (stay in place)
+    reward_vel = -1.0 * (vel[0] * vel[0] + vel[1] * vel[1])
+
+    # Height
+    h_err = pos[2] - target_height
+    reward_height = wp.where(h_err < 0.0, -2.0 * 10.0 * h_err * h_err, -2.0 * h_err * h_err)
+
+    # Upright
+    up_world = wp.vec3(0.0, 0.0, 1.0)
+    up_body = wp.quat_rotate(rot_inv, up_world)
+    diff = up_body - up_world
+    reward_upright = -2.0 * wp.dot(diff, diff)
+
+    # Pitch
+    fwd_local = wp.vec3(1.0, 0.0, 0.0)
+    fwd_world = wp.quat_rotate(rot, fwd_local)
+    pitch = wp.atan2(-fwd_world[2], wp.sqrt(fwd_world[0] * fwd_world[0] + fwd_world[1] * fwd_world[1]))
+    reward_pitch = -3.0 * pitch * pitch
+
+    # Body rate smoothness
+    reward_body_rate = -0.3 * (ab[0] * ab[0] + ab[1] * ab[1])
+
+    reward = reward_yaw_rate + reward_vel + reward_height + reward_upright + reward_pitch + reward_body_rate
+
+    if pos[2] < 0.08 or up_body[2] < -0.3:
+        reward = -100.0
+
+    rewards[world_id] = reward
+
+
+# Keep numpy version for reference/verification
 def turn_reward(rollout_sim, config, t, actions=None, n_actual=None):
-    """Reward for turning in place: yaw rate tracking + stability."""
+    """Reward for turning in place: yaw rate tracking + stability (numpy, for verification)."""
     bp, bq, bv, ba = rollout_sim.get_base_states()
     N = n_actual or bp.shape[0]
     bp, bq, bv, ba = bp[:N], bq[:N], bv[:N], ba[:N]
@@ -124,18 +185,13 @@ def turn_reward(rollout_sim, config, t, actions=None, n_actual=None):
     ramp = min(1.0, t / config.ramp_up_time) if config.ramp_up_time > 0 else 1.0
     ab = quat_rotate_inv(bq, ba)
 
-    # Yaw rate tracking (primary objective: turn at target rate)
     target_vyaw = config.target_vyaw * ramp
     reward_yaw_rate = -3.0 * ((ab[:, 2] - target_vyaw) ** 2)
-
-    # Penalize linear velocity (stay in place while turning)
     reward_vel = -1.0 * (bv[:, 0] ** 2 + bv[:, 1] ** 2)
 
-    # Height maintenance
     h_err = bp[:, 2] - config.target_height
     reward_height = -2.0 * np.where(h_err < 0, 10.0 * h_err ** 2, h_err ** 2)
 
-    # Upright + pitch
     up_body = compute_up_in_body(bq)
     up_world = np.zeros_like(up_body)
     up_world[:, 2] = 1.0
@@ -143,11 +199,8 @@ def turn_reward(rollout_sim, config, t, actions=None, n_actual=None):
 
     pitch = compute_pitch(bq)
     reward_pitch = -3.0 * (pitch ** 2)
-
-    # Body pitch/roll rate smoothness
     reward_body_rate = -0.3 * (ab[:, 0] ** 2 + ab[:, 1] ** 2)
 
-    # Action regularization
     reward_action = np.zeros(N, dtype=np.float32)
     if actions is not None:
         reward_action = -0.01 * np.mean(actions ** 2, axis=1)
@@ -224,7 +277,8 @@ class Example:
         self.controller = DIALMPCController(
             self.mpc_config, self.rollout_sim, N_JOINTS,
             self.joint_range_low, self.joint_range_high,
-            reward_fn=turn_reward,
+            reward_kernel=turn_reward_kernel,
+            reward_params=[float(self.mpc_config.target_vyaw), float(settled_z)],
         )
 
         self.trajectory = {

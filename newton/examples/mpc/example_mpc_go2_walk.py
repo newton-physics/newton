@@ -58,6 +58,77 @@ N_JOINTS = 12  # 4 legs × 3 joints
 
 
 # ============================================================
+# Walk Reward Kernel (GPU)
+# ============================================================
+
+
+@wp.kernel
+def walk_reward_kernel(
+    body_q: wp.array(dtype=wp.transformf),
+    body_qd: wp.array(dtype=wp.spatial_vectorf),
+    rewards: wp.array(dtype=wp.float32),
+    bodies_per_world: int,
+    n_worlds: int,
+    target_vx: float,
+    target_height: float,
+):
+    """GPU reward: forward velocity tracking + upright + height stability."""
+    world_id = wp.tid()
+    if world_id >= n_worlds:
+        return
+
+    base_idx = world_id * bodies_per_world
+    xform = body_q[base_idx]
+    twist = body_qd[base_idx]
+
+    pos = wp.transform_get_translation(xform)
+    rot = wp.transform_get_rotation(xform)
+    # Newton body_qd: (linear, angular) in world frame
+    vel = wp.vec3(twist[0], twist[1], twist[2])
+    ang = wp.vec3(twist[3], twist[4], twist[5])
+
+    # Body-frame angular velocity
+    rot_inv = wp.quat_inverse(rot)
+    ab = wp.quat_rotate(rot_inv, ang)
+
+    # Forward velocity tracking (world frame)
+    reward_vel = -2.0 * ((vel[0] - target_vx) * (vel[0] - target_vx) + vel[1] * vel[1])
+
+    # Height (asymmetric)
+    h_err = pos[2] - target_height
+    reward_height = wp.where(h_err < 0.0, -2.0 * 10.0 * h_err * h_err, -2.0 * h_err * h_err)
+
+    # Upright: rotate world-up into body frame
+    up_world = wp.vec3(0.0, 0.0, 1.0)
+    up_body = wp.quat_rotate(rot_inv, up_world)
+    diff = up_body - up_world
+    reward_upright = -2.0 * wp.dot(diff, diff)
+
+    # Pitch
+    fwd_local = wp.vec3(1.0, 0.0, 0.0)
+    fwd_world = wp.quat_rotate(rot, fwd_local)
+    pitch = wp.atan2(-fwd_world[2], wp.sqrt(fwd_world[0] * fwd_world[0] + fwd_world[1] * fwd_world[1]))
+    reward_pitch = -3.0 * pitch * pitch
+
+    # Yaw
+    qx = rot[0]; qy = rot[1]; qz = rot[2]; qw = rot[3]
+    yaw = wp.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    reward_yaw = -0.3 * yaw * yaw
+
+    # Angular velocity smoothness
+    reward_ang_vel = -0.3 * ab[2] * ab[2]
+    reward_body_rate = -0.3 * (ab[0] * ab[0] + ab[1] * ab[1])
+
+    reward = reward_vel + reward_height + reward_upright + reward_pitch + reward_yaw + reward_ang_vel + reward_body_rate
+
+    # Termination
+    if pos[2] < 0.08 or up_body[2] < -0.3:
+        reward = -100.0
+
+    rewards[world_id] = reward
+
+
+# ============================================================
 # Go2 Robot Builder
 # ============================================================
 
@@ -234,10 +305,15 @@ class Example:
             device=self.device,
         )
 
+        # GPU reward kernel params: target_vx, target_height
+        self._target_vx_param = float(self.mpc_config.target_vx)
+        self._target_height_param = float(settled_z)
+
         self.controller = DIALMPCController(
             self.mpc_config, self.rollout_sim, N_JOINTS,
             self.joint_range_low, self.joint_range_high,
-            reward_fn=walk_reward,
+            reward_kernel=walk_reward_kernel,
+            reward_params=[self._target_vx_param, self._target_height_param],
         )
 
         self.trajectory = {

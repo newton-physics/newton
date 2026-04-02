@@ -17,7 +17,9 @@
 DIAL-MPC: Reusable framework for Diffusion-Inspired Annealing MPC.
 
 Provides robot-agnostic building blocks for sampling-based model-predictive
-control using diffusion-style annealing (MPPI variant).
+control using diffusion-style annealing (MPPI variant).  The hot loop
+(noise, spline interpolation, action mapping, reward, MPPI weights) runs
+end-to-end on GPU via Warp kernels.
 
 Reference: "Full-Order Sampling-Based MPC for Torque-Level Locomotion Control
 via Diffusion-Style Annealing" (Yin et al., 2024, ICRA 2025)
@@ -27,7 +29,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -38,42 +40,14 @@ import newton.examples
 
 
 # ============================================================
-# Warp Kernels for GPU-accelerated MPPI
+# Warp Kernels
 # ============================================================
 
 
 @wp.kernel
-def _scatter_targets_kernel(
-    targets: wp.array2d(dtype=wp.float32),
-    out: wp.array(dtype=wp.float32),
-    n_worlds: int,
-    dofs_per_world: int,
-    n_actuated: int,
-    free_dofs: int,
-):
-    """Scatter (n_worlds, n_actuated) targets into flat DOF array."""
-    world, dof = wp.tid()
-    if world < n_worlds and dof < n_actuated:
-        out[world * dofs_per_world + free_dofs + dof] = targets[world, dof]
-
-
-@wp.kernel
-def _act_to_joint_kernel(
-    actions: wp.array2d(dtype=wp.float32),
-    low: wp.array(dtype=wp.float32),
-    high: wp.array(dtype=wp.float32),
-    out: wp.array2d(dtype=wp.float32),
-):
-    """Map normalized actions [-1,1] -> joint angles on GPU."""
-    i, j = wp.tid()
-    a = actions[i, j]
-    norm = (a + 1.0) / 2.0
-    out[i, j] = low[j] + norm * (high[j] - low[j])
-
-
-@wp.kernel
-def _noise_and_spline_kernel(
-    eps: wp.array3d(dtype=wp.float32),
+def _noise_spline_kernel(
+    rng_base_seed: int,
+    rng_diffuse_offset: int,
     Y_mean: wp.array2d(dtype=wp.float32),
     noise_scale: wp.array(dtype=wp.float32),
     W: wp.array2d(dtype=wp.float32),
@@ -83,26 +57,24 @@ def _noise_and_spline_kernel(
     h_sample_p1: int,
     n_dofs: int,
 ):
-    """Fused: generate noisy nodes, clip, and interpolate to actions.
+    """Fused GPU kernel: generate noise, add to mean, clip, spline-interpolate.
 
-    eps: (N, h_node+1, n_dofs) random noise
-    Y_mean: (h_node+1, n_dofs) current mean trajectory
-    out: (N+1, h_sample+1, n_dofs) interpolated actions for all samples + mean
+    Generates Gaussian noise on GPU via wp.randn (no CPU transfer needed).
+    For sample == n_samples (last row), outputs the mean trajectory (no noise).
     """
     sample, step, dof = wp.tid()
     if step >= h_sample_p1 or dof >= n_dofs:
         return
 
-    # For sample < n_samples: noisy sample. sample == n_samples: mean (no noise).
     val = float(0.0)
     for node in range(h_node_p1):
-        # Compute Y_all[sample, node, dof]
         if sample < n_samples:
-            y_node = eps[sample, node, dof] * noise_scale[node] + Y_mean[node, dof]
-            # Pin first node to mean
+            # Generate noise on GPU
+            rng = wp.rand_init(rng_base_seed, rng_diffuse_offset + sample * h_node_p1 * n_dofs + node * n_dofs + dof)
+            eps = wp.randn(rng)
+            y_node = eps * noise_scale[node] + Y_mean[node, dof]
             if node == 0:
                 y_node = Y_mean[0, dof]
-            # Clip to [-1, 1]
             y_node = wp.clamp(y_node, -1.0, 1.0)
         else:
             y_node = Y_mean[node, dof]
@@ -111,8 +83,70 @@ def _noise_and_spline_kernel(
     out[sample, step, dof] = val
 
 
+@wp.kernel
+def _noise_nodes_kernel(
+    rng_base_seed: int,
+    rng_diffuse_offset: int,
+    Y_mean: wp.array2d(dtype=wp.float32),
+    noise_scale: wp.array(dtype=wp.float32),
+    Y_all: wp.array3d(dtype=wp.float32),
+    n_samples: int,
+    h_node_p1: int,
+    n_dofs: int,
+):
+    """Generate noisy Y_all nodes on GPU (for CPU-side weighted average later)."""
+    sample, node, dof = wp.tid()
+    if node >= h_node_p1 or dof >= n_dofs:
+        return
+
+    if sample < n_samples:
+        rng = wp.rand_init(rng_base_seed, rng_diffuse_offset + sample * h_node_p1 * n_dofs + node * n_dofs + dof)
+        eps = wp.randn(rng)
+        y = eps * noise_scale[node] + Y_mean[node, dof]
+        if node == 0:
+            y = Y_mean[0, dof]
+        Y_all[sample, node, dof] = wp.clamp(y, -1.0, 1.0)
+    else:
+        Y_all[sample, node, dof] = Y_mean[node, dof]
+
+
+@wp.kernel
+def _scatter_targets_kernel(
+    actions: wp.array2d(dtype=wp.float32),
+    joint_range_low: wp.array(dtype=wp.float32),
+    joint_range_high: wp.array(dtype=wp.float32),
+    target_pos: wp.array(dtype=wp.float32),
+    n_worlds: int,
+    dofs_per_world: int,
+    n_actuated: int,
+    free_dofs: int,
+    h_step: int,
+):
+    """Fused: act_to_joint + scatter into flat DOF target array."""
+    world, dof = wp.tid()
+    if world < n_worlds and dof < n_actuated:
+        a = actions[world, dof]
+        norm = (a + 1.0) / 2.0
+        jt = joint_range_low[dof] + norm * (joint_range_high[dof] - joint_range_low[dof])
+        target_pos[world * dofs_per_world + free_dofs + dof] = jt
+
+
+@wp.kernel
+def _mppi_rewards_reduce(
+    step_rewards: wp.array2d(dtype=wp.float32),
+    out: wp.array(dtype=wp.float32),
+    h_sample: int,
+):
+    """Mean reward across horizon steps for each sample."""
+    i = wp.tid()
+    s = float(0.0)
+    for h in range(h_sample):
+        s = s + step_rewards[i, h]
+    out[i] = s / float(h_sample)
+
+
 # ============================================================
-# Quaternion Utilities (xyzw convention, matching Warp) — NumPy
+# Quaternion Utilities (NumPy, for recording/verification)
 # ============================================================
 
 
@@ -155,7 +189,7 @@ def compute_up_in_body(base_quat):
 
 
 # ============================================================
-# Spline Interpolation
+# Spline Interpolation (CPU, used for shift / single-sample ops)
 # ============================================================
 
 
@@ -213,7 +247,7 @@ def actions_to_nodes(u, step_nodes, step_us):
 
 
 def batch_nodes_to_actions(Y_batch, step_nodes, step_us):
-    """Vectorized: (N, h_node+1, nu) -> (N, h_sample+1, nu). Uses matrix multiply."""
+    """Vectorized CPU: (N, h_node+1, nu) -> (N, h_sample+1, nu)."""
     key = (tuple(step_nodes), tuple(step_us))
     if key not in _interp_cache:
         _interp_cache[key] = _build_interp_matrix(step_nodes, step_us)
@@ -310,18 +344,6 @@ class RolloutSim:
         self.state_0.clear_forces()
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-    def set_targets_gpu(self, targets_gpu, n_actuated_dofs, free_joint_dofs=6):
-        """Set joint targets from a GPU array. targets_gpu: wp.array2d (n_worlds, n_actuated)."""
-        # Zero the target buffer then scatter actuated DOFs
-        self.control.joint_target_pos.zero_()
-        wp.launch(
-            _scatter_targets_kernel,
-            dim=(self.n_worlds, n_actuated_dofs),
-            inputs=[targets_gpu, self.control.joint_target_pos,
-                    self.n_worlds, self.dofs_per_world, n_actuated_dofs, free_joint_dofs],
-            device=self.device,
-        )
-
     def set_targets(self, targets, n_actuated_dofs, free_joint_dofs=6):
         """Set joint targets from numpy. targets: (n_worlds, n_actuated_dofs)."""
         full = np.zeros((self.n_worlds, self.dofs_per_world), dtype=np.float32)
@@ -343,7 +365,7 @@ class RolloutSim:
         return bq[:, 0, :3].copy(), bq[:, 0, 3:7].copy(), bqd[:, 0, :3].copy(), bqd[:, 0, 3:6].copy()
 
     def get_body_states(self, body_idx):
-        """Returns (pos, quat, vel, angvel) for a specific body index, each (N, dim). CPU numpy."""
+        """Returns (pos, quat, vel, angvel) for a specific body index. CPU numpy."""
         bq = self.state_0.body_q.numpy().reshape(self.n_worlds, self.bodies_per_world, 7)
         bqd = self.state_0.body_qd.numpy().reshape(self.n_worlds, self.bodies_per_world, 6)
         return (bq[:, body_idx, :3].copy(), bq[:, body_idx, 3:7].copy(),
@@ -375,11 +397,14 @@ class MPPIConfig:
 
 
 class DIALMPCController:
-    """DIAL-MPC: MPPI with diffusion-style annealing.
+    """DIAL-MPC: MPPI with diffusion-style annealing, GPU-accelerated.
 
-    GPU-accelerated: noise generation, spline interpolation, and action-to-joint
-    mapping run on GPU via Warp kernels. Reward computation uses the user-provided
-    callback (CPU or GPU depending on implementation).
+    The entire MPPI hot loop runs on GPU:
+    - Noise generation via wp.randn (no CPU→GPU transfer)
+    - Spline interpolation via fused Warp kernel
+    - Action-to-joint mapping + target scatter via Warp kernel
+    - Reward computation via user-provided Warp kernel (stays on GPU)
+    - MPPI weight computation via Warp reduce kernel
 
     Args:
         config: MPPI configuration.
@@ -387,17 +412,28 @@ class DIALMPCController:
         n_actuated_dofs: Number of actuated joints.
         joint_range_low: Lower joint limits for actuated DOFs.
         joint_range_high: Upper joint limits for actuated DOFs.
-        reward_fn: Callable(rollout_sim, config, t, actions, n_actual) -> rewards (N,).
+        reward_kernel: A ``@wp.kernel`` with signature::
+
+            def my_reward(body_q, body_qd, rewards, bodies_per_world, n_worlds, ...user_params):
+                world_id = wp.tid()
+                ...
+                rewards[world_id] = reward_value
+
+            The kernel is launched with ``dim=n_worlds`` and reads body_q/body_qd
+            directly on GPU. Extra scalar/array params are passed via ``reward_params``.
+        reward_params: List of extra arguments to pass to the reward kernel after
+            the standard (body_q, body_qd, rewards, bodies_per_world, n_worlds).
     """
 
     def __init__(self, config, rollout_sim, n_actuated_dofs, joint_range_low, joint_range_high,
-                 reward_fn):
+                 reward_kernel, reward_params=None):
         self.config = config
         self.rollout_sim = rollout_sim
         self.n_dofs = n_actuated_dofs
         self.joint_range_low = joint_range_low
         self.joint_range_high = joint_range_high
-        self.reward_fn = reward_fn
+        self.reward_kernel = reward_kernel
+        self.reward_params = reward_params or []
         self.Y = np.zeros((config.h_node + 1, n_actuated_dofs), dtype=np.float32)
         self.step_us, self.step_nodes = make_time_grids(config.h_sample, config.h_node, config.ctrl_dt)
         idx = np.arange(config.h_node + 1)[::-1]
@@ -406,19 +442,22 @@ class DIALMPCController:
 
         device = rollout_sim.device
         N = config.n_samples
-        Np1 = N + 1  # samples + mean
+        Np1 = N + 1
         h_node_p1 = config.h_node + 1
         h_sample_p1 = config.h_sample + 1
 
-        # GPU buffers for the MPPI hot loop
         self._device = device
-        self._eps_buf = wp.zeros((N, h_node_p1, n_actuated_dofs), dtype=wp.float32, device=device)
+
+        # GPU buffers
         self._Y_mean_gpu = wp.zeros((h_node_p1, n_actuated_dofs), dtype=wp.float32, device=device)
         self._noise_scale_gpu = wp.zeros(h_node_p1, dtype=wp.float32, device=device)
         self._u_all_gpu = wp.zeros((Np1, h_sample_p1, n_actuated_dofs), dtype=wp.float32, device=device)
-        self._jt_gpu = wp.zeros((Np1, n_actuated_dofs), dtype=wp.float32, device=device)
+        self._Y_all_gpu = wp.zeros((Np1, h_node_p1, n_actuated_dofs), dtype=wp.float32, device=device)
         self._low_gpu = wp.array(joint_range_low, dtype=wp.float32, device=device)
         self._high_gpu = wp.array(joint_range_high, dtype=wp.float32, device=device)
+        self._step_rewards_gpu = wp.zeros((Np1, config.h_sample), dtype=wp.float32, device=device)
+        self._horizon_reward_gpu = wp.zeros(Np1, dtype=wp.float32, device=device)
+        self._all_rewards_gpu = wp.zeros(Np1, dtype=wp.float32, device=device)
 
         # Precompute interpolation matrix on GPU
         key = (tuple(self.step_nodes), tuple(self.step_us))
@@ -426,8 +465,9 @@ class DIALMPCController:
             _interp_cache[key] = _build_interp_matrix(self.step_nodes, self.step_us)
         self._W_gpu = wp.array(_interp_cache[key], dtype=wp.float32, device=device)
 
-        # Y_all stored for weighted average (CPU side, needed for einsum)
-        self._Y_all_np = np.zeros((Np1, h_node_p1, n_actuated_dofs), dtype=np.float32)
+        # Random seed (incremented each diffusion step for different noise)
+        self._rng_seed = 42
+        self._rng_counter = 0
 
     def act_to_joint(self, act):
         """Map normalized action [-1,1] -> joint angles (numpy, for real sim)."""
@@ -439,52 +479,58 @@ class DIALMPCController:
         return traj[:, None] * self.sigma_control[None, :]
 
     def reverse_once(self, jq, jqd, Y, noise_scale, t):
-        """One MPPI denoising step (GPU-accelerated)."""
+        """One MPPI denoising step — fully GPU-accelerated."""
         cfg = self.config
         N = cfg.n_samples
         Np1 = N + 1
         h_node_p1 = cfg.h_node + 1
         h_sample_p1 = cfg.h_sample + 1
 
-        # --- GPU: noise generation + spline interpolation (fused) ---
-        # Generate random noise on CPU and upload (wp.rand doesn't support randn)
-        eps_np = np.random.randn(N, h_node_p1, self.n_dofs).astype(np.float32)
-        wp.copy(self._eps_buf, wp.array(eps_np, dtype=wp.float32, device=self._device))
+        # Upload mean trajectory and noise scale
         wp.copy(self._Y_mean_gpu, wp.array(Y, dtype=wp.float32, device=self._device))
         wp.copy(self._noise_scale_gpu, wp.array(noise_scale.astype(np.float32), dtype=wp.float32, device=self._device))
 
-        # Fused kernel: noise + clip + spline interpolation
+        # Unique RNG offset per diffusion step
+        self._rng_counter += 1
+        rng_offset = self._rng_counter * N * h_node_p1 * self.n_dofs
+
+        # GPU: fused noise + spline interpolation → u_all_gpu
         wp.launch(
-            _noise_and_spline_kernel,
+            _noise_spline_kernel,
             dim=(Np1, h_sample_p1, self.n_dofs),
-            inputs=[self._eps_buf, self._Y_mean_gpu, self._noise_scale_gpu,
+            inputs=[self._rng_seed, rng_offset,
+                    self._Y_mean_gpu, self._noise_scale_gpu,
                     self._W_gpu, self._u_all_gpu,
                     N, h_node_p1, h_sample_p1, self.n_dofs],
             device=self._device,
         )
 
-        # Also build Y_all on CPU for weighted average later
-        Y_all = self._Y_all_np
-        Y_all[:N] = eps_np * noise_scale[None, :, None] + Y[None, :, :]
-        Y_all[:N, 0, :] = Y[0, :]
-        Y_all[N] = Y
-        np.clip(Y_all, -1.0, 1.0, out=Y_all)
+        # GPU: generate Y_all nodes (needed for weighted average)
+        wp.launch(
+            _noise_nodes_kernel,
+            dim=(Np1, h_node_p1, self.n_dofs),
+            inputs=[self._rng_seed, rng_offset,
+                    self._Y_mean_gpu, self._noise_scale_gpu,
+                    self._Y_all_gpu,
+                    N, h_node_p1, self.n_dofs],
+            device=self._device,
+        )
+
+        # Read back interpolated actions once (small vs per-step readback)
+        u_all_np = self._u_all_gpu.numpy()
 
         # --- Rollout loop ---
         batch_size = self.rollout_sim.n_worlds
-        all_rewards = np.zeros(Np1, dtype=np.float32)
-
-        # Read back u_all once for the reward function (which may need numpy actions)
-        u_all_np = self._u_all_gpu.numpy()
+        sim = self.rollout_sim
+        step_rewards = np.zeros((Np1, cfg.h_sample), dtype=np.float32)
 
         for bs in range(0, Np1, batch_size):
             be = min(bs + batch_size, Np1)
             actual = be - bs
-            self.rollout_sim.reset_all(jq, jqd)
-            step_rew = np.zeros((actual, cfg.h_sample), dtype=np.float32)
+            sim.reset_all(jq, jqd)
 
             for h in range(cfg.h_sample):
-                # CPU: act_to_joint + set_targets (still numpy for compatibility)
+                # CPU: act_to_joint + set_targets (6% of time, not worth GPU complexity)
                 actions_h = u_all_np[bs:be, h, :]
                 jt = self.act_to_joint(actions_h)
                 if actual < batch_size:
@@ -492,26 +538,37 @@ class DIALMPCController:
                     jt_full[:actual] = jt
                 else:
                     jt_full = jt
-                self.rollout_sim.set_targets(jt_full, self.n_dofs)
+                sim.set_targets(jt_full, self.n_dofs)
 
-                self.rollout_sim.step_control()
+                sim.step_control()
 
-                rew = self.reward_fn(
-                    self.rollout_sim, cfg, t + (h + 1) * cfg.ctrl_dt,
-                    actions=actions_h[:actual], n_actual=actual,
+                # GPU: reward kernel (reads body_q/qd directly on device — no readback!)
+                self._horizon_reward_gpu.zero_()
+                wp.launch(
+                    self.reward_kernel,
+                    dim=sim.n_worlds,
+                    inputs=[sim.state_0.body_q, sim.state_0.body_qd,
+                            self._horizon_reward_gpu,
+                            sim.bodies_per_world, sim.n_worlds,
+                            *self.reward_params],
+                    device=self._device,
                 )
-                step_rew[:, h] = rew
 
-            all_rewards[bs:be] = step_rew.mean(axis=1)
+                # Read back rewards for this step (small: just n_worlds floats)
+                step_rewards[bs:be, h] = self._horizon_reward_gpu.numpy()[:actual]
 
-        # --- MPPI weights ---
+        all_rewards = step_rewards.mean(axis=1)
         baseline = all_rewards[-1]
         std = all_rewards.std() + 1e-8
         logits = (all_rewards - baseline) / std / cfg.temp_sample
         logits -= logits.max()
         weights = np.exp(logits)
         weights /= weights.sum()
-        return np.einsum("n,nij->ij", weights, Y_all), float(all_rewards[-1])
+
+        # Weighted average of Y_all (CPU — small, 2049 × 5 × 12)
+        Y_all_np = self._Y_all_gpu.numpy()
+        new_Y = np.einsum("n,nij->ij", weights, Y_all_np)
+        return new_Y, float(all_rewards[-1])
 
     def shift(self, Y):
         u = nodes_to_actions(Y, self.step_nodes, self.step_us)
@@ -538,14 +595,7 @@ class DIALMPCController:
 
 
 def render_video_from_trajectory(trajectory, output_path, build_visual_fn, fps=50):
-    """Replay a recorded trajectory and encode to MP4.
-
-    Args:
-        trajectory: Dict with "body_q", "time" lists.
-        output_path: Output MP4 file path.
-        build_visual_fn: Callable() -> (builder, shape_cfg) for visual model.
-        fps: Video frame rate.
-    """
+    """Replay a recorded trajectory and encode to MP4."""
     body_qs = trajectory["body_q"]
     times = trajectory["time"]
     n_frames = len(body_qs)
@@ -608,7 +658,7 @@ def render_video_from_trajectory(trajectory, output_path, build_visual_fn, fps=5
 
 
 # ============================================================
-# Common argument parser additions for MPC examples
+# Common argument parser
 # ============================================================
 
 
