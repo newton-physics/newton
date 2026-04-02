@@ -3088,7 +3088,6 @@ class SolverMuJoCo(SolverBase):
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
             self._update_eq_properties()
             self._update_mimic_eq_properties()
-            need_const_0 = True
         if flags & SolverNotifyFlags.TENDON_PROPERTIES:
             self._update_tendon_properties()
             need_const_0 = True
