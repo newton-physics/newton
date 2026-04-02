@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 import warp as wp
-from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID, parse_actuator_prim
+from newton.actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID, parse_actuator_prim
 
 import newton
 from newton._src.utils.import_usd import parse_usd
