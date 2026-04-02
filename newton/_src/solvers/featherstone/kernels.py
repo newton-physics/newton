@@ -916,6 +916,43 @@ def convert_free_distance_joint_qd_public_to_internal(
 
 
 @wp.kernel
+def reconstruct_free_distance_joint_q_from_body_pose(
+    joint_indices: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    joint_q: wp.array[float],
+):
+    joint_id = joint_indices[wp.tid()]
+    parent = joint_parent[joint_id]
+    child = joint_child[joint_id]
+
+    X_wpj = joint_X_p[joint_id]
+    if parent >= 0:
+        X_wpj = body_q[parent] * X_wpj
+
+    X_wcj = body_q[child] * joint_X_c[joint_id]
+
+    x_err_c = wp.quat_rotate_inv(
+        wp.transform_get_rotation(X_wpj),
+        wp.transform_get_translation(X_wcj) - wp.transform_get_translation(X_wpj),
+    )
+    q_pc = wp.quat_inverse(wp.transform_get_rotation(X_wpj)) * wp.transform_get_rotation(X_wcj)
+
+    q_start = joint_q_start[joint_id]
+    joint_q[q_start + 0] = x_err_c[0]
+    joint_q[q_start + 1] = x_err_c[1]
+    joint_q[q_start + 2] = x_err_c[2]
+    joint_q[q_start + 3] = q_pc[0]
+    joint_q[q_start + 4] = q_pc[1]
+    joint_q[q_start + 5] = q_pc[2]
+    joint_q[q_start + 6] = q_pc[3]
+
+
+@wp.kernel
 def convert_free_distance_joint_qd_internal_to_public(
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
@@ -1622,55 +1659,18 @@ def integrate_body_pose_from_com_twist(
 
 
 @wp.kernel
-def correct_free_distance_joint_pose_from_world_twist(
-    articulation_start: wp.array[int],
-    joint_type: wp.array[int],
-    joint_parent: wp.array[int],
+def correct_free_distance_body_pose_from_world_twist(
+    joint_indices: wp.array[int],
     joint_child: wp.array[int],
-    joint_q_start: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     body_q_in: wp.array[wp.transform],
     body_qd_out: wp.array[wp.spatial_vector],
-    joint_q_out: wp.array[float],
     body_q_out: wp.array[wp.transform],
     dt: float,
 ):
-    articulation = wp.tid()
-    start = articulation_start[articulation]
-    end = articulation_start[articulation + 1]
-
-    for i in range(start, end):
-        if joint_type[i] != JointType.FREE and joint_type[i] != JointType.DISTANCE:
-            continue
-
-        parent = joint_parent[i]
-        if parent < 0:
-            continue
-
-        child = joint_child[i]
-
-        X_wb_new = integrate_body_pose_from_com_twist(body_q_in[child], body_com[child], body_qd_out[child], dt)
-
-        X_wpj_new = body_q_out[parent] * joint_X_p[i]
-
-        X_wcj_new = X_wb_new * joint_X_c[i]
-        X_j_new = wp.transform_inverse(X_wpj_new) * X_wcj_new
-
-        q_start = joint_q_start[i]
-        p_new = wp.transform_get_translation(X_j_new)
-        r_new = wp.transform_get_rotation(X_j_new)
-
-        joint_q_out[q_start + 0] = p_new[0]
-        joint_q_out[q_start + 1] = p_new[1]
-        joint_q_out[q_start + 2] = p_new[2]
-        joint_q_out[q_start + 3] = r_new[0]
-        joint_q_out[q_start + 4] = r_new[1]
-        joint_q_out[q_start + 5] = r_new[2]
-        joint_q_out[q_start + 6] = r_new[3]
-
-        body_q_out[child] = X_wb_new
+    joint_id = joint_indices[wp.tid()]
+    child = joint_child[joint_id]
+    body_q_out[child] = integrate_body_pose_from_com_twist(body_q_in[child], body_com[child], body_qd_out[child], dt)
 
 
 @wp.kernel
@@ -1960,6 +1960,53 @@ def eval_articulation_fk_with_velocity_conversion(
     )
 
 
+@wp.kernel
+def eval_articulation_fk_with_velocity_conversion_from_joint(
+    articulation_start: wp.array[int],
+    articulation_indices: wp.array[int],
+    articulation_joint_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
+    # outputs
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    articulation_id = articulation_indices[tid]
+    joint_start = articulation_joint_start[tid]
+    joint_end = articulation_start[articulation_id + 1]
+
+    eval_single_articulation_fk_with_velocity_conversion(
+        joint_start,
+        joint_end,
+        joint_q,
+        joint_qd,
+        joint_q_start,
+        joint_qd_start,
+        joint_type,
+        joint_parent,
+        joint_child,
+        joint_X_p,
+        joint_X_c,
+        joint_axis,
+        joint_dof_dim,
+        body_com,
+        # outputs
+        body_q,
+        body_qd,
+    )
+
+
 def eval_fk_with_velocity_conversion(
     model: Model,
     joint_q: wp.array[float],
@@ -2002,6 +2049,44 @@ def eval_fk_with_velocity_conversion(
             model.articulation_count,
             mask,
             indices,
+            joint_q,
+            joint_qd,
+            model.joint_q_start,
+            model.joint_qd_start,
+            model.joint_type,
+            model.joint_parent,
+            model.joint_child,
+            model.joint_X_p,
+            model.joint_X_c,
+            model.joint_axis,
+            model.joint_dof_dim,
+            model.body_com,
+        ],
+        outputs=[
+            state.body_q,
+            state.body_qd,
+        ],
+        device=model.device,
+    )
+
+
+def eval_fk_with_velocity_conversion_from_joint_starts(
+    model: Model,
+    articulation_indices: wp.array[int],
+    articulation_joint_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    state: State,
+):
+    assert len(articulation_indices) == len(articulation_joint_start)
+
+    wp.launch(
+        kernel=eval_articulation_fk_with_velocity_conversion_from_joint,
+        dim=len(articulation_indices),
+        inputs=[
+            model.articulation_start,
+            articulation_indices,
+            articulation_joint_start,
             joint_q,
             joint_qd,
             model.joint_q_start,
