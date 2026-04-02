@@ -2756,9 +2756,7 @@ def parse_usd(
 
     actuator_count = 0
     path_to_dof = {
-        path: builder.joint_qd_start[idx]
-        for path, idx in path_joint_map.items()
-        if idx < len(builder.joint_qd_start)
+        path: builder.joint_qd_start[idx] for path, idx in path_joint_map.items() if idx < len(builder.joint_qd_start)
     }
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
         parsed = parse_actuator_prim(prim)
