@@ -43,9 +43,7 @@ PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
 
 @wp.kernel(enable_backward=False)
-def write_transforms(
-    xform: wp.array(dtype=wp.transform), scale: wp.array(dtype=wp.vec3), offset: int, m_out: wp.array(dtype=wp.mat44d)
-):
+def write_transforms(xform: wp.array[wp.transform], scale: wp.array[wp.vec3], offset: int, m_out: wp.array[wp.mat44d]):
     tid = wp.tid()
     xf32 = xform[tid]
     sc32 = scale[tid]
@@ -59,14 +57,14 @@ def write_transforms(
 
 @wp.kernel(enable_backward=False)
 def update_and_write_shape_transforms(
-    shape_xforms: wp.array(dtype=wp.transform),
-    shape_parents: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    shape_worlds: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    scales: wp.array(dtype=wp.vec3),
+    shape_xforms: wp.array[wp.transform],
+    shape_parents: wp.array[int],
+    body_q: wp.array[wp.transform],
+    shape_worlds: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    scales: wp.array[wp.vec3],
     mat44_offset: int,
-    m_out: wp.array(dtype=wp.mat44d),
+    m_out: wp.array[wp.mat44d],
 ):
     """Fused kernel: compute world transform from body state then write as mat44d.
 
@@ -459,49 +457,7 @@ void main() {
 
     def _frame_camera_on_model(self):
         """Frame the camera to show all visible objects in the scene."""
-        if self.model is None:
-            return
-        from pyglet.math import Vec3 as PyVec3
-
-        min_bounds = np.array([float("inf")] * 3)
-        max_bounds = np.array([float("-inf")] * 3)
-        found_objects = False
-
-        state = getattr(self, "_last_state", None)
-        if state is not None:
-            if getattr(state, "body_q", None) is not None:
-                body_q = state.body_q.numpy()
-                positions = body_q[:, :3]
-                min_bounds = np.minimum(min_bounds, positions.min(axis=0))
-                max_bounds = np.maximum(max_bounds, positions.max(axis=0))
-                found_objects = True
-            if getattr(state, "particle_q", None) is not None:
-                pq = state.particle_q.numpy()
-                if len(pq) > 0:
-                    min_bounds = np.minimum(min_bounds, pq.min(axis=0))
-                    max_bounds = np.maximum(max_bounds, pq.max(axis=0))
-                    found_objects = True
-
-        if not found_objects:
-            min_bounds = np.array([-5.0, -5.0, -5.0])
-            max_bounds = np.array([5.0, 5.0, 5.0])
-
-        center = (min_bounds + max_bounds) * 0.5
-        size = max_bounds - min_bounds
-        max_extent = float(np.max(size))
-        if max_extent < 1.0:
-            max_extent = 1.0
-
-        fov_rad = np.radians(self.camera.fov)
-        padding = 1.5
-        distance = max_extent / (2.0 * np.tan(fov_rad / 2.0)) * padding
-        front = self.camera.get_front()
-        self.camera.pos = PyVec3(
-            center[0] - front.x * distance,
-            center[1] - front.y * distance,
-            center[2] - front.z * distance,
-        )
-        self._camera_dirty = True
+        self.gui.frame_camera_on_model()
 
     # -------------------------------------------------------- USD scene helpers
 

@@ -180,6 +180,59 @@ class ViewerGui:
         if hasattr(self._viewer, "_camera_dirty"):
             self._viewer._camera_dirty = True
 
+    def frame_camera_on_model(self):
+        """Frame the camera to show all visible objects in the scene."""
+        viewer = self._viewer
+        if getattr(viewer, "model", None) is None:
+            return
+        from pyglet.math import Vec3 as PyVec3
+
+        camera = getattr(viewer, "camera", None)
+        if camera is None:
+            return
+
+        min_bounds = np.array([float("inf")] * 3)
+        max_bounds = np.array([float("-inf")] * 3)
+        found_objects = False
+
+        state = getattr(viewer, "_last_state", None)
+        if state is not None:
+            if getattr(state, "body_q", None) is not None:
+                body_q = state.body_q.numpy()
+                if len(body_q) > 0:
+                    positions = body_q[:, :3]
+                    min_bounds = np.minimum(min_bounds, positions.min(axis=0))
+                    max_bounds = np.maximum(max_bounds, positions.max(axis=0))
+                    found_objects = True
+            if getattr(state, "particle_q", None) is not None:
+                pq = state.particle_q.numpy()
+                if len(pq) > 0:
+                    min_bounds = np.minimum(min_bounds, pq.min(axis=0))
+                    max_bounds = np.maximum(max_bounds, pq.max(axis=0))
+                    found_objects = True
+
+        if not found_objects:
+            min_bounds = np.array([-5.0, -5.0, -5.0])
+            max_bounds = np.array([5.0, 5.0, 5.0])
+
+        center = (min_bounds + max_bounds) * 0.5
+        size = max_bounds - min_bounds
+        max_extent = float(np.max(size))
+        if max_extent < 1.0:
+            max_extent = 1.0
+
+        fov_rad = np.radians(camera.fov)
+        padding = 1.5
+        distance = max_extent / (2.0 * np.tan(fov_rad / 2.0)) * padding
+        front = camera.get_front()
+        camera.pos = PyVec3(
+            center[0] - front.x * distance,
+            center[1] - front.y * distance,
+            center[2] - front.z * distance,
+        )
+        if hasattr(viewer, "_camera_dirty"):
+            viewer._camera_dirty = True
+
     def map_window_to_target_coords(self, x: float, y: float, window, target_size: tuple[int, int] | None = None):
         if window is None:
             return float(x), float(y)
