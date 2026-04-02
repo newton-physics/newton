@@ -1,17 +1,5 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Tests for joint equality constraints verified with simulation steps."""
 
@@ -66,27 +54,20 @@ class TestEqualityConstraintWithSimStepBase:
     def _create_solver(self, model):
         raise NotImplementedError
 
+    def _num_worlds(self):
+        raise NotImplementedError
+
 
 class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase):
     """Test that a CONNECT equality constraint pins two bodies at a point."""
 
-    class ConnectTestCase:
-        """Parameters for a single CONNECT constraint test iteration."""
-
-        def __init__(self, orig_a0, changed_a0, body2_index, initial_q, ref_q):
-            self.orig_a0 = orig_a0
-            self.changed_a0 = changed_a0
-            self.body2_index = body2_index
-            self.initial_q = initial_q
-            self.ref_q = ref_q
-
     def _build_connect_model(
         self,
         connect_body_indices: list[int],
-        connect_anchor_body2: list[float],
+        connect_anchor_body2: list[list[float]],
         joint_types: list[str],
         joint_axes: list[int],
-        joint_dof_refs: list[float],
+        joint_dof_refs: list[list[float]],
         num_worlds: int,
     ):
         """Build a 5-body articulation with a CONNECT constraint.
@@ -104,19 +85,21 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         Args:
             connect_body_indices: Body indices ``[body2, body3]`` for the
                 CONNECT constraint.
-            connect_anchor_body2: Anchor point on body2 as ``[x, y, z]`` [m].
+            connect_anchor_body2: Anchor on body2 per world as
+                ``[[x, y, z], ...]`` [m].
             joint_types: Joint type per non-root joint, length 3. Each is
                 ``"revolute"`` or ``"prismatic"``.
             joint_axes: Motion axis per non-root joint, length 3 (0=X, 1=Y, 2=Z).
-            joint_dof_refs: Reference joint position per non-root joint [rad or m],
-                length 3.
+            joint_dof_refs: Reference position per non-root joint per world,
+                shape ``[num_worlds][3]`` [rad or m].
+            num_worlds: Number of parallel worlds.
 
         Returns:
             A :class:`Sim` containing the model, solver, states, and control.
         """
         self.assertEqual(len(joint_types), 3, "joint_types must have 3 elements")
         self.assertEqual(len(joint_axes), 3, "joint_axes must have 3 elements")
-        self.assertEqual(len(joint_dof_refs), num_worlds, "joint_dof_refs must have num_worlds rows")
+        self.assertGreaterEqual(len(joint_dof_refs), num_worlds, "joint_dof_refs must have >= num_worlds rows")
         for row in joint_dof_refs:
             self.assertEqual(len(row), 3, "each joint_dof_refs row must have 3 elements")
 
@@ -218,7 +201,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
         return Sim(model, solver, state_in, state_out, control)
 
-    def computeJ(self, joint_axis: int, joint_pos: float, joint_type: str) -> wp.transform:
+    def compute_joint_transform(self, joint_axis: int, joint_pos: float, joint_type: str) -> wp.transform:
         J = wp.transform_identity()
         if joint_type == "prismatic":
             pos = [0.0, 0.0, 0.0]
@@ -248,9 +231,9 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         Returns:
             Expected anchor on body3 as ``wp.vec3``.
         """
-        J0 = self.computeJ(joint_axes[0], joint_dof_refs[0], joint_types[0])
-        J1 = self.computeJ(joint_axes[1], joint_dof_refs[1], joint_types[1])
-        J2 = self.computeJ(joint_axes[2], joint_dof_refs[2], joint_types[2])
+        J0 = self.compute_joint_transform(joint_axes[0], joint_dof_refs[0], joint_types[0])
+        J1 = self.compute_joint_transform(joint_axes[1], joint_dof_refs[1], joint_types[1])
+        J2 = self.compute_joint_transform(joint_axes[2], joint_dof_refs[2], joint_types[2])
         T0 = wp.transform_identity()
         T1 = wp.transform_multiply(T0, J0)
         T2 = wp.transform_multiply(T1, J1)
@@ -268,15 +251,11 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
         Tests multiple anchor positions to exercise the constraint at different
         offsets from the body origin.
-
-        Args:
-            joint_type: One of ``"revolute"`` or ``"prismatic"``.
-            motion_axis: Joint motion axis (0=X, 1=Y, 2=Z).
         """
 
         dt = 0.01
         num_steps = 50
-        num_worlds = 2
+        num_worlds = self._num_worlds()
 
         # joint0 can be prismatic or revolute but motion is always along/around Y.
         joint_0_joint_types = ["prismatic", "revolute"]
@@ -626,7 +605,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         self._test_connect_constraint()
 
 
-class TestConnectConstraintJointMuJoCo(TestConnectConstraintWithSimStepBase, unittest.TestCase):
+class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase, unittest.TestCase):
+    def _num_worlds(self):
+        return 2
+
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
@@ -637,6 +619,21 @@ class TestConnectConstraintJointMuJoCo(TestConnectConstraintWithSimStepBase, uni
             integrator="euler",
         )
 
+class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, unittest.TestCase):
+    def _num_worlds(self):
+        return 1
 
+    def _create_solver(self, model):
+        return SolverMuJoCo(
+            model,
+            iterations=1,
+            ls_iterations=1,
+            disable_contacts=True,
+            use_mujoco_cpu=True,
+            separate_worlds=True,
+            integrator="euler",
+        )
+
+#
 if __name__ == "__main__":
     unittest.main(verbosity=2)
