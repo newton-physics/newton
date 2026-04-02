@@ -359,7 +359,10 @@ class Example:
             )
         elif self.image_output == IMAGE_OUTPUT_FORWARD_DEPTH:
             self.tiled_camera_sensor.utils.convert_ray_depth_to_forward_depth(
-                self.tiled_camera_sensor_depth_image, self.get_camera_transforms(), self.camera_rays
+                self.tiled_camera_sensor_depth_image,
+                self.get_camera_transforms(),
+                self.camera_rays,
+                self.tiled_camera_sensor_depth_image,
             )
             self.tiled_camera_sensor.utils.flatten_depth_image_to_rgba(
                 self.tiled_camera_sensor_depth_image,

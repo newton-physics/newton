@@ -288,20 +288,19 @@ class Utils:
 
         Projects each pixel's hit distance along its ray onto the camera's
         forward axis, producing depth measured perpendicular to the image
-        plane. Uses the center-pixel ray as the forward direction (does not
-        account for an off-center focal point).
+        plane. The forward axis is derived from each camera transform by
+        transforming camera-space ``(0, 0, -1)`` into world space.
 
         Args:
-            depth_image: Ray-distance depth from :meth:`update`, shape
+            depth_image: Ray-distance depth [m] from :meth:`update`, shape
                 ``(world_count, camera_count, height, width)``.
             camera_transforms: World-space camera transforms, shape
                 ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from
                 :meth:`compute_pinhole_camera_rays`, shape
                 ``(camera_count, height, width, 2)``.
-            out_depth: Output array with the same shape as
-                *depth_image*. If ``None``, *depth_image* will be used
-                as output, overwriting the original depth values in it.
+            out_depth: Output forward-depth array [m] with the same shape as
+                *depth_image*. If ``None``, allocates a new one.
 
         Returns:
             Forward (planar) depth array, same shape as *depth_image* [m].
@@ -312,7 +311,7 @@ class Utils:
         width = depth_image.shape[3]
 
         if out_depth is None:
-            out_depth = depth_image
+            out_depth = wp.empty_like(depth_image, device=self.__render_context.device)
 
         wp.launch(
             kernel=convert_ray_depth_to_forward_depth_kernel,
