@@ -286,7 +286,7 @@ def intersection_point(trim_seg_start: wp.vec2, trim_seg_end: wp.vec2, a: wp.vec
 
 
 @wp.func
-def insert_vec2(arr: wp.array(dtype=wp.vec2), arr_count: int, index: int, element: wp.vec2):
+def insert_vec2(arr: wp.array[wp.vec2], arr_count: int, index: int, element: wp.vec2):
     """
     Insert an element into an array at the specified index, shifting elements to the right.
 
@@ -307,7 +307,7 @@ def insert_vec2(arr: wp.array(dtype=wp.vec2), arr_count: int, index: int, elemen
 def trim_in_place(
     trim_seg_start: wp.vec2,
     trim_seg_end: wp.vec2,
-    loop: wp.array(dtype=wp.vec2),
+    loop: wp.array[wp.vec2],
     loop_count: int,
 ) -> int:
     """
@@ -396,9 +396,9 @@ def trim_in_place(
 
 @wp.func
 def trim_all_in_place(
-    trim_poly: wp.array(dtype=wp.vec2),
+    trim_poly: wp.array[wp.vec2],
     trim_poly_count: int,
-    loop: wp.array(dtype=wp.vec2),
+    loop: wp.array[wp.vec2],
     loop_count: int,
 ) -> int:
     """
@@ -482,7 +482,7 @@ def trim_all_in_place(
 
 
 @wp.func
-def approx_max_quadrilateral_area_with_calipers(hull: wp.array(dtype=wp.vec2), hull_count: int) -> wp.vec4i:
+def approx_max_quadrilateral_area_with_calipers(hull: wp.array[wp.vec2], hull_count: int) -> wp.vec4i:
     """
     Finds an approximate maximum area quadrilateral inside a convex hull in O(n) time
     using the Rotating Calipers algorithm to find the hull's diameter.
@@ -578,7 +578,7 @@ def approx_max_quadrilateral_area_with_calipers(hull: wp.array(dtype=wp.vec2), h
 
 
 @wp.func
-def remove_zero_length_edges(loop: wp.array(dtype=wp.vec2), loop_count: int, eps: float) -> int:
+def remove_zero_length_edges(loop: wp.array[wp.vec2], loop_count: int, eps: float) -> int:
     """
     Remove zero-length edges from a polygon loop.
 
@@ -618,9 +618,7 @@ def remove_zero_length_edges(loop: wp.array(dtype=wp.vec2), loop_count: int, eps
 
 
 @wp.func
-def add_avoid_duplicates_vec2(
-    arr: wp.array(dtype=wp.vec2), arr_count: int, vec: wp.vec2, eps: float
-) -> tuple[int, bool]:
+def add_avoid_duplicates_vec2(arr: wp.array[wp.vec2], arr_count: int, vec: wp.vec2, eps: float) -> tuple[int, bool]:
     """
     Add a vector to an array, avoiding duplicates.
 
@@ -650,7 +648,7 @@ def add_avoid_duplicates_vec2(
 @wp.func_native("""
     return (uint64_t)a.data;
 """)
-def get_ptr(a: wp.array(dtype=wp.vec2)) -> wp.uint64: ...
+def get_ptr(a: wp.array[wp.vec2]) -> wp.uint64: ...
 
 
 def create_build_manifold(support_func: Any, writer_func: Any, post_process_contact: Any, _support_funcs: Any = None):
@@ -679,9 +677,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
     @wp.func
     def extract_4_point_contact_manifolds(
-        m_a: wp.array(dtype=wp.vec2),
+        m_a: wp.array[wp.vec2],
         m_a_count: int,
-        m_b: wp.array(dtype=wp.vec2),
+        m_b: wp.array[wp.vec2],
         m_b_count: int,
         normal_local: wp.vec3,
         cross_vector_1: wp.vec3,

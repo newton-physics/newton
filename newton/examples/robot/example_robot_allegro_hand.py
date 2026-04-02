@@ -28,15 +28,15 @@ from newton.solvers import SolverNotifyFlags
 
 @wp.kernel
 def move_hand(
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_limit_lower: wp.array(dtype=wp.float32),
-    joint_limit_upper: wp.array(dtype=wp.float32),
-    sim_time: wp.array(dtype=wp.float32),
+    joint_qd_start: wp.array[wp.int32],
+    joint_limit_lower: wp.array[wp.float32],
+    joint_limit_upper: wp.array[wp.float32],
+    sim_time: wp.array[wp.float32],
     sim_dt: float,
     hand_rotation: wp.quat,
     # outputs
-    joint_target_pos: wp.array(dtype=wp.float32),
-    joint_parent_xform: wp.array(dtype=wp.transform),
+    joint_target_pos: wp.array[wp.float32],
+    joint_parent_xform: wp.array[wp.transform],
 ):
     world_id = wp.tid()
     root_joint_id = world_id * 22

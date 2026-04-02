@@ -25,10 +25,10 @@ class WindParams:
 
 @wp.kernel
 def apply_wind_force_kernel(
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_qd: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    wind_params: wp.array(dtype=WindParams),
+    particle_q: wp.array[wp.vec3],
+    particle_qd: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    wind_params: wp.array[WindParams],
 ):
     """Apply sinusoidal wind impulses to particles using struct parameters."""
     tid = wp.tid()

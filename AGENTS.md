@@ -4,7 +4,8 @@
 - Breaking changes require a deprecation first. Do not remove or rename public API symbols without deprecating them in a prior release.
 - Prefix-first naming for autocomplete: `ActuatorPD` (not `PDActuator`), `add_shape_sphere()` (not `add_sphere_shape()`).
 - Prefer nested classes for self-contained helper types/enums.
-- PEP 604 unions (`x | None`, not `Optional[x]`). Annotate Warp arrays with concrete dtypes (`wp.array(dtype=wp.vec3)`).
+- PEP 604 unions (`x | None`, not `Optional[x]`).
+- Annotate Warp arrays with bracket syntax (`wp.array[wp.vec3]`, `wp.array2d[float]`, `wp.array[Any]`), not the parenthesized form (`wp.array(dtype=...)`). Use `wp.array[X]` for 1-D arrays, not `wp.array1d[X]`.
 - Follow Google-style docstrings. Types in annotations, not docstrings. `Args:` use `name: description`.
   - Sphinx cross-refs (`:class:`, `:meth:`) with shortest possible targets. Prefer public API paths; never use `newton._src`.
   - SI units for physical quantities in public API docstrings: `"""Particle positions [m], shape [particle_count, 3]."""`. Joint-dependent: `[m or rad]`. Spatial vectors: `[N, N·m]`. Compound arrays: per-component. Skip non-physical fields.
@@ -22,16 +23,24 @@ Run `uvx pre-commit run -a` to lint/format before committing. Use `uv` for all c
 # Examples
 uv sync --extra examples
 uv run -m newton.examples basic_pendulum
+```
 
-# Tests
+## Tests
 
 Always use `unittest`, not pytest.
 
+```bash
 uv run --extra dev -m newton.tests
 uv run --extra dev -m newton.tests -k test_viewer_log_shapes           # specific test
 uv run --extra dev -m newton.tests -k test_basic.example_basic_shapes  # example test
 uv run --extra dev --extra torch-cu12 -m newton.tests                  # with PyTorch
+```
 
+### Testing guidelines
+
+- Never call `wp.synchronize()` or `wp.synchronize_device()` right before `.numpy()` on a Warp array. This is redundant as `.numpy()` performs a synchronous device-to-host copy that completes all outstanding work.
+
+```bash
 # Benchmarks
 uvx --with virtualenv asv run --launch-method spawn main^!
 ```

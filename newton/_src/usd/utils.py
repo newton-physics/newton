@@ -530,8 +530,8 @@ def get_custom_attribute_values(
 ) -> dict[str, Any]:
     """
     Get custom attribute values from a USD prim and a set of known custom attributes.
-    Returns a dictionary mapping from :attr:`ModelBuilder.CustomAttribute.key` to the converted Warp value.
-    The conversion is performed by :meth:`ModelBuilder.CustomAttribute.usd_value_transformer`.
+    Returns a dictionary mapping from :attr:`~newton.ModelBuilder.CustomAttribute.key` to the converted Warp value.
+    The conversion is performed by the ``CustomAttribute.usd_value_transformer`` callable.
 
     The context dictionary passed to the transformer function always contains:
     - ``"prim"``: The USD prim to query.

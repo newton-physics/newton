@@ -38,13 +38,13 @@ SEMANTIC_COLOR_GROUND_PLANE = 0xFF444444
 @wp.kernel(enable_backward=False)
 def animate_franka(
     time: wp.float32,
-    joint_type: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_limit_lower: wp.array(dtype=wp.float32),
-    joint_limit_upper: wp.array(dtype=wp.float32),
-    joint_q: wp.array(dtype=wp.float32),
+    joint_type: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_limit_lower: wp.array[wp.float32],
+    joint_limit_upper: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
 ):
     tid = wp.tid()
 
@@ -64,9 +64,9 @@ def animate_franka(
 
 @wp.kernel
 def shape_index_to_semantic_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    colors: wp.array(dtype=wp.uint32),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
+    shape_indices: wp.array4d[wp.uint32],
+    colors: wp.array[wp.uint32],
+    rgba: wp.array4d[wp.uint32],
 ):
     world_id, camera_id, y, x = wp.tid()
     shape_index = shape_indices[world_id, camera_id, y, x]
@@ -78,8 +78,8 @@ def shape_index_to_semantic_rgb(
 
 @wp.kernel
 def shape_index_to_random_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
+    shape_indices: wp.array4d[wp.uint32],
+    rgba: wp.array4d[wp.uint32],
 ):
     world_id, camera_id, y, x = wp.tid()
     shape_index = shape_indices[world_id, camera_id, y, x]
@@ -127,11 +127,14 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, 0.5), q=wp.quat_identity())),
                     radius=0.4,
                     half_height=0.5,
+                    color=(0.27, 0.47, 0.67),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_CYLINDER)
             if rng.random() < 0.5:
                 builder.add_shape_sphere(
-                    builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, -2.0, 0.5), q=wp.quat_identity())), radius=0.5
+                    builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, -2.0, 0.5), q=wp.quat_identity())),
+                    radius=0.5,
+                    color=(0.40, 0.80, 0.93),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_SPHERE)
             if rng.random() < 0.5:
@@ -139,6 +142,7 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(-4.0, 0.0, 0.75), q=wp.quat_identity())),
                     radius=0.25,
                     half_height=0.5,
+                    color=(0.13, 0.53, 0.20),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_CAPSULE)
             if rng.random() < 0.5:
@@ -147,6 +151,7 @@ class Example:
                     hx=0.5,
                     hy=0.35,
                     hz=0.5,
+                    color=(0.80, 0.73, 0.27),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_BOX)
             if rng.random() < 0.5:
@@ -154,6 +159,7 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 4.0, 0.0), q=wp.quat(0.5, 0.5, 0.5, 0.5))),
                     mesh=bunny_mesh,
                     scale=(0.5, 0.5, 0.5),
+                    color=(0.93, 0.40, 0.47),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_MESH)
 
@@ -168,7 +174,7 @@ class Example:
             semantic_colors.extend([SEMANTIC_COLOR_ROBOT] * robot_builder.shape_count)
             builder.end_world()
 
-        builder.add_ground_plane()
+        builder.add_ground_plane(color=(0.6, 0.6, 0.6))
         semantic_colors.append(SEMANTIC_COLOR_GROUND_PLANE)
 
         self.model = builder.finalize()
@@ -265,7 +271,7 @@ class Example:
         )
         self.update_texture()
 
-    def get_camera_transforms(self) -> wp.array(dtype=wp.transformf):
+    def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
             return wp.array(
                 [

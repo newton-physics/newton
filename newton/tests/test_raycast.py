@@ -27,7 +27,7 @@ class TestRaycast(unittest.TestCase):
 # Kernels to test ray intersection functions
 @wp.kernel
 def kernel_test_sphere(
-    out_t: wp.array(dtype=float),
+    out_t: wp.array[float],
     geom_to_world: wp.transform,
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
@@ -39,7 +39,7 @@ def kernel_test_sphere(
 
 @wp.kernel
 def kernel_test_box(
-    out_t: wp.array(dtype=float),
+    out_t: wp.array[float],
     geom_to_world: wp.transform,
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
@@ -51,7 +51,7 @@ def kernel_test_box(
 
 @wp.kernel
 def kernel_test_capsule(
-    out_t: wp.array(dtype=float),
+    out_t: wp.array[float],
     geom_to_world: wp.transform,
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
@@ -64,7 +64,7 @@ def kernel_test_capsule(
 
 @wp.kernel
 def kernel_test_cylinder(
-    out_t: wp.array(dtype=float),
+    out_t: wp.array[float],
     geom_to_world: wp.transform,
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
@@ -77,7 +77,7 @@ def kernel_test_cylinder(
 
 @wp.kernel
 def kernel_test_cone(
-    out_t: wp.array(dtype=float),
+    out_t: wp.array[float],
     geom_to_world: wp.transform,
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
@@ -90,7 +90,7 @@ def kernel_test_cone(
 
 @wp.kernel
 def kernel_test_geom(
-    out_t: wp.array(dtype=float),
+    out_t: wp.array[float],
     geom_to_world: wp.transform,
     size: wp.vec3,
     geomtype: int,
@@ -104,7 +104,7 @@ def kernel_test_geom(
 
 @wp.kernel
 def kernel_test_mesh(
-    out_t: wp.array(dtype=float),
+    out_t: wp.array[float],
     geom_to_world: wp.transform,
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,

@@ -15,9 +15,9 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
-from ...core.shapes import ShapeType
 from ...core.state import StateKamino
 from ...core.types import float32, int32, vec6f
 from ..contacts import DEFAULT_GEOM_PAIR_CONTACT_GAP, ContactsKamino
@@ -251,8 +251,8 @@ class CollisionPipelinePrimitive:
             # Retrieve the shape types and world indices of the geometry pair
             gid_1 = geom_pairs[gid_12, 0]
             gid_2 = geom_pairs[gid_12, 1]
-            shape_1 = ShapeType(geom_type[gid_1])
-            shape_2 = ShapeType(geom_type[gid_2])
+            shape_1 = GeoType(geom_type[gid_1])
+            shape_2 = GeoType(geom_type[gid_2])
             candidate_pair = (min((shape_1, shape_2)), max((shape_1, shape_2)))
 
             # First check if both shapes are supported by the primitive broad-phase

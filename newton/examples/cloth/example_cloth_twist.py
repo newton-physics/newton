@@ -29,14 +29,14 @@ from newton import ParticleFlags
 @wp.kernel
 def initialize_rotation(
     # input
-    vertex_indices_to_rot: wp.array(dtype=wp.int32),
-    pos: wp.array(dtype=wp.vec3),
-    rot_centers: wp.array(dtype=wp.vec3),
-    rot_axes: wp.array(dtype=wp.vec3),
-    t: wp.array(dtype=float),
+    vertex_indices_to_rot: wp.array[wp.int32],
+    pos: wp.array[wp.vec3],
+    rot_centers: wp.array[wp.vec3],
+    rot_axes: wp.array[wp.vec3],
+    t: wp.array[float],
     # output
-    roots: wp.array(dtype=wp.vec3),
-    roots_to_ps: wp.array(dtype=wp.vec3),
+    roots: wp.array[wp.vec3],
+    roots_to_ps: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     v_index = vertex_indices_to_rot[wp.tid()]
@@ -60,17 +60,17 @@ def initialize_rotation(
 @wp.kernel
 def apply_rotation(
     # input
-    vertex_indices_to_rot: wp.array(dtype=wp.int32),
-    rot_axes: wp.array(dtype=wp.vec3),
-    roots: wp.array(dtype=wp.vec3),
-    roots_to_ps: wp.array(dtype=wp.vec3),
-    t: wp.array(dtype=float),
+    vertex_indices_to_rot: wp.array[wp.int32],
+    rot_axes: wp.array[wp.vec3],
+    roots: wp.array[wp.vec3],
+    roots_to_ps: wp.array[wp.vec3],
+    t: wp.array[float],
     angular_velocity: float,
     dt: float,
     end_time: float,
     # output
-    pos_0: wp.array(dtype=wp.vec3),
-    pos_1: wp.array(dtype=wp.vec3),
+    pos_0: wp.array[wp.vec3],
+    pos_1: wp.array[wp.vec3],
 ):
     cur_t = t[0]
     if cur_t > end_time:

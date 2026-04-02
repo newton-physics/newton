@@ -20,7 +20,7 @@ from newton.utils import EventTracer
 
 
 @wp.kernel
-def apply_random_control(state: wp.uint32, joint_target: wp.array(dtype=float)):
+def apply_random_control(state: wp.uint32, joint_target: wp.array[float]):
     tid = wp.tid()
 
     joint_target[tid] = wp.randf(state) * 2.0 - 1.0

@@ -97,10 +97,10 @@ def test_basic_contact_storage(test, device):
     @wp.kernel
     def store_contact_kernel(
         reducer_data: GlobalContactReducerData,
-        xform: wp.array(dtype=wp.transform),
-        aabb_lower: wp.array(dtype=wp.vec3),
-        aabb_upper: wp.array(dtype=wp.vec3),
-        voxel_res: wp.array(dtype=wp.vec3i),
+        xform: wp.array[wp.transform],
+        aabb_lower: wp.array[wp.vec3],
+        aabb_upper: wp.array[wp.vec3],
+        voxel_res: wp.array[wp.vec3i],
     ):
         _ = export_and_reduce_contact(
             shape_a=0,
@@ -154,10 +154,10 @@ def test_multiple_contacts_same_pair(test, device):
     @wp.kernel
     def store_multiple_contacts_kernel(
         reducer_data: GlobalContactReducerData,
-        xform: wp.array(dtype=wp.transform),
-        aabb_lower: wp.array(dtype=wp.vec3),
-        aabb_upper: wp.array(dtype=wp.vec3),
-        voxel_res: wp.array(dtype=wp.vec3i),
+        xform: wp.array[wp.transform],
+        aabb_lower: wp.array[wp.vec3],
+        aabb_upper: wp.array[wp.vec3],
+        voxel_res: wp.array[wp.vec3i],
     ):
         tid = wp.tid()
         # All contacts have same shape pair and similar normal (pointing up)
@@ -215,10 +215,10 @@ def test_different_shape_pairs(test, device):
     @wp.kernel
     def store_different_pairs_kernel(
         reducer_data: GlobalContactReducerData,
-        xform: wp.array(dtype=wp.transform),
-        aabb_lower: wp.array(dtype=wp.vec3),
-        aabb_upper: wp.array(dtype=wp.vec3),
-        voxel_res: wp.array(dtype=wp.vec3i),
+        xform: wp.array[wp.transform],
+        aabb_lower: wp.array[wp.vec3],
+        aabb_upper: wp.array[wp.vec3],
+        voxel_res: wp.array[wp.vec3i],
     ):
         tid = wp.tid()
         # Each thread represents a different shape pair
@@ -273,10 +273,10 @@ def test_clear(test, device):
     @wp.kernel
     def store_one_contact_kernel(
         reducer_data: GlobalContactReducerData,
-        xform: wp.array(dtype=wp.transform),
-        aabb_lower: wp.array(dtype=wp.vec3),
-        aabb_upper: wp.array(dtype=wp.vec3),
-        voxel_res: wp.array(dtype=wp.vec3i),
+        xform: wp.array[wp.transform],
+        aabb_lower: wp.array[wp.vec3],
+        aabb_upper: wp.array[wp.vec3],
+        voxel_res: wp.array[wp.vec3i],
     ):
         export_and_reduce_contact(
             shape_a=0,
@@ -329,10 +329,10 @@ def test_stress_many_contacts(test, device):
     @wp.kernel
     def stress_kernel(
         reducer_data: GlobalContactReducerData,
-        xform: wp.array(dtype=wp.transform),
-        aabb_lower: wp.array(dtype=wp.vec3),
-        aabb_upper: wp.array(dtype=wp.vec3),
-        voxel_res: wp.array(dtype=wp.vec3i),
+        xform: wp.array[wp.transform],
+        aabb_lower: wp.array[wp.vec3],
+        aabb_upper: wp.array[wp.vec3],
+        voxel_res: wp.array[wp.vec3i],
     ):
         tid = wp.tid()
         # 100 shape pairs, 50 contacts each = 5000 total
@@ -403,10 +403,10 @@ def test_clear_active(test, device):
     @wp.kernel
     def store_contact_kernel(
         reducer_data: GlobalContactReducerData,
-        xform: wp.array(dtype=wp.transform),
-        aabb_lower: wp.array(dtype=wp.vec3),
-        aabb_upper: wp.array(dtype=wp.vec3),
-        voxel_res: wp.array(dtype=wp.vec3i),
+        xform: wp.array[wp.transform],
+        aabb_lower: wp.array[wp.vec3],
+        aabb_upper: wp.array[wp.vec3],
+        voxel_res: wp.array[wp.vec3i],
     ):
         export_and_reduce_contact(
             shape_a=0,
@@ -490,10 +490,10 @@ def test_export_reduced_contacts_kernel(test, device):
     @wp.kernel
     def store_contacts_kernel(
         reducer_data: GlobalContactReducerData,
-        xform: wp.array(dtype=wp.transform),
-        aabb_lower: wp.array(dtype=wp.vec3),
-        aabb_upper: wp.array(dtype=wp.vec3),
-        voxel_res: wp.array(dtype=wp.vec3i),
+        xform: wp.array[wp.transform],
+        aabb_lower: wp.array[wp.vec3],
+        aabb_upper: wp.array[wp.vec3],
+        voxel_res: wp.array[wp.vec3i],
     ):
         tid = wp.tid()
         # Different shape pairs so all contacts win
@@ -589,7 +589,7 @@ def test_key_uniqueness(test, device):
 
     @wp.kernel
     def compute_keys_kernel(
-        keys_out: wp.array(dtype=wp.uint64),
+        keys_out: wp.array[wp.uint64],
     ):
         # Test various combinations
         keys_out[0] = make_contact_key(0, 1, 0)
@@ -617,7 +617,7 @@ def test_oct_encode_decode_roundtrip(test, device):
     """
 
     @wp.kernel
-    def roundtrip_error_kernel(normals: wp.array(dtype=wp.vec3), errors: wp.array(dtype=wp.float32)):
+    def roundtrip_error_kernel(normals: wp.array[wp.vec3], errors: wp.array[wp.float32]):
         tid = wp.tid()
         n = wp.normalize(normals[tid])
         decoded = decode_oct(encode_oct(n))
