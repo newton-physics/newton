@@ -673,7 +673,10 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 200},
     expected_output=["Diagnostics plot saved to|Simulation diagnostics summary"],
-    allowed_output=[r"^\s+(Iterations|Kinetic E|Potential E|Constraints):"],
+    allowed_output=[
+        r"^\s+(Iterations|Kinetic E|Potential E|Constraints):",
+        "Matplotlib is building the font cache",
+    ],
 )
 
 
@@ -687,6 +690,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     expected_output=["Downloading nut/bolt assets", "Assets downloaded to"],
+    allowed_output=["Cloning ", "Successfully downloaded folder to", "New version of .* found"],
 )
 add_example_test(
     TestContactsExamples,
@@ -694,6 +698,7 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     expected_output=["Downloading nut/bolt assets", "Assets downloaded to"],
+    allowed_output=["Cloning ", "Successfully downloaded folder to", "New version of .* found"],
 )
 add_example_test(
     TestContactsExamples,

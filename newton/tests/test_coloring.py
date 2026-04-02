@@ -472,7 +472,7 @@ class TestColoring(unittest.TestCase):
     pass
 
 
-add_function_test(TestColoring, "test_coloring_trimesh", test_coloring_trimesh, devices=devices, check_output=False)
+add_function_test(TestColoring, "test_coloring_trimesh", test_coloring_trimesh, devices=devices)
 add_function_test(TestColoring, "test_combine_coloring", test_combine_coloring, devices=devices)
 
 # Rigid body coloring tests

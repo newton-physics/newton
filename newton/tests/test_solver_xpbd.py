@@ -476,7 +476,6 @@ add_function_test(
     "test_particle_particle_friction_uses_relative_velocity",
     test_particle_particle_friction_uses_relative_velocity,
     devices=devices,
-    check_output=False,
 )
 
 add_function_test(
@@ -484,7 +483,6 @@ add_function_test(
     "test_particle_particle_friction_with_relative_motion",
     test_particle_particle_friction_with_relative_motion,
     devices=devices,
-    check_output=False,
 )
 
 add_function_test(
@@ -492,7 +490,6 @@ add_function_test(
     "test_particle_shape_restitution_correct_particle",
     test_particle_shape_restitution_correct_particle,
     devices=devices,
-    check_output=False,
 )
 
 
@@ -501,7 +498,6 @@ add_function_test(
     "test_particle_shape_restitution_accounts_for_body_velocity",
     test_particle_shape_restitution_accounts_for_body_velocity,
     devices=devices,
-    check_output=False,
 )
 
 
@@ -510,7 +506,6 @@ add_function_test(
     "test_articulation_contact_drift",
     test_articulation_contact_drift,
     devices=devices,
-    check_output=False,
 )
 
 

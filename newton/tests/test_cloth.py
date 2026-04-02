@@ -1216,9 +1216,7 @@ tests_to_run = {
 
 for solver, tests in tests_to_run.items():
     for test in tests:
-        add_function_test(
-            TestCloth, f"{test.__name__}_{solver}", partial(test, solver=solver), devices=devices, check_output=False
-        )
+        add_function_test(TestCloth, f"{test.__name__}_{solver}", partial(test, solver=solver), devices=devices)
 
 
 # ============================================================================
@@ -1280,7 +1278,6 @@ for solver, tests in collision_pipeline_tests_to_run.items():
             f"{test.__name__}_{solver}",
             partial(test, solver=solver),
             devices=devices,
-            check_output=False,
         )
 
 

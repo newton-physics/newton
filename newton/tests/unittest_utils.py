@@ -198,32 +198,39 @@ class StdOutCapture(StreamCapture):
 
 
 def is_noise_line(line: str) -> bool:
-    """Return True if *line* is a known noisy framework message that should be ignored."""
+    """Return True if *line* is a known noisy framework message that should be ignored.
+
+    Only truly global infrastructure noise belongs here — messages that any
+    test can emit at any time due to Warp runtime internals.  Test-specific
+    noise (asset downloads, matplotlib, etc.) should use ``allowed_patterns``
+    on the individual test instead.
+    """
     stripped = line.lstrip()
     if stripped.startswith("Module") and "load on device" in stripped:
-        return True
-    if stripped.startswith("Matplotlib is building the font cache"):
-        return True
-    if stripped.startswith("Warp DeprecationWarning:") or stripped.startswith("Warp UserWarning:"):
-        return True
-    if stripped.startswith("Cloning ") or stripped.startswith("Successfully downloaded "):
         return True
     return False
 
 
 class CheckOutput:
-    """Context manager that captures stdout and warnings, failing on unexpected output.
+    """Context manager that captures stdout, stderr, and warnings, failing on unexpected output.
+
+    Warning capture is targeted: only warnings whose source file is under
+    *warning_source_root* are intercepted and validated.  Warnings from
+    other packages (Warp, NumPy, stdlib, etc.) are written to the real
+    stderr (bypassing capture) so they are never silently swallowed and
+    still respect ``-W error`` flags.
 
     Args:
         test: The ``unittest.TestCase`` instance used for assertions.
-        expected_patterns: Regex strings that must each match at least once in
-            the combined stdout + warning text.  Also used as an allow-list.
-        allowed_patterns: Regex strings that suppress unexpected-output failures
-            but are not required to appear.
+        expected_patterns: Regex strings that must each match at least once
+            in the combined stdout + stderr + warning text.
+        allowed_patterns: Regex strings that suppress unexpected-output
+            failures without requiring a match.  Use this for output that
+            may or may not appear (e.g. intermittent download messages).
         warning_source_root: Warnings whose ``filename`` starts with this path
-            are checked against the allow-list; warnings from other paths are
-            silently ignored.  Defaults to the newton package root.  Pass
-            ``None`` to disable warning capture entirely.
+            are checked against the allow-list; warnings from other paths
+            pass through to normal handling.  Defaults to the newton package
+            root.  Pass ``None`` to disable warning capture entirely.
     """
 
     _DEFAULT_WARNING_ROOT = _NEWTON_ROOT
@@ -236,64 +243,127 @@ class CheckOutput:
         warning_source_root: str | None = _DEFAULT_WARNING_ROOT,
     ):
         self.test = test
-        self.output = ""
+        self.stdout_output = ""
+        self.stderr_output = ""
         self._expected = [re.compile(p) for p in expected_patterns] if expected_patterns else []
-        self._all = self._expected + ([re.compile(p) for p in allowed_patterns] if allowed_patterns else [])
+        # Both expected and allowed patterns suppress "unexpected output"
+        # failures — expected patterns are additionally asserted to appear.
+        self._allowed = self._expected + ([re.compile(p) for p in allowed_patterns] if allowed_patterns else [])
         self._warning_source_root = warning_source_root
 
     def __enter__(self):
-        self.capture = StdOutCapture()
-        self.capture.begin()
+        self._stdout_capture = StdOutCapture()
+        self._stdout_capture.begin()
+        self._stderr_capture = StdErrCapture()
+        self._stderr_capture.begin()
+        # Create a file object for the real stderr (pre-capture fd) so
+        # warnings that go through showwarning bypass capture and remain
+        # visible.  This is needed unconditionally because stderr is always
+        # captured — without the redirect, any showwarning call (even from
+        # the default handler) would land in captured stderr.
+        self._real_stderr = os.fdopen(os.dup(self._stderr_capture.target), "w")
+        self._caught = []
+        # Save/restore filter state and showwarning via catch_warnings,
+        # but do NOT use record=True — that would intercept all warnings.
+        self._warning_ctx = warnings.catch_warnings()
+        self._warning_ctx.__enter__()
+        original_showwarning = warnings.showwarning
+        real_stderr = self._real_stderr
         if self._warning_source_root is not None:
-            self._warning_ctx = warnings.catch_warnings(record=True)
-            self._caught = self._warning_ctx.__enter__()
-            warnings.simplefilter("always")
+            # Ensure newton warnings are never suppressed by Python's default
+            # "ignore::DeprecationWarning" filter.  Note: this filter matches
+            # on module __name__ while _selective_showwarning matches on file
+            # path — the two are correlated but not identical (e.g. exec'd
+            # code or warnings.warn_explicit with a custom filename).  In
+            # practice they agree for all normal newton imports.
+            warnings.filterwarnings("always", module=r"newton\..*")
+            # Install a targeted hook: intercept newton warnings into
+            # self._caught; delegate everything else to the original handler
+            # with output directed to real stderr.
+            root = self._warning_source_root + os.sep
+            caught = self._caught
+
+            def _selective_showwarning(message, category, filename, lineno, file=None, line=None):
+                if str(filename).startswith(root):
+                    caught.append(warnings.WarningMessage(message, category, filename, lineno, file, line))
+                else:
+                    original_showwarning(message, category, filename, lineno, file=real_stderr, line=line)
+
+            warnings.showwarning = _selective_showwarning
         else:
-            self._warning_ctx = None
-            self._caught = []
+            # No newton warning interception, but still redirect all
+            # showwarning output to real stderr so it bypasses capture.
+            def _passthrough_showwarning(message, category, filename, lineno, file=None, line=None):
+                original_showwarning(message, category, filename, lineno, file=real_stderr, line=line)
+
+            warnings.showwarning = _passthrough_showwarning
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        if self._warning_ctx is not None:
-            self._warning_ctx.__exit__(exc_type, exc_value, traceback)
-        # ensure any stdout output is flushed
+        # Restore warning filters and showwarning before flushing output.
+        # This means warnings emitted during wp.synchronize() go through
+        # normal handling rather than being captured — the right tradeoff,
+        # since sync-time warnings are typically from device-side code.
+        self._warning_ctx.__exit__(exc_type, exc_value, traceback)
+
+        # Ensure any pending output is flushed
         wp.synchronize()
 
-        self.output = self.capture.end()
+        # End captures and close real_stderr *after* sync so that any
+        # warnings emitted during wp.synchronize() that go through the
+        # (now-restored) default showwarning can still reach real_stderr.
+        self.stdout_output = self._stdout_capture.end()
+        self.stderr_output = self._stderr_capture.end()
+        self._real_stderr.close()
+
         if exc_type is not None:
-            if self.output.strip():
-                print(f"Captured stdout before crash:\n{self.output.rstrip()}")
+            if self.stdout_output.strip():
+                print(f"Captured stdout before crash:\n{self.stdout_output.rstrip()}")
+            if self.stderr_output.strip():
+                print(f"Captured stderr before crash:\n{self.stderr_output.rstrip()}", file=sys.stderr)
             return
 
-        if self.output:
-            print(self.output.rstrip())
+        if self.stdout_output:
+            print(self.stdout_output.rstrip())
+        if self.stderr_output:
+            print(self.stderr_output.rstrip(), file=sys.stderr)
 
-        # Assert each expected pattern appears in combined stdout + warnings
+        # Assert each expected pattern appears in combined stdout + stderr + warnings
         if self._expected:
             warning_messages = [str(w.message) for w in self._caught]
             combined = "\n".join(warning_messages)
-            if self.output.strip():
-                combined += "\n" + self.output
+            if self.stdout_output.strip():
+                combined += "\n" + self.stdout_output
+            if self.stderr_output.strip():
+                combined += "\n" + self.stderr_output
             for pat in self._expected:
                 if not pat.search(combined):
                     self.test.fail(f"Expected output pattern not found: {pat.pattern}")
 
         # Fail on unexpected stdout
-        if self.output:
+        if self.stdout_output:
             filtered = "\n".join(
                 line
-                for line in self.output.splitlines()
-                if not is_noise_line(line) and not any(p.search(line) for p in self._all)
+                for line in self.stdout_output.splitlines()
+                if not is_noise_line(line) and not any(p.search(line) for p in self._allowed)
             )
             if filtered.strip():
-                self.test.fail(f"Unexpected output:\n'{self.output.rstrip()}'")
+                self.test.fail(f"Unexpected stdout:\n'{self.stdout_output.rstrip()}'")
 
-        # Fail on unexpected warnings from the specified source
+        # Fail on unexpected stderr
+        if self.stderr_output:
+            filtered = "\n".join(
+                line
+                for line in self.stderr_output.splitlines()
+                if not is_noise_line(line) and not any(p.search(line) for p in self._allowed)
+            )
+            if filtered.strip():
+                self.test.fail(f"Unexpected stderr:\n'{self.stderr_output.rstrip()}'")
+
+        # Fail on unexpected warnings from newton
         for w in self._caught:
-            if not str(w.filename).startswith(self._warning_source_root):
-                continue
             msg = str(w.message)
-            if not any(p.search(msg) for p in self._all):
+            if not any(p.search(msg) for p in self._allowed):
                 self.test.fail(f"Unexpected warning: {msg}")
 
 
@@ -372,7 +442,7 @@ def create_test_func(
     co_kwargs = {}
     if patterns:
         co_kwargs["expected_patterns"] = patterns
-    if allowed_patterns:
+    if allowed_patterns is not None:
         co_kwargs["allowed_patterns"] = allowed_patterns
     if warning_source_root is not _UNSET:
         co_kwargs["warning_source_root"] = warning_source_root
