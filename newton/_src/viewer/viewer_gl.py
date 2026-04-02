@@ -20,7 +20,7 @@ from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
-from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+from .gl.opengl import STYLE_REGISTRY, LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind
@@ -192,6 +192,7 @@ class ViewerGL(ViewerBase):
         height: int = 1080,
         vsync: bool = False,
         headless: bool = False,
+        shading_style: str = "classic",
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -201,6 +202,9 @@ class ViewerGL(ViewerBase):
             height: Window height in pixels.
             vsync: Enable vertical sync.
             headless: Run in headless mode (no window).
+            shading_style: Visual rendering style. ``"classic"`` uses Newton's default
+                checker-floor look. ``"studio"`` uses a clean studio look with soft
+                hemisphere lighting, directional shadows, and a neutral ground plane.
         """
         # Pre-initialize callback registry; clear_model() (called from
         # super().__init__()) resets the "side" slot on each model change.
@@ -208,7 +212,13 @@ class ViewerGL(ViewerBase):
 
         super().__init__()
 
-        self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
+        self.renderer = RendererGL(
+            vsync=vsync,
+            screen_width=width,
+            screen_height=height,
+            headless=headless,
+            shading_style=shading_style,
+        )
         self.renderer.set_title("Newton Viewer")
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
@@ -2000,6 +2010,16 @@ class ViewerGL(ViewerBase):
                     # Collision geometry toggle
                     show_collision = self.show_collision
                     changed, self.show_collision = imgui.checkbox("Show Collision", show_collision)
+
+                    # Edge overlay toggle
+                    changed, self.renderer.draw_edges = imgui.checkbox("Show Edges", self.renderer.draw_edges)
+
+                    # Shading style dropdown
+                    shading_styles = list(STYLE_REGISTRY.keys())
+                    current_style_idx = shading_styles.index(self.renderer.shading_style)
+                    changed, current_style_idx = imgui.combo("Shading", current_style_idx, shading_styles)
+                    if changed:
+                        self.renderer.shading_style = shading_styles[current_style_idx]
 
                     # Gap + margin wireframe mode
                     _sdf_margin_labels = ["Off", "Margin", "Margin + Gap"]
