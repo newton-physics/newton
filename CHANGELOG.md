@@ -143,6 +143,8 @@
 - Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
 - Add site-targeted actuator support to MuJoCo solver
+- Add `joint_passive_damping` model attribute and `JointDofConfig.passive_damping` for velocity-proportional damping that is always active
+
 
 ### Changed
 
@@ -241,6 +243,8 @@
 - Fix `cloth_franka` example Jacobian broken by COM-referenced `body_qd` convention change; adjust robot base height, gripper orientations, and grasp targets for improved reachability (a follow-up PR will migrate the example to `newton.ik`)
 - Fix joint-synthesized CONNECT constraint anchors not updating when `dof_ref` or `joint_X_p` changes at runtime via `notify_model_changed()`
 - Fix WELD constraint data corruption when a model contains both FIXED and revolute/ball loop joints, caused by CONNECT anchor kernels overwriting WELD `eq_data`
+- Fix MJCF joint `damping` attribute being ignored by `SolverFeatherstone`
+
 
 ## [1.0.0] - 2026-03-10
 
