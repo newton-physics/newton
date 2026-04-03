@@ -1039,7 +1039,7 @@ def evaluate_neo_hookean_membrane_force_hessian(
     # Stable Neo-Hookean energy for 2D membranes (Smith et al. 2018 adapted to shells):
     #   psi = (mu/2)(I_c - 2) + (lambda/2)(J_s - alpha)^2
     # where I_c = tr(F^T F), J_s = sqrt(det(F^T F)) = area ratio,
-    # alpha = 1 + mu/lambda (barrier shift preventing inversion).
+    # alpha = 1 + mu/lambda (ensures zero stress at the rest configuration).
 
     v0 = tri_indices[face, 0]
     v1 = tri_indices[face, 1]
