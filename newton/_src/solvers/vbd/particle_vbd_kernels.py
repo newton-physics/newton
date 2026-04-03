@@ -1023,6 +1023,125 @@ def evaluate_stvk_force_hessian(
 
 
 @wp.func
+def evaluate_neo_hookean_membrane_force_hessian(
+    face: int,
+    v_order: int,
+    pos: wp.array(dtype=wp.vec3),
+    pos_anchor: wp.array(dtype=wp.vec3),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    tri_pose: wp.mat22,
+    area: float,
+    mu: float,
+    lmbd: float,
+    damping: float,
+    dt: float,
+):
+    # Stable Neo-Hookean energy for 2D membranes (Smith et al. 2018 adapted to shells):
+    #   psi = (mu/2)(I_c - 2) + (lambda/2)(J_s - alpha)^2
+    # where I_c = tr(F^T F), J_s = sqrt(det(F^T F)) = area ratio,
+    # alpha = 1 + mu/lambda (barrier shift preventing inversion).
+
+    v0 = tri_indices[face, 0]
+    v1 = tri_indices[face, 1]
+    v2 = tri_indices[face, 2]
+
+    x0 = pos[v0]
+    x01 = pos[v1] - x0
+    x02 = pos[v2] - x0
+
+    DmInv00 = tri_pose[0, 0]
+    DmInv01 = tri_pose[0, 1]
+    DmInv10 = tri_pose[1, 0]
+    DmInv11 = tri_pose[1, 1]
+
+    # Deformation gradient F = [f0, f1] (3x2 as two column vectors)
+    f0 = x01 * DmInv00 + x02 * DmInv10
+    f1 = x01 * DmInv01 + x02 * DmInv11
+
+    # Cauchy-Green invariants
+    f0_dot_f0 = wp.dot(f0, f0)
+    f1_dot_f1 = wp.dot(f1, f1)
+    f0_dot_f1 = wp.dot(f0, f1)
+
+    # J_s = area ratio = sqrt(det(F^T F))
+    J_s_sq = f0_dot_f0 * f1_dot_f1 - f0_dot_f1 * f0_dot_f1
+    J_s_sq = wp.max(J_s_sq, 1.0e-20)
+    J_s = wp.sqrt(J_s_sq)
+    inv_J_s = 1.0 / J_s
+
+    # Stable neo-Hookean parameters
+    lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1.0e-6)
+    alpha = 1.0 + mu / lmbd_safe
+
+    # 2D "cofactor" vectors: g_i = dJ_s/df_i
+    g0 = inv_J_s * (f1_dot_f1 * f0 - f0_dot_f1 * f1)
+    g1 = inv_J_s * (f0_dot_f0 * f1 - f0_dot_f1 * f0)
+
+    # First Piola-Kirchhoff stress: P = mu*F + lambda*(J_s - alpha)*[g0, g1]
+    s = lmbd * (J_s - alpha)
+    P_col0 = mu * f0 + s * g0
+    P_col1 = mu * f1 + s * g1
+
+    # Vertex selection masks
+    mask0 = float(v_order == 0)
+    mask1 = float(v_order == 1)
+    mask2 = float(v_order == 2)
+
+    df0_dx = DmInv00 * (mask1 - mask0) + DmInv10 * (mask2 - mask0)
+    df1_dx = DmInv01 * (mask1 - mask0) + DmInv11 * (mask2 - mask0)
+
+    # Force: -(dψ/dF):(dF/dx)
+    dpsi_dx = P_col0 * df0_dx + P_col1 * df1_dx
+    force = -dpsi_dx
+
+    # --- Hessian (SPD-projected via clamping the cofactor-derivative coefficient) ---
+    # Clamp s for PSD guarantee: only the cofactor-derivative term uses s_clamp
+    s_clamp = wp.max(0.0, s)
+    r = s_clamp * inv_J_s
+    c1 = lmbd - r  # coefficient for outer(dJ_dx, dJ_dx); >= 0 when lmbd > 0
+
+    df0_dx_sq = df0_dx * df0_dx
+    df1_dx_sq = df1_dx * df1_dx
+
+    # Projected gradient of J_s w.r.t. vertex position
+    dJ_dx = g0 * df0_dx + g1 * df1_dx
+    # Cross-column vector for cofactor-derivative contraction
+    w = f1 * df0_dx - f0 * df1_dx
+
+    I_coeff = mu * (df0_dx_sq + df1_dx_sq) + r * (
+        df0_dx_sq * f1_dot_f1 + df1_dx_sq * f0_dot_f0 - 2.0 * df0_dx * df1_dx * f0_dot_f1
+    )
+
+    I33 = wp.identity(n=3, dtype=float)
+    hessian = I_coeff * I33 + c1 * wp.outer(dJ_dx, dJ_dx) - r * wp.outer(w, w)
+
+    # Absolute damping (Newtonian viscosity: P_damp = damping * F_dot)
+    if damping > 0.0:
+        inv_dt = 1.0 / dt
+
+        x0_prev = pos_anchor[v0]
+        x01_prev = pos_anchor[v1] - x0_prev
+        x02_prev = pos_anchor[v2] - x0_prev
+
+        vel_x01 = (x01 - x01_prev) * inv_dt
+        vel_x02 = (x02 - x02_prev) * inv_dt
+
+        df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
+        df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
+
+        f_damp = damping * (df0_dt * df0_dx + df1_dt * df1_dx)
+        force += -f_damp
+
+        hessian += damping * inv_dt * (df0_dx_sq + df1_dx_sq) * I33
+
+    # Apply area scaling
+    force *= area
+    hessian *= area
+
+    return force, hessian
+
+
+@wp.func
 def compute_normalized_vector_derivative(
     unnormalized_vec_length: float, normalized_vec: wp.vec3, unnormalized_vec_derivative: wp.mat33
 ) -> wp.mat33:
@@ -2979,6 +3098,7 @@ def solve_elasticity_tile(
     tri_poses: wp.array[wp.mat22],
     tri_materials: wp.array2d[float],
     tri_areas: wp.array[float],
+    tri_material_model: int,
     edge_indices: wp.array2d[wp.int32],
     edge_rest_angles: wp.array[float],
     edge_rest_length: wp.array[float],
@@ -3039,19 +3159,34 @@ def solve_elasticity_tile(
             # fmt: on
 
             if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                f_tri, h_tri = evaluate_stvk_force_hessian(
-                    tri_index,
-                    vertex_order,
-                    pos,
-                    pos_prev,
-                    tri_indices,
-                    tri_poses[tri_index],
-                    tri_areas[tri_index],
-                    tri_materials[tri_index, 0],
-                    tri_materials[tri_index, 1],
-                    tri_materials[tri_index, 2],
-                    dt,
-                )
+                if tri_material_model == 0:
+                    f_tri, h_tri = evaluate_stvk_force_hessian(
+                        tri_index,
+                        vertex_order,
+                        pos,
+                        pos_prev,
+                        tri_indices,
+                        tri_poses[tri_index],
+                        tri_areas[tri_index],
+                        tri_materials[tri_index, 0],
+                        tri_materials[tri_index, 1],
+                        tri_materials[tri_index, 2],
+                        dt,
+                    )
+                else:
+                    f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                        tri_index,
+                        vertex_order,
+                        pos,
+                        pos_prev,
+                        tri_indices,
+                        tri_poses[tri_index],
+                        tri_areas[tri_index],
+                        tri_materials[tri_index, 0],
+                        tri_materials[tri_index, 1],
+                        tri_materials[tri_index, 2],
+                        dt,
+                    )
 
                 f += f_tri
                 h += h_tri
@@ -3144,6 +3279,7 @@ def solve_elasticity(
     tri_poses: wp.array[wp.mat22],
     tri_materials: wp.array2d[float],
     tri_areas: wp.array[float],
+    tri_material_model: int,
     edge_indices: wp.array2d[wp.int32],
     edge_rest_angles: wp.array[float],
     edge_rest_length: wp.array[float],
@@ -3201,19 +3337,34 @@ def solve_elasticity(
             # fmt: on
 
             if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                f_tri, h_tri = evaluate_stvk_force_hessian(
-                    tri_index,
-                    vertex_order,
-                    pos,
-                    pos_prev,
-                    tri_indices,
-                    tri_poses[tri_index],
-                    tri_areas[tri_index],
-                    tri_materials[tri_index, 0],
-                    tri_materials[tri_index, 1],
-                    tri_materials[tri_index, 2],
-                    dt,
-                )
+                if tri_material_model == 0:
+                    f_tri, h_tri = evaluate_stvk_force_hessian(
+                        tri_index,
+                        vertex_order,
+                        pos,
+                        pos_prev,
+                        tri_indices,
+                        tri_poses[tri_index],
+                        tri_areas[tri_index],
+                        tri_materials[tri_index, 0],
+                        tri_materials[tri_index, 1],
+                        tri_materials[tri_index, 2],
+                        dt,
+                    )
+                else:
+                    f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                        tri_index,
+                        vertex_order,
+                        pos,
+                        pos_prev,
+                        tri_indices,
+                        tri_poses[tri_index],
+                        tri_areas[tri_index],
+                        tri_materials[tri_index, 0],
+                        tri_materials[tri_index, 1],
+                        tri_materials[tri_index, 2],
+                        dt,
+                    )
 
                 f = f + f_tri
                 h = h + h_tri
