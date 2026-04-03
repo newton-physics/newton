@@ -1209,6 +1209,37 @@ vertical field of view.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Utils.convert_ray_depth_to_forward_depth">
+<span class="sig-name descname"><span class="pre">convert_ray_depth_to_forward_depth</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">depth_image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_transforms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_rays</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_depth</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Utils.convert_ray_depth_to_forward_depth" title="Link to this definition">#</a></dt>
+<dd><p>Convert ray-distance depth to forward (planar) depth.</p>
+<p>Projects each pixel’s hit distance along its ray onto the camera’s
+forward axis, producing depth measured perpendicular to the image
+plane. The forward axis is derived from each camera transform by
+transforming camera-space <code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">0,</span> <span class="pre">-1)</span></code> into world space.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>depth_image</strong> (<em>wp.array4d</em><em>[</em><em>wp.float32</em><em>]</em>) – Ray-distance depth [m] from <code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code>, shape
+<code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>.</p></li>
+<li><p><strong>camera_transforms</strong> (<em>wp.array2d</em><em>[</em><em>wp.transformf</em><em>]</em>) – World-space camera transforms, shape
+<code class="docutils literal notranslate"><span class="pre">(camera_count,</span> <span class="pre">world_count)</span></code>.</p></li>
+<li><p><strong>camera_rays</strong> (<em>wp.array4d</em><em>[</em><em>wp.vec3f</em><em>]</em>) – Camera-space rays from
+<a class="reference internal" href="#newton.sensors.SensorTiledCamera.Utils.compute_pinhole_camera_rays" title="newton.sensors.SensorTiledCamera.Utils.compute_pinhole_camera_rays"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute_pinhole_camera_rays()</span></code></a>, shape
+<code class="docutils literal notranslate"><span class="pre">(camera_count,</span> <span class="pre">height,</span> <span class="pre">width,</span> <span class="pre">2)</span></code>.</p></li>
+<li><p><strong>out_depth</strong> (<em>wp.array4d</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><em>None</em>) – Output forward-depth array [m] with the same shape as
+<em>depth_image</em>. If <code class="docutils literal notranslate"><span class="pre">None</span></code>, allocates a new one.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Forward (planar) depth array, same shape as <em>depth_image</em> [m].</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>wp.array4d[wp.float32]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Utils.create_albedo_image_output">
 <span class="sig-name descname"><span class="pre">create_albedo_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Utils.create_albedo_image_output" title="Link to this definition">#</a></dt>
 <dd><p>Create an albedo output array for <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>.</p>
@@ -1843,6 +1874,7 @@ class’s public methods, or <a class="reference internal" href="#newton.sensors
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Utils.assign_random_colors_per_shape"><code class="docutils literal notranslate"><span class="pre">assign_random_colors_per_shape()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Utils.assign_random_colors_per_world"><code class="docutils literal notranslate"><span class="pre">assign_random_colors_per_world()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Utils.compute_pinhole_camera_rays"><code class="docutils literal notranslate"><span class="pre">compute_pinhole_camera_rays()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Utils.convert_ray_depth_to_forward_depth"><code class="docutils literal notranslate"><span class="pre">convert_ray_depth_to_forward_depth()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Utils.create_albedo_image_output"><code class="docutils literal notranslate"><span class="pre">create_albedo_image_output()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Utils.create_color_image_output"><code class="docutils literal notranslate"><span class="pre">create_color_image_output()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Utils.create_default_light"><code class="docutils literal notranslate"><span class="pre">create_default_light()</span></code></a></li>
