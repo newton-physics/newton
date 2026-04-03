@@ -47,7 +47,7 @@ def move_hand(
     # animate the finger joints
     for i in range(20):
         di = root_dof_start + i
-        target = wp.sin(t + float(i * 6) * 0.1) * 0.1 + 0.3
+        target = wp.sin(t + float(i * 6) * 0.1) * 0.08 + 0.3
         joint_target_pos[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
@@ -136,7 +136,7 @@ class Example:
             integrator="implicitfast",
             njmax=200,
             nconmax=max_contacts_per_world,
-            impratio=10.0,
+            impratio=20.0,
             cone="elliptic",
             iterations=100,
             ls_iterations=50,
@@ -205,11 +205,13 @@ class Example:
 
     def test_final(self):
         num_bodies_per_world = self.model.body_count // self.world_count
+        cubes_held = 0
+
         for i in range(self.world_count):
             world_offset = i * num_bodies_per_world
             world_pos = wp.vec3(*self.initial_world_positions[i])
 
-            # Test hand bodies (all except the cube) - keep original tight bounds
+            # Test hand bodies - must stay near initial position
             hand_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
             hand_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
             hand_body_indices = np.arange(num_bodies_per_world - 1, dtype=np.int32) + world_offset
@@ -221,19 +223,18 @@ class Example:
                 indices=hand_body_indices,
             )
 
-            # Test cube body - allow it to fall to ground plane
-            # Keep X/Y bounds tight, but allow Z from ground (0.0) to initial position + 0.5
+            # Count cubes still in the hand — at least 50% must remain
             cube_body_idx = world_offset + self.cube_body_offset
-            cube_lower = wp.vec3(world_pos.x - 0.5, world_pos.y - 0.5, 0.0)
+            cube_lower = wp.vec3(world_pos.x - 0.5, world_pos.y - 0.5, 0.9)
             cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
-            newton.examples.test_body_state(
-                self.model,
-                self.state_0,
-                f"cube from world {i} is within bounds and above ground",
-                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.math.vec_inside_limits(q.p, lower, upper)
-                and q.p[2] > 0.0,
-                indices=np.array([cube_body_idx], dtype=np.int32),
-            )
+            cube_pos = wp.vec3(*self.state_0.body_q.numpy()[cube_body_idx, :3])
+            if newton.math.vec_inside_limits(cube_pos, cube_lower, cube_upper):
+                cubes_held += 1
+
+        held_ratio = cubes_held / self.world_count
+        assert held_ratio >= 0.5, (
+            f"Only {cubes_held}/{self.world_count} ({held_ratio:.0%}) cubes stayed in the hand, expected at least 50%"
+        )
 
     @staticmethod
     def create_parser():

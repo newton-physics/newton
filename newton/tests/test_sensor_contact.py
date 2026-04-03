@@ -353,6 +353,206 @@ class TestSensorContact(unittest.TestCase):
         for i in range(2):
             self.assertIn(2, sensor.counterpart_indices[i], f"Sensing obj {i} missing ground counterpart")
 
+    def test_friction_force_orthogonal_to_normal(self):
+        """Friction force is orthogonal to the contact normal."""
+        device = wp.get_device()
+
+        builder = newton.ModelBuilder()
+        body_a = builder.add_body(label="A")
+        builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+        body_b = builder.add_body(label="B")
+        builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+
+        sensor = SensorContact(model, sensing_obj_bodies="*")
+
+        # Force has normal component (z) and tangential component (x)
+        # Normal is [0,0,1], force spatial vector is (3, 0, 5, 0, 0, 0)
+        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
+        with wp.ScopedDevice(device):
+            contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
+            contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
+            contacts.rigid_contact_normal = wp.array(
+                [[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                dtype=wp.vec3,
+            )
+            contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
+            contacts.force = wp.array(
+                [(3.0, 0.0, 5.0, 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
+                dtype=wp.spatial_vector,
+            )
+
+        sensor.update(None, contacts)
+
+        friction = sensor.total_force_friction.numpy()
+        # Friction on A should be (3, 0, 0) — the tangential part
+        np.testing.assert_allclose(friction[0], [3.0, 0.0, 0.0], atol=1e-5)
+        # Friction on B should be (-3, 0, 0) — Newton's third law
+        np.testing.assert_allclose(friction[1], [-3.0, 0.0, 0.0], atol=1e-5)
+        # Verify orthogonality: dot(friction, normal) == 0
+        normal = np.array([0.0, 0.0, 1.0])
+        self.assertAlmostEqual(np.dot(friction[0], normal), 0.0, places=5)
+
+    def test_friction_force_multi_contact(self):
+        """Friction forces accumulate correctly across contacts with different normals."""
+        device = wp.get_device()
+
+        builder = newton.ModelBuilder()
+        body_a = builder.add_body(label="A")
+        builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+        body_b = builder.add_body(label="B")
+        builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+
+        sensor = SensorContact(model, sensing_obj_bodies="*")
+
+        # Contact 0: shape0=0(A), shape1=1(B), normal=[0,0,1], force=(1,2,3)
+        #   normal_comp = dot((1,2,3),(0,0,1))*(0,0,1) = (0,0,3)
+        #   friction = (1,2,3)-(0,0,3) = (1,2,0)
+        #   A gets +(1,2,0), B gets -(1,2,0)
+        #
+        # Contact 1: shape0=1(B), shape1=2(ground), normal=[0,1,0], force=(4,5,6)
+        #   normal_comp = dot((4,5,6),(0,1,0))*(0,1,0) = (0,5,0)
+        #   friction = (4,5,6)-(0,5,0) = (4,0,6)
+        #   B gets +(4,0,6), ground is not sensed
+        #
+        # Expected friction: A = (1,2,0), B = (-1,-2,0)+(4,0,6) = (3,-2,6)
+        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
+        with wp.ScopedDevice(device):
+            contacts.rigid_contact_shape0 = wp.array([0, 1, -1, -1], dtype=wp.int32)
+            contacts.rigid_contact_shape1 = wp.array([1, 2, -1, -1], dtype=wp.int32)
+            contacts.rigid_contact_normal = wp.array(
+                [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                dtype=wp.vec3,
+            )
+            contacts.rigid_contact_count = wp.array([2], dtype=wp.int32)
+            contacts.force = wp.array(
+                [
+                    (1.0, 2.0, 3.0, 0.0, 0.0, 0.0),
+                    (4.0, 5.0, 6.0, 0.0, 0.0, 0.0),
+                    (0.0,) * 6,
+                    (0.0,) * 6,
+                ],
+                dtype=wp.spatial_vector,
+            )
+
+        sensor.update(None, contacts)
+
+        friction = sensor.total_force_friction.numpy()
+        np.testing.assert_allclose(friction[0], [1.0, 2.0, 0.0], atol=1e-5)
+        np.testing.assert_allclose(friction[1], [3.0, -2.0, 6.0], atol=1e-5)
+
+    def test_force_matrix_friction(self):
+        """force_matrix_friction mirrors force_matrix structure."""
+        device = wp.get_device()
+
+        builder = newton.ModelBuilder()
+        body_a = builder.add_body(label="A")
+        builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+        body_b = builder.add_body(label="B")
+        builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+
+        sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
+
+        # Force with tangential component: normal=[0,0,1], force=(2, 3, 7, 0, 0, 0)
+        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
+        with wp.ScopedDevice(device):
+            contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
+            contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
+            contacts.rigid_contact_normal = wp.array(
+                [[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                dtype=wp.vec3,
+            )
+            contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
+            contacts.force = wp.array(
+                [(2.0, 3.0, 7.0, 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
+                dtype=wp.spatial_vector,
+            )
+
+        sensor.update(None, contacts)
+
+        self.assertIsNotNone(sensor.force_matrix_friction)
+        fmat = sensor.force_matrix_friction.numpy()
+        self.assertEqual(fmat.shape, sensor.force_matrix.numpy().shape)
+        # A's friction from B: tangential part = (2, 3, 0)
+        np.testing.assert_allclose(fmat[0, 1], [2.0, 3.0, 0.0], atol=1e-5)
+        # B's friction from A: (-2, -3, 0)
+        np.testing.assert_allclose(fmat[1, 0], [-2.0, -3.0, 0.0], atol=1e-5)
+
+    def test_friction_force_measure_total_false(self):
+        """measure_total=False produces total_force_friction=None."""
+        model = _make_two_world_model(include_ground=True)
+        sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_shapes="*", measure_total=False)
+        self.assertIsNone(sensor.total_force_friction)
+        self.assertIsNotNone(sensor.force_matrix_friction)
+
+    def test_friction_force_no_counterparts(self):
+        """No counterparts produces force_matrix_friction=None."""
+        model = _make_two_world_model()
+        sensor = SensorContact(model, sensing_obj_bodies="*")
+        self.assertIsNone(sensor.force_matrix_friction)
+        self.assertIsNotNone(sensor.total_force_friction)
+
+    def test_purely_normal_force_has_zero_friction(self):
+        """Purely normal contact forces produce zero friction."""
+        device = wp.get_device()
+        model = _make_two_world_model(device=device)
+
+        sensor = SensorContact(model, sensing_obj_bodies="*")
+
+        # create_contacts builds force = magnitude * normal, so purely normal
+        contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[5.0])
+        sensor.update(None, contacts)
+
+        friction = sensor.total_force_friction.numpy()
+        np.testing.assert_allclose(friction[0], [0.0, 0.0, 0.0], atol=1e-5)
+        np.testing.assert_allclose(friction[1], [0.0, 0.0, 0.0], atol=1e-5)
+
+    def test_friction_force_diagonal_normal(self):
+        """Friction decomposition is correct for a non-axis-aligned normal."""
+        device = wp.get_device()
+
+        builder = newton.ModelBuilder()
+        body_a = builder.add_body(label="A")
+        builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+        body_b = builder.add_body(label="B")
+        builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+
+        sensor = SensorContact(model, sensing_obj_bodies="*")
+
+        # 30-degree incline normal: n = (0, -sin(30), cos(30)) = (0, -0.5, sqrt(3)/2)
+        s30 = 0.5
+        c30 = 3.0**0.5 / 2.0
+        n = np.array([0.0, -s30, c30])
+        force_vec = np.array([1.0, 2.0, 3.0])
+        # Expected: normal_comp = dot(f,n)*n, friction = f - normal_comp
+        d = float(np.dot(force_vec, n))  # 1*0 + 2*(-0.5) + 3*(sqrt(3)/2) = -1 + 2.598 = 1.598
+        expected_friction = force_vec - d * n
+
+        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
+        with wp.ScopedDevice(device):
+            contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
+            contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
+            contacts.rigid_contact_normal = wp.array(
+                [n.tolist(), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                dtype=wp.vec3,
+            )
+            contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
+            contacts.force = wp.array(
+                [(*force_vec.tolist(), 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
+                dtype=wp.spatial_vector,
+            )
+
+        sensor.update(None, contacts)
+
+        friction = sensor.total_force_friction.numpy()
+        np.testing.assert_allclose(friction[0], expected_friction, atol=1e-5)
+        # Verify orthogonality
+        self.assertAlmostEqual(np.dot(friction[0], n), 0.0, places=5)
+
 
 class TestSensorContactMuJoCo(unittest.TestCase):
     """End-to-end tests for contact sensors using MuJoCo solver."""
@@ -402,7 +602,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
                 solver.step(state_out, state_in, control, None, sim_dt)
             graph = capture.graph
 
-        remaining = num_steps - (4 if use_cuda_graph else 0)
+        avg_steps = 10  # average forces over last few steps for stability
+        remaining = num_steps - avg_steps - (4 if use_cuda_graph else 0)
         for _ in range(remaining // 2 if use_cuda_graph else remaining):
             if use_cuda_graph:
                 wp.capture_launch(graph)
@@ -412,13 +613,72 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         if use_cuda_graph and remaining % 2 == 1:
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
-        solver.update_contacts(contacts, state_in)
-        sensor.update(state_in, contacts)
 
-        total = sensor.total_force.numpy()
+        forces_acc = np.zeros((2, 3))
+        for _ in range(avg_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+            solver.update_contacts(contacts, state_in)
+            sensor.update(state_in, contacts)
+            forces_acc += sensor.total_force.numpy()
+        total = forces_acc / avg_steps
+
         g = 9.81
         self.assertAlmostEqual(total[0, 2], mass_a * g, delta=mass_a * g * 0.01)
         self.assertAlmostEqual(total[1, 2], mass_b * g, delta=mass_b * g * 0.01)
+
+    def test_stacking_friction(self):
+        """Friction forces are near zero for boxes at rest on a flat surface."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.density = 1000.0
+
+        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, label="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), label="a")
+        builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
+
+        model = builder.finalize()
+        mass_a = 45.0
+
+        try:
+            solver = SolverMuJoCo(model, njmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo not available: {e}")
+
+        sensor = SensorContact(model, sensing_obj_bodies=["a"])
+        contacts = newton.Contacts(
+            solver.get_max_contact_count(),
+            0,
+            device=model.device,
+            requested_attributes=model.get_requested_contact_attributes(),
+        )
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        sim_dt = 1.0 / 240.0
+        num_steps = 240 * 2
+        avg_steps = 10  # average forces over last few steps for stability
+        for _ in range(num_steps - avg_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+
+        total_acc = np.zeros((1, 3))
+        friction_acc = np.zeros((1, 3))
+        for _ in range(avg_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+            solver.update_contacts(contacts, state_in)
+            sensor.update(state_in, contacts)
+            total_acc += sensor.total_force.numpy()
+            friction_acc += sensor.total_force_friction.numpy()
+        total = total_acc / avg_steps
+        friction = friction_acc / avg_steps
+
+        g = 9.81
+        # Normal force should match weight
+        self.assertAlmostEqual(total[0, 2], mass_a * g, delta=mass_a * g * 0.02)
+        # Friction should be near zero (box at rest on flat ground, no lateral forces)
+        np.testing.assert_allclose(friction[0], [0.0, 0.0, 0.0], atol=mass_a * g * 0.02)
 
     def test_parallel_scenario(self):
         """Test contact forces with a, b, c side-by-side on base."""
