@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import importlib
 import os
 import warnings
@@ -463,6 +464,13 @@ def create_parser():
         metavar="SECONDS",
         help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
     )
+    parser.add_argument(
+        "--warp-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a warp.config attribute (repeatable).",
+    )
 
     return parser
 
@@ -526,6 +534,38 @@ def default_args(parser=None):
     return parser.parse_known_args([])[0]
 
 
+def _apply_warp_config(parser, args):
+    """Apply ``--warp-config`` overrides to :obj:`warp.config`.
+
+    Each entry in ``args.warp_config`` must have the form ``KEY=VALUE``.  The
+    key is validated to be an existing attribute of :obj:`warp.config`.  The
+    value is parsed with :func:`ast.literal_eval`; if that fails the raw
+    string is kept.
+
+    Args:
+        parser: The argument parser, used for error reporting.
+        args: Parsed argument namespace containing ``warp_config``.
+    """
+    if not args.warp_config:
+        return
+
+    for entry in args.warp_config:
+        if "=" not in entry:
+            parser.error(f"invalid --warp-config format '{entry}': expected KEY=VALUE")
+
+        key, value_str = entry.split("=", 1)
+
+        if not hasattr(wp.config, key):
+            parser.error(f"invalid --warp-config key '{key}': not a recognized warp.config setting")
+
+        try:
+            value = ast.literal_eval(value_str)
+        except (ValueError, SyntaxError):
+            value = value_str
+
+        setattr(wp.config, key, value)
+
+
 def init(parser=None):
     """Initialize Newton example components from parsed arguments.
 
@@ -552,6 +592,9 @@ def init(parser=None):
     else:
         # When parser is provided, use parse_args() to properly handle --help
         args = parser.parse_args()
+
+    # Apply --warp-config overrides before any Warp API calls
+    _apply_warp_config(parser, args)
 
     # Suppress Warp compilation messages if requested
     if args.quiet:
