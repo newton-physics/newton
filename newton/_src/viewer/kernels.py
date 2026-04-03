@@ -717,8 +717,8 @@ PARTICLE_ACTIVE = wp.constant(wp.int32(newton.ParticleFlags.ACTIVE))
 
 @wp.kernel
 def build_active_particle_mask(
-    flags: wp.array(dtype=wp.int32),
-    mask: wp.array(dtype=wp.int32),
+    flags: wp.array[wp.int32],
+    mask: wp.array[wp.int32],
 ):
     i = wp.tid()
     if (flags[i] & PARTICLE_ACTIVE) != wp.int32(0):
@@ -729,10 +729,10 @@ def build_active_particle_mask(
 
 @wp.kernel
 def compact(
-    src: wp.array(dtype=Any),
-    mask: wp.array(dtype=wp.int32),
-    offsets: wp.array(dtype=wp.int32),
-    dst: wp.array(dtype=Any),
+    src: wp.array[Any],
+    mask: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    dst: wp.array[Any],
 ):
     i = wp.tid()
     if mask[i] == wp.int32(1):
