@@ -173,6 +173,7 @@ class SolverVBD(SolverBase):
         particle_collision_detection_interval: int = 0,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
+        particle_tri_material_model: str = "neohookean",
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -222,6 +223,9 @@ class SolverVBD(SolverBase):
                 iterations.
             particle_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
             particle_enable_tile_solve: Whether to accelerate the particle solver using tile API.
+            particle_tri_material_model: Material model for triangle elasticity.
+                ``"neohookean"`` (default) uses the stable Neo-Hookean energy with absolute damping;
+                ``"stvk"`` uses the St. Venant-Kirchhoff model with Rayleigh damping.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -301,6 +305,7 @@ class SolverVBD(SolverBase):
             particle_rest_shape_contact_exclusion_radius,
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
+            particle_tri_material_model,
         )
 
         # Initialize rigid body system and rigid-particle (body-particle) interaction state
@@ -348,8 +353,14 @@ class SolverVBD(SolverBase):
         particle_rest_shape_contact_exclusion_radius: float,
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
+        particle_tri_material_model: str,
     ):
         """Initialize particle-specific data structures and settings."""
+        _tri_models = {"stvk": 0, "neohookean": 1}
+        if particle_tri_material_model not in _tri_models:
+            raise ValueError(f"Unknown tri_material_model: {particle_tri_material_model!r}. Choose from {list(_tri_models)}")
+        self._tri_material_model = _tri_models[particle_tri_material_model]
+
         # Early exit if no particles
         if model.particle_count == 0:
             return
@@ -1837,6 +1848,7 @@ class SolverVBD(SolverBase):
                         self.model.tri_poses,
                         self.model.tri_materials,
                         self.model.tri_areas,
+                        self._tri_material_model,
                         self.model.edge_indices,
                         self.model.edge_rest_angle,
                         self.model.edge_rest_length,
@@ -1869,6 +1881,7 @@ class SolverVBD(SolverBase):
                         self.model.tri_poses,
                         self.model.tri_materials,
                         self.model.tri_areas,
+                        self._tri_material_model,
                         self.model.edge_indices,
                         self.model.edge_rest_angle,
                         self.model.edge_rest_length,
