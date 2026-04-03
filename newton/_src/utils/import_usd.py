@@ -524,6 +524,18 @@ def parse_usd(
             return
 
         if path_name not in path_shape_map:
+            # Resolve material color for primitive (non-mesh) visual shapes.
+            # Walk up to the parent if the prim itself has no material bound,
+            # since USD materials are often authored on a parent Xform.
+            _prim_color = None
+            if type_name != "mesh":
+                _prim_mat_props = _get_material_props_cached(prim)
+                _prim_color = _prim_mat_props.get("color")
+                if _prim_color is None:
+                    parent = prim.GetParent()
+                    if parent and parent.IsValid():
+                        _prim_color = _get_material_props_cached(parent).get("color")
+
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
                 side_lengths = scale * size
@@ -535,6 +547,7 @@ def parse_usd(
                     hz=side_lengths[2] / 2,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "sphere":
@@ -547,6 +560,7 @@ def parse_usd(
                     radius,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "plane":
@@ -562,6 +576,7 @@ def parse_usd(
                     width=width,
                     length=length,
                     cfg=visual_shape_cfg,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "capsule":
@@ -577,6 +592,7 @@ def parse_usd(
                     half_height,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "cylinder":
@@ -592,6 +608,7 @@ def parse_usd(
                     half_height,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "cone":
@@ -2151,9 +2168,22 @@ def parse_usd(
                 if shape_kd is None:
                     shape_kd = builder.default_shape_cfg.kd
 
+                # Resolve material color for visible collision shapes so they
+                # render with the correct colour instead of the palette fallback.
+                # Walk up to the parent if the prim itself has no material.
+                _collider_color = None
+                if collider_is_visible:
+                    _coll_mat = _get_material_props_cached(prim)
+                    _collider_color = _coll_mat.get("color")
+                    if _collider_color is None:
+                        _coll_parent = prim.GetParent()
+                        if _coll_parent and _coll_parent.IsValid():
+                            _collider_color = _get_material_props_cached(_coll_parent).get("color")
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
+                    "color": _collider_color,
                     "cfg": ModelBuilder.ShapeConfig(
                         ke=shape_ke,
                         kd=shape_kd,
