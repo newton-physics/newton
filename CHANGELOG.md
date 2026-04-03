@@ -18,6 +18,7 @@
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add support for pt2 neural-network checkpoints (saved via `torch.export.save`) in `ControllerNeuralMLP` and `ControllerNeuralLSTM`.
 - Add `SensorContact.position_matrix` alongside `force_matrix`, reporting per-counterpart world-frame contact positions (force-weighted average of contact midpoints).
+- Forward `--warp-config KEY=VALUE` from `python -m newton.tests` to example subprocesses so `warp.config` overrides apply during example tests.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 - Add `basic_dzhanibekov` example demonstrating free rigid-body intermediate-axis instability across VBD, XPBD, and MuJoCo solvers
 - Add inverse-dynamics evaluation for articulated systems: `Model.inverse_dynamics()` returns an `InverseDynamics` container that `eval_inverse_dynamics` populates with the joint-space mass matrix `M(q)`, gravity bias `g(q)`, and Coriolis bias `C(q, q_dot)*q_dot` (selected via `InverseDynamics.EvalType` flags); `eval_inverse_dynamics_force` combines them with a user-supplied `qddot` into the manipulator-equation joint force `tau = M*qddot + C*q_dot + g`; `ArticulationView.eval_inverse_dynamics` masks the computation to a selected subset of articulations via the selection API
