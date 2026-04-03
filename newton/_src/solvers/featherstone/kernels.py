@@ -404,8 +404,10 @@ def jcalc_tau(
             target_pos = joint_target_pos[j]
             target_vel = joint_target_vel[j]
             passive_damping = joint_passive_damping[j]
-            
-            drive_f = joint_force(q, qd, target_pos, target_vel, target_ke, target_kd, lower, upper, limit_ke, limit_kd, passive_damping)
+
+            drive_f = joint_force(
+                q, qd, target_pos, target_vel, target_ke, target_kd, lower, upper, limit_ke, limit_kd, passive_damping
+            )
 
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]

@@ -460,7 +460,7 @@ class ModelBuilder:
             self.target_kd = target_kd
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
             self.passive_damping = passive_damping
-            """Passive velocity damping that is always active. Defaults to 0.0."""
+            """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] that is always active. Defaults to 0.0."""
             self.armature = armature
             """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
@@ -3737,7 +3737,7 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            passive_damping: Passive velocity damping always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.passive_damping`` is used.
+            passive_damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.passive_damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -3761,6 +3761,7 @@ class ModelBuilder:
         if isinstance(axis, ModelBuilder.JointDofConfig):
             ax = axis
         else:
+            # fmt: off
             ax = ModelBuilder.JointDofConfig(
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
@@ -3778,6 +3779,7 @@ class ModelBuilder:
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
                 actuator_mode=actuator_mode if actuator_mode is not None else self.default_joint_cfg.actuator_mode,
             )
+            # fmt: on
         return self.add_joint(
             JointType.REVOLUTE,
             parent,
@@ -3832,7 +3834,7 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            passive_damping: Passive velocity damping always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.passive_damping`` is used.
+            passive_damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.passive_damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -3856,6 +3858,7 @@ class ModelBuilder:
         if isinstance(axis, ModelBuilder.JointDofConfig):
             ax = axis
         else:
+            # fmt: off
             ax = ModelBuilder.JointDofConfig(
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
@@ -3873,6 +3876,7 @@ class ModelBuilder:
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
                 actuator_mode=actuator_mode if actuator_mode is not None else self.default_joint_cfg.actuator_mode,
             )
+            # fmt: on
         return self.add_joint(
             JointType.PRISMATIC,
             parent,
@@ -10194,7 +10198,9 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_passive_damping = wp.array(self.joint_passive_damping, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_passive_damping = wp.array(
+                self.joint_passive_damping, dtype=wp.float32, requires_grad=requires_grad
+            )
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
