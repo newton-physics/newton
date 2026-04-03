@@ -455,6 +455,8 @@ class Model:
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd: wp.array[wp.float32] | None = None
         """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
+        self.joint_passive_damping: wp.array[wp.float32] | None = None
+        """Passive velocity damping always active on the joint, shape [joint_dof_count], float."""
         self.joint_effort_limit: wp.array[wp.float32] | None = None
         """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_velocity_limit: wp.array[wp.float32] | None = None
@@ -763,6 +765,7 @@ class Model:
         self.attribute_frequency["joint_target_mode"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_passive_damping"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_lower"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_upper"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_ke"] = Model.AttributeFrequency.JOINT_DOF
