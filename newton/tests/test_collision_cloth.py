@@ -780,7 +780,6 @@ def test_mesh_ground_collision_index(test, device):
     test.assertTrue(np.allclose(normals[:, 2], 0.0, atol=1e-6))
 
 
-
 @wp.kernel
 def validate_vertex_collisions_distance_filter(
     max_query_radius: float,

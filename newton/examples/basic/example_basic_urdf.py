@@ -90,7 +90,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=1,
-                rigid_joint_linear_ke=1.0e5,
             )
         else:
             self.update_step_interval = 1
