@@ -593,6 +593,7 @@ def raycast_kernel(
     # Optional: world offsets for multi-world picking
     shape_world: wp.array[int],
     world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
 ):
     """
     Computes the intersection of a ray with all geometries in the scene.
@@ -612,8 +613,16 @@ def raycast_kernel(
         min_body_index: A single-element array to store the body index of the closest geometry. Expected to be initialized to -1.
         shape_world: Optional array mapping shape index to world index. Can be empty to disable world offsets.
         world_offsets: Optional array of world offsets. Can be empty to disable world offsets.
+        visible_worlds_mask: Optional mask array (1=visible, 0=hidden per world). Can be empty to disable filtering.
     """
     shape_idx = wp.tid()
+
+    # Skip shapes from non-visible worlds
+    if visible_worlds_mask and shape_world.shape[0] > 0:
+        world_idx = shape_world[shape_idx]
+        if world_idx >= 0:
+            if visible_worlds_mask[world_idx] == 0:
+                return
 
     # compute shape transform
     b = shape_body[shape_idx]

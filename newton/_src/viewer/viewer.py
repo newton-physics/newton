@@ -106,7 +106,9 @@ class ViewerBase(ABC):
 
         # World offset support
         self.world_offsets = None
-        self.max_worlds = None
+        self._user_spacing: tuple[float, float, float] | None = None
+        self._visible_worlds: set[int] | None = None
+        self._visible_worlds_mask: wp.array | None = None
 
         # Picking
         self.picking_enabled = True
@@ -164,23 +166,34 @@ class ViewerBase(ABC):
         ] = {}
 
     def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
-        """
-        Set the model to be visualized.
+        """Set the model to be visualized.
 
         Args:
             model: The Newton model to visualize.
             max_worlds: Maximum number of worlds to render (None = all).
-                        Useful for performance when training with many environments.
+
+                .. deprecated::
+                    Use :meth:`set_visible_worlds` instead.
         """
         if self.model is not None:
             self.clear_model()
 
         self.model = model
-        self.max_worlds = max_worlds
+
+        if max_worlds is not None:
+            warnings.warn(
+                "max_worlds is deprecated, use set_visible_worlds() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._visible_worlds = set(range(max_worlds))
+        else:
+            self._visible_worlds = None
 
         if model is not None:
             self.device = model.device
             self._shape_sdf_index_host = model.shape_sdf_index.numpy() if model.shape_sdf_index is not None else None
+            self._build_visible_worlds_mask()
             self._populate_shapes()
 
             # Auto-compute world offsets if not already set
@@ -188,20 +201,78 @@ class ViewerBase(ABC):
                 self._auto_compute_world_offsets()
 
     def _should_render_world(self, world_idx: int) -> bool:
-        """Check if a world should be rendered based on max_worlds limit."""
+        """Check if a world should be rendered based on visible worlds."""
         if world_idx == -1:  # Global entities always rendered
             return True
-        if self.max_worlds is None:
+        if self._visible_worlds is None:
             return True
-        return world_idx < self.max_worlds
+        return world_idx in self._visible_worlds
 
     def _get_render_world_count(self) -> int:
         """Get the number of worlds to render."""
         if self.model is None:
             return 0
-        if self.max_worlds is None:
+        if self._visible_worlds is None:
             return self.model.world_count
-        return min(self.max_worlds, self.model.world_count)
+        return len(self._visible_worlds)
+
+    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+        """Set which worlds are rendered.
+
+        Only shapes, joints, contacts, and other visualization elements
+        belonging to the specified worlds will be sent to the viewer backend.
+        Call with ``None`` to show all worlds (the default).
+
+        This method can be called between frames to dynamically change which
+        worlds are visualized without recreating the model.
+
+        Args:
+            worlds: Sequence of world indices to render, or ``None`` for all.
+
+        Raises:
+            RuntimeError: If the model has not been set yet.
+        """
+        if self.model is None:
+            raise RuntimeError("Model must be set before calling set_visible_worlds()")
+
+        if worlds is not None:
+            wc = self.model.world_count
+            self._visible_worlds = {w for w in worlds if 0 <= w < wc}
+        else:
+            self._visible_worlds = None
+        self._build_visible_worlds_mask()
+
+        # Clear shape instance batches but preserve geometry cache
+        self._shape_instances = {}
+        self._gaussian_instances = []
+        self._sdf_isomesh_instances = {}
+        self._sdf_isomesh_populated = False
+        self.model_shape_color = None
+        self._shape_to_slot = None
+        self._slot_to_shape = None
+        self._slot_to_shape_wp = None
+        self._shape_to_batch = None
+
+        self._populate_shapes()
+        if self._user_spacing is not None:
+            self.set_world_offsets(self._user_spacing)
+        else:
+            self._auto_compute_world_offsets()
+        self.model_changed = True
+
+    def _build_visible_worlds_mask(self) -> None:
+        """Build a GPU mask array from :attr:`_visible_worlds`."""
+        if self.model is None:
+            self._visible_worlds_mask = None
+            return
+        if self._visible_worlds is None:
+            self._visible_worlds_mask = None
+            return
+        mask = np.zeros(self.model.world_count, dtype=np.int32)
+        for w in self._visible_worlds:
+            if 0 <= w < self.model.world_count:
+                mask[w] = 1
+        self._visible_worlds_mask = wp.array(mask, dtype=int, device=self.device)
 
     def _get_shape_isomesh(self, shape_idx: int) -> newton.Mesh | None:
         """Get the isomesh for a collision shape with a texture SDF.
@@ -257,17 +328,20 @@ class ViewerBase(ABC):
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets for visual separation of multiple worlds.
 
+        When :meth:`set_visible_worlds` restricts rendering to a subset, only
+        the visible worlds receive compact grid positions.
+
         Args:
             spacing: Spacing between worlds along each axis as a tuple, list, or wp.vec3.
                      Example: (5.0, 5.0, 0.0) for 5 units spacing in X and Y.
 
         Raises:
-            RuntimeError: If model has not been set yet
+            RuntimeError: If model has not been set yet.
         """
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        world_count = self._get_render_world_count()
+        render_count = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -276,11 +350,22 @@ class ViewerBase(ABC):
         if isinstance(spacing, (list, wp.vec3)):
             spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
-        # Compute offsets using the shared utility function
-        world_offsets = compute_world_offsets(world_count, spacing, up_axis)
+        self._user_spacing = spacing
+
+        # Compute compact grid offsets for the visible world count
+        compact_offsets = compute_world_offsets(render_count, spacing, up_axis)
+
+        # Map compact grid positions back to original world indices
+        full_offsets = np.zeros((self.model.world_count, 3), dtype=np.float32)
+        if self._visible_worlds is None:
+            full_offsets = compact_offsets
+        else:
+            for grid_idx, world_idx in enumerate(sorted(self._visible_worlds)):
+                if world_idx < self.model.world_count and grid_idx < len(compact_offsets):
+                    full_offsets[world_idx] = compact_offsets[grid_idx]
 
         # Convert to warp array
-        self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
+        self.world_offsets = wp.array(full_offsets, dtype=wp.vec3, device=self.device)
 
     def _get_world_extents(self) -> tuple[float, float, float] | None:
         """Get the maximum extents of all worlds in the model."""
@@ -450,7 +535,7 @@ class ViewerBase(ABC):
         offsets_np = None
 
         for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
-            visible = self._should_show_shape(flags, is_static)
+            visible = self._should_show_shape(flags, is_static) and self._should_render_world(world_idx)
             if not visible or not self.show_gaussians:
                 self.log_gaussian(gname, gaussian, hidden=True)
                 continue
@@ -540,6 +625,7 @@ class ViewerBase(ABC):
                     self.model.shape_body,
                     self.model.shape_world,
                     self.world_offsets,
+                    self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -624,6 +710,7 @@ class ViewerBase(ABC):
                 shape_pairs,
                 self.model.shape_world,
                 self.world_offsets,
+                self._visible_worlds_mask,
                 num_contacts,
                 0.0,
                 0.0005,
@@ -1333,7 +1420,7 @@ class ViewerBase(ABC):
 
         # loop over shapes
         for s in range(shape_count):
-            # skip shapes from worlds beyond max_worlds limit
+            # skip shapes from non-visible worlds
             if not self._should_render_world(shape_world[s]):
                 continue
 
@@ -1520,7 +1607,7 @@ class ViewerBase(ABC):
         shape_count = len(shape_body)
 
         for s in range(shape_count):
-            # skip shapes from worlds beyond max_worlds limit
+            # skip shapes from non-visible worlds
             if not self._should_render_world(shape_world[s]):
                 continue
 
@@ -1664,7 +1751,7 @@ class ViewerBase(ABC):
                 self.model.body_inv_mass,
                 self.model.body_world,
                 self.world_offsets,
-                self.max_worlds if self.max_worlds is not None else -1,
+                self._visible_worlds_mask,
                 wp.vec3(0.5, 0.5, 0.5),  # color
             ],
             outputs=[
@@ -1933,6 +2020,7 @@ class ViewerBase(ABC):
                 state.body_q,
                 self.model.body_world,
                 self.world_offsets,
+                self._visible_worlds_mask,
                 self.model.shape_collision_radius,
                 self.model.shape_body,
                 0.1,  # line scale factor
@@ -1968,6 +2056,7 @@ class ViewerBase(ABC):
                 self.model.body_com,
                 self.model.body_world,
                 self.world_offsets,
+                self._visible_worlds_mask,
             ],
             outputs=[self._com_positions],
             device=self.device,
