@@ -815,7 +815,7 @@
 <td><p>Compute a numerically stable, differentiable approximation of <cite>min(a, b)</cite>.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.normalize_with_norm.html#newton.math.normalize_with_norm" title="newton.math.normalize_with_norm"><code class="xref py py-obj docutils literal notranslate"><span class="pre">normalize_with_norm</span></code></a>(x)</p></td>
-<td><p>Normalize a vector and return both the normalized vector and the original norm.</p></td>
+<td><p>Normalize a vector and return both the unit vector and the original norm.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.orthonormal_basis.html#newton.math.orthonormal_basis" title="newton.math.orthonormal_basis"><code class="xref py py-obj docutils literal notranslate"><span class="pre">orthonormal_basis</span></code></a>(n)</p></td>
 <td><p>Build an orthonormal basis from a normal vector.</p></td>
@@ -833,7 +833,7 @@
 <td><p>Approximate angular velocity from successive world quaternions (world frame).</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.safe_div.html#newton.math.safe_div" title="newton.math.safe_div"><code class="xref py py-obj docutils literal notranslate"><span class="pre">safe_div</span></code></a>(x, y[, eps])</p></td>
-<td><p>Safe division that avoids division-by-zero.</p></td>
+<td><p>Safe division that returns <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">/</span> <span class="pre">y</span></code>, falling back to <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">/</span> <span class="pre">eps</span></code> when <code class="docutils literal notranslate"><span class="pre">y</span></code> is zero.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.smooth_max.html#newton.math.smooth_max" title="newton.math.smooth_max"><code class="xref py py-obj docutils literal notranslate"><span class="pre">smooth_max</span></code></a>(a, b, eps)</p></td>
 <td><p>Compute a smooth approximation of the maximum of two values.</p></td>
@@ -851,10 +851,10 @@
 <td><p>Compute the elementwise absolute value of a 3D vector.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.vec_allclose.html#newton.math.vec_allclose" title="newton.math.vec_allclose"><code class="xref py py-obj docutils literal notranslate"><span class="pre">vec_allclose</span></code></a>(a, b[, rtol, atol])</p></td>
-<td><p>Check if two Warp vectors are all close.</p></td>
+<td><p>Check whether two Warp vectors are element-wise equal within a tolerance.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.math.vec_inside_limits.html#newton.math.vec_inside_limits" title="newton.math.vec_inside_limits"><code class="xref py py-obj docutils literal notranslate"><span class="pre">vec_inside_limits</span></code></a>(a, lower, upper)</p></td>
-<td><p>Check if a Warp vector is inside the given limits.</p></td>
+<td><p>Check whether every element of a vector lies within the given bounds.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.math.vec_leaky_max.html#newton.math.vec_leaky_max" title="newton.math.vec_leaky_max"><code class="xref py py-obj docutils literal notranslate"><span class="pre">vec_leaky_max</span></code></a>(a, b)</p></td>
 <td><p>Compute the elementwise &quot;leaky&quot; maximum of two 3D vectors.</p></td>

@@ -811,9 +811,20 @@
 <h1>newton.math.normalize_with_norm<a class="headerlink" href="#newton-math-normalize-with-norm" title="Link to this heading">#</a></h1>
 <dl class="py function">
 <dt class="sig sig-object py" id="newton.math.normalize_with_norm">
-<span class="sig-prename descclassname"><span class="pre">newton.math.</span></span><span class="sig-name descname"><span class="pre">normalize_with_norm</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/math/__init__.py#L267"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.math.normalize_with_norm" title="Link to this definition">#</a></dt>
-<dd><p>Normalize a vector and return both the normalized vector and the original norm.</p>
+<span class="sig-prename descclassname"><span class="pre">newton.math.</span></span><span class="sig-name descname"><span class="pre">normalize_with_norm</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/math/__init__.py#L296"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.math.normalize_with_norm" title="Link to this definition">#</a></dt>
+<dd><p>Normalize a vector and return both the unit vector and the original norm.</p>
+<p>If the input has zero length it is returned unchanged with a norm of <code class="docutils literal notranslate"><span class="pre">0.0</span></code>.</p>
 <dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>x</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a>) – Input vector.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><code class="docutils literal notranslate"><span class="pre">(normalized_x,</span> <span class="pre">norm)</span></code> where <code class="docutils literal notranslate"><span class="pre">normalized_x</span></code> is the
+unit-length direction and <code class="docutils literal notranslate"><span class="pre">norm</span></code> is <code class="docutils literal notranslate"><span class="pre">wp.length(x)</span></code>.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Tuple[vector, <a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)">float</a>]</p>
+</dd>
 </dl>
 </dd></dl>
 
