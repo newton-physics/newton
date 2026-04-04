@@ -66,9 +66,9 @@ from .graph_coloring import (
 from .model import Model
 
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
     from pxr import Usd
 
+    from ..actuators.actuators.base import Actuator
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -1683,14 +1683,14 @@ class ModelBuilder:
     ) -> None:
         """Add an external actuator, independent of any ``UsdPhysics`` joint drives.
 
-        External actuators (e.g. :class:`newton_actuators.ActuatorPD`) apply
+        External actuators (e.g. :class:`newton.actuators.ActuatorPD`) apply
         forces computed outside the physics engine. Multiple calls with the same
         *actuator_class* and identical scalar parameters are accumulated into one
         entry; the actuator instance is created during :meth:`finalize <ModelBuilder.finalize>`.
 
         Args:
             actuator_class: The actuator class (must derive from
-                :class:`newton_actuators.Actuator`).
+                :class:`newton.actuators.Actuator`).
             input_indices: DOF indices this actuator reads from. Length 1 for single-input,
                 length > 1 for multi-input actuators.
             output_indices: DOF indices for writing output. Defaults to *input_indices*.

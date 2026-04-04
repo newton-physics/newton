@@ -12,7 +12,7 @@ from warp.types import is_array
 from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
 
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
+    from ..actuators.actuators.base import Actuator
 
 AttributeFrequency = Model.AttributeFrequency
 

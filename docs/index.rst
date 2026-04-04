@@ -24,9 +24,10 @@ Newton Physics
    :maxdepth: 1
    :hidden:
    :caption: Concepts
-   
+
    Worlds <concepts/worlds>
    Articulations <concepts/articulations>
+   Actuators <concepts/actuators>
    Mass and Inertia <concepts/mass_inertia>
    Sites <concepts/sites>
    Sensors <concepts/sensors>
@@ -42,6 +43,7 @@ Newton Physics
    :caption: API Reference
    
    api/newton
+   api/newton_actuators
    api/newton_geometry
    api/newton_ik
    api/newton_math

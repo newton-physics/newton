@@ -1,644 +1,1042 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for actuator integration with ModelBuilder."""
+"""Unit tests for actuator classes."""
 
-import math
-import os
+from __future__ import annotations
+
+import importlib.util
 import unittest
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
-from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID, parse_actuator_prim
 
-import newton
-from newton._src.utils.import_usd import parse_usd
-from newton.selection import ArticulationView
-
-try:
-    from pxr import Usd
-
-    HAS_USD = True
-except ImportError:
-    HAS_USD = False
-
-
-class TestActuatorBuilder(unittest.TestCase):
-    """Tests for ModelBuilder.add_actuator - functionality, multi-world, and scalar params."""
-
-    def test_accumulation_and_parameters(self):
-        """Test actuator accumulation, parameters, defaults, and input/output indices."""
-        builder = newton.ModelBuilder()
-
-        bodies = [builder.add_body() for _ in range(3)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-
-        dofs = [builder.joint_qd_start[j] for j in joints]
-
-        # Add actuators - should accumulate into one
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.5, constant_force=1.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=100.0, kd=10.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], output_indices=[dofs[2]], kp=150.0, max_force=50.0)
-
-        model = builder.finalize()
-
-        self.assertEqual(len(model.actuators), 1)
-        act = model.actuators[0]
-        self.assertEqual(act.num_actuators, 3)
-
-        np.testing.assert_array_equal(act.input_indices.numpy(), [dofs[0], dofs[1], dofs[1]])
-        np.testing.assert_array_equal(act.output_indices.numpy(), [dofs[0], dofs[1], dofs[2]])
-        np.testing.assert_array_almost_equal(act.kp.numpy(), [50.0, 100.0, 150.0])
-        np.testing.assert_array_almost_equal(act.kd.numpy(), [0.0, 10.0, 0.0])
-        self.assertAlmostEqual(act.gear.numpy()[0], 2.5)
-        self.assertAlmostEqual(act.constant_force.numpy()[0], 1.0)
-        self.assertAlmostEqual(act.max_force.numpy()[2], 50.0)
-        self.assertTrue(math.isinf(act.max_force.numpy()[0]))
-
-    def test_mixed_types_with_replication(self):
-        """Test mixed actuator types, replication, DOF offsets, and input/output indices."""
-        template = newton.ModelBuilder()
-
-        body0 = template.add_body()
-        body1 = template.add_body()
-        body2 = template.add_body()
-
-        joint0 = template.add_joint_revolute(parent=-1, child=body0, axis=newton.Axis.Z)
-        joint1 = template.add_joint_revolute(parent=body0, child=body1, axis=newton.Axis.Y)
-        joint2 = template.add_joint_revolute(parent=body1, child=body2, axis=newton.Axis.X)
-        template.add_articulation([joint0, joint1, joint2])
-
-        dof0 = template.joint_qd_start[joint0]
-        dof1 = template.joint_qd_start[joint1]
-        dof2 = template.joint_qd_start[joint2]
-
-        template.add_actuator(ActuatorPD, input_indices=[dof0], kp=100.0, kd=10.0)
-        template.add_actuator(ActuatorPID, input_indices=[dof1], kp=200.0, ki=5.0, kd=20.0)
-        template.add_actuator(ActuatorPD, input_indices=[dof1], output_indices=[dof2], kp=300.0)
-
-        num_worlds = 3
-        builder = newton.ModelBuilder()
-        builder.replicate(template, num_worlds)
-
-        model = builder.finalize()
-
-        self.assertEqual(model.world_count, num_worlds)
-        self.assertEqual(len(model.actuators), 2)
-
-        pd_act = next(a for a in model.actuators if type(a) is ActuatorPD)
-        pid_act = next(a for a in model.actuators if isinstance(a, ActuatorPID))
-
-        self.assertEqual(pd_act.num_actuators, 2 * num_worlds)
-        self.assertEqual(pid_act.num_actuators, num_worlds)
-
-        np.testing.assert_array_almost_equal(pd_act.kp.numpy(), [100.0, 300.0] * num_worlds)
-        np.testing.assert_array_almost_equal(pid_act.ki.numpy(), [5.0] * num_worlds)
-
-        pd_in = pd_act.input_indices.numpy()
-        pd_out = pd_act.output_indices.numpy()
-        dofs_per_world = model.joint_dof_count // num_worlds
-
-        for w in range(1, num_worlds):
-            self.assertEqual(pd_in[w * 2] - pd_in[(w - 1) * 2], dofs_per_world)
-            self.assertEqual(pd_in[w * 2 + 1] - pd_in[(w - 1) * 2 + 1], dofs_per_world)
-            self.assertEqual(pd_out[w * 2 + 1] - pd_out[(w - 1) * 2 + 1], dofs_per_world)
-
-        for w in range(num_worlds):
-            self.assertNotEqual(pd_in[w * 2 + 1], pd_out[w * 2 + 1])
-
-    def test_delay_grouping(self):
-        """Test: same delay groups, different delays separate, mixed with simple PD."""
-        builder = newton.ModelBuilder()
-
-        bodies = [builder.add_body() for _ in range(6)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-
-        dofs = [builder.joint_qd_start[j] for j in joints]
-
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=150.0)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[2]], kp=200.0, delay=3)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[3]], kp=250.0, delay=3)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[4]], kp=300.0, delay=7)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[5]], kp=350.0, delay=7)
-
-        model = builder.finalize()
-
-        self.assertEqual(len(model.actuators), 3)
-
-        pd_act = next(a for a in model.actuators if type(a) is ActuatorPD)
-        delay3 = next(a for a in model.actuators if isinstance(a, ActuatorDelayedPD) and a.delay == 3)
-        delay7 = next(a for a in model.actuators if isinstance(a, ActuatorDelayedPD) and a.delay == 7)
-
-        self.assertEqual(pd_act.num_actuators, 2)
-        self.assertEqual(delay3.num_actuators, 2)
-        self.assertEqual(delay7.num_actuators, 2)
-
-        np.testing.assert_array_almost_equal(delay3.kp.numpy(), [200.0, 250.0])
-
-    def test_multi_input_actuator_2d_indices(self):
-        """Test actuators with multiple input indices (2D index arrays)."""
-        builder = newton.ModelBuilder()
-
-        # Create 6 joints for testing
-        bodies = [builder.add_body() for _ in range(6)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-
-        dofs = [builder.joint_qd_start[j] for j in joints]
-
-        # Add multi-input actuators: each reads from 2 DOFs
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0], dofs[1]], kp=100.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[2], dofs[3]], kp=200.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[4], dofs[5]], kp=300.0)
-
-        model = builder.finalize()
-
-        # Should have 1 ActuatorPD instance with 3 actuators, each with 2 inputs
-        self.assertEqual(len(model.actuators), 1)
-        pd_act = model.actuators[0]
-
-        self.assertEqual(pd_act.num_actuators, 3)
-
-        # Verify input_indices shape is 2D: (3, 2)
-        input_arr = pd_act.input_indices.numpy()
-        self.assertEqual(input_arr.shape, (3, 2))
-
-        # Verify the indices are correct
-        np.testing.assert_array_equal(input_arr[0], [dofs[0], dofs[1]])
-        np.testing.assert_array_equal(input_arr[1], [dofs[2], dofs[3]])
-        np.testing.assert_array_equal(input_arr[2], [dofs[4], dofs[5]])
-
-        # Verify output_indices also has same shape
-        output_arr = pd_act.output_indices.numpy()
-        self.assertEqual(output_arr.shape, (3, 2))
-
-        # Verify kp array has correct values (one per actuator)
-        np.testing.assert_array_almost_equal(pd_act.kp.numpy(), [100.0, 200.0, 300.0])
-
-    def test_dimension_mismatch_raises_error(self):
-        """Test that mixing different input dimensions raises an error."""
-        builder = newton.ModelBuilder()
-
-        bodies = [builder.add_body() for _ in range(3)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-
-        dofs = [builder.joint_qd_start[j] for j in joints]
-
-        # First call: 1 input
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-
-        # Second call: 2 inputs - should raise
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[1], dofs[2]], kp=200.0)
-
-        self.assertIn("dimension mismatch", str(ctx.exception))
-
-
-@unittest.skipUnless(HAS_USD, "pxr not installed")
-class TestActuatorUSDParsing(unittest.TestCase):
-    """Tests for parsing actuators from USD files."""
-
-    def test_usd_parsing(self):
-        """Test that USD parsing automatically parses Newton actuators."""
-        test_dir = os.path.dirname(__file__)
-        usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
-
-        if not os.path.exists(usd_path):
-            self.skipTest(f"Test USD file not found: {usd_path}")
-
-        # Actuators are parsed automatically
-        builder = newton.ModelBuilder()
-        result = parse_usd(builder, usd_path)
-        self.assertGreater(result["actuator_count"], 0)
-        model = builder.finalize()
-        self.assertGreater(len(model.actuators), 0)
-
-        # Verify parsed parameters
-        stage = Usd.Stage.Open(usd_path)
-        actuator_prim = stage.GetPrimAtPath("/World/Robot/Joint1Actuator")
-        parsed = parse_actuator_prim(actuator_prim)
-
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.kwargs.get("kp"), 100.0)
-        self.assertEqual(parsed.kwargs.get("kd"), 10.0)
-
-
-class TestActuatorSelectionAPI(unittest.TestCase):
-    """Tests for actuator parameter access via ArticulationView.
-
-    Follows the same parameterised pattern as the joint/link selection tests:
-    a single ``run_test_actuator_selection`` helper is driven by four thin
-    entry-point tests that cover (use_mask x use_multiple_artics_per_view).
-    """
-
-    def run_test_actuator_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
-        """Test an ArticulationView that includes a subset of joints and that we
-        can read/write actuator parameters for the subset with and without a mask.
-        Verifies the full flat actuator parameter array."""
-
-        mjcf = """<?xml version="1.0" ?>
-<mujoco model="myart">
-    <worldbody>
-    <!-- Root body (fixed to world) -->
-    <body name="root" pos="0 0 0">
-      <!-- First child link with prismatic joint along x -->
-      <body name="link1" pos="0.0 -0.5 0">
-        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
-        <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
-      </body>
-      <!-- Second child link with prismatic joint along x -->
-      <body name="link2" pos="-0.0 -0.7 0">
-        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
-        <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
-      </body>
-      <!-- Third child link with prismatic joint along x -->
-      <body name="link3" pos="-0.0 -0.9 0">
-        <joint name="joint3" type="slide" axis="1 0 0" range="-50.5 50.5"/>
-        <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
-      </body>
-    </body>
-  </worldbody>
-</mujoco>
-"""
-
-        num_joints_per_articulation = 3
-        num_articulations_per_world = 2
-        num_worlds = 3
-        num_actuators = num_joints_per_articulation * num_articulations_per_world * num_worlds
-
-        # Create a single articulation with 3 joints.
-        single_articulation_builder = newton.ModelBuilder()
-        single_articulation_builder.add_mjcf(mjcf)
-
-        # Add an ActuatorPD for each slide joint: kp = 100, 200, 300
-        joint_names = [
-            "myart/worldbody/root/link1/joint1",
-            "myart/worldbody/root/link2/joint2",
-            "myart/worldbody/root/link3/joint3",
-        ]
-        for i, jname in enumerate(joint_names):
-            j_idx = single_articulation_builder.joint_label.index(jname)
-            dof = single_articulation_builder.joint_qd_start[j_idx]
-            single_articulation_builder.add_actuator(ActuatorPD, input_indices=[dof], kp=100.0 * (i + 1))
-
-        # Create a world with 2 articulations
-        single_world_builder = newton.ModelBuilder()
-        for _i in range(num_articulations_per_world):
-            single_world_builder.add_builder(single_articulation_builder)
-
-        # Customise the articulation labels in single_world_builder
-        single_world_builder.articulation_label[1] = "art1"
-        if use_multiple_artics_per_view:
-            single_world_builder.articulation_label[0] = "art1"
-        else:
-            single_world_builder.articulation_label[0] = "art0"
-
-        # Create 3 worlds with two articulations per world and 3 actuators per articulation.
-        builder = newton.ModelBuilder()
-        for _i in range(num_worlds):
-            builder.add_world(single_world_builder)
-
-        # Create the model
-        model = builder.finalize()
-
-        # Create a view of "art1/joint3"
-        joints_to_include = ["joint3"]
-        joint_view = ArticulationView(model, "art1", include_joints=joints_to_include)
-
-        actuator = model.actuators[0]
-
-        # Get the kp values for the view's DOFs (only joint3 of selected artics)
-        kp_values = joint_view.get_actuator_parameter(actuator, "kp").numpy().copy()
-
-        # Verify shape and initial values
-        if use_multiple_artics_per_view:
-            self.assertEqual(kp_values.shape, (num_worlds, 2))
-            np.testing.assert_array_almost_equal(kp_values, [[300.0, 300.0]] * num_worlds)
-        else:
-            self.assertEqual(kp_values.shape, (num_worlds, 1))
-            np.testing.assert_array_almost_equal(kp_values, [[300.0]] * num_worlds)
-
-        # Modify the kp values with distinguishable per-slot values
-        val = 1000.0
-        for world_idx in range(kp_values.shape[0]):
-            for dof_idx in range(kp_values.shape[1]):
-                kp_values[world_idx, dof_idx] = val
-                val += 100.0
-
-        mask = None
-        if use_mask:
-            mask = wp.array([False, True, False], dtype=bool, device=model.device)
-
-        # Set the modified values
-        wp_kp = wp.array(kp_values, dtype=float, device=model.device)
-        joint_view.set_actuator_parameter(actuator, "kp", wp_kp, mask=mask)
-
-        # Build expected flat kp array and verify against the full actuator.kp array.
-        # Initial flat layout: [100, 200, 300] per articulation x 6 articulations.
-        expected_kp = []
-        if use_mask:
-            if use_multiple_artics_per_view:
-                expected_kp = [
-                    100.0,
-                    200.0,
-                    300.0,  # world0/artic0 — not masked
-                    100.0,
-                    200.0,
-                    300.0,  # world0/artic1 — not masked
-                    100.0,
-                    200.0,
-                    1200.0,  # world1/artic0 — masked, joint3 updated
-                    100.0,
-                    200.0,
-                    1300.0,  # world1/artic1 — masked, joint3 updated
-                    100.0,
-                    200.0,
-                    300.0,  # world2/artic0 — not masked
-                    100.0,
-                    200.0,
-                    300.0,  # world2/artic1 — not masked
-                ]
-            else:
-                expected_kp = [
-                    100.0,
-                    200.0,
-                    300.0,  # world0/artic0 (art0) — not in view
-                    100.0,
-                    200.0,
-                    300.0,  # world0/artic1 (art1) — not masked
-                    100.0,
-                    200.0,
-                    300.0,  # world1/artic0 (art0) — not in view
-                    100.0,
-                    200.0,
-                    1100.0,  # world1/artic1 (art1) — masked, joint3 updated
-                    100.0,
-                    200.0,
-                    300.0,  # world2/artic0 (art0) — not in view
-                    100.0,
-                    200.0,
-                    300.0,  # world2/artic1 (art1) — not masked
-                ]
-        else:
-            if use_multiple_artics_per_view:
-                expected_kp = [
-                    100.0,
-                    200.0,
-                    1000.0,  # world0/artic0 — joint3 updated
-                    100.0,
-                    200.0,
-                    1100.0,  # world0/artic1 — joint3 updated
-                    100.0,
-                    200.0,
-                    1200.0,  # world1/artic0 — joint3 updated
-                    100.0,
-                    200.0,
-                    1300.0,  # world1/artic1 — joint3 updated
-                    100.0,
-                    200.0,
-                    1400.0,  # world2/artic0 — joint3 updated
-                    100.0,
-                    200.0,
-                    1500.0,  # world2/artic1 — joint3 updated
-                ]
-            else:
-                expected_kp = [
-                    100.0,
-                    200.0,
-                    300.0,  # world0/artic0 (art0) — not in view
-                    100.0,
-                    200.0,
-                    1000.0,  # world0/artic1 (art1) — joint3 updated
-                    100.0,
-                    200.0,
-                    300.0,  # world1/artic0 (art0) — not in view
-                    100.0,
-                    200.0,
-                    1100.0,  # world1/artic1 (art1) — joint3 updated
-                    100.0,
-                    200.0,
-                    300.0,  # world2/artic0 (art0) — not in view
-                    100.0,
-                    200.0,
-                    1200.0,  # world2/artic1 (art1) — joint3 updated
-                ]
-
-        # Verify the full flat actuator kp array
-        measured_kp = actuator.kp.numpy()
-        for i in range(num_actuators):
-            self.assertAlmostEqual(
-                expected_kp[i],
-                measured_kp[i],
-                places=4,
-                msg=f"Expected kp value {i}: {expected_kp[i]}, Measured value: {measured_kp[i]}",
+from newton.actuators import (
+    Actuator,
+    ActuatorDCMotor,
+    ActuatorDelayedPD,
+    ActuatorNetLSTM,
+    ActuatorNetMLP,
+    ActuatorPD,
+    ActuatorPID,
+    ActuatorRemotizedPD,
+    parse_actuator_prim,
+)
+
+_HAS_TORCH = importlib.util.find_spec("torch") is not None
+
+
+@dataclass
+class MockSimState:
+    """Mock simulation state for testing."""
+
+    joint_q: wp.array[float]
+    joint_qd: wp.array[float]
+    tendon_length: wp.array[float] | None = None
+    tendon_vel: wp.array[float] | None = None
+
+
+@dataclass
+class MockSimControl:
+    """Mock simulation control for testing."""
+
+    joint_target_pos: wp.array[float]
+    joint_target_vel: wp.array[float]
+    joint_act: wp.array[float]
+    joint_f: wp.array[float]
+    tendon_target_length: wp.array[float] | None = None
+    tendon_target_vel: wp.array[float] | None = None
+    tendon_force: wp.array[float] | None = None
+
+
+class TestActuatorPDUnit(unittest.TestCase):
+    """Tests for ActuatorPD."""
+
+    def setUp(self):
+        wp.init()
+
+    def test_pd_actuator_creation(self):
+        """Test that ActuatorPD can be created with valid parameters."""
+        indices = wp.array([0, 1, 2], dtype=wp.uint32)
+        actuator = ActuatorPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0, 100.0, 100.0], dtype=wp.float32),
+            kd=wp.array([10.0, 10.0, 10.0], dtype=wp.float32),
+            max_force=wp.array([50.0, 50.0, 50.0], dtype=wp.float32),
+        )
+        self.assertIsInstance(actuator, Actuator)
+        self.assertIsNone(actuator.state())
+        self.assertFalse(actuator.is_stateful())
+        self.assertTrue(actuator.is_graphable())
+
+    def test_pd_actuator_step(self):
+        """Test that ActuatorPD.step() computes correct forces."""
+        num_dofs = 3
+        indices = wp.array([0, 1, 2], dtype=wp.uint32)
+
+        actuator = ActuatorPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0, 100.0, 100.0], dtype=wp.float32),
+            kd=wp.array([0.0, 0.0, 0.0], dtype=wp.float32),
+            max_force=wp.array([1000.0, 1000.0, 1000.0], dtype=wp.float32),
+        )
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0, 0.0, 0.0], dtype=wp.float32),
+            joint_qd=wp.array([0.0, 0.0, 0.0], dtype=wp.float32),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0, 2.0, 3.0], dtype=wp.float32),
+            joint_target_vel=wp.array([0.0, 0.0, 0.0], dtype=wp.float32),
+            joint_act=wp.array([0.0, 0.0, 0.0], dtype=wp.float32),
+            joint_f=wp.zeros(num_dofs, dtype=wp.float32),
+        )
+
+        actuator.step(sim_state, sim_control, None, None)
+        forces = sim_control.joint_f.numpy()
+        np.testing.assert_allclose(forces, [100.0, 200.0, 300.0], rtol=1e-5)
+
+    def test_pd_actuator_resolve_arguments(self):
+        """Test that resolve_arguments fills defaults correctly."""
+        resolved = ActuatorPD.resolve_arguments({"kp": 50.0})
+        self.assertEqual(resolved["kp"], 50.0)
+        self.assertEqual(resolved["kd"], 0.0)
+        self.assertEqual(resolved["constant_force"], 0.0)
+
+
+class TestActuatorDelayedPDUnit(unittest.TestCase):
+    """Tests for ActuatorDelayedPD."""
+
+    def setUp(self):
+        wp.init()
+
+    def test_delayed_pd_creation(self):
+        """Test that ActuatorDelayedPD can be created with valid parameters."""
+        indices = wp.array([0, 1], dtype=wp.uint32)
+        actuator = ActuatorDelayedPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0, 100.0], dtype=wp.float32),
+            kd=wp.array([10.0, 10.0], dtype=wp.float32),
+            delay=5,
+            max_force=wp.array([50.0, 50.0], dtype=wp.float32),
+        )
+        self.assertIsInstance(actuator, Actuator)
+        self.assertTrue(actuator.is_stateful())
+        self.assertTrue(actuator.is_graphable())
+
+    def test_delayed_pd_state(self):
+        """Test that ActuatorDelayedPD.state() returns properly initialized state."""
+        delay = 5
+        num_dofs = 2
+        indices = wp.array([0, 1], dtype=wp.uint32)
+
+        actuator = ActuatorDelayedPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0, 100.0], dtype=wp.float32),
+            kd=wp.array([10.0, 10.0], dtype=wp.float32),
+            delay=delay,
+            max_force=wp.array([50.0, 50.0], dtype=wp.float32),
+        )
+
+        state = actuator.state()
+        self.assertIsInstance(state, ActuatorDelayedPD.State)
+        self.assertEqual(state.write_idx, delay - 1)
+        self.assertFalse(state.is_filled)
+        self.assertEqual(state.buffer_pos.shape, (delay, num_dofs))
+        self.assertEqual(state.buffer_vel.shape, (delay, num_dofs))
+        self.assertEqual(state.buffer_act.shape, (delay, num_dofs))
+
+    def test_delayed_pd_resolve_arguments_requires_delay(self):
+        """Test that resolve_arguments raises error if delay not provided."""
+        with self.assertRaises(ValueError):
+            ActuatorDelayedPD.resolve_arguments({"kp": 50.0})
+
+    def test_delayed_pd_delay_behavior(self):
+        """Test that ActuatorDelayedPD correctly delays targets by N steps."""
+        delay = 3
+        num_dofs = 1
+        indices = wp.array([0], dtype=wp.uint32)
+
+        actuator = ActuatorDelayedPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([1.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+            delay=delay,
+            max_force=wp.array([1000.0], dtype=wp.float32),
+        )
+
+        stateA = actuator.state()
+        stateB = actuator.state()
+
+        target_history = []
+        force_history = []
+
+        for step in range(delay + 3):
+            target_value = float(step + 1) * 10.0
+            target_history.append(target_value)
+
+            sim_state = MockSimState(
+                joint_q=wp.array([0.0], dtype=wp.float32),
+                joint_qd=wp.array([0.0], dtype=wp.float32),
+            )
+            sim_control = MockSimControl(
+                joint_target_pos=wp.array([target_value], dtype=wp.float32),
+                joint_target_vel=wp.array([0.0], dtype=wp.float32),
+                joint_act=wp.array([0.0], dtype=wp.float32),
+                joint_f=wp.zeros(num_dofs, dtype=wp.float32),
             )
 
-    def test_actuator_selection_one_per_view_no_mask(self):
-        self.run_test_actuator_selection(use_mask=False, use_multiple_artics_per_view=False)
-
-    def test_actuator_selection_two_per_view_no_mask(self):
-        self.run_test_actuator_selection(use_mask=False, use_multiple_artics_per_view=True)
-
-    def test_actuator_selection_one_per_view_with_mask(self):
-        self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=False)
-
-    def test_actuator_selection_two_per_view_with_mask(self):
-        self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
-
-
-class TestActuatorStepIntegration(unittest.TestCase):
-    """Tests for actuator.step() with real Model/State/Control objects.
-
-    Verifies the end-to-end flow: set targets on Control -> call actuator.step()
-    -> forces written to control.joint_f.
-
-    Uses add_link() (not add_body()) to avoid implicit free joints that would
-    cause DOF/coord index mismatch when the actuator indexes into joint_q.
-    """
-
-    def _build_chain_model(self, num_joints, actuator_cls, actuator_kwargs):
-        """Helper: build a revolute chain with add_link, add one actuator per joint, finalize."""
-        builder = newton.ModelBuilder()
-        links = [builder.add_link() for _ in range(num_joints)]
-        joints = []
-        for i, link in enumerate(links):
-            parent = -1 if i == 0 else links[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-        dofs = [builder.joint_qd_start[j] for j in joints]
-        for dof in dofs:
-            builder.add_actuator(actuator_cls, input_indices=[dof], **actuator_kwargs)
-        return builder.finalize(), dofs
-
-    def _set_control_array(self, model, control_array, dof_indices, values):
-        """Write values into a control array at the given DOF indices."""
-        arr_np = control_array.numpy()
-        for dof, val in zip(dof_indices, values, strict=True):
-            arr_np[dof] = val
-        wp.copy(control_array, wp.array(arr_np, dtype=float, device=model.device))
-
-    def test_pd_step_position_error(self):
-        """ActuatorPD: force = kp * (target_pos - q) when kd=0, gear=1."""
-        model, dofs = self._build_chain_model(3, ActuatorPD, {"kp": 100.0})
-        state = model.state()
-        control = model.control()
-        control.joint_f.zero_()
-
-        self._set_control_array(model, control.joint_target_pos, dofs, [1.0, 2.0, 3.0])
-
-        actuator = model.actuators[0]
-        actuator.step(state, control)
-
-        forces = control.joint_f.numpy()
-        np.testing.assert_allclose(
-            [forces[d] for d in dofs],
-            [100.0, 200.0, 300.0],
-            rtol=1e-5,
-        )
-
-    def test_pd_step_velocity_error(self):
-        """ActuatorPD: force includes kd * (target_vel - qd)."""
-        model, dofs = self._build_chain_model(2, ActuatorPD, {"kp": 0.0, "kd": 10.0})
-        state = model.state()
-        control = model.control()
-        control.joint_f.zero_()
-
-        self._set_control_array(model, control.joint_target_vel, dofs, [5.0, -3.0])
-
-        actuator = model.actuators[0]
-        actuator.step(state, control)
-
-        forces = control.joint_f.numpy()
-        np.testing.assert_allclose(
-            [forces[d] for d in dofs],
-            [50.0, -30.0],
-            rtol=1e-5,
-        )
-
-    def test_pd_step_feedforward_joint_act(self):
-        """ActuatorPD: feedforward joint_act term is added to the output force."""
-        model, dofs = self._build_chain_model(2, ActuatorPD, {"kp": 0.0})
-        state = model.state()
-        control = model.control()
-        control.joint_f.zero_()
-
-        self._set_control_array(model, control.joint_act, dofs, [7.0, -3.0])
-
-        actuator = model.actuators[0]
-        actuator.step(state, control)
-
-        forces = control.joint_f.numpy()
-        np.testing.assert_allclose(
-            [forces[d] for d in dofs],
-            [7.0, -3.0],
-            rtol=1e-5,
-        )
-
-    def test_pd_step_gear_and_clamp(self):
-        """ActuatorPD: gear ratio scales error and force is clamped to max_force."""
-        model, dofs = self._build_chain_model(1, ActuatorPD, {"kp": 100.0, "gear": 2.0, "max_force": 50.0})
-        state = model.state()
-        control = model.control()
-        control.joint_f.zero_()
-
-        self._set_control_array(model, control.joint_target_pos, dofs, [1.0])
-
-        actuator = model.actuators[0]
-        actuator.step(state, control)
-
-        # gear=2, q=0: force = 2 * (100 * (1 - 2*0)) = 200, clamped to 50
-        forces = control.joint_f.numpy()
-        self.assertAlmostEqual(forces[dofs[0]], 50.0, places=5)
-
-    def test_pd_step_constant_force(self):
-        """ActuatorPD: constant_force offset is included in output."""
-        model, dofs = self._build_chain_model(1, ActuatorPD, {"kp": 0.0, "constant_force": 42.0})
-        state = model.state()
-        control = model.control()
-        control.joint_f.zero_()
-
-        actuator = model.actuators[0]
-        actuator.step(state, control)
-
-        forces = control.joint_f.numpy()
-        self.assertAlmostEqual(forces[dofs[0]], 42.0, places=5)
-
-    def test_pid_step_integral_accumulation(self):
-        """ActuatorPID: integral term accumulates over multiple steps."""
-        model, dofs = self._build_chain_model(1, ActuatorPID, {"kp": 0.0, "ki": 10.0, "kd": 0.0})
-        state = model.state()
-        control = model.control()
-
-        self._set_control_array(model, control.joint_target_pos, dofs, [1.0])
-
-        actuator = model.actuators[0]
-        state_a = actuator.state()
-        state_b = actuator.state()
-        dt = 0.01
-
-        forces_over_time = []
-        for step_i in range(3):
-            control.joint_f.zero_()
-            if step_i % 2 == 0:
-                current, nxt = state_a, state_b
+            if step % 2 == 0:
+                current, next_state = stateA, stateB
             else:
-                current, nxt = state_b, state_a
-            actuator.step(state, control, current, nxt, dt)
-            forces_over_time.append(control.joint_f.numpy()[dofs[0]])
+                current, next_state = stateB, stateA
 
-        # integral after step 0: 1.0 * 0.01 = 0.01, force = ki * integral = 0.1
-        # integral after step 1: 0.01 + 0.01 = 0.02, force = 0.2
-        # integral after step 2: 0.02 + 0.01 = 0.03, force = 0.3
-        np.testing.assert_allclose(forces_over_time, [0.1, 0.2, 0.3], rtol=1e-4)
+            actuator.step(sim_state, sim_control, current, next_state, dt=0.01)
+            force_history.append(sim_control.joint_f.numpy()[0])
 
-    def test_delayed_pd_step_delay_behavior(self):
-        """ActuatorDelayedPD: targets are delayed by N steps with real Model objects."""
-        delay = 2
-        model, dofs = self._build_chain_model(1, ActuatorDelayedPD, {"kp": 1.0, "delay": delay})
-        state = model.state()
-
-        actuator = model.actuators[0]
-        state_a = actuator.state()
-        state_b = actuator.state()
-        dt = 0.01
-
-        force_history = []
-        for step_i in range(delay + 2):
-            control = model.control()
-            control.joint_f.zero_()
-            target_val = float(step_i + 1) * 10.0
-            self._set_control_array(model, control.joint_target_pos, dofs, [target_val])
-
-            if step_i % 2 == 0:
-                current, nxt = state_a, state_b
-            else:
-                current, nxt = state_b, state_a
-            actuator.step(state, control, current, nxt, dt)
-            force_history.append(control.joint_f.numpy()[dofs[0]])
-
-        # Steps 0..(delay-1) produce zero (buffer filling)
         for i in range(delay):
-            self.assertEqual(force_history[i], 0.0, f"Step {i}: expected 0 during fill phase")
+            self.assertEqual(force_history[i], 0.0, f"Step {i}: expected 0 force during fill phase")
 
-        # Step 2 uses target from step 0 (10.0), step 3 uses target from step 1 (20.0)
-        self.assertAlmostEqual(force_history[delay], 10.0, places=4)
-        self.assertAlmostEqual(force_history[delay + 1], 20.0, places=4)
+        self.assertAlmostEqual(force_history[3], target_history[0], places=5)
+        self.assertAlmostEqual(force_history[4], target_history[1], places=5)
+        self.assertAlmostEqual(force_history[5], target_history[2], places=5)
+
+
+class TestActuatorPIDUnit(unittest.TestCase):
+    """Tests for ActuatorPID."""
+
+    def setUp(self):
+        wp.init()
+
+    def test_pid_actuator_creation(self):
+        """Test that ActuatorPID can be created with valid parameters."""
+        indices = wp.array([0, 1], dtype=wp.uint32)
+        actuator = ActuatorPID(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0, 100.0], dtype=wp.float32),
+            ki=wp.array([10.0, 10.0], dtype=wp.float32),
+            kd=wp.array([5.0, 5.0], dtype=wp.float32),
+            max_force=wp.array([50.0, 50.0], dtype=wp.float32),
+            integral_max=wp.array([10.0, 10.0], dtype=wp.float32),
+        )
+        self.assertIsInstance(actuator, Actuator)
+        self.assertTrue(actuator.is_stateful())
+        self.assertTrue(actuator.is_graphable())
+
+    def test_pid_actuator_state(self):
+        """Test that ActuatorPID.state() returns properly initialized state."""
+        num_dofs = 2
+        indices = wp.array([0, 1], dtype=wp.uint32)
+
+        actuator = ActuatorPID(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0, 100.0], dtype=wp.float32),
+            ki=wp.array([10.0, 10.0], dtype=wp.float32),
+            kd=wp.array([5.0, 5.0], dtype=wp.float32),
+            max_force=wp.array([50.0, 50.0], dtype=wp.float32),
+            integral_max=wp.array([10.0, 10.0], dtype=wp.float32),
+        )
+
+        state = actuator.state()
+        self.assertIsInstance(state, ActuatorPID.State)
+        self.assertEqual(state.integral.shape[0], num_dofs)
+        np.testing.assert_array_equal(state.integral.numpy(), [0.0, 0.0])
+
+
+class TestActuatorDCMotorUnit(unittest.TestCase):
+    """Tests for ActuatorDCMotor."""
+
+    def setUp(self):
+        wp.init()
+
+    def test_dc_motor_creation(self):
+        """Test that ActuatorDCMotor can be created with valid parameters."""
+        indices = wp.array([0, 1], dtype=wp.uint32)
+        actuator = ActuatorDCMotor(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0, 100.0], dtype=wp.float32),
+            kd=wp.array([10.0, 10.0], dtype=wp.float32),
+            max_force=wp.array([50.0, 50.0], dtype=wp.float32),
+            saturation_effort=wp.array([80.0, 80.0], dtype=wp.float32),
+            velocity_limit=wp.array([10.0, 10.0], dtype=wp.float32),
+        )
+        self.assertIsInstance(actuator, Actuator)
+        self.assertFalse(actuator.is_stateful())
+        self.assertIsNone(actuator.state())
+        self.assertTrue(actuator.is_graphable())
+
+    def test_dc_motor_resolve_arguments_requires_velocity_limit(self):
+        """Test that resolve_arguments raises error if velocity_limit not provided."""
+        with self.assertRaises(ValueError):
+            ActuatorDCMotor.resolve_arguments({"kp": 50.0})
+
+    def test_dc_motor_resolve_arguments(self):
+        """Test that resolve_arguments fills defaults correctly."""
+        resolved = ActuatorDCMotor.resolve_arguments({"kp": 50.0, "velocity_limit": 10.0})
+        self.assertEqual(resolved["kp"], 50.0)
+        self.assertEqual(resolved["kd"], 0.0)
+        self.assertEqual(resolved["velocity_limit"], 10.0)
+
+    def test_dc_motor_zero_velocity_full_torque(self):
+        """At zero velocity, DC motor can produce full torque up to saturation/max_force."""
+        indices = wp.array([0], dtype=wp.uint32)
+        actuator = ActuatorDCMotor(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+            max_force=wp.array([200.0], dtype=wp.float32),
+            saturation_effort=wp.array([150.0], dtype=wp.float32),
+            velocity_limit=wp.array([10.0], dtype=wp.float32),
+        )
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0], dtype=wp.float32),
+            joint_qd=wp.array([0.0], dtype=wp.float32),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0], dtype=wp.float32),
+            joint_target_vel=wp.array([0.0], dtype=wp.float32),
+            joint_act=wp.array([0.0], dtype=wp.float32),
+            joint_f=wp.zeros(1, dtype=wp.float32),
+        )
+
+        actuator.step(sim_state, sim_control, None, None)
+        force = sim_control.joint_f.numpy()[0]
+        self.assertAlmostEqual(force, 100.0, places=3)
+
+    def test_dc_motor_velocity_reduces_max_torque(self):
+        """At high velocity, available torque in direction of motion is reduced."""
+        indices = wp.array([0], dtype=wp.uint32)
+        actuator = ActuatorDCMotor(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([1000.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+            max_force=wp.array([200.0], dtype=wp.float32),
+            saturation_effort=wp.array([100.0], dtype=wp.float32),
+            velocity_limit=wp.array([10.0], dtype=wp.float32),
+        )
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0], dtype=wp.float32),
+            joint_qd=wp.array([5.0], dtype=wp.float32),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0], dtype=wp.float32),
+            joint_target_vel=wp.array([0.0], dtype=wp.float32),
+            joint_act=wp.array([0.0], dtype=wp.float32),
+            joint_f=wp.zeros(1, dtype=wp.float32),
+        )
+
+        actuator.step(sim_state, sim_control, None, None)
+        force = sim_control.joint_f.numpy()[0]
+        self.assertAlmostEqual(force, 50.0, places=3)
+
+    def test_dc_motor_at_velocity_limit(self):
+        """At v_max, no torque can be produced in direction of motion."""
+        indices = wp.array([0], dtype=wp.uint32)
+        actuator = ActuatorDCMotor(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([1000.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+            max_force=wp.array([200.0], dtype=wp.float32),
+            saturation_effort=wp.array([100.0], dtype=wp.float32),
+            velocity_limit=wp.array([10.0], dtype=wp.float32),
+        )
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0], dtype=wp.float32),
+            joint_qd=wp.array([10.0], dtype=wp.float32),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0], dtype=wp.float32),
+            joint_target_vel=wp.array([0.0], dtype=wp.float32),
+            joint_act=wp.array([0.0], dtype=wp.float32),
+            joint_f=wp.zeros(1, dtype=wp.float32),
+        )
+
+        actuator.step(sim_state, sim_control, None, None)
+        force = sim_control.joint_f.numpy()[0]
+        self.assertAlmostEqual(force, 0.0, places=3)
+
+    def test_dc_motor_negative_velocity_increases_positive_limit(self):
+        """Negative velocity allows more torque in the positive direction."""
+        indices = wp.array([0], dtype=wp.uint32)
+        actuator = ActuatorDCMotor(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([1000.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+            max_force=wp.array([200.0], dtype=wp.float32),
+            saturation_effort=wp.array([100.0], dtype=wp.float32),
+            velocity_limit=wp.array([10.0], dtype=wp.float32),
+        )
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0], dtype=wp.float32),
+            joint_qd=wp.array([-5.0], dtype=wp.float32),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0], dtype=wp.float32),
+            joint_target_vel=wp.array([0.0], dtype=wp.float32),
+            joint_act=wp.array([0.0], dtype=wp.float32),
+            joint_f=wp.zeros(1, dtype=wp.float32),
+        )
+
+        actuator.step(sim_state, sim_control, None, None)
+        force = sim_control.joint_f.numpy()[0]
+        self.assertAlmostEqual(force, 150.0, places=3)
+
+
+class TestActuatorRemotizedPDUnit(unittest.TestCase):
+    """Tests for ActuatorRemotizedPD."""
+
+    def setUp(self):
+        wp.init()
+
+    def _make_lookup(self):
+        """Create a simple lookup table: torque limit varies from 10 to 50 over angles -1 to 1."""
+        angles = wp.array([-1.0, 0.0, 1.0], dtype=wp.float32)
+        torques = wp.array([10.0, 30.0, 50.0], dtype=wp.float32)
+        return angles, torques
+
+    def test_remotized_pd_creation(self):
+        """Test that ActuatorRemotizedPD can be created with valid parameters."""
+        indices = wp.array([0, 1], dtype=wp.uint32)
+        angles, torques = self._make_lookup()
+
+        actuator = ActuatorRemotizedPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0, 100.0], dtype=wp.float32),
+            kd=wp.array([10.0, 10.0], dtype=wp.float32),
+            delay=3,
+            lookup_angles=angles,
+            lookup_torques=torques,
+        )
+        self.assertIsInstance(actuator, ActuatorDelayedPD)
+        self.assertTrue(actuator.is_stateful())
+        self.assertTrue(actuator.is_graphable())
+        self.assertEqual(actuator.lookup_size, 3)
+
+    def test_remotized_pd_resolve_arguments_requires_delay_and_lookup(self):
+        """Test that resolve_arguments raises errors for missing required args."""
+        with self.assertRaises(ValueError):
+            ActuatorRemotizedPD.resolve_arguments({"kp": 50.0})
+        with self.assertRaises(ValueError):
+            ActuatorRemotizedPD.resolve_arguments({"kp": 50.0, "delay": 3})
+
+    def test_remotized_pd_angle_dependent_clipping(self):
+        """Test that torque is clamped based on the lookup table at the current joint angle."""
+        delay = 2
+        indices = wp.array([0], dtype=wp.uint32)
+        angles, torques = self._make_lookup()
+
+        actuator = ActuatorRemotizedPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([1000.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+            delay=delay,
+            lookup_angles=angles,
+            lookup_torques=torques,
+        )
+
+        stateA = actuator.state()
+        stateB = actuator.state()
+
+        for step in range(delay + 1):
+            sim_state = MockSimState(
+                joint_q=wp.array([0.0], dtype=wp.float32),
+                joint_qd=wp.array([0.0], dtype=wp.float32),
+            )
+            sim_control = MockSimControl(
+                joint_target_pos=wp.array([1.0], dtype=wp.float32),
+                joint_target_vel=wp.array([0.0], dtype=wp.float32),
+                joint_act=wp.array([0.0], dtype=wp.float32),
+                joint_f=wp.zeros(1, dtype=wp.float32),
+            )
+            if step % 2 == 0:
+                current, next_s = stateA, stateB
+            else:
+                current, next_s = stateB, stateA
+            actuator.step(sim_state, sim_control, current, next_s, dt=0.01)
+
+        force = sim_control.joint_f.numpy()[0]
+        self.assertAlmostEqual(force, 30.0, places=3)
+
+    def test_remotized_pd_different_angles(self):
+        """Test that lookup interpolation works at different joint angles."""
+        delay = 2
+        indices = wp.array([0], dtype=wp.uint32)
+        angles, torques = self._make_lookup()
+
+        actuator = ActuatorRemotizedPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([1000.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+            delay=delay,
+            lookup_angles=angles,
+            lookup_torques=torques,
+        )
+
+        for test_angle, expected_limit in [(-1.0, 10.0), (-0.5, 20.0), (0.5, 40.0), (1.0, 50.0)]:
+            stateA = actuator.state()
+            stateB = actuator.state()
+
+            for step in range(delay + 1):
+                sim_state = MockSimState(
+                    joint_q=wp.array([test_angle], dtype=wp.float32),
+                    joint_qd=wp.array([0.0], dtype=wp.float32),
+                )
+                sim_control = MockSimControl(
+                    joint_target_pos=wp.array([test_angle + 10.0], dtype=wp.float32),
+                    joint_target_vel=wp.array([0.0], dtype=wp.float32),
+                    joint_act=wp.array([0.0], dtype=wp.float32),
+                    joint_f=wp.zeros(1, dtype=wp.float32),
+                )
+                if step % 2 == 0:
+                    current, next_s = stateA, stateB
+                else:
+                    current, next_s = stateB, stateA
+                actuator.step(sim_state, sim_control, current, next_s, dt=0.01)
+
+            force = sim_control.joint_f.numpy()[0]
+            self.assertAlmostEqual(
+                force, expected_limit, places=2, msg=f"At angle={test_angle}, expected limit={expected_limit}"
+            )
+
+    def test_remotized_pd_no_force_during_fill(self):
+        """Test that no force is applied while the delay buffer is filling."""
+        delay = 3
+        indices = wp.array([0], dtype=wp.uint32)
+        angles, torques = self._make_lookup()
+
+        actuator = ActuatorRemotizedPD(
+            input_indices=indices,
+            output_indices=indices,
+            kp=wp.array([100.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+            delay=delay,
+            lookup_angles=angles,
+            lookup_torques=torques,
+        )
+
+        stateA = actuator.state()
+        stateB = actuator.state()
+
+        for step in range(delay):
+            sim_state = MockSimState(
+                joint_q=wp.array([0.0], dtype=wp.float32),
+                joint_qd=wp.array([0.0], dtype=wp.float32),
+            )
+            sim_control = MockSimControl(
+                joint_target_pos=wp.array([1.0], dtype=wp.float32),
+                joint_target_vel=wp.array([0.0], dtype=wp.float32),
+                joint_act=wp.array([0.0], dtype=wp.float32),
+                joint_f=wp.zeros(1, dtype=wp.float32),
+            )
+            if step % 2 == 0:
+                current, next_s = stateA, stateB
+            else:
+                current, next_s = stateB, stateA
+            actuator.step(sim_state, sim_control, current, next_s, dt=0.01)
+            force = sim_control.joint_f.numpy()[0]
+            self.assertEqual(force, 0.0, f"Step {step}: expected 0 force during fill phase")
+
+
+class MockAttribute:
+    """Mock USD attribute for testing."""
+
+    def __init__(self, value=None, name=""):
+        self._value = value
+        self._name = name
+
+    def HasAuthoredValue(self):
+        return self._value is not None
+
+    def Get(self):
+        return self._value
+
+    def GetName(self):
+        return self._name
+
+
+class MockRelationship:
+    """Mock USD relationship for testing."""
+
+    def __init__(self, targets=None):
+        self._targets = targets or []
+
+    def GetTargets(self):
+        return self._targets
+
+
+class MockPrim:
+    """Mock USD prim for testing ActuatorParser."""
+
+    def __init__(self, type_name="", attributes=None, relationships=None, schemas=None):
+        self._type_name = type_name
+        self._attributes = attributes or {}
+        self._relationships = relationships or {}
+        self._schemas = schemas or []
+
+    def GetTypeName(self):
+        return self._type_name
+
+    def GetAttribute(self, name):
+        return self._attributes.get(name)
+
+    def GetAttributes(self):
+        return [MockAttribute(attr._value, name) for name, attr in self._attributes.items()]
+
+    def GetRelationship(self, name):
+        return self._relationships.get(name)
+
+    def GetAppliedSchemas(self):
+        return self._schemas
+
+
+class TestActuatorParserUnit(unittest.TestCase):
+    """Tests for ActuatorParser and USD parsing utilities."""
+
+    def test_parse_pd_actuator_prim(self):
+        """Test parsing a PD actuator prim."""
+
+        prim = MockPrim(
+            type_name="Actuator",
+            attributes={
+                "newton:actuator:kp": MockAttribute(100.0, "newton:actuator:kp"),
+                "newton:actuator:kd": MockAttribute(10.0, "newton:actuator:kd"),
+            },
+            relationships={
+                "newton:actuator:target": MockRelationship(["/World/Robot/Joint1"]),
+            },
+            schemas=["PDControllerAPI"],
+        )
+
+        result = parse_actuator_prim(prim)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.actuator_class, ActuatorPD)
+        self.assertEqual(result.target_paths, ["/World/Robot/Joint1"])
+        self.assertEqual(result.kwargs.get("kp"), 100.0)
+        self.assertEqual(result.kwargs.get("kd"), 10.0)
+
+    def test_parse_delayed_pd_actuator_prim(self):
+        """Test parsing a Delayed PD actuator prim."""
+
+        prim = MockPrim(
+            type_name="Actuator",
+            attributes={
+                "newton:actuator:kp": MockAttribute(50.0, "newton:actuator:kp"),
+                "newton:actuator:delay": MockAttribute(5, "newton:actuator:delay"),
+            },
+            relationships={
+                "newton:actuator:target": MockRelationship(["/World/Robot/Joint1"]),
+            },
+            schemas=["PDControllerAPI", "DelayAPI"],
+        )
+
+        result = parse_actuator_prim(prim)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.actuator_class, ActuatorDelayedPD)
+        self.assertEqual(result.kwargs.get("kp"), 50.0)
+        self.assertEqual(result.kwargs.get("delay"), 5)
+
+    def test_parse_pid_actuator_prim(self):
+        """Test parsing a PID actuator prim."""
+
+        prim = MockPrim(
+            type_name="Actuator",
+            attributes={
+                "newton:actuator:kp": MockAttribute(100.0, "newton:actuator:kp"),
+                "newton:actuator:ki": MockAttribute(5.0, "newton:actuator:ki"),
+                "newton:actuator:kd": MockAttribute(10.0, "newton:actuator:kd"),
+            },
+            relationships={
+                "newton:actuator:target": MockRelationship(["/World/Robot/Joint1"]),
+            },
+            schemas=["PIDControllerAPI"],
+        )
+
+        result = parse_actuator_prim(prim)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.actuator_class, ActuatorPID)
+        self.assertEqual(result.kwargs.get("kp"), 100.0)
+        self.assertEqual(result.kwargs.get("ki"), 5.0)
+
+    def test_parse_multi_target_actuator(self):
+        """Test parsing an actuator with multiple targets."""
+
+        prim = MockPrim(
+            type_name="Actuator",
+            attributes={
+                "newton:actuator:kp": MockAttribute(100.0, "newton:actuator:kp"),
+                "newton:actuator:transmission": MockAttribute([0.5, 0.3, 0.2], "newton:actuator:transmission"),
+            },
+            relationships={
+                "newton:actuator:target": MockRelationship(
+                    ["/World/Robot/Joint1", "/World/Robot/Joint2", "/World/Robot/Joint3"]
+                ),
+            },
+            schemas=["PDControllerAPI"],
+        )
+
+        result = parse_actuator_prim(prim)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result.target_paths), 3)
+        self.assertEqual(result.transmission, [0.5, 0.3, 0.2])
+
+    def test_parse_non_actuator_prim_returns_none(self):
+        """Test that non-Actuator prims return None."""
+
+        prim = MockPrim(type_name="Mesh", attributes={}, relationships={}, schemas=[])
+        result = parse_actuator_prim(prim)
+        self.assertIsNone(result)
+
+    def test_parse_actuator_without_targets_returns_none(self):
+        """Test that actuator without targets returns None."""
+
+        prim = MockPrim(
+            type_name="Actuator",
+            attributes={"newton:actuator:kp": MockAttribute(100.0, "newton:actuator:kp")},
+            relationships={},
+            schemas=["PDControllerAPI"],
+        )
+        result = parse_actuator_prim(prim)
+        self.assertIsNone(result)
+
+    def test_parse_dc_motor_actuator_prim(self):
+        """Test parsing a DC motor actuator prim with PD + saturation params."""
+
+        prim = MockPrim(
+            type_name="Actuator",
+            attributes={
+                "newton:actuator:kp": MockAttribute(100.0, "newton:actuator:kp"),
+                "newton:actuator:kd": MockAttribute(10.0, "newton:actuator:kd"),
+                "newton:actuator:maxForce": MockAttribute(200.0, "newton:actuator:maxForce"),
+                "newton:actuator:saturationEffort": MockAttribute(150.0, "newton:actuator:saturationEffort"),
+                "newton:actuator:velocityLimit": MockAttribute(10.0, "newton:actuator:velocityLimit"),
+            },
+            relationships={
+                "newton:actuator:target": MockRelationship(["/World/Robot/Joint1"]),
+            },
+        )
+
+        result = parse_actuator_prim(prim)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.actuator_class, ActuatorDCMotor)
+        self.assertEqual(result.kwargs.get("kp"), 100.0)
+        self.assertEqual(result.kwargs.get("saturation_effort"), 150.0)
+        self.assertEqual(result.kwargs.get("velocity_limit"), 10.0)
+
+    def test_parse_dc_motor_velocity_limit_zero_raises(self):
+        """Test that velocity_limit=0 raises ValueError during parsing."""
+
+        prim = MockPrim(
+            type_name="Actuator",
+            attributes={
+                "newton:actuator:kp": MockAttribute(100.0, "newton:actuator:kp"),
+                "newton:actuator:saturationEffort": MockAttribute(150.0, "newton:actuator:saturationEffort"),
+                "newton:actuator:velocityLimit": MockAttribute(0.0, "newton:actuator:velocityLimit"),
+            },
+            relationships={
+                "newton:actuator:target": MockRelationship(["/World/Robot/Joint1"]),
+            },
+        )
+
+        with self.assertRaises(ValueError):
+            parse_actuator_prim(prim)
+
+    def test_parse_dc_motor_velocity_limit_negative_raises(self):
+        """Test that negative velocity_limit raises ValueError during parsing."""
+
+        prim = MockPrim(
+            type_name="Actuator",
+            attributes={
+                "newton:actuator:kp": MockAttribute(100.0, "newton:actuator:kp"),
+                "newton:actuator:saturationEffort": MockAttribute(150.0, "newton:actuator:saturationEffort"),
+                "newton:actuator:velocityLimit": MockAttribute(-5.0, "newton:actuator:velocityLimit"),
+            },
+            relationships={
+                "newton:actuator:target": MockRelationship(["/World/Robot/Joint1"]),
+            },
+        )
+
+        with self.assertRaises(ValueError):
+            parse_actuator_prim(prim)
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestActuatorNetMLPUnit(unittest.TestCase):
+    """Tests for ActuatorNetMLP."""
+
+    def setUp(self):
+        wp.init()
+        import torch
+
+        self.torch = torch
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.wp_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    def _make_mlp(self, input_dim, hidden=32):
+        """Create a simple MLP: input_dim -> hidden -> 1."""
+        return self.torch.nn.Sequential(
+            self.torch.nn.Linear(input_dim, hidden),
+            self.torch.nn.ELU(),
+            self.torch.nn.Linear(hidden, 1),
+        )
+
+    def test_mlp_creation(self):
+        """Test that ActuatorNetMLP can be created with valid parameters."""
+
+        indices = wp.array([0, 1], dtype=wp.uint32, device=self.wp_device)
+        network = self._make_mlp(input_dim=2)
+
+        actuator = ActuatorNetMLP(
+            input_indices=indices,
+            output_indices=indices,
+            network=network,
+            max_force=wp.array([50.0, 50.0], dtype=wp.float32, device=self.wp_device),
+        )
+        self.assertIsInstance(actuator, Actuator)
+        self.assertTrue(actuator.is_stateful())
+        self.assertFalse(actuator.is_graphable())
+        self.assertEqual(actuator.history_length, 1)
+
+    def test_mlp_step_runs(self):
+        """Test that step() executes without errors and produces output."""
+
+        num_dofs = 2
+        indices = wp.array([0, 1], dtype=wp.uint32, device=self.wp_device)
+        network = self._make_mlp(input_dim=2)
+
+        actuator = ActuatorNetMLP(
+            input_indices=indices,
+            output_indices=indices,
+            network=network,
+            max_force=wp.array([1000.0, 1000.0], dtype=wp.float32, device=self.wp_device),
+        )
+
+        stateA = actuator.state()
+        stateB = actuator.state()
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0, 0.0], dtype=wp.float32, device=self.wp_device),
+            joint_qd=wp.array([0.0, 0.0], dtype=wp.float32, device=self.wp_device),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0, 2.0], dtype=wp.float32, device=self.wp_device),
+            joint_target_vel=wp.array([0.0, 0.0], dtype=wp.float32, device=self.wp_device),
+            joint_act=wp.array([0.0, 0.0], dtype=wp.float32, device=self.wp_device),
+            joint_f=wp.zeros(num_dofs, dtype=wp.float32, device=self.wp_device),
+        )
+
+        actuator.step(sim_state, sim_control, stateA, stateB)
+        forces = sim_control.joint_f.numpy()
+        self.assertEqual(forces.shape, (2,))
+
+    def test_mlp_clamping(self):
+        """Test that output is clamped to max_force."""
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.wp_device)
+
+        network = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True))
+        with self.torch.no_grad():
+            network[0].weight.fill_(0.0)
+            network[0].bias.fill_(999.0)
+
+        max_force_val = 10.0
+        actuator = ActuatorNetMLP(
+            input_indices=indices,
+            output_indices=indices,
+            network=network,
+            max_force=wp.array([max_force_val], dtype=wp.float32, device=self.wp_device),
+            torque_scale=1.0,
+        )
+
+        stateA = actuator.state()
+        stateB = actuator.state()
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0], dtype=wp.float32, device=self.wp_device),
+            joint_qd=wp.array([0.0], dtype=wp.float32, device=self.wp_device),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0], dtype=wp.float32, device=self.wp_device),
+            joint_target_vel=wp.array([0.0], dtype=wp.float32, device=self.wp_device),
+            joint_act=wp.array([0.0], dtype=wp.float32, device=self.wp_device),
+            joint_f=wp.zeros(1, dtype=wp.float32, device=self.wp_device),
+        )
+
+        actuator.step(sim_state, sim_control, stateA, stateB)
+        force = sim_control.joint_f.numpy()[0]
+        self.assertAlmostEqual(force, max_force_val, places=3)
+
+    def test_mlp_invalid_input_order(self):
+        """Test that an invalid input_order raises ValueError at construction."""
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.wp_device)
+        network = self._make_mlp(input_dim=2)
+
+        with self.assertRaises(ValueError):
+            ActuatorNetMLP(
+                input_indices=indices,
+                output_indices=indices,
+                network=network,
+                max_force=wp.array([50.0], dtype=wp.float32, device=self.wp_device),
+                input_order="invalid",
+            )
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestActuatorNetLSTMUnit(unittest.TestCase):
+    """Tests for ActuatorNetLSTM."""
+
+    def setUp(self):
+        wp.init()
+        import torch
+
+        self.torch = torch
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.wp_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    def _make_lstm(self, hidden_size=8, num_layers=1):
+        import torch
+
+        class _SimpleLSTMNet(torch.nn.Module):
+            def __init__(self, input_size=2, hidden_size=8, output_size=1, num_layers=1):
+                super().__init__()
+                self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+                self.decoder = torch.nn.Linear(hidden_size, output_size)
+
+            def forward(self, x, hc):
+                lstm_out, (h_new, c_new) = self.lstm(x, hc)
+                output = self.decoder(lstm_out[:, -1, :])
+                return output, (h_new, c_new)
+
+        return _SimpleLSTMNet(input_size=2, hidden_size=hidden_size, num_layers=num_layers)
+
+    def test_lstm_creation(self):
+        """Test that ActuatorNetLSTM can be created with valid parameters."""
+
+        indices = wp.array([0, 1], dtype=wp.uint32, device=self.wp_device)
+        network = self._make_lstm()
+
+        actuator = ActuatorNetLSTM(
+            input_indices=indices,
+            output_indices=indices,
+            network=network,
+            max_force=wp.array([50.0, 50.0], dtype=wp.float32, device=self.wp_device),
+        )
+        self.assertIsInstance(actuator, Actuator)
+        self.assertTrue(actuator.is_stateful())
+        self.assertFalse(actuator.is_graphable())
+
+    def test_lstm_state(self):
+        """Test that state() returns properly shaped hidden and cell tensors."""
+
+        hidden_size = 16
+        num_layers = 2
+        indices = wp.array([0, 1, 2], dtype=wp.uint32, device=self.wp_device)
+        network = self._make_lstm(hidden_size=hidden_size, num_layers=num_layers)
+
+        actuator = ActuatorNetLSTM(
+            input_indices=indices,
+            output_indices=indices,
+            network=network,
+            max_force=wp.array([50.0, 50.0, 50.0], dtype=wp.float32, device=self.wp_device),
+        )
+
+        state = actuator.state()
+        self.assertIsInstance(state, ActuatorNetLSTM.State)
+        self.assertEqual(state.hidden.shape, (num_layers, 3, hidden_size))
+        self.assertEqual(state.cell.shape, (num_layers, 3, hidden_size))
+
+    def test_lstm_step_runs(self):
+        """Test that step() executes without errors and produces output."""
+
+        num_dofs = 2
+        indices = wp.array([0, 1], dtype=wp.uint32, device=self.wp_device)
+        network = self._make_lstm()
+
+        actuator = ActuatorNetLSTM(
+            input_indices=indices,
+            output_indices=indices,
+            network=network,
+            max_force=wp.array([1000.0, 1000.0], dtype=wp.float32, device=self.wp_device),
+        )
+
+        stateA = actuator.state()
+        stateB = actuator.state()
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0, 0.0], dtype=wp.float32, device=self.wp_device),
+            joint_qd=wp.array([1.0, -1.0], dtype=wp.float32, device=self.wp_device),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0, 2.0], dtype=wp.float32, device=self.wp_device),
+            joint_target_vel=wp.array([0.0, 0.0], dtype=wp.float32, device=self.wp_device),
+            joint_act=wp.array([0.0, 0.0], dtype=wp.float32, device=self.wp_device),
+            joint_f=wp.zeros(num_dofs, dtype=wp.float32, device=self.wp_device),
+        )
+
+        actuator.step(sim_state, sim_control, stateA, stateB)
+        forces = sim_control.joint_f.numpy()
+        self.assertEqual(forces.shape, (2,))
+
+    def test_lstm_clamping(self):
+        """Test that output is clamped to max_force."""
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.wp_device)
+
+        network = self._make_lstm(hidden_size=4)
+        with self.torch.no_grad():
+            network.decoder.weight.fill_(0.0)
+            network.decoder.bias.fill_(500.0)
+
+        max_force_val = 10.0
+        actuator = ActuatorNetLSTM(
+            input_indices=indices,
+            output_indices=indices,
+            network=network,
+            max_force=wp.array([max_force_val], dtype=wp.float32, device=self.wp_device),
+        )
+
+        stateA = actuator.state()
+        stateB = actuator.state()
+
+        sim_state = MockSimState(
+            joint_q=wp.array([0.0], dtype=wp.float32, device=self.wp_device),
+            joint_qd=wp.array([0.0], dtype=wp.float32, device=self.wp_device),
+        )
+        sim_control = MockSimControl(
+            joint_target_pos=wp.array([1.0], dtype=wp.float32, device=self.wp_device),
+            joint_target_vel=wp.array([0.0], dtype=wp.float32, device=self.wp_device),
+            joint_act=wp.array([0.0], dtype=wp.float32, device=self.wp_device),
+            joint_f=wp.zeros(1, dtype=wp.float32, device=self.wp_device),
+        )
+
+        actuator.step(sim_state, sim_control, stateA, stateB)
+        force = sim_control.joint_f.numpy()[0]
+        self.assertAlmostEqual(force, max_force_val, places=3)
 
 
 if __name__ == "__main__":
