@@ -740,6 +740,7 @@ def parse_urdf(
         lower = joint.get("limit_lower", None)
         upper = joint.get("limit_upper", None)
         joint_damping = joint["damping"]
+        joint_friction = joint["friction"]
 
         parent_xform = joint["origin"]
 
@@ -762,6 +763,7 @@ def parse_urdf(
             created_joint_idx = builder.add_joint_revolute(
                 axis=joint["axis"],
                 target_kd=joint_damping,
+                friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower,
                 limit_upper=upper,
@@ -771,6 +773,7 @@ def parse_urdf(
             created_joint_idx = builder.add_joint_prismatic(
                 axis=joint["axis"],
                 target_kd=joint_damping,
+                friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower * scale,
                 limit_upper=upper * scale,
@@ -801,6 +804,7 @@ def parse_urdf(
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
+                        friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
                     ModelBuilder.JointDofConfig(
@@ -808,6 +812,7 @@ def parse_urdf(
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
+                        friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
                 ],
