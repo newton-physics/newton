@@ -79,6 +79,24 @@ class GeoType(enum.IntEnum):
     GAUSSIAN = 11
     """Gaussian splat."""
 
+    @property
+    def is_primitive(self) -> bool:
+        """Return whether this is a primitive (analytically defined) shape type."""
+        return self in {
+            GeoType.SPHERE,
+            GeoType.CYLINDER,
+            GeoType.CONE,
+            GeoType.CAPSULE,
+            GeoType.BOX,
+            GeoType.ELLIPSOID,
+            GeoType.PLANE,
+        }
+
+    @property
+    def is_explicit(self) -> bool:
+        """Return whether this is an explicit (data-driven) shape type."""
+        return self in {GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD}
+
 
 class Mesh:
     """

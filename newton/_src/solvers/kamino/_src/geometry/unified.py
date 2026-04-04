@@ -272,6 +272,9 @@ def _compute_collision_radius(geo_type: int32, scale: vec3f) -> float32:
             radius = wp.length(scale)
         else:
             radius = float32(1.0e6)
+    elif geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH or geo_type == GeoType.HFIELD:
+        # Large bounding sphere; the AABB kernel computes a tighter bound from mesh data
+        radius = float32(1.0e6)
     return radius
 
 
@@ -502,6 +505,10 @@ class CollisionPipelineUnifiedKamino:
             | ShapeFlags.COLLIDE_PARTICLES  # Enable shape-particle collision
         )
 
+        # Detect whether the model contains mesh, convex mesh, or heightfield shapes
+        geom_type_np = self._model.geoms.type.numpy()
+        _has_explicit = any(int(t) in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD) for t in geom_type_np)
+
         # Allocate internal data needed by the pipeline that
         # the Kamino model and data do not yet provide
         with wp.ScopedDevice(self._device):
@@ -515,17 +522,27 @@ class CollisionPipelineUnifiedKamino:
             self.broad_phase_pairs = wp.zeros(self._max_shape_pairs, dtype=wp.vec2i)
             self.broad_phase_pair_count = wp.zeros(1, dtype=wp.int32)
             self.narrow_phase_contact_count = wp.zeros(1, dtype=int32)
-            # TODO: These are currently left empty just to satisfy the narrow phase interface
-            # but we need to implement SDF/mesh/heightfield support in Kamino to make use of them.
-            # With has_meshes=False, these arrays are never accessed.
             self.shape_sdf_data = wp.empty(shape=(0,), dtype=TextureSDFData)
             self.shape_sdf_index = wp.full_like(self.geom_type, -1)
-            self.shape_collision_aabb_lower = wp.empty(shape=(0,), dtype=wp.vec3)
-            self.shape_collision_aabb_upper = wp.empty(shape=(0,), dtype=wp.vec3)
-            self.shape_voxel_resolution = wp.empty(shape=(0,), dtype=wp.vec3i)
-            self.shape_heightfield_index = None  # TODO
-            self.heightfield_data = None  # TODO
-            self.heightfield_elevations = None  # TODO
+
+        # Wire mesh / heightfield data from the model when explicit shapes exist;
+        # otherwise use empty placeholder arrays that satisfy the narrow-phase interface.
+        geoms = self._model.geoms
+        if _has_explicit:
+            self.shape_collision_aabb_lower = geoms.shape_collision_aabb_lower
+            self.shape_collision_aabb_upper = geoms.shape_collision_aabb_upper
+            self.shape_voxel_resolution = geoms.shape_voxel_resolution
+            self.shape_heightfield_index = geoms.shape_heightfield_index
+            self.heightfield_data = geoms.heightfield_data
+            self.heightfield_elevations = geoms.heightfield_elevations
+        else:
+            with wp.ScopedDevice(self._device):
+                self.shape_collision_aabb_lower = wp.empty(shape=(0,), dtype=wp.vec3)
+                self.shape_collision_aabb_upper = wp.empty(shape=(0,), dtype=wp.vec3)
+                self.shape_voxel_resolution = wp.empty(shape=(0,), dtype=wp.vec3i)
+            self.shape_heightfield_index = None
+            self.heightfield_data = None
+            self.heightfield_elevations = None
 
         # Initialize the broad-phase backend depending on the selected mode
         match self._broadphase:
@@ -539,7 +556,6 @@ class CollisionPipelineUnifiedKamino:
                 raise ValueError(f"Unsupported broad phase mode: {self._broadphase}")
 
         # Initialize narrow-phase backend with the contact writer customized for Kamino
-        # Note: has_meshes=False since Kamino doesn't support mesh collisions yet
         self.narrow_phase = NarrowPhase(
             max_candidate_pairs=self._max_shape_pairs,
             max_triangle_pairs=self._max_triangle_pairs,
@@ -547,7 +563,7 @@ class CollisionPipelineUnifiedKamino:
             shape_aabb_lower=self.shape_aabb_lower,
             shape_aabb_upper=self.shape_aabb_upper,
             contact_writer_warp_func=write_contact_unified_kamino,
-            has_meshes=False,
+            has_meshes=_has_explicit,
         )
 
         # Convert geometry data from Kamino to Newton format
@@ -645,6 +661,11 @@ class CollisionPipelineUnifiedKamino:
             ],
             device=self._device,
         )
+
+        # Use Newton's precomputed collision radius when available (gives
+        # tighter AABBs for meshes and heightfields than the 1e6 fallback).
+        if self._model.geoms.shape_collision_radius is not None:
+            self.shape_collision_radius.assign(self._model.geoms.shape_collision_radius)
 
     def _update_geom_data(self, data: DataKamino, state: StateKamino):
         """
