@@ -37,6 +37,7 @@ from .types import GeoType
 # Is not allowed to share values with GeoType
 class GeoTypeEx(enum.IntEnum):
     TRIANGLE = 1000
+    TRIANGLE_PRISM = 1001
 
 
 @wp.struct
@@ -89,6 +90,7 @@ class GenericShapeData:
       - CONE: radius in x, half-height in y (axis +Z, apex at +Z)
       - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
       - TRIANGLE: vertex B-A stored in scale, vertex C-A stored in auxiliary
+      - TRIANGLE_PRISM: same as TRIANGLE; support function extrudes 1 m along -Z
     """
 
     shape_type: int
@@ -138,7 +140,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
                 best_idx = i
         result = wp.cw_mul(mesh.points[best_idx], mesh_scale)
 
-    elif geom.shape_type == GeoTypeEx.TRIANGLE:
+    elif geom.shape_type == GeoTypeEx.TRIANGLE or geom.shape_type == GeoTypeEx.TRIANGLE_PRISM:
         # Triangle vertices: a at origin, b at scale, c at auxiliary
         tri_a = wp.vec3(0.0, 0.0, 0.0)
         tri_b = geom.scale
@@ -156,6 +158,15 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
             result = tri_b
         else:
             result = tri_c
+
+        # TRIANGLE_PRISM: extrude 1 m along -Z to form a solid prism so
+        # that GJK/MPR naturally resolves shapes on the back side.
+        # The support function is queried in the heightfield's local
+        # frame (orientation_a = heightfield rotation), where -Z is
+        # always the heightfield's down direction.
+        if geom.shape_type == GeoTypeEx.TRIANGLE_PRISM:
+            if direction[2] < 0.0:
+                result = result + wp.vec3(0.0, 0.0, -1.0)
     elif geom.shape_type == GeoType.BOX:
         sx = 1.0 if direction[0] >= 0.0 else -1.0
         sy = 1.0 if direction[1] >= 0.0 else -1.0
