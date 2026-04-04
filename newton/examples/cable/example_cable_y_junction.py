@@ -47,7 +47,7 @@ class Example:
         num_segments_per_branch = 20
         segment_length = 0.03
 
-        bend_stiffness = 1.0e6
+        bend_stiffness = 1.0e2
         bend_damping = 1.0e-1
 
         builder = newton.ModelBuilder()

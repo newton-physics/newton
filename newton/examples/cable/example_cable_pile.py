@@ -37,8 +37,8 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 5
-        self.sim_iterations = 10
+        self.sim_substeps = 10
+        self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # Cable pile parameters

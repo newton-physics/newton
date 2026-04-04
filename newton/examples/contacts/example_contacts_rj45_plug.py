@@ -28,8 +28,8 @@ from newton.solvers import SolverVBD
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     mu=0.1,
-    ke=1.0e6,
-    kd=1.0e3,
+    ke=1.0e5,
+    kd=1.0e-3,
     gap=0.002,
     density=1.0e6,
     mu_torsional=0.0,
@@ -45,8 +45,8 @@ CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
 
 # Contact parameters for cable and ground plane (tuned for VBD).
-CABLE_KE = 1.0e8
-CABLE_KD = 1.0e-3
+CABLE_KE = 1.0e5
+CABLE_KD = 1.0e-2
 CABLE_MU = 2.0
 
 # Latch revolute-joint tuning.
@@ -323,8 +323,8 @@ class Example:
             ),
             bend_stiffness=1.0e-1,
             bend_damping=1.0e-1,
-            stretch_stiffness=1.0e9,
-            stretch_damping=1.0e-1,
+            stretch_stiffness=1.0e4,
+            stretch_damping=1.0e-4,
             label="cable",
         )
 
@@ -385,9 +385,11 @@ class Example:
             self.model,
             iterations=12,
             friction_epsilon=0.1,
-            rigid_contact_k_start=1.0e5,
-            rigid_body_contact_buffer_size=256,
+            rigid_contact_hard=False,
+            rigid_contact_buffer_size=256,
         )
+        for j in range(self.model.joint_count):
+            self.solver.set_joint_hard(j, False)
 
         self._rest_pos = plug_pos
         self.gizmo_tf = wp.transform(plug_pos, wp.quat_identity())
