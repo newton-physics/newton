@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import re
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from importlib import metadata
 from typing import Any, Literal
@@ -15,6 +17,7 @@ import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
+from newton.sensors import SensorTiledCamera
 
 from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
@@ -215,6 +218,17 @@ class ViewerGL(ViewerBase):
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
         self._paused = False
+
+        # Tiled camera view resources (lazily initialized)
+        self._tiled_sensor = None
+        self._tiled_camera_rays = None
+        self._tiled_color_image = None
+        self._tiled_texture_id = 0
+        self._tiled_pixel_buffer = None
+        self._tiled_texture_buffer = None
+        self._tiled_layout_key = None  # (screen_w, screen_h, sidebar_w)
+        self._tiled_grid_dims = None  # (cols, rows) — stable per model
+        self._tiled_grid = None  # (cols, rows, tile_w, tile_h) — changes with layout
 
         # Selection panel state
         self._selection_ui_state = {
@@ -427,6 +441,7 @@ class ViewerGL(ViewerBase):
             model: The Newton model instance.
             max_worlds: Maximum number of worlds to render (None = all).
         """
+        self._teardown_tiled_view()
         super().set_model(model, max_worlds=max_worlds)
 
         if self.model is not None:
@@ -1243,6 +1258,204 @@ class ViewerGL(ViewerBase):
         if self.wind is not None:
             self.wind._apply_wind_force(state)
 
+    @override
+    def _setup_tiled_view(self):
+        """Create SensorTiledCamera (expensive, done once per model)."""
+        if self.model is None or self.model.world_count <= 1:
+            return
+
+        self._tiled_sensor = SensorTiledCamera(model=self.model)
+        self._tiled_sensor.utils.create_default_light(enable_shadows=True)
+        self._apply_ground_plane_checkerboard()
+
+        world_count = self.model.world_count
+        if self.max_worlds is not None:
+            world_count = min(world_count, self.max_worlds)
+        cols = math.isqrt(world_count)
+        if cols * cols < world_count:
+            cols += 1
+        rows = (world_count + cols - 1) // cols
+        self._tiled_grid_dims = (cols, rows)
+
+        self._setup_tiled_buffers()
+
+    def _setup_tiled_buffers(self):
+        """Create rays, output buffers, and GL texture for current layout.
+
+        Cheap to call — no kernel compilation. Safe to call when sidebar
+        toggles or window resizes.
+        """
+        from pyglet import gl
+
+        cols, rows = self._tiled_grid_dims
+
+        sidebar_w = 320 if (self.show_ui and self.ui and self.ui.is_available) else 0
+        screen_w = self.renderer._screen_width
+        screen_h = self.renderer._screen_height
+        avail_w = screen_w - sidebar_w
+        tile_w = avail_w // cols
+        tile_h = screen_h // rows
+
+        # Compute camera rays (1 camera)
+        fov_rad = math.radians(self.camera.fov)
+        self._tiled_camera_rays = self._tiled_sensor.utils.compute_pinhole_camera_rays(tile_w, tile_h, fov_rad)
+
+        # Allocate color output buffer
+        self._tiled_color_image = self._tiled_sensor.utils.create_color_image_output(tile_w, tile_h, camera_count=1)
+
+        # Create GL texture
+        total_w = tile_w * cols
+        total_h = tile_h * rows
+
+        # Clean up old GL resources if they exist
+        if self._tiled_texture_id:
+            tex = gl.GLuint(self._tiled_texture_id)
+            gl.glDeleteTextures(1, tex)
+        if self._tiled_pixel_buffer:
+            buf = gl.GLuint(self._tiled_pixel_buffer)
+            gl.glDeleteBuffers(1, buf)
+
+        texture_id = gl.GLuint()
+        gl.glGenTextures(1, texture_id)
+        self._tiled_texture_id = texture_id.value
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._tiled_texture_id)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            gl.GL_RGBA8,
+            total_w,
+            total_h,
+            0,
+            gl.GL_RGBA,
+            gl.GL_UNSIGNED_BYTE,
+            None,
+        )
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        # Create PBO for GPU texture upload
+        pixel_buffer = gl.GLuint()
+        gl.glGenBuffers(1, pixel_buffer)
+        self._tiled_pixel_buffer = pixel_buffer.value
+        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self._tiled_pixel_buffer)
+        gl.glBufferData(
+            gl.GL_PIXEL_UNPACK_BUFFER,
+            total_w * total_h * 4,
+            None,
+            gl.GL_DYNAMIC_DRAW,
+        )
+        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+
+        self._tiled_texture_buffer = wp.RegisteredGLBuffer(self._tiled_pixel_buffer)
+        self._tiled_layout_key = (screen_w, screen_h, sidebar_w)
+        self._tiled_grid = (cols, rows, tile_w, tile_h)
+
+    @override
+    def _render_tiled_view(self):
+        """Render all worlds via SensorTiledCamera and display as fullscreen texture."""
+        from pyglet import gl
+
+        if self._tiled_sensor is None or self._last_state is None:
+            return
+
+        world_count = self._tiled_color_image.shape[0]
+        cols, rows, tile_w, tile_h = self._tiled_grid
+
+        # Build camera transform from viewer camera, broadcast to all worlds
+        view_matrix = self.camera.get_view_matrix()
+        rotation = wp.quat_from_matrix(wp.mat33f(view_matrix.reshape(4, 4)[:3, :3]))
+        camera_xform = wp.transformf(self.camera.pos, rotation)
+        camera_transforms = wp.array(
+            [[camera_xform] * world_count],
+            dtype=wp.transformf,
+        )
+
+        # Render
+        self._tiled_sensor.update(
+            self._last_state,
+            camera_transforms,
+            self._tiled_camera_rays,
+            color_image=self._tiled_color_image,
+        )
+
+        # Flatten to RGBA and upload to texture
+        texture_buffer = self._tiled_texture_buffer.map(
+            dtype=wp.uint8,
+            shape=(rows * tile_h, cols * tile_w, 4),
+        )
+        self._tiled_sensor.utils.flatten_color_image_to_rgba(
+            self._tiled_color_image,
+            texture_buffer,
+            cols,
+        )
+        self._tiled_texture_buffer.unmap()
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._tiled_texture_id)
+        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self._tiled_pixel_buffer)
+        gl.glTexSubImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            cols * tile_w,
+            rows * tile_h,
+            gl.GL_RGBA,
+            gl.GL_UNSIGNED_BYTE,
+            ctypes.c_void_p(0),
+        )
+        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+    def _apply_ground_plane_checkerboard(self):
+        """Apply a checkerboard texture to ground plane shapes only.
+
+        The GL viewer renders planes with a shader-based checkerboard, but the
+        raytrace backend has no equivalent. This creates a checkerboard texture
+        and applies it only to shapes with ``GeoType.PLANE``.
+        """
+        shape_types = self.model.shape_type.numpy()
+        plane_mask = shape_types == int(nt.GeoType.PLANE)
+        if not plane_mask.any():
+            return
+
+        # Create the checkerboard texture (applies to all shapes initially)
+        self._tiled_sensor.utils.assign_checkerboard_material_to_all_shapes()
+
+        # Override texture IDs: 0 for planes (checkerboard), -1 for everything else
+        texture_ids = np.where(plane_mask, 0, -1).astype(np.int32)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            ctx = self._tiled_sensor.render_context
+        ctx.shape_texture_ids = wp.array(texture_ids, dtype=wp.int32, device=self.model.device)
+
+    def _teardown_tiled_view(self):
+        """Release all tiled rendering resources (sensor + GL)."""
+        if not self._tiled_texture_id and not self._tiled_pixel_buffer and not self._tiled_sensor:
+            return
+
+        from pyglet import gl
+
+        if self._tiled_texture_id:
+            tex = gl.GLuint(self._tiled_texture_id)
+            gl.glDeleteTextures(1, tex)
+            self._tiled_texture_id = 0
+
+        if self._tiled_pixel_buffer:
+            buf = gl.GLuint(self._tiled_pixel_buffer)
+            gl.glDeleteBuffers(1, buf)
+            self._tiled_pixel_buffer = None
+
+        self._tiled_texture_buffer = None
+        self._tiled_sensor = None
+        self._tiled_camera_rays = None
+        self._tiled_color_image = None
+        self._tiled_layout_key = None
+        self._tiled_grid_dims = None
+        self._tiled_grid = None
+
     def _update(self):
         """
         Internal update: process events, update camera, wind, render scene and UI.
@@ -1262,13 +1475,29 @@ class ViewerGL(ViewerBase):
         if self.renderer.has_exit():
             return
 
-        # Render the scene and present it
-        self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes)
+        # Render scene or tiled camera view
+        if self.tiled_view and self.model is not None and self.model.world_count > 1:
+            if self._tiled_sensor is None:
+                # First time — create sensor (expensive, once per model)
+                self._teardown_tiled_view()
+                self._setup_tiled_view()
+            else:
+                # Recreate buffers/texture if layout changed (cheap)
+                sidebar_w = 320 if (self.show_ui and self.ui and self.ui.is_available) else 0
+                layout_key = (self.renderer._screen_width, self.renderer._screen_height, sidebar_w)
+                if self._tiled_layout_key != layout_key:
+                    self._setup_tiled_buffers()
+            self._render_tiled_view()
+        else:
+            self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes)
 
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
 
-        if self.ui and self.ui.is_available and self.show_ui:
+        # Always run ImGui when tiled view is active (needed to draw the texture),
+        # otherwise only when the UI sidebar is visible.
+        need_imgui = self.show_ui or (self.tiled_view and self._tiled_texture_id)
+        if self.ui and self.ui.is_available and need_imgui:
             self.ui.begin_frame()
 
             # Render the UI
@@ -1389,6 +1618,7 @@ class ViewerGL(ViewerBase):
         """
         Close the viewer and clean up resources.
         """
+        self._teardown_tiled_view()
         self.renderer.close()
 
     @property
@@ -1640,6 +1870,9 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.ESCAPE:
             # Exit with Escape key
             self.renderer.close()
+        elif symbol == pyglet.window.key.T:
+            if self.model is not None and self.model.world_count > 1:
+                self.tiled_view = not self.tiled_view
 
     def on_key_release(self, symbol: int, modifiers: int):
         """
@@ -1907,11 +2140,70 @@ class ViewerGL(ViewerBase):
 
         self.gizmo_is_using = giz.is_using_any()
 
+    def _render_tiled_view_ui(self):
+        """Draw the tiled camera texture as a background image with grid lines."""
+        if not self._tiled_texture_id or not self.ui or not self.ui.is_available:
+            return
+
+        imgui = self.ui.imgui
+        cols, rows, tile_w, tile_h = self._tiled_grid
+        total_w = cols * tile_w
+        total_h = rows * tile_h
+
+        sidebar_w = 320 if self.show_ui else 0
+        display = self.ui.io.display_size
+
+        imgui.set_next_window_pos(imgui.ImVec2(sidebar_w, 0))
+        imgui.set_next_window_size(imgui.ImVec2(display[0] - sidebar_w, display[1]))
+
+        flags = (
+            imgui.WindowFlags_.no_title_bar.value
+            | imgui.WindowFlags_.no_mouse_inputs.value
+            | imgui.WindowFlags_.no_bring_to_front_on_focus.value
+            | imgui.WindowFlags_.no_scrollbar.value
+        )
+
+        if imgui.begin("TiledView", flags=flags):
+            imgui.set_cursor_pos(imgui.ImVec2(0, 0))
+            imgui.image(
+                imgui.ImTextureRef(self._tiled_texture_id),
+                imgui.ImVec2(total_w, total_h),
+            )
+
+            # Draw grid separator lines
+            line_color = imgui.get_color_u32(imgui.Col_.window_bg)
+            draw_list = imgui.get_window_draw_list()
+
+            for x in range(1, cols):
+                px = sidebar_w + x * tile_w
+                draw_list.add_line(
+                    imgui.ImVec2(px, 0),
+                    imgui.ImVec2(px, total_h),
+                    line_color,
+                    2.0,
+                )
+            for y in range(1, rows):
+                py = y * tile_h
+                draw_list.add_line(
+                    imgui.ImVec2(sidebar_w, py),
+                    imgui.ImVec2(sidebar_w + total_w, py),
+                    line_color,
+                    2.0,
+                )
+
+        imgui.end()
+
     def _render_ui(self):
         """
         Render the complete ImGui interface (left panel, stats overlay, and custom UI).
         """
         if not self.ui or not self.ui.is_available:
+            return
+
+        if self.tiled_view and self._tiled_texture_id:
+            self._render_tiled_view_ui()
+
+        if not self.show_ui:
             return
 
         # Render gizmos
@@ -2018,6 +2310,12 @@ class ViewerGL(ViewerBase):
                     # Inertia boxes toggle
                     show_inertia_boxes = self.show_inertia_boxes
                     changed, self.show_inertia_boxes = imgui.checkbox("Show Inertia Boxes", show_inertia_boxes)
+
+                    # Tiled camera view
+                    if self.model is not None and self.model.world_count > 1:
+                        changed, tiled = imgui.checkbox("Tiled View (T)", self.tiled_view)
+                        if changed:
+                            self.tiled_view = tiled
 
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):
