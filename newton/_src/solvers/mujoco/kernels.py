@@ -10,8 +10,8 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...math import velocity_at_point
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
+from ...sim.articulation import com_twist_to_point_velocity, origin_twist_to_com_twist
 
 
 def _import_contact_force_fn():
@@ -494,7 +494,8 @@ def convert_mj_coords_to_warp_kernel(
         joint_q[wq_i + 6] = rot[3]
 
         # MuJoCo qvel: linear velocity of body ORIGIN (world frame), angular velocity (body frame)
-        # Newton joint_qd: linear velocity of CoM (world frame), angular velocity (world frame)
+        # Newton's MuJoCo FREE-root bridge uses a CoM/world twist. More generally,
+        # descendant FREE/DISTANCE joint_qd remains expressed in the joint parent frame.
         #
         # Relationship: v_com = v_origin + ω x com_offset_world
         # where com_offset_world = quat_rotate(body_rotation, body_com)
@@ -597,7 +598,8 @@ def convert_warp_coords_to_mj_kernel(
         qpos[worldid, q_i + 5] = rot_wxyz[2]
         qpos[worldid, q_i + 6] = rot_wxyz[3]
 
-        # Newton joint_qd: linear velocity of CoM (world frame), angular velocity (world frame)
+        # Newton's MuJoCo FREE-root bridge uses a CoM/world twist. More generally,
+        # descendant FREE/DISTANCE joint_qd remains expressed in the joint parent frame.
         # MuJoCo qvel: linear velocity of body ORIGIN (world frame), angular velocity (body frame)
         #
         # Relationship: v_origin = v_com - ω x com_offset_world
@@ -1088,27 +1090,31 @@ def eval_single_articulation_fk(
         # transform from world to child body frame
         X_wc = X_wcj * wp.transform_inverse(X_cj)
 
+        x_child_origin = wp.transform_get_translation(X_wc)
         v_parent_origin = wp.vec3()
         w_parent = wp.vec3()
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = velocity_at_point(
-                v_wp, wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
-            )
+            v_parent_origin = com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_origin)
 
-        linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+        linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        child_origin_offset_world = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wcj)
-        linear_joint_origin = linear_joint_anchor + wp.cross(angular_joint_world, child_origin_offset_world)
+        if type == JointType.FREE or type == JointType.DISTANCE:
+            linear_joint_origin = linear_joint_world - wp.cross(
+                angular_joint_world, wp.transform_vector(X_wc, body_com[child])
+            )
+        else:
+            child_origin_offset_world = x_child_origin - wp.transform_get_translation(X_wcj)
+            linear_joint_origin = linear_joint_world + wp.cross(angular_joint_world, child_origin_offset_world)
 
-        v_wc = wp.spatial_vector(
+        v_wc_origin = wp.spatial_vector(
             v_parent_origin + linear_joint_origin,
             w_parent + angular_joint_world,
         )  # spatial vector with (linear, angular) ordering
 
         body_q[child] = X_wc
-        body_qd[child] = v_wc
+        body_qd[child] = origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
 
 
 @wp.kernel
@@ -2165,10 +2171,9 @@ def convert_qfrc_actuator_from_mj_kernel(
     """Convert MuJoCo qfrc_actuator [nworld, nv] into Newton flat DOF array.
 
     Uses the same joint-based DOF mapping as the coordinate conversion
-    kernels.  For free joints the wrench is transformed from MuJoCo's
-    (origin, body-frame) convention to Newton's (CoM, world-frame)
-    convention (dual of the velocity transform).  Ball and other joints
-    are copied directly.
+    kernels. For free joints the wrench is transformed from MuJoCo's
+    (origin, body-frame) convention to the CoM/world convention used on the
+    MuJoCo side of Newton. Ball and other joints are copied directly.
     """
     worldid, jntid = wp.tid()
 

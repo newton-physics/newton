@@ -384,7 +384,8 @@ class Model:
         self.body_q: wp.array[wp.transform] | None = None
         """Rigid body poses [m, unitless quaternion] for state initialization, shape [body_count, 7], float."""
         self.body_qd: wp.array[wp.spatial_vector] | None = None
-        """Rigid body velocities [m/s, rad/s] for state initialization, shape [body_count, 6], float."""
+        """Rigid body velocities [m/s, rad/s] for state initialization, shape [body_count, 6], float.
+        The linear component is the body COM velocity in world frame."""
         self.body_com: wp.array[wp.vec3] | None = None
         """Rigid body center of mass [m] (in local frame), shape [body_count, 3], float."""
         self.body_inertia: wp.array[wp.mat33] | None = None
@@ -422,9 +423,11 @@ class Model:
         self.joint_q: wp.array[wp.float32] | None = None
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
         self.joint_qd: wp.array[wp.float32] | None = None
-        """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float."""
+        """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float.
+        For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
         self.joint_f: wp.array[wp.float32] | None = None
-        """Generalized joint forces [N or N·m, depending on joint type] for state initialization, shape [joint_dof_count], float."""
+        """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
+        For FREE and DISTANCE joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
         self.joint_target_pos: wp.array[wp.float32] | None = None
         """Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_vel: wp.array[wp.float32] | None = None
