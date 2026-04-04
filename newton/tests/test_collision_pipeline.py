@@ -385,7 +385,7 @@ def test_mesh_mesh_sdf_vs_sdf(_test, device, broad_phase: str):
     """Test mesh-mesh collision where both meshes have SDFs."""
     # SDF-SDF hydroelastic contacts can have some variability in contact normal direction
     test_mesh_mesh_sdf_modes(
-        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase=broad_phase, tolerance=0.1
+        _test, device, sdf_max_resolution_a=64, sdf_max_resolution_b=64, broad_phase=broad_phase, tolerance=0.1
     )
 
 
@@ -395,7 +395,7 @@ def test_mesh_mesh_sdf_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test,
         device,
-        sdf_max_resolution_a=8,
+        sdf_max_resolution_a=64,
         sdf_max_resolution_b=None,
         broad_phase=broad_phase,
         tolerance=0.2,
@@ -409,7 +409,7 @@ def test_mesh_mesh_bvh_vs_sdf(_test, device, broad_phase: str):
         _test,
         device,
         sdf_max_resolution_a=None,
-        sdf_max_resolution_b=8,
+        sdf_max_resolution_b=64,
         broad_phase=broad_phase,
         tolerance=0.5,
     )

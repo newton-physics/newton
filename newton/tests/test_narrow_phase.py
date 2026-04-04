@@ -1457,6 +1457,13 @@ class TestNarrowPhase(unittest.TestCase):
             contact_tangent = wp.zeros(max_contacts, dtype=wp.vec3)
             contact_count = wp.zeros(1, dtype=int)
 
+            # Build edge arrays for the mesh shapes
+            edges = box_mesh.edges
+            mesh_edge_indices = wp.array(edges, dtype=wp.vec2i, device=device)
+            num_edges = len(edges)
+            # Both shapes share the same mesh edges
+            shape_edge_range = wp.array([(0, num_edges), (0, num_edges)], dtype=wp.vec2i, device=device)
+
             narrow_phase.launch(
                 candidate_pair=candidate_pair,
                 candidate_pair_count=candidate_pair_count,
@@ -1477,6 +1484,8 @@ class TestNarrowPhase(unittest.TestCase):
                 contact_penetration=contact_penetration,
                 contact_count=contact_count,
                 contact_tangent=contact_tangent,
+                mesh_edge_indices=mesh_edge_indices,
+                shape_edge_range=shape_edge_range,
             )
 
             count = int(contact_count.numpy()[0])
