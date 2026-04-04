@@ -404,7 +404,7 @@ add_function_test(
     "test_viewer_file_playback",
     test_viewer_file_playback,
     devices=devices,
-    check_output=False,  # ViewerFile prints save/load messages
+    allowed_patterns=["Recording saved to", "ViewerFile closed"],
 )
 
 add_function_test(
@@ -419,7 +419,6 @@ add_function_test(
     "test_model_and_state_recorder_binary",
     test_model_and_state_recorder_binary,
     devices=devices,
-    check_output=False,  # Ignore "Please install 'psutil'" UserWarning
 )
 
 
@@ -630,7 +629,6 @@ add_function_test(
     "test_warp_dtype_roundtrip_binary",
     test_warp_dtype_roundtrip_binary,
     devices=devices,
-    check_output=False,
 )
 
 add_function_test(
@@ -638,7 +636,6 @@ add_function_test(
     "test_warp_dtype_file_roundtrip",
     test_warp_dtype_file_roundtrip,
     devices=devices,
-    check_output=False,
 )
 
 
@@ -731,7 +728,6 @@ add_function_test(
     "test_real_model_recording_roundtrip",
     test_real_model_recording_roundtrip,
     devices=devices,
-    check_output=False,
 )
 
 

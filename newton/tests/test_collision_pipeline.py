@@ -442,7 +442,6 @@ for mode_name, test_func in mesh_mesh_sdf_tests:
             test_func,
             devices=devices,
             broad_phase=broad_phase,
-            check_output=False,  # Disable output checking due to Warp module loading messages
         )
 
 

@@ -768,7 +768,11 @@ def test_mesh_ground_collision_index(test, device):
     model = builder.finalize(device=device)
     test.assertEqual(model.shape_contact_pair_count, 3)
     state = model.state()
-    contacts = model.contacts()
+    if device.is_cpu:
+        with test.assertWarnsRegex(UserWarning, "mesh-mesh contacts will be skipped"):
+            contacts = model.contacts()
+    else:
+        contacts = model.contacts()
     model.collide(state, contacts)
     contact_count = contacts.rigid_contact_count.numpy()[0]
     # CPU gets 3 contacts (no reduction), CUDA may get more with reduction

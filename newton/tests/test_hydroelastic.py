@@ -1164,7 +1164,6 @@ add_function_test(
     "test_buffer_fraction_no_crash",
     test_buffer_fraction_no_crash,
     devices=cuda_devices,
-    check_output=False,
 )
 
 add_function_test(
@@ -1179,7 +1178,6 @@ add_function_test(
     "test_reduce_contacts_with_pre_prune_disabled_no_crash",
     test_reduce_contacts_with_pre_prune_disabled_no_crash,
     devices=cuda_devices,
-    check_output=False,
 )
 add_function_test(
     TestHydroelastic,
@@ -1193,7 +1191,6 @@ add_function_test(
     "test_reduced_vs_unreduced_contact_forces",
     test_reduced_vs_unreduced_contact_forces,
     devices=cuda_devices,
-    check_output=False,
 )
 
 add_function_test(
@@ -1201,7 +1198,6 @@ add_function_test(
     "test_reduced_vs_unreduced_contact_forces_with_anchor_contact",
     test_reduced_vs_unreduced_contact_forces_with_anchor_contact,
     devices=cuda_devices,
-    check_output=False,
 )
 
 add_function_test(
@@ -1209,7 +1205,6 @@ add_function_test(
     "test_reduced_vs_unreduced_contact_moments",
     test_reduced_vs_unreduced_contact_moments,
     devices=cuda_devices,
-    check_output=False,
 )
 
 
@@ -1218,7 +1213,6 @@ add_function_test(
     "test_translational_friction_invariance",
     test_translational_friction_invariance,
     devices=cuda_devices,
-    check_output=False,
 )
 
 add_function_test(
@@ -1226,7 +1220,6 @@ add_function_test(
     "test_reduced_vs_unreduced_contact_forces_cube_on_cube",
     test_reduced_vs_unreduced_contact_forces_cube_on_cube,
     devices=cuda_devices,
-    check_output=False,
 )
 
 add_function_test(
@@ -1234,7 +1227,6 @@ add_function_test(
     "test_reduced_vs_unreduced_contact_moments_cube_on_cube",
     test_reduced_vs_unreduced_contact_moments_cube_on_cube,
     devices=cuda_devices,
-    check_output=False,
 )
 
 

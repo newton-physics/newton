@@ -217,16 +217,13 @@ class TestImplicitMPM(unittest.TestCase):
     pass
 
 
-add_function_test(
-    TestImplicitMPM, "test_sand_cube_on_plane", test_sand_cube_on_plane, devices=devices, check_output=False
-)
+add_function_test(TestImplicitMPM, "test_sand_cube_on_plane", test_sand_cube_on_plane, devices=devices)
 
 add_function_test(
     TestImplicitMPM,
     "test_finite_difference_collider_velocity",
     test_finite_difference_collider_velocity,
     devices=devices,
-    check_output=False,
 )
 
 

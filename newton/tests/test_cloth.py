@@ -1167,7 +1167,6 @@ def test_cloth_enable_tri_contact(test, device, solver):
 
     # examine that the vertical coordinate of the last particle is negative
     final_pos = example.state0.particle_q.numpy()
-    print("final_pos", final_pos[-1, 1])
     test.assertTrue(final_pos[-1, 1] < 0.0)
 
 
@@ -1217,9 +1216,7 @@ tests_to_run = {
 
 for solver, tests in tests_to_run.items():
     for test in tests:
-        add_function_test(
-            TestCloth, f"{test.__name__}_{solver}", partial(test, solver=solver), devices=devices, check_output=False
-        )
+        add_function_test(TestCloth, f"{test.__name__}_{solver}", partial(test, solver=solver), devices=devices)
 
 
 # ============================================================================
@@ -1281,7 +1278,6 @@ for solver, tests in collision_pipeline_tests_to_run.items():
             f"{test.__name__}_{solver}",
             partial(test, solver=solver),
             devices=devices,
-            check_output=False,
         )
 
 
