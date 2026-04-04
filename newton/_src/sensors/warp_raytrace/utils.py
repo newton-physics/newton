@@ -467,7 +467,7 @@ class Utils:
     def assign_random_colors_per_world(self, seed: int = 100):
         """Assign each world a random color, applied to all its shapes.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
 
         Args:
@@ -491,7 +491,7 @@ class Utils:
     def assign_random_colors_per_shape(self, seed: int = 100):
         """Assign a random color to each shape.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
 
         Args:
