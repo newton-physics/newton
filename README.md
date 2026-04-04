@@ -97,6 +97,11 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     <td align="center" width="33%">
       <code>python -m newton.examples basic_joints</code>
     </td>
+    <td align="center">
+      <code>uv run -m newton.examples basic_particle_chain</code>
+    </td>
+  </tr>
+  <tr>
     <td align="center" width="33%">
       <code>python -m newton.examples basic_conveyor</code>
     </td>
