@@ -18,7 +18,13 @@ import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
 from ..core.types import MAXVAL, Axis
-from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents, repack_shape_colors
+from .kernels import (
+    build_active_particle_mask,
+    compact,
+    compute_hydro_contact_surface_lines,
+    estimate_world_extents,
+    repack_shape_colors,
+)
 
 
 class ViewerBase(ABC):
@@ -1987,16 +1993,43 @@ class ViewerBase(ABC):
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:
-            # just set colors on first frame
+            points = state.particle_q
+            radii = self.model.particle_radius
+
+            # Filter out inactive particles so emitters/culled particles are not rendered.
+            # Uses Warp stream compaction to stay on device and avoid GPU→CPU→GPU roundtrips.
+            if self.model.particle_flags is not None:
+                n = self.model.particle_count
+                mask = wp.zeros(n, dtype=wp.int32, device=self.device)
+                wp.launch(
+                    build_active_particle_mask, dim=n, inputs=[self.model.particle_flags, mask], device=self.device
+                )
+                offsets = wp.empty(n, dtype=wp.int32, device=self.device)
+                wp.utils.array_scan(mask, offsets, inclusive=False)
+
+                # Slice to transfer only the last element instead of the full array.
+                active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
+                if active_count == 0:
+                    self.log_points(name="/model/particles", points=None, hidden=True)
+                    return
+                if active_count < n:
+                    points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)
+                    wp.launch(compact, dim=n, inputs=[points, mask, offsets, points_out], device=self.device)
+                    points = points_out
+                    if isinstance(radii, wp.array):
+                        radii_out = wp.empty(active_count, dtype=wp.float32, device=self.device)
+                        wp.launch(compact, dim=n, inputs=[radii, mask, offsets, radii_out], device=self.device)
+                        radii = radii_out
+
             if self.model_changed:
-                colors = wp.full(shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
+                colors = wp.full(shape=len(points), value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
             else:
                 colors = None
 
             self.log_points(
                 name="/model/particles",
-                points=state.particle_q,
-                radii=self.model.particle_radius,
+                points=points,
+                radii=radii,
                 colors=colors,
                 hidden=not self.show_particles,
             )
