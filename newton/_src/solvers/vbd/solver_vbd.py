@@ -269,6 +269,8 @@ class SolverVBD(SolverBase):
                 persistent lambda and C0 stabilization) or soft mode (penalty only).
             rigid_contact_warmstart: Whether to warmstart hard body-body contacts from cross-step contact history.
                 Defaults to `rigid_contact_hard` when left as `None`.
+                Forced to ``False`` when ``rigid_contact_hard=False`` (soft contacts
+                do not use lambda history or dual updates).
             rigid_contact_match_tolerance: World-space tolerance used to match current contacts against contact
                 history entries during warmstart.
             rigid_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
@@ -469,18 +471,19 @@ class SolverVBD(SolverBase):
         self.avbd_alpha = rigid_stabilization_alpha
         # Hard-contact mode: lambda + C0 stabilization for body-body contacts.
         self.rigid_contact_hard = int(rigid_contact_hard)
-        # Contact warmstart: default follows hard (hard->True, soft->False).
-        # Contact stabilization alpha follows warmstart: use
-        # rigid_stabilization_alpha when warmstart is enabled, otherwise 0.0.
+        # Contact warmstart: requires hard contacts (AL with lambda + C0).
+        # Soft contacts never use lambda history or dual updates, so warmstart
+        # is forced off regardless of the user-supplied value.
         if rigid_contact_warmstart is None:
             rigid_contact_warmstart = rigid_contact_hard
-        self.rigid_contact_warmstart = rigid_contact_warmstart
         if rigid_contact_warmstart and not rigid_contact_hard:
             warnings.warn(
-                "rigid_contact_warmstart with soft contacts has no effect "
+                "rigid_contact_warmstart=True ignored because rigid_contact_hard=False "
                 "(soft contacts do not use lambda history or dual updates).",
                 stacklevel=3,
             )
+            rigid_contact_warmstart = False
+        self.rigid_contact_warmstart = rigid_contact_warmstart
         self.rigid_contact_alpha = rigid_stabilization_alpha if rigid_contact_warmstart else 0.0
         rigid_contact_match_tolerance = max(0.0, rigid_contact_match_tolerance)
         self.rigid_contact_match_tolerance = rigid_contact_match_tolerance
