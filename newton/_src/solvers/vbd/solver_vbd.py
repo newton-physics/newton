@@ -66,14 +66,14 @@ from .rigid_vbd_kernels import (
     compute_rigid_contact_forces,
     evict_contact_history,
     forward_step_rigid_bodies,
-    init_body_body_contacts,
+    init_body_body_contact_materials,
+    init_body_body_contacts_avbd,
     init_body_particle_contacts,
-    init_contact_avbd,
-    init_joint_avbd,
     snapshot_contact_history,
     snapshot_contact_history_light,
     solve_rigid_body,
-    step_contact_C0_lambda,
+    step_body_body_contact_C0_lambda,
+    step_joint_C0_lambda,
     update_body_velocity,
     update_cable_dahl_state,
     update_duals_body_body_contacts,
@@ -207,8 +207,8 @@ class SolverVBD(SolverBase):
         rigid_contact_buffer_size: int = 64,
         rigid_particle_contact_buffer_size: int = 256,
         # Rigid body - joints
-        rigid_joint_linear_ke: float = 1.0e4,  # Fixed penalty stiffness for structural linear joint constraints (BALL, FIXED, etc.)
-        rigid_joint_angular_ke: float = 1.0e4,  # Fixed penalty stiffness for structural angular joint constraints (FIXED, REVOLUTE, etc.)
+        rigid_joint_linear_ke: float = 1.0e5,  # Fixed penalty stiffness for structural linear joint constraints (BALL, FIXED, etc.)
+        rigid_joint_angular_ke: float = 1.0e5,  # Fixed penalty stiffness for structural angular joint constraints (FIXED, REVOLUTE, etc.)
         rigid_joint_linear_kd: float = 0.0,  # Rayleigh damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Rayleigh damping for non-cable angular joint constraints
     ):
@@ -505,9 +505,10 @@ class SolverVBD(SolverBase):
         # Rigid-only AVBD state (used when SolverVBD integrates bodies)
         # -------------------------------------------------------------
         if not self.integrate_with_external_rigid_solver and model.body_count > 0:
-            # State storage
-            # Initialize to the current poses for the first step to avoid spurious finite-difference
-            # velocities/friction impulses.
+            # Previous-step body transforms, advanced by update_body_velocity() each step.
+            # Provides contact friction velocity and joint C0 feedforward for kinematic tracking.
+            # Kinematic bodies: set body_q.
+            # Dynamic teleportation: also set body_q_prev and body_qd.
             self.body_q_prev = wp.clone(model.body_q).to(self.device)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
@@ -614,7 +615,7 @@ class SolverVBD(SolverBase):
         has_bodies = self.model.body_count > 0
         has_body_coloring = len(self.model.body_color_groups) > 0
 
-        if has_bodies and not has_body_coloring:
+        if has_bodies and not has_body_coloring and not self.integrate_with_external_rigid_solver:
             raise ValueError(
                 "model.body_color_groups is empty but rigid bodies are present! When using the SolverVBD you must call ModelBuilder.color() "
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
@@ -657,6 +658,12 @@ class SolverVBD(SolverBase):
         self.contact_history_age = wp.zeros(ht_cap, dtype=int, device=self.device)
         self.contact_history_slots = wp.full(rigid_contact_max, -1, dtype=int, device=self.device)
 
+    @staticmethod
+    def _to_numpy(arr, dtype=None):
+        """Transfer a Warp array to CPU and return as numpy."""
+        cpu = arr.to("cpu")
+        return cpu.numpy() if hasattr(cpu, "numpy") else np.asarray(cpu, dtype=dtype)
+
     def _init_joint_constraint_layout(self) -> None:
         """Initialize VBD-owned joint constraint indexing.
 
@@ -681,8 +688,7 @@ class SolverVBD(SolverBase):
         """
         n_j = self.model.joint_count
         with wp.ScopedDevice("cpu"):
-            jt_cpu = self.model.joint_type.to("cpu")
-            jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
+            jt = self._to_numpy(self.model.joint_type, dtype=int)
 
             dim_np = np.zeros((n_j,), dtype=np.int32)
             for j in range(n_j):
@@ -751,23 +757,11 @@ class SolverVBD(SolverBase):
             joint_kd_np = np.zeros((constraint_count,), dtype=float)
             is_hard_np = np.zeros((constraint_count,), dtype=np.int32)
 
-            jt_cpu = self.model.joint_type.to("cpu")
-            jdofs_cpu = self.model.joint_qd_start.to("cpu")
-            jtarget_ke_cpu = self.model.joint_target_ke.to("cpu")
-            jtarget_kd_cpu = self.model.joint_target_kd.to("cpu")
-            jc_start_cpu = self.joint_constraint_start.to("cpu")
-
-            jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
-            jdofs = jdofs_cpu.numpy() if hasattr(jdofs_cpu, "numpy") else np.asarray(jdofs_cpu, dtype=int)
-            jc_start = (
-                jc_start_cpu.numpy() if hasattr(jc_start_cpu, "numpy") else np.asarray(jc_start_cpu, dtype=np.int32)
-            )
-            jtarget_ke = (
-                jtarget_ke_cpu.numpy() if hasattr(jtarget_ke_cpu, "numpy") else np.asarray(jtarget_ke_cpu, dtype=float)
-            )
-            jtarget_kd = (
-                jtarget_kd_cpu.numpy() if hasattr(jtarget_kd_cpu, "numpy") else np.asarray(jtarget_kd_cpu, dtype=float)
-            )
+            jt = self._to_numpy(self.model.joint_type, dtype=int)
+            jdofs = self._to_numpy(self.model.joint_qd_start, dtype=int)
+            jtarget_ke = self._to_numpy(self.model.joint_target_ke, dtype=float)
+            jtarget_kd = self._to_numpy(self.model.joint_target_kd, dtype=float)
+            jc_start = self._to_numpy(self.joint_constraint_start, dtype=np.int32)
 
             structural_linear_ke = self.rigid_joint_linear_ke
             structural_angular_ke = self.rigid_joint_angular_ke
@@ -828,19 +822,11 @@ class SolverVBD(SolverBase):
         rest_angle_np = np.zeros(dof_count, dtype=float)
 
         with wp.ScopedDevice("cpu"):
-            jt_cpu = self.model.joint_type.to("cpu")
-            jq_cpu = self.model.joint_q.to("cpu")
-            jq_start_cpu = self.model.joint_q_start.to("cpu")
-            jqd_start_cpu = self.model.joint_qd_start.to("cpu")
-            jdof_dim_cpu = self.model.joint_dof_dim.to("cpu")
-
-            jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
-            jq = jq_cpu.numpy() if hasattr(jq_cpu, "numpy") else np.asarray(jq_cpu, dtype=float)
-            jq_start = jq_start_cpu.numpy() if hasattr(jq_start_cpu, "numpy") else np.asarray(jq_start_cpu, dtype=int)
-            jqd_start = (
-                jqd_start_cpu.numpy() if hasattr(jqd_start_cpu, "numpy") else np.asarray(jqd_start_cpu, dtype=int)
-            )
-            jdof_dim = jdof_dim_cpu.numpy() if hasattr(jdof_dim_cpu, "numpy") else np.asarray(jdof_dim_cpu, dtype=int)
+            jt = self._to_numpy(self.model.joint_type, dtype=int)
+            jq = self._to_numpy(self.model.joint_q, dtype=float)
+            jq_start = self._to_numpy(self.model.joint_q_start, dtype=int)
+            jqd_start = self._to_numpy(self.model.joint_qd_start, dtype=int)
+            jdof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
 
             for j in range(self.model.joint_count):
                 if jt[j] == JointType.REVOLUTE:
@@ -1182,7 +1168,7 @@ class SolverVBD(SolverBase):
     # =====================================================
 
     def set_rigid_contact_refresh(self, refresh: bool):
-        """Control whether the next step() refreshes solver contact state.
+        """Control whether step() refreshes solver contact state.
 
         When True (default), the step refreshes contact state from the Contacts
         buffer: warmstarts from the hash table, initializes penalty_k/lambda/C0,
@@ -1190,7 +1176,7 @@ class SolverVBD(SolverBase):
         current contact state and runs a light snapshot to keep the hash table fresh.
 
         Joint AVBD maintenance (C0 snapshot, lambda decay)
-        runs every step regardless of this flag via init_joint_avbd().
+        runs every step regardless of this flag via step_joint_C0_lambda().
 
         This setting applies only to the next call to :meth:`step` and is then
         reset to True.  Useful for substepping where collision detection frequency
@@ -1228,17 +1214,9 @@ class SolverVBD(SolverBase):
             raise ValueError(f"joint_index={joint_index} out of range [0, {n_j}).")
 
         with wp.ScopedDevice("cpu"):
-            c_start_cpu = self.joint_constraint_start.to("cpu")
-            c_dim_cpu = self.joint_constraint_dim.to("cpu")
-            is_hard_cpu = self.joint_is_hard.to("cpu")
-
-            c_start_np = (
-                c_start_cpu.numpy() if hasattr(c_start_cpu, "numpy") else np.asarray(c_start_cpu, dtype=np.int32)
-            )
-            c_dim_np = c_dim_cpu.numpy() if hasattr(c_dim_cpu, "numpy") else np.asarray(c_dim_cpu, dtype=np.int32)
-            is_hard_np = (
-                is_hard_cpu.numpy() if hasattr(is_hard_cpu, "numpy") else np.asarray(is_hard_cpu, dtype=np.int32)
-            )
+            c_start_np = self._to_numpy(self.joint_constraint_start, dtype=np.int32)
+            c_dim_np = self._to_numpy(self.joint_constraint_dim, dtype=np.int32)
+            is_hard_np = self._to_numpy(self.joint_is_hard, dtype=np.int32)
 
             c0 = int(c_start_np[joint_index])
             cdim = int(c_dim_np[joint_index])
@@ -1303,14 +1281,14 @@ class SolverVBD(SolverBase):
             self._solve_rigid_body_iteration(state_in, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
-        self._snapshot_contact_history(contacts, refresh)
+        self._snapshot_rigid_contact_history(contacts, refresh)
 
         self._finalize_rigid_bodies(
             state_in, state_out, dt, apply_stick_deadzone=contacts is not None and self.rigid_contact_hard
         )
         self._finalize_particles(state_out, dt)
 
-    def _snapshot_contact_history(self, contacts: Contacts | None, refresh: bool):
+    def _snapshot_rigid_contact_history(self, contacts: Contacts | None, refresh: bool):
         """Write contact solver state to the hash table.
 
         When warmstart is enabled:
@@ -1507,7 +1485,11 @@ class SolverVBD(SolverBase):
         # Rigid-only initialization
         # ---------------------------
         if model.body_count > 0 and not self.integrate_with_external_rigid_solver:
-            if contacts is not None and contacts.rigid_contact_max > 0 and self.body_body_contact_penalty_k.shape[0] == 0:
+            if (
+                contacts is not None
+                and contacts.rigid_contact_max > 0
+                and self.body_body_contact_penalty_k.shape[0] == 0
+            ):
                 refresh = True
             # Contact C0 + warmstart BEFORE integration: body_q is the collide frame
             # for all bodies (dynamic and kinematic) at this point.
@@ -1553,7 +1535,7 @@ class SolverVBD(SolverBase):
                             self._init_contact_history(contacts.rigid_contact_max)
 
                         wp.launch(
-                            kernel=init_contact_avbd,
+                            kernel=init_body_body_contacts_avbd,
                             dim=contact_launch_dim,
                             inputs=[
                                 contacts.rigid_contact_count,
@@ -1590,7 +1572,7 @@ class SolverVBD(SolverBase):
                         )
                     else:
                         wp.launch(
-                            kernel=init_body_body_contacts,
+                            kernel=init_body_body_contact_materials,
                             inputs=[
                                 contacts.rigid_contact_count,
                                 contacts.rigid_contact_shape0,
@@ -1614,7 +1596,7 @@ class SolverVBD(SolverBase):
                 contact_launch_dim = contacts.rigid_contact_max
                 recompute_C0 = 0 if refresh else 1
                 wp.launch(
-                    kernel=step_contact_C0_lambda,
+                    kernel=step_body_body_contact_C0_lambda,
                     dim=contact_launch_dim,
                     inputs=[
                         contacts.rigid_contact_count,
@@ -1628,7 +1610,7 @@ class SolverVBD(SolverBase):
                         model.shape_body,
                         state_in.body_q,
                         self.rigid_contact_hard,
-                        self.avbd_gamma if self.rigid_contact_warmstart else 0.0,
+                        self.avbd_gamma if (self.rigid_contact_warmstart and self.rigid_contact_hard) else 0.0,
                         recompute_C0,
                     ],
                     outputs=[
@@ -1668,7 +1650,7 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
-            # Forward integrate rigid bodies (snapshots body_q_prev for dynamic bodies only)
+            # Forward integrate rigid bodies (body_q modified in-place for dynamic bodies only).
             wp.launch(
                 kernel=forward_step_rigid_bodies,
                 inputs=[
@@ -1685,17 +1667,17 @@ class SolverVBD(SolverBase):
                 ],
                 outputs=[
                     self.body_inertia_q,
-                    self.body_q_prev,
                 ],
                 dim=model.body_count,
                 device=self.device,
             )
 
-            # Per-step joint C0 snapshot + lambda decay (must run every step, not just refresh,
-            # to prevent C_stab drift and unbounded lambda accumulation).
+            # Per-step joint lambda decay + C0 snapshot.
+            # Uses body_q_prev (previous-step pose for kinematic bodies) which
+            # provides implicit feedforward tracking force -- see avbd_rigid_review.md section 6.
             if model.joint_count > 0:
                 wp.launch(
-                    kernel=init_joint_avbd,
+                    kernel=step_joint_C0_lambda,
                     dim=model.joint_count,
                     inputs=[
                         model.joint_enabled,
@@ -2210,7 +2192,6 @@ class SolverVBD(SolverBase):
                     model.body_q,
                     self.joint_penalty_k,
                     model.joint_dof_dim,
-                    self.joint_rest_angle,
                     self.joint_lambda_lin,
                     self.joint_lambda_ang,
                     self.joint_C0_lin,

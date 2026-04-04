@@ -37,7 +37,7 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 5
         self.sim_iterations = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -48,7 +48,7 @@ class Example:
         cable_radius = 0.012
 
         # Layers and lanes
-        layers = 16
+        layers = 10
         lanes_per_layer = 10
         lane_spacing = max(8.0 * cable_radius, 0.15)
         layer_gap = cable_radius * 6.0
@@ -157,7 +157,7 @@ class Example:
             self.model,
             iterations=self.sim_iterations,
             friction_epsilon=0.01,
-            rigid_contact_buffer_size=512,
+            rigid_contact_buffer_size=256,
         )
 
         self.state_0 = self.model.state()
