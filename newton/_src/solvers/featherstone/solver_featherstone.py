@@ -511,7 +511,7 @@ class SolverFeatherstone(SolverBase):
                             model.joint_limit_upper,
                             model.joint_limit_ke,
                             model.joint_limit_kd,
-                            model.joint_passive_damping,
+                            model.joint_damping,
                             state_aug.joint_S_s,
                             state_aug.body_f_s,
                             body_f,

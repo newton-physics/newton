@@ -317,7 +317,7 @@ def parse_mjcf(
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
     default_joint_target_ke = builder.default_joint_cfg.target_ke
     default_joint_target_kd = builder.default_joint_cfg.target_kd
-    default_joint_passive_damping = builder.default_joint_cfg.passive_damping
+    default_joint_damping = builder.default_joint_cfg.damping
     default_joint_armature = builder.default_joint_cfg.armature
     default_joint_effort_limit = builder.default_joint_cfg.effort_limit
 
@@ -1549,7 +1549,7 @@ def parse_mjcf(
                     limit_kd=limit_kd,
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
-                    passive_damping=parse_float(joint_attrib, "damping", default_joint_passive_damping),
+                    damping=parse_float(joint_attrib, "damping", default_joint_damping),
                     armature=joint_armature[-1],
                     friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
