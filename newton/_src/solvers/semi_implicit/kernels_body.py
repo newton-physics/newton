@@ -26,7 +26,7 @@ def joint_force(
     limit_upper: float,
     limit_ke: float,
     limit_kd: float,
-    passive_damping: float,
+    damping: float,
 ) -> float:
     """Joint force evaluation for a single degree of freedom."""
 
@@ -46,7 +46,7 @@ def joint_force(
         damping_f = -limit_kd * qd
         target_f = 0.0
 
-    passive_f = -passive_damping * qd
+    passive_f = -damping * qd
 
     return limit_f + damping_f + target_f + passive_f
 
@@ -74,7 +74,7 @@ def eval_body_joints(
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
-    joint_passive_damping: wp.array[float],
+    joint_damping: wp.array[float],
     joint_attach_ke: float,
     joint_attach_kd: float,
     body_f: wp.array[wp.spatial_vector],
@@ -182,7 +182,7 @@ def eval_body_joints(
                 joint_limit_upper[qd_start],
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
-                joint_passive_damping[qd_start],
+                joint_damping[qd_start],
             )
         )
 
@@ -220,7 +220,7 @@ def eval_body_joints(
                 joint_limit_upper[qd_start],
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
-                joint_passive_damping[qd_start],
+                joint_damping[qd_start],
             )
         )
 
@@ -260,7 +260,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 0],
                     joint_limit_ke[qd_start + 0],
                     joint_limit_kd[qd_start + 0],
-                    joint_passive_damping[qd_start + 0],
+                    joint_damping[qd_start + 0],
                 )
             )
 
@@ -285,7 +285,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 1],
                     joint_limit_ke[qd_start + 1],
                     joint_limit_kd[qd_start + 1],
-                    joint_passive_damping[qd_start + 1],
+                    joint_damping[qd_start + 1],
                 )
             )
 
@@ -310,7 +310,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 2],
                     joint_limit_ke[qd_start + 2],
                     joint_limit_kd[qd_start + 2],
-                    joint_passive_damping[qd_start + 2],
+                    joint_damping[qd_start + 2],
                 )
             )
 
@@ -355,7 +355,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_passive_damping[i_0],
+                    joint_damping[i_0],
                 )
             )
 
@@ -402,7 +402,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_passive_damping[i_0],
+                    joint_damping[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -418,7 +418,7 @@ def eval_body_joints(
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
-                    joint_passive_damping[i_1],
+                    joint_damping[i_1],
                 )
             )
 
@@ -473,7 +473,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_passive_damping[i_0],
+                    joint_damping[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -489,7 +489,7 @@ def eval_body_joints(
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
-                    joint_passive_damping[i_1],
+                    joint_damping[i_1],
                 )
             )
             t_total += axis_2 * (
@@ -505,7 +505,7 @@ def eval_body_joints(
                     joint_limit_upper[i_2],
                     joint_limit_ke[i_2],
                     joint_limit_kd[i_2],
-                    joint_passive_damping[i_2],
+                    joint_damping[i_2],
                 )
             )
 
@@ -545,7 +545,7 @@ def eval_body_joint_forces(
                 model.joint_limit_upper,
                 model.joint_limit_ke,
                 model.joint_limit_kd,
-                model.joint_passive_damping,
+                model.joint_damping,
                 joint_attach_ke,
                 joint_attach_kd,
             ],

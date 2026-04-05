@@ -144,6 +144,7 @@
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
 - Add site-targeted actuator support to MuJoCo solver
 - Add `joint_passive_damping` model attribute and `JointDofConfig.passive_damping` for velocity-proportional damping that is always active
+- Add `joint_damping` model attribute and `JointDofConfig.damping` for velocity-proportional damping that is always active
 
 
 ### Changed
