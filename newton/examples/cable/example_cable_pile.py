@@ -156,8 +156,8 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            friction_epsilon=0.01,
             rigid_contact_buffer_size=256,
+            rigid_contact_warmstart=True,
         )
 
         self.state_0 = self.model.state()
@@ -217,7 +217,7 @@ class Example:
         """Test cable pile simulation for stability and correctness (called after simulation)."""
         cable_radius = 0.012
         cable_diameter = 2.0 * cable_radius
-        layers = 4
+        layers = 10
 
         tolerance = 0.1
 

@@ -198,11 +198,11 @@ class SolverVBD(SolverBase):
         particle_external_edge_contact_filtering_map: dict | None = None,
         # Rigid body parameters
         rigid_penalty_decay: float = 0.9,  # AVBD gamma: per-step lambda decay factor
-        rigid_stabilization_alpha: float = 0.95,  # AVBD alpha: C0 stabilization factor (C_stab = C - alpha * C0)
+        rigid_joint_stabilization_alpha: float = 0.95,  # AVBD alpha for joints: C0 stabilization (C_stab = C - alpha * C0)
+        rigid_contact_stabilization_alpha: float | None = None,  # AVBD alpha for contacts: C0 stabilization (default: 0.95 w/ warmstart, 0.0 w/o)
         # Rigid body - contacts
         rigid_contact_hard: bool = True,  # Hard = AL with lambda + C0 stabilization; soft = penalty only
-        rigid_contact_warmstart: bool
-        | None = None,  # Cross-step contact-history warmstart via hash table (default: follows hard)
+        rigid_contact_warmstart: bool = False,  # Cross-step contact-history warmstart via hash table
         rigid_contact_match_tolerance: float = 0.01,
         rigid_contact_buffer_size: int = 64,
         rigid_particle_contact_buffer_size: int = 256,
@@ -261,16 +261,14 @@ class SolverVBD(SolverBase):
 
             rigid_penalty_decay: (AVBD gamma) Per-step lambda decay factor (lambda *= gamma).
                 Lower values decay lambda faster, improving stability at the cost of slower convergence.
-            rigid_stabilization_alpha: (AVBD alpha) C0 stabilization factor. Controls how much of the step-start
-                constraint violation (C0) is subtracted from the current violation: C_stab = C - alpha * C0.
-                Applied to structural slots of rigid joints.
-                For contacts, auto-derived: equals this value when warmstart is enabled, 0.0 otherwise.
+            rigid_joint_stabilization_alpha: C0 stabilization factor for joint constraints (C_stab = C - alpha * C0).
+            rigid_contact_stabilization_alpha: C0 stabilization factor for contact constraints.
+                Defaults to 0.95 with warmstart, 0.0 without. Explicit values are always respected.
             rigid_contact_hard: Whether body-body rigid contacts use hard mode (augmented Lagrangian with
                 persistent lambda and C0 stabilization) or soft mode (penalty only).
             rigid_contact_warmstart: Whether to warmstart hard body-body contacts from cross-step contact history.
-                Defaults to `rigid_contact_hard` when left as `None`.
-                Forced to ``False`` when ``rigid_contact_hard=False`` (soft contacts
-                do not use lambda history or dual updates).
+                Defaults to ``False``. Forced to ``False`` when ``rigid_contact_hard=False``
+                (soft contacts do not use lambda history or dual updates).
             rigid_contact_match_tolerance: World-space tolerance used to match current contacts against contact
                 history entries during warmstart.
             rigid_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
@@ -327,7 +325,8 @@ class SolverVBD(SolverBase):
         self._init_rigid_system(
             model,
             rigid_penalty_decay,
-            rigid_stabilization_alpha,
+            rigid_joint_stabilization_alpha,
+            rigid_contact_stabilization_alpha,
             rigid_contact_hard,
             rigid_contact_warmstart,
             rigid_contact_match_tolerance,
@@ -449,9 +448,10 @@ class SolverVBD(SolverBase):
         self,
         model: Model,
         rigid_penalty_decay: float,
-        rigid_stabilization_alpha: float,
+        rigid_joint_stabilization_alpha: float,
+        rigid_contact_stabilization_alpha: float | None,
         rigid_contact_hard: bool,
-        rigid_contact_warmstart: bool | None,
+        rigid_contact_warmstart: bool,
         rigid_contact_match_tolerance: float,
         rigid_contact_buffer_size: int,
         rigid_particle_contact_buffer_size: int,
@@ -467,15 +467,13 @@ class SolverVBD(SolverBase):
           - Shared interaction state for body-particle (rigid-particle) soft contacts
         """
         # AVBD penalty parameters
-        self.avbd_gamma = rigid_penalty_decay
-        self.avbd_alpha = rigid_stabilization_alpha
+        self.rigid_penalty_decay = rigid_penalty_decay
+        self.rigid_joint_stabilization_alpha = rigid_joint_stabilization_alpha
         # Hard-contact mode: lambda + C0 stabilization for body-body contacts.
         self.rigid_contact_hard = int(rigid_contact_hard)
         # Contact warmstart: requires hard contacts (AL with lambda + C0).
         # Soft contacts never use lambda history or dual updates, so warmstart
         # is forced off regardless of the user-supplied value.
-        if rigid_contact_warmstart is None:
-            rigid_contact_warmstart = rigid_contact_hard
         if rigid_contact_warmstart and not rigid_contact_hard:
             warnings.warn(
                 "rigid_contact_warmstart=True ignored because rigid_contact_hard=False "
@@ -484,7 +482,10 @@ class SolverVBD(SolverBase):
             )
             rigid_contact_warmstart = False
         self.rigid_contact_warmstart = rigid_contact_warmstart
-        self.rigid_contact_alpha = rigid_stabilization_alpha if rigid_contact_warmstart else 0.0
+        if rigid_contact_stabilization_alpha is not None:
+            self.rigid_contact_stabilization_alpha = rigid_contact_stabilization_alpha
+        else:
+            self.rigid_contact_stabilization_alpha = 0.95 if rigid_contact_warmstart else 0.0
         rigid_contact_match_tolerance = max(0.0, rigid_contact_match_tolerance)
         self.rigid_contact_match_tolerance = rigid_contact_match_tolerance
         self.rigid_contact_match_cell_size_inv = 1.0 / max(rigid_contact_match_tolerance, 1.0e-8)
@@ -1613,7 +1614,7 @@ class SolverVBD(SolverBase):
                         model.shape_body,
                         state_in.body_q,
                         self.rigid_contact_hard,
-                        self.avbd_gamma if (self.rigid_contact_warmstart and self.rigid_contact_hard) else 0.0,
+                        self.rigid_penalty_decay if (self.rigid_contact_warmstart and self.rigid_contact_hard) else 0.0,
                         recompute_C0,
                     ],
                     outputs=[
@@ -1693,7 +1694,7 @@ class SolverVBD(SolverBase):
                         self.joint_constraint_start,
                         self.joint_constraint_dim,
                         self.joint_is_hard,
-                        self.avbd_gamma,
+                        self.rigid_penalty_decay,
                     ],
                     outputs=[
                         self.joint_C0_lin,
@@ -2066,7 +2067,7 @@ class SolverVBD(SolverBase):
                         self.body_body_contact_material_mu,
                         self.body_body_contact_lambda,
                         self.body_body_contact_C0,
-                        self.rigid_contact_alpha,
+                        self.rigid_contact_stabilization_alpha,
                         self.rigid_contact_hard,
                         contacts.rigid_contact_count,
                         contacts.rigid_contact_shape0,
@@ -2131,7 +2132,7 @@ class SolverVBD(SolverBase):
                     self.joint_C0_lin,
                     self.joint_C0_ang,
                     self.joint_is_hard,
-                    self.avbd_alpha,
+                    self.rigid_joint_stabilization_alpha,
                     model.joint_dof_dim,
                     self.joint_rest_angle,
                     self.body_forces,
@@ -2167,7 +2168,7 @@ class SolverVBD(SolverBase):
                     self.body_body_contact_penalty_k,
                     self.body_body_contact_lambda,
                     self.body_body_contact_C0,
-                    self.rigid_contact_alpha,
+                    self.rigid_contact_stabilization_alpha,
                     self.rigid_contact_hard,
                     self.body_inv_mass_effective,
                 ],
@@ -2200,7 +2201,7 @@ class SolverVBD(SolverBase):
                     self.joint_C0_lin,
                     self.joint_C0_ang,
                     self.joint_is_hard,
-                    self.avbd_alpha,
+                    self.rigid_joint_stabilization_alpha,
                 ],
                 device=self.device,
             )
@@ -2317,7 +2318,7 @@ class SolverVBD(SolverBase):
                 self.body_body_contact_material_mu,
                 self.body_body_contact_lambda,
                 self.body_body_contact_C0,
-                self.rigid_contact_alpha,
+                self.rigid_contact_stabilization_alpha,
                 self.rigid_contact_hard,
                 float(self.friction_epsilon),
             ],
