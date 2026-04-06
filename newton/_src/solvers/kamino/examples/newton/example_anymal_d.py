@@ -128,8 +128,9 @@ class Example:
                 self.model,
                 self.state_0,
                 "body velocities are small",
-                lambda q, qd: max(abs(qd))
-                < 0.25,  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
+                lambda q, qd: (
+                    max(abs(qd)) < 0.25
+                ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
 
 

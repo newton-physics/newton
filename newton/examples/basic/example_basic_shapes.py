@@ -190,13 +190,15 @@ class Example:
             self.model,
             self.state_0,
             "cylinder at rest pose",
-            lambda q, qd: abs(q[0] - cylinder_q[0]) < 0.01
-            and abs(q[1] - cylinder_q[1]) < 0.01
-            and abs(q[2] - cylinder_q[2]) < 1e-4
-            and abs(q[3] - cylinder_q[3]) < 1e-4
-            and abs(q[4] - cylinder_q[4]) < 1e-4
-            and abs(q[5] - cylinder_q[5]) < 1e-4
-            and abs(q[6] - cylinder_q[6]) < 1e-4,
+            lambda q, qd: (
+                abs(q[0] - cylinder_q[0]) < 0.01
+                and abs(q[1] - cylinder_q[1]) < 0.01
+                and abs(q[2] - cylinder_q[2]) < 1e-4
+                and abs(q[3] - cylinder_q[3]) < 1e-4
+                and abs(q[4] - cylinder_q[4]) < 1e-4
+                and abs(q[5] - cylinder_q[5]) < 1e-4
+                and abs(q[6] - cylinder_q[6]) < 1e-4
+            ),
             [3],
         )
         self.box_pos[2] = 0.25

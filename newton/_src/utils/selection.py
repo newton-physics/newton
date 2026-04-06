@@ -380,7 +380,7 @@ def get_name_from_label(label: str):
     Returns:
         The final path component of the label.
     """
-    return label.split("/")[-1]
+    return label.rsplit("/", maxsplit=1)[-1]
 
 
 def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
