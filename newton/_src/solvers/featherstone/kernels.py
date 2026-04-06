@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...math import transform_twist, velocity_at_point
+from ...math import transform_twist
 from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
@@ -1563,80 +1563,48 @@ def eval_single_articulation_fk_with_velocity_conversion(
             X_j = wp.transform(pos, rot)
             v_j = wp.spatial_vector(vel_v, vel_w)
 
-        # transform from world to parent joint anchor frame
         X_wpj = X_pj
+        v_wpj = wp.spatial_vector()
         if parent >= 0:
             X_wp = body_q[parent]
             X_wpj = X_wp * X_wpj
+            r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
+
+            v_wp = body_qd[parent]
+            w_p = wp.spatial_bottom(v_wp)
+            v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
+            v_wpj = wp.spatial_vector(v_p, w_p)
 
         # transform from world to joint anchor frame at child body
         X_wcj = X_wpj * X_j
         # transform from world to child body frame
         X_wc = X_wcj * wp.transform_inverse(X_cj)
 
-        v_parent_origin = wp.vec3()
-        w_parent = wp.vec3()
-        if parent >= 0:
-            v_wp = body_qd[parent]
-            w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = velocity_at_point(
-                v_wp, wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
-            )
+        linear_vel = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+        angular_vel = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
 
-        linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
-        angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        child_origin_offset_world = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wcj)
-        linear_joint_origin = linear_joint_anchor + wp.cross(angular_joint_world, child_origin_offset_world)
+        if type == JointType.FREE or type == JointType.DISTANCE:
+            # Public FREE/DISTANCE joint_qd stores the linear term at the child COM.
+            # Convert back to the child-body origin convention before composing the
+            # world-space twist, then convert back to COM on body_qd writeback below.
+            r_com = wp.quat_rotate(wp.transform_get_rotation(X_wc), body_com[child])
+            linear_vel = linear_vel - wp.cross(angular_vel, r_com)
 
-        v_wc = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
+        v_wc = v_wpj + wp.spatial_vector(linear_vel, angular_vel)
 
         body_q[child] = X_wc
-        body_qd[child] = v_wc
 
-
-@wp.kernel
-def convert_articulation_free_distance_body_qd(
-    articulation_start: wp.array[int],
-    articulation_count: int,
-    articulation_mask: wp.array[bool],
-    articulation_indices: wp.array[int],
-    joint_type: wp.array[int],
-    joint_child: wp.array[int],
-    body_com: wp.array[wp.vec3],
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-):
-    tid = wp.tid()
-
-    if articulation_indices:
-        articulation_id = articulation_indices[tid]
-    else:
-        articulation_id = tid
-
-    if articulation_id < 0 or articulation_id >= articulation_count:
-        return
-
-    if articulation_mask:
-        if not articulation_mask[articulation_id]:
-            return
-
-    joint_start = articulation_start[articulation_id]
-    joint_end = articulation_start[articulation_id + 1]
-
-    for i in range(joint_start, joint_end):
-        type = joint_type[i]
-        if type != JointType.FREE and type != JointType.DISTANCE:
-            continue
-
-        child = joint_child[i]
-        X_wc = body_q[child]
-        v_wc = body_qd[child]
-
-        v_origin = wp.spatial_top(v_wc)
-        omega = wp.spatial_bottom(v_wc)
-        r_com = wp.transform_point(X_wc, body_com[child])
-        v_com = v_origin + wp.cross(omega, r_com)
-        body_qd[child] = wp.spatial_vector(v_com, omega)
+        # Velocity conversion for FREE and DISTANCE joints:
+        # v_wc is a spatial twist at the origin, but body_qd should store COM velocity
+        # Transform: v_com = v_origin + ω x r_com
+        if type == JointType.FREE or type == JointType.DISTANCE:
+            v_origin = wp.spatial_top(v_wc)
+            omega = wp.spatial_bottom(v_wc)
+            r_com = wp.quat_rotate(wp.transform_get_rotation(X_wc), body_com[child])
+            v_com = v_origin + wp.cross(omega, r_com)
+            body_qd[child] = wp.spatial_vector(v_com, omega)
+        else:
+            body_qd[child] = v_wc
 
 
 @wp.kernel
@@ -1715,11 +1683,11 @@ def eval_fk_with_velocity_conversion(
     indices: wp.array[int] | None = None,
 ):
     """
-    Evaluates the model's forward kinematics with velocity conversion for Featherstone solver.
+    Evaluates the model's forward kinematics with velocity conversion for Featherstone-based state writeback.
 
-    This is a local copy that converts FREE/DISTANCE joint velocities from origin frame to COM frame,
-    as required by the Featherstone solver. Updates the state's body information (:attr:`State.body_q`
-    and :attr:`State.body_qd`).
+    FREE/DISTANCE joint_qd is interpreted in the public CoM convention and converted to
+    origin-referenced twists for FK propagation. The resulting body_qd writeback is then
+    converted back to CoM velocity so state.body_qd matches IsaacLab's expected convention.
 
     Args:
         model (Model): The model to evaluate.
@@ -1759,25 +1727,6 @@ def eval_fk_with_velocity_conversion(
             model.joint_X_c,
             model.joint_axis,
             model.joint_dof_dim,
-            model.body_com,
-        ],
-        outputs=[
-            state.body_q,
-            state.body_qd,
-        ],
-        device=model.device,
-    )
-
-    wp.launch(
-        kernel=convert_articulation_free_distance_body_qd,
-        dim=num_articulations,
-        inputs=[
-            model.articulation_start,
-            model.articulation_count,
-            mask,
-            indices,
-            model.joint_type,
-            model.joint_child,
             model.body_com,
         ],
         outputs=[
