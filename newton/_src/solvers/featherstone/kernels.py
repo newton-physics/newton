@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...math import transform_twist, velocity_at_point
+from ...math import transform_twist
 from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
     com_twist_to_point_velocity,
@@ -1859,38 +1859,48 @@ def eval_single_articulation_fk_with_velocity_conversion(
             X_j = wp.transform(pos, rot)
             v_j = wp.spatial_vector(vel_v, vel_w)
 
-        # transform from world to parent joint anchor frame
         X_wpj = X_pj
+        v_wpj = wp.spatial_vector()
         if parent >= 0:
             X_wp = body_q[parent]
             X_wpj = X_wp * X_wpj
+            r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
+
+            v_wp = body_qd[parent]
+            w_p = wp.spatial_bottom(v_wp)
+            v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
+            v_wpj = wp.spatial_vector(v_p, w_p)
 
         # transform from world to joint anchor frame at child body
         X_wcj = X_wpj * X_j
         # transform from world to child body frame
         X_wc = X_wcj * wp.transform_inverse(X_cj)
 
-        x_child_origin = wp.transform_get_translation(X_wc)
-        v_parent_origin = wp.vec3()
-        w_parent = wp.vec3()
-        if parent >= 0:
-            v_wp = body_qd[parent]
-            w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_origin)
-        linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
-        angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            v_j_world = transform_twist(X_wpj, v_j)
-            linear_joint_origin = velocity_at_point(v_j_world, x_child_origin)
-            angular_joint_world = wp.spatial_bottom(v_j_world)
-        else:
-            child_origin_offset_world = x_child_origin - wp.transform_get_translation(X_wcj)
-            linear_joint_origin = linear_joint_world + wp.cross(angular_joint_world, child_origin_offset_world)
+        linear_vel = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+        angular_vel = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
 
-        v_wc_origin = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
+        if type == JointType.FREE or type == JointType.DISTANCE:
+            # Public FREE/DISTANCE joint_qd stores the linear term at the child COM.
+            # Convert back to the child-body origin convention before composing the
+            # world-space twist, then convert back to COM on body_qd writeback below.
+            r_com = wp.quat_rotate(wp.transform_get_rotation(X_wc), body_com[child])
+            linear_vel = linear_vel - wp.cross(angular_vel, r_com)
+
+        v_wc = v_wpj + wp.spatial_vector(linear_vel, angular_vel)
 
         body_q[child] = X_wc
-        body_qd[child] = origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
+
+        # Velocity conversion for FREE and DISTANCE joints:
+        # v_wc is a spatial twist at the origin, but body_qd should store COM velocity
+        # Transform: v_com = v_origin + ω x r_com
+        if type == JointType.FREE or type == JointType.DISTANCE:
+            v_origin = wp.spatial_top(v_wc)
+            omega = wp.spatial_bottom(v_wc)
+            r_com = wp.quat_rotate(wp.transform_get_rotation(X_wc), body_com[child])
+            v_com = v_origin + wp.cross(omega, r_com)
+            body_qd[child] = wp.spatial_vector(v_com, omega)
+        else:
+            body_qd[child] = v_wc
 
 
 @wp.kernel
@@ -2016,11 +2026,11 @@ def eval_fk_with_velocity_conversion(
     indices: wp.array[int] | None = None,
 ):
     """
-    Evaluates Featherstone FK from internal free-joint speeds and writes public body twists.
+    Evaluates the model's forward kinematics with velocity conversion for Featherstone-based state writeback.
 
-    This helper mirrors :func:`newton.eval_fk`, but it expects Featherstone's
-    internal FREE/DISTANCE ``joint_qd`` convention as input and still writes
-    the public COM-referenced :attr:`State.body_qd` output.
+    FREE/DISTANCE joint_qd is interpreted in the public CoM convention and converted to
+    origin-referenced twists for FK propagation. The resulting body_qd writeback is then
+    converted back to CoM velocity so state.body_qd matches IsaacLab's expected convention.
 
     Args:
         model (Model): The model to evaluate.
@@ -2068,8 +2078,6 @@ def eval_fk_with_velocity_conversion(
         ],
         device=model.device,
     )
-
-
 def eval_fk_with_velocity_conversion_from_joint_starts(
     model: Model,
     articulation_indices: wp.array[int],
