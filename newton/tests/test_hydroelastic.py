@@ -13,12 +13,12 @@ import newton
 from newton._src.geometry.sdf_hydroelastic import (
     HYDROELASTIC_MODE_COMPLIANT,
     PressureFieldData,
-    eval_signed_field,
     _solve_poisson_pressure_extent,
+    eval_signed_field,
     resolve_pair_contact_workflow,
     weighted_sdf_difference,
 )
-from newton._src.geometry.sdf_utils import SDFData
+from newton._src.geometry.sdf_texture import TextureSDFData, texture_sample_sdf
 from newton.geometry import HydroelasticContactWorkflow, HydroelasticSDF, HydroelasticType
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -77,11 +77,11 @@ HYDRO_PRESSURE_TEST_SHAPES = (
 
 @wp.kernel(enable_backward=False)
 def weighted_sdf_difference_kernel(
-    val_a: wp.array(dtype=wp.float32),
-    val_b: wp.array(dtype=wp.float32),
+    val_a: wp.array[wp.float32],
+    val_b: wp.array[wp.float32],
     w_a: wp.float32,
     w_b: wp.float32,
-    out: wp.array(dtype=wp.float32),
+    out: wp.array[wp.float32],
 ):
     tid = wp.tid()
     out[tid] = weighted_sdf_difference(val_a[tid], val_b[tid], w_a, w_b)
@@ -89,11 +89,11 @@ def weighted_sdf_difference_kernel(
 
 @wp.kernel(enable_backward=False)
 def resolve_pair_contact_workflow_kernel(
-    mode_a: wp.array(dtype=wp.int32),
-    mode_b: wp.array(dtype=wp.int32),
-    workflow_a: wp.array(dtype=wp.int32),
-    workflow_b: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.int32),
+    mode_a: wp.array[wp.int32],
+    mode_b: wp.array[wp.int32],
+    workflow_a: wp.array[wp.int32],
+    workflow_b: wp.array[wp.int32],
+    out: wp.array[wp.int32],
 ):
     tid = wp.tid()
     out[tid] = resolve_pair_contact_workflow(mode_a[tid], mode_b[tid], workflow_a[tid], workflow_b[tid])
@@ -102,12 +102,11 @@ def resolve_pair_contact_workflow_kernel(
 @wp.kernel(enable_backward=False)
 def sample_pressure_and_sdf_kernel(
     pressure_volume_id: wp.uint64,
-    sparse_sdf_id: wp.uint64,
-    coarse_sdf_id: wp.uint64,
-    background_value: wp.float32,
-    points: wp.array(dtype=wp.vec3),
-    out_pressure: wp.array(dtype=wp.float32),
-    out_sdf: wp.array(dtype=wp.float32),
+    sdf_data: wp.array[TextureSDFData],
+    sdf_idx: wp.int32,
+    points: wp.array[wp.vec3],
+    out_pressure: wp.array[wp.float32],
+    out_sdf: wp.array[wp.float32],
 ):
     tid = wp.tid()
     sample = points[tid]
@@ -117,26 +116,20 @@ def sample_pressure_and_sdf_kernel(
     if wp.isnan(pressure):
         pressure = 0.0
     out_pressure[tid] = wp.max(pressure, 0.0)
-
-    sdf_idx = wp.volume_world_to_index(sparse_sdf_id, sample)
-    sdf_val = wp.volume_sample_f(sparse_sdf_id, sdf_idx, wp.Volume.LINEAR)
-    if (sdf_val >= background_value * 0.99 or wp.isnan(sdf_val)) and coarse_sdf_id != wp.uint64(0):
-        coarse_idx = wp.volume_world_to_index(coarse_sdf_id, sample)
-        sdf_val = wp.volume_sample_f(coarse_sdf_id, coarse_idx, wp.Volume.LINEAR)
-    out_sdf[tid] = sdf_val
+    out_sdf[tid] = texture_sample_sdf(sdf_data[sdf_idx], sample)
 
 
 @wp.kernel(enable_backward=False)
 def eval_signed_field_kernel(
-    sdf_values: wp.array(dtype=wp.float32),
-    points: wp.array(dtype=wp.vec3),
-    sdf_data: wp.array(dtype=SDFData),
-    pressure_data: wp.array(dtype=PressureFieldData),
+    sdf_values: wp.array[wp.float32],
+    points: wp.array[wp.vec3],
+    sdf_data: wp.array[TextureSDFData],
+    pressure_data: wp.array[PressureFieldData],
     sdf_index: wp.int32,
     pressure_index: wp.int32,
     pair_workflow: wp.int32,
-    out_field: wp.array(dtype=wp.float32),
-    out_valid: wp.array(dtype=wp.int32),
+    out_field: wp.array[wp.float32],
+    out_valid: wp.array[wp.int32],
 ):
     tid = wp.tid()
     field, valid = eval_signed_field(
@@ -1478,7 +1471,6 @@ def test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf(test, devic
     test.assertGreaterEqual(sdf_index, 0)
     test.assertGreaterEqual(pressure_index, 0)
 
-    sdf_entry = model.sdf_data.numpy()[sdf_index]
     pressure_entry = hydro.compact_pressure_field_data.numpy()[pressure_index]
 
     sample_points = np.array(
@@ -1502,9 +1494,8 @@ def test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf(test, devic
         dim=len(sample_points),
         inputs=[
             wp.uint64(int(pressure_entry["pressure_ptr"])),
-            wp.uint64(int(sdf_entry["sparse_sdf_ptr"])),
-            wp.uint64(int(sdf_entry["coarse_sdf_ptr"])),
-            float(sdf_entry["background_value"]),
+            model.texture_sdf_data,
+            wp.int32(sdf_index),
             points_wp,
         ],
         outputs=[pressure_wp, sdf_wp],
@@ -1532,7 +1523,7 @@ def test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf(test, devic
         inputs=[
             chosen_sdf_wp,
             chosen_points_wp,
-            model.sdf_data,
+            model.texture_sdf_data,
             hydro.compact_pressure_field_data,
             wp.int32(sdf_index),
             wp.int32(pressure_index),

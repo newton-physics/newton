@@ -16,8 +16,7 @@ from .kernels import (
     sdf_mesh,
     sdf_sphere,
 )
-from .sdf_contact import sample_sdf_extrapolated
-from .sdf_utils import SDFData
+from .sdf_utils import SDFData, sample_sdf_extrapolated
 from .types import Axis, GeoType
 
 _POISSON_MAX_ITERS = 512
@@ -35,12 +34,12 @@ class PressureFieldData:
 
 @wp.kernel
 def sample_sdf_grid_kernel(
-    sdf_data: wp.array(dtype=SDFData),
+    sdf_data: wp.array[SDFData],
     sdf_idx: wp.int32,
     lower: wp.vec3,
     voxel_size: wp.vec3,
     dims: wp.vec3i,
-    out_sdf: wp.array(dtype=wp.float32),
+    out_sdf: wp.array[wp.float32],
 ):
     """Sample extrapolated SDF values on a dense regular grid."""
     tid = wp.tid()
@@ -68,7 +67,7 @@ def sample_geometry_sdf_grid_kernel(
     voxel_size: wp.vec3,
     dims: wp.vec3i,
     max_query_dist: wp.float32,
-    out_sdf: wp.array(dtype=wp.float32),
+    out_sdf: wp.array[wp.float32],
 ):
     """Sample geometry-based signed distances on a dense regular grid."""
     tid = wp.tid()
@@ -112,15 +111,60 @@ def create_empty_pressure_field_data() -> PressureFieldData:
     return pressure_data
 
 
+def _entry_field_names(sdf_entry: np.void) -> tuple[str, ...]:
+    """Return structured-field names for either legacy or texture-backed SDF entries."""
+    names = getattr(getattr(sdf_entry, "dtype", None), "names", None)
+    return tuple(names or ())
+
+
+def _entry_has_field(sdf_entry: np.void, field_name: str) -> bool:
+    """Check whether a structured SDF entry exposes a given field."""
+    return field_name in _entry_field_names(sdf_entry)
+
+
+def _entry_center(sdf_entry: np.void) -> np.ndarray:
+    """Return SDF center [m] for legacy or texture-backed entries."""
+    if _entry_has_field(sdf_entry, "center"):
+        return np.asarray(sdf_entry["center"], dtype=np.float32)
+
+    lower = np.asarray(sdf_entry["sdf_box_lower"], dtype=np.float32)
+    upper = np.asarray(sdf_entry["sdf_box_upper"], dtype=np.float32)
+    return 0.5 * (lower + upper)
+
+
+def _entry_half_extents(sdf_entry: np.void) -> np.ndarray:
+    """Return SDF half extents [m] for legacy or texture-backed entries."""
+    if _entry_has_field(sdf_entry, "half_extents"):
+        return np.asarray(sdf_entry["half_extents"], dtype=np.float32)
+
+    lower = np.asarray(sdf_entry["sdf_box_lower"], dtype=np.float32)
+    upper = np.asarray(sdf_entry["sdf_box_upper"], dtype=np.float32)
+    return 0.5 * (upper - lower)
+
+
+def _entry_voxel_size(sdf_entry: np.void) -> np.ndarray:
+    """Return the effective sparse voxel spacing [m] for an SDF entry."""
+    if _entry_has_field(sdf_entry, "sparse_voxel_size"):
+        return np.asarray(sdf_entry["sparse_voxel_size"], dtype=np.float32)
+    return np.asarray(sdf_entry["voxel_size"], dtype=np.float32)
+
+
+def _entry_has_legacy_volume_data(sdf_entry: np.void) -> bool:
+    """Return whether a legacy volume-backed SDF entry has sampleable sparse data."""
+    if not _entry_has_field(sdf_entry, "sparse_sdf_ptr"):
+        return False
+    return int(sdf_entry["sparse_sdf_ptr"]) != 0
+
+
 def _compute_pressure_grid_spec(sdf_entry: np.void) -> tuple[np.ndarray, float, np.ndarray]:
     """Compute dense-grid sampling parameters for pressure field construction."""
-    center = np.asarray(sdf_entry["center"], dtype=np.float32)
-    half_extents = np.asarray(sdf_entry["half_extents"], dtype=np.float32)
+    center = _entry_center(sdf_entry)
+    half_extents = _entry_half_extents(sdf_entry)
     lower = center - half_extents
     upper = center + half_extents
     extent = np.maximum(upper - lower, 1.0e-6)
 
-    sparse_voxel_size = np.asarray(sdf_entry["sparse_voxel_size"], dtype=np.float32)
+    sparse_voxel_size = _entry_voxel_size(sdf_entry)
     # Warp's load_from_numpy currently expects an isotropic voxel size.
     # Use the max sparse spacing to keep conservative coverage and avoid upsampling artifacts.
     voxel_size = float(np.max(np.maximum(sparse_voxel_size, 1.0e-6)))
@@ -279,7 +323,7 @@ def _is_geometry_sampling_supported(shape_type: int, shape_source_ptr: int) -> b
 
 
 def build_immutable_pressure_field_from_sdf(
-    sdf_data: wp.array(dtype=SDFData),
+    sdf_data,
     sdf_entry: np.void,
     sdf_idx: int,
     device: Devicelike,
@@ -291,7 +335,12 @@ def build_immutable_pressure_field_from_sdf(
     pressure_sine_phase: np.ndarray | tuple[float, float, float] | None = None,
 ) -> tuple[PressureFieldData, wp.Volume | None]:
     """Build immutable pressure field for one compact SDF entry."""
-    if int(sdf_entry["sparse_sdf_ptr"]) == 0:
+    if (not _entry_has_legacy_volume_data(sdf_entry)) and (
+        shape_type is None or shape_scale is None or shape_source_ptr is None
+    ):
+        return create_empty_pressure_field_data(), None
+
+    if _entry_has_field(sdf_entry, "sparse_sdf_ptr") and int(sdf_entry["sparse_sdf_ptr"]) == 0:
         return create_empty_pressure_field_data(), None
 
     lower, voxel_size_scalar, dims = _compute_pressure_grid_spec(sdf_entry)
@@ -311,7 +360,7 @@ def build_immutable_pressure_field_from_sdf(
         shape_scale_arr = np.asarray(shape_scale, dtype=np.float32)
         if shape_scale_arr.shape != (3,):
             shape_scale_arr = np.ones(3, dtype=np.float32)
-        half_extents = np.asarray(sdf_entry["half_extents"], dtype=np.float32)
+        half_extents = _entry_half_extents(sdf_entry)
         max_query_dist = float(np.linalg.norm(half_extents) + 4.0 * voxel_size_scalar)
         wp.launch(
             kernel=sample_geometry_sdf_grid_kernel,
@@ -358,8 +407,8 @@ def build_immutable_pressure_field_from_sdf(
     cycles = _normalize_axis_triplet(pressure_sine_cycles, (1.0, 1.0, 1.0))
     phase = _normalize_axis_triplet(pressure_sine_phase, (0.0, 0.0, 0.0))
     if np.any(np.abs(amplitude) > 1.0e-8):
-        center = np.asarray(sdf_entry["center"], dtype=np.float32)
-        half_extents = np.asarray(sdf_entry["half_extents"], dtype=np.float32)
+        center = _entry_center(sdf_entry)
+        half_extents = _entry_half_extents(sdf_entry)
         pressure_grid = _apply_pressure_axis_sine_modulation_to_grid(
             pressure_grid,
             inside,

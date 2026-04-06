@@ -64,8 +64,7 @@ def _collect_hydroelastic_indices(shape_flags: np.ndarray, shape_hydro_mode: np.
     return [
         idx
         for idx in range(len(shape_flags))
-        if (int(shape_flags[idx]) & ShapeFlags.COLLIDE_SHAPES)
-        and (shape_hydro_mode[idx] != int(HydroelasticType.NONE))
+        if (int(shape_flags[idx]) & ShapeFlags.COLLIDE_SHAPES) and (shape_hydro_mode[idx] != int(HydroelasticType.NONE))
     ]
 
 
@@ -147,7 +146,7 @@ def _collect_shape_sdf_metadata(model: Model) -> tuple[np.ndarray, np.ndarray, n
     shape_scale = model.shape_scale.numpy()
     shape_source_ptr = model.shape_source_ptr.numpy()
     shape_sdf_index = model.shape_sdf_index.numpy()
-    num_sdfs = len(model.sdf_volume)
+    num_sdfs = len(model.texture_sdf_data)
 
     sdf_shape_type = np.full(num_sdfs, -1, dtype=np.int32)
     sdf_shape_scale = np.ones((num_sdfs, 3), dtype=np.float32)
@@ -181,10 +180,10 @@ def _build_pressure_tables(
     pressure_field_volume: list[wp.Volume] = []
     pressure_profile_cache: dict[tuple[Any, ...], int] = {}
 
-    sdf_data = model.sdf_data.numpy()
+    sdf_data = model.texture_sdf_data.numpy()
     sdf_shape_type, sdf_shape_scale, sdf_shape_source_ptr = _collect_shape_sdf_metadata(model)
     shape_sdf_index = model.shape_sdf_index.numpy()
-    num_sdfs = len(model.sdf_volume)
+    num_sdfs = len(model.texture_sdf_data)
 
     for shape_idx in hydroelastic_indices:
         if shape_hydro_mode[shape_idx] != int(HydroelasticType.COMPLIANT):
@@ -232,7 +231,7 @@ def _build_pressure_tables(
                 pressure_shape_source_ptr = int(sdf_shape_source_ptr[sdf_idx])
 
             pressure_data, pressure_volume = build_immutable_pressure_field_from_sdf(
-                model.sdf_data,
+                model.texture_sdf_data,
                 sdf_data[sdf_idx],
                 sdf_idx,
                 model.device,
@@ -268,7 +267,7 @@ def collect_hydroelastic_runtime_data(model: Model) -> HydroelasticRuntimeData |
 
     shape_sdf_index = model.shape_sdf_index.numpy()
     sdf_index2blocks = model.sdf_index2blocks.numpy()
-    sdf_data = model.sdf_data.numpy()
+    sdf_data = model.texture_sdf_data.numpy()
     if np.ndim(sdf_index2blocks) != 2 or sdf_index2blocks.shape[1] != 2:
         raise ValueError("model.sdf_index2blocks must have shape [num_sdfs, 2].")
 

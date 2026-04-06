@@ -1623,6 +1623,9 @@ class NarrowPhase:
 
             self.gjk_candidate_pairs_count = c[gjk_idx : gjk_idx + 1]
             self.shape_pairs_sdf_sdf_count = c[sdf_sdf_idx : sdf_sdf_idx + 1]
+            # Backward-compatible alias retained for tests and older call sites
+            # that still inspect the dedicated heightfield pair counter.
+            self.shape_pairs_heightfield_count = wp.zeros(1, dtype=wp.int32, device=device)
             self.shape_pairs_mesh_count = c[mesh_like_idx : mesh_like_idx + 1] if has_mesh_like else None
             self.triangle_pairs_count = c[mesh_like_idx + 1 : mesh_like_idx + 2] if has_mesh_like else None
             self.shape_pairs_mesh_plane_count = c[mesh_only_idx : mesh_only_idx + 1] if has_meshes else None
@@ -2110,8 +2113,8 @@ class NarrowPhase:
                     record_tape=False,
                 )
         if self.hydroelastic_sdf is not None:
-            hf_data = shape_heightfield_data if shape_heightfield_data is not None else self._empty_heightfield_data
-            hf_elev = heightfield_elevation_data if heightfield_elevation_data is not None else self._empty_elevation_data
+            hf_data = heightfield_data if heightfield_data is not None else self._empty_heightfield_data
+            hf_elev = heightfield_elevations if heightfield_elevations is not None else self._empty_elevation_data
             self.hydroelastic_sdf.launch(
                 texture_sdf_data,
                 shape_sdf_index,

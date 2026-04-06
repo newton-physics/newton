@@ -25,6 +25,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.sdf_texture import TextureSDFData, texture_sample_sdf
 
 
 @wp.kernel
@@ -35,7 +36,7 @@ def build_slice_points(
     plane_scale: float,
     sdf_center: wp.vec3,
     sdf_half_extents: wp.vec3,
-    out_points: wp.array(dtype=wp.vec3),
+    out_points: wp.array[wp.vec3],
 ):
     """Sample one axis-aligned section in object-local coordinates."""
     tid = wp.tid()
@@ -80,16 +81,15 @@ def build_slice_points(
 def sample_pressure_on_slice(
     clip_to_sdf: int,
     pressure_volume_id: wp.uint64,
-    sdf_sparse_volume_id: wp.uint64,
-    sdf_coarse_volume_id: wp.uint64,
-    sdf_background_value: float,
+    texture_sdf_data: wp.array[TextureSDFData],
+    sdf_index: wp.int32,
     sdf_center: wp.vec3,
     sdf_half_extents: wp.vec3,
     pressure_epsilon: float,
-    points: wp.array(dtype=wp.vec3),
-    out_inside_flag: wp.array(dtype=wp.float32),
-    out_pressure: wp.array(dtype=wp.float32),
-    out_inside_count: wp.array(dtype=wp.int32),
+    points: wp.array[wp.vec3],
+    out_inside_flag: wp.array[wp.float32],
+    out_pressure: wp.array[wp.float32],
+    out_inside_count: wp.array[wp.int32],
 ):
     """Sample immutable pressure volume and classify pressure-support interior."""
     tid = wp.tid()
@@ -127,14 +127,8 @@ def sample_pressure_on_slice(
         out_pressure[tid] = -1.0
         return
 
-    sdf_idx = wp.volume_world_to_index(sdf_sparse_volume_id, sample)
-    sdf_val = wp.volume_sample_f(sdf_sparse_volume_id, sdf_idx, wp.Volume.LINEAR)
-    invalid_sdf = sdf_val >= sdf_background_value * 0.99 or wp.isnan(sdf_val)
-    if invalid_sdf and sdf_coarse_volume_id != wp.uint64(0):
-        coarse_idx = wp.volume_world_to_index(sdf_coarse_volume_id, sample)
-        sdf_val = wp.volume_sample_f(sdf_coarse_volume_id, coarse_idx, wp.Volume.LINEAR)
-        invalid_sdf = wp.isnan(sdf_val)
-    if invalid_sdf or sdf_val > 0.0:
+    sdf_val = texture_sample_sdf(texture_sdf_data[sdf_index], sample)
+    if wp.isnan(sdf_val) or sdf_val > 0.0:
         out_inside_flag[tid] = -1.0
         out_pressure[tid] = -1.0
         return

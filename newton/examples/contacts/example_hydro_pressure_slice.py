@@ -474,12 +474,13 @@ class Example:
         if self.pressure_global_max <= 1.0e-8:
             raise RuntimeError("Hydroelastic immutable pressure max is zero; expected positive interior pressure.")
 
-        sdf_data = model.sdf_data.numpy()[main_sdf_idx]
-        self.sdf_sparse_volume_id = wp.uint64(int(sdf_data["sparse_sdf_ptr"]))
-        self.sdf_coarse_volume_id = wp.uint64(int(sdf_data["coarse_sdf_ptr"]))
-        self.sdf_background_value = float(sdf_data["background_value"])
-        self.sdf_center = wp.vec3(sdf_data["center"])
-        self.sdf_half_extents = wp.vec3(sdf_data["half_extents"])
+        self.texture_sdf_data = model.texture_sdf_data
+        self.sdf_index = main_sdf_idx
+        sdf_data = model.texture_sdf_data.numpy()[main_sdf_idx]
+        sdf_box_lower = np.asarray(sdf_data["sdf_box_lower"], dtype=np.float32)
+        sdf_box_upper = np.asarray(sdf_data["sdf_box_upper"], dtype=np.float32)
+        self.sdf_center = wp.vec3(0.5 * (sdf_box_lower + sdf_box_upper))
+        self.sdf_half_extents = wp.vec3(0.5 * (sdf_box_upper - sdf_box_lower))
         self.mesh.finalize(device=self.device)
 
     def _mesh_bounds(self) -> tuple[np.ndarray, np.ndarray]:
@@ -592,9 +593,8 @@ class Example:
             inputs=[
                 int(self.clip_slice_to_sdf),
                 self.pressure_volume_id,
-                self.sdf_sparse_volume_id,
-                self.sdf_coarse_volume_id,
-                self.sdf_background_value,
+                self.texture_sdf_data,
+                self.sdf_index,
                 self.sdf_center,
                 self.sdf_half_extents,
                 1.0e-8,
