@@ -65,6 +65,77 @@ from .graph_coloring import (
 )
 from .model import Model
 
+
+def _coacd_worker(vertices, indices, settings, result_queue):
+    """Run CoACD convex decomposition in an isolated process.
+
+    CoACD's C library is not thread-safe with respect to concurrent
+    allocators (e.g. TBB's scalable_malloc used by OpenUSD/Hydra).
+    Running in a subprocess isolates the heap and prevents corruption.
+    """
+    try:
+        import coacd
+
+        cmesh = coacd.Mesh(vertices, indices)
+        decomposition = coacd.run_coacd(cmesh, **settings)
+        # Convert to plain numpy arrays for pickling
+        result = [(part[0].copy(), part[1].copy()) for part in decomposition]
+        result_queue.put(("ok", result))
+    except Exception as e:
+        result_queue.put(("error", str(e)))
+
+
+def _run_coacd_isolated(vertices, indices, settings):
+    """Run CoACD in a subprocess to avoid heap corruption.
+
+    When Newton is used inside applications with active TBB thread pools
+    (e.g. UsdView/Hydra), CoACD's C allocator can corrupt the heap.
+    This function runs CoACD in a forked subprocess with an isolated heap.
+
+    Falls back to in-process execution if subprocess communication fails.
+    """
+    import multiprocessing as mp
+
+    ctx = mp.get_context("spawn")  # "spawn" ensures clean process
+    result_queue = ctx.Queue()
+
+    proc = ctx.Process(
+        target=_coacd_worker,
+        args=(vertices.copy(), indices.copy(), settings, result_queue),
+    )
+    proc.start()
+    proc.join(timeout=300)  # 5 minute timeout per mesh
+
+    if proc.is_alive():
+        proc.kill()
+        proc.join()
+        warnings.warn(
+            "CoACD subprocess timed out, falling back to in-process execution",
+            stacklevel=2,
+        )
+        # Fall back to in-process
+        import coacd
+
+        cmesh = coacd.Mesh(vertices, indices)
+        return coacd.run_coacd(cmesh, **settings)
+
+    if result_queue.empty():
+        warnings.warn(
+            "CoACD subprocess failed without result, falling back to in-process execution",
+            stacklevel=2,
+        )
+        import coacd
+
+        cmesh = coacd.Mesh(vertices, indices)
+        return coacd.run_coacd(cmesh, **settings)
+
+    status, data = result_queue.get()
+    if status == "ok":
+        return data
+    else:
+        raise RuntimeError(f"CoACD subprocess failed: {data}")
+
+
 if TYPE_CHECKING:
     from newton_actuators import Actuator
     from pxr import Usd
@@ -6189,7 +6260,6 @@ class ModelBuilder:
                         decomposition = decompositions[hash_m]
                     else:
                         if method == "coacd":
-                            cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             coacd_settings = {
                                 "threshold": 0.5,
                                 "mcts_nodes": 20,
@@ -6199,7 +6269,9 @@ class ModelBuilder:
                                 "max_convex_hull": mesh.maxhullvert,
                             }
                             coacd_settings.update(remeshing_kwargs)
-                            decomposition = coacd.run_coacd(cmesh, **coacd_settings)
+                            decomposition = _run_coacd_isolated(
+                                mesh.vertices, mesh.indices.reshape(-1, 3), coacd_settings
+                            )
                         else:
                             tmesh = trimesh.Trimesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             vhacd_settings = {
