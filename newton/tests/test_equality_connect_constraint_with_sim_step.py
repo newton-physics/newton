@@ -57,6 +57,9 @@ class TestEqualityConstraintWithSimStepBase:
     def _num_worlds(self):
         raise NotImplementedError
 
+    def _use_mujoco_cpu(self):
+        raise NotImplementedError
+
 
 class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase):
     """Test that a CONNECT equality constraint pins two bodies at a point."""
@@ -254,6 +257,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         dt = 0.01
         num_steps = 50
         num_worlds = self._num_worlds()
+        use_mujoco_cpu = self._use_mujoco_cpu()
 
         # joint0 can be prismatic or revolute but motion is always along/around Y.
         joint_0_joint_types = ["prismatic", "revolute"]
@@ -364,6 +368,12 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     for k in range(3):
                         self.assertAlmostEqual(float(expected_a2[k]), float(measured_a2[k]), places=4)
                         self.assertAlmostEqual(float(expected_a3[k]), float(measured_a3[k]), places=4)
+                    if use_mujoco_cpu:
+                        mj_eq_data = sim.solver.mj_model.eq_data
+                        for k in range(3):
+                            self.assertAlmostEqual(float(expected_a2[k]), float(mj_eq_data[0][k]), places=4)
+                            self.assertAlmostEqual(float(expected_a3[k]), float(mj_eq_data[0][3 + k]), places=4)
+
                     # Check that the reference joint positions were applied correctly.
                     # qpos0 shape is [nworld, nq]; world w
                     # First ball_q_offset entries are the ball joint quaternion, then 3 joint coords.
@@ -413,6 +423,11 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     ]
                     residual = connect_residual(measured_body_poses, world_body_indices, measured_a2, measured_a3)
                     self.assertAlmostEqual(residual, 0.0, places=4)
+                    if use_mujoco_cpu:
+                        mj_eq_data = sim.solver.mj_model.eq_data
+                        for k in range(6):
+                            self.assertAlmostEqual(float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4)
+
                     measured_joint_q = sim.state_in.joint_q.numpy()
                     nq_per_world = ball_q_offset + 3
                     for k in range(3):
@@ -460,6 +475,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     ]
                     residual = connect_residual(measured_body_poses, world_body_indices, measured_a2, measured_a3)
                     self.assertAlmostEqual(residual, 0.0, places=3)
+                    if use_mujoco_cpu:
+                        mj_eq_data = sim.solver.mj_model.eq_data
+                        for k in range(6):
+                            self.assertAlmostEqual(float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4)
 
                 ##############
                 # TEST 3
@@ -489,6 +508,13 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                             float(changed_connect_anchor_body2[w][k]), float(changed_measured_a2[k]), places=4
                         )
                         self.assertAlmostEqual(float(changed_expected_a3[k]), float(changed_measured_a3[k]), places=4)
+                    if use_mujoco_cpu:
+                        mj_eq_data = sim.solver.mj_model.eq_data
+                        for k in range(3):
+                            self.assertAlmostEqual(
+                                float(changed_connect_anchor_body2[w][k]), float(mj_eq_data[0][k]), places=4
+                            )
+                            self.assertAlmostEqual(float(changed_expected_a3[k]), float(mj_eq_data[0][3 + k]), places=4)
 
                 sim.state_in.joint_q.assign(flat_initial_q)
                 sim.state_in.joint_qd.assign(flat_initial_qd)
@@ -521,6 +547,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                         measured_body_poses, world_body_indices, changed_measured_a2, changed_measured_a3
                     )
                     self.assertAlmostEqual(residual, 0.0, places=3)
+                    if use_mujoco_cpu:
+                        mj_eq_data = sim.solver.mj_model.eq_data
+                        for k in range(6):
+                            self.assertAlmostEqual(float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4)
 
                 ##############
                 # TEST 4
@@ -556,6 +586,15 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                         self.assertAlmostEqual(
                             float(changed_ref_expected_a3[k]), float(changed_ref_measured_a3[k]), places=4
                         )
+                    if use_mujoco_cpu:
+                        mj_eq_data = sim.solver.mj_model.eq_data
+                        for k in range(3):
+                            self.assertAlmostEqual(
+                                float(changed_connect_anchor_body2[w][k]), float(mj_eq_data[0][k]), places=4
+                            )
+                            self.assertAlmostEqual(
+                                float(changed_ref_expected_a3[k]), float(mj_eq_data[0][3 + k]), places=4
+                            )
 
                 # Also verify qpos0 was updated with the new dof_ref values.
                 for w in range(num_worlds):
@@ -598,6 +637,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                         measured_body_poses, world_body_indices, changed_ref_measured_a2, changed_ref_measured_a3
                     )
                     self.assertAlmostEqual(residual, 0.0, places=3)
+                    if use_mujoco_cpu:
+                        mj_eq_data = sim.solver.mj_model.eq_data
+                        for k in range(6):
+                            self.assertAlmostEqual(float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4)
 
     def test_connect_constraint(self):
         self._test_connect_constraint()
@@ -606,6 +649,9 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase, unittest.TestCase):
     def _num_worlds(self):
         return 2
+
+    def _use_mujoco_cpu(self):
+        return False
 
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -621,6 +667,9 @@ class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase,
 class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, unittest.TestCase):
     def _num_worlds(self):
         return 1
+
+    def _use_mujoco_cpu(self):
+        return True
 
     def _create_solver(self, model):
         return SolverMuJoCo(
