@@ -1546,6 +1546,11 @@ class TestMenagerieBase(unittest.TestCase):
         assert _mujoco is not None
         assert _mujoco_warp is not None
 
+        # Reduce to 1 world for robots that only run deterministic tests
+        # (model comparison, FK don't benefit from multiple worlds)
+        if self.num_steps <= 0:
+            self.num_worlds = 1
+
         # Create models and solvers — stored on cls for reuse across test methods
         cls._newton_model = self._create_newton_model()
         cls._newton_state = cls._newton_model.state()
