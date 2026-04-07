@@ -2901,6 +2901,8 @@ class SolverMuJoCo(SolverBase):
         """Number of shapes per world (for computing Newton shape indices from template)."""
         self._first_env_shape_base: int = 0
         """Base shape index for the first environment."""
+
+        # --- Internal state for connect constraint anchor computation ---
         self.has_connect_constraints: bool = False
         """Whether the model contains any CONNECT equality constraints."""
         self.connect_constraint_q_rel: wp.array | None = None
