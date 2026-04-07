@@ -50,8 +50,8 @@ def _measure_cenic(n: int, tol: float, sim_duration: float, trials: int) -> floa
     """Measure CENIC wall time (ms/sim-s), median of `trials` fresh processes."""
     code = textwrap.dedent(f"""\
         import time, warp as wp
-        from scripts.scenes.contact_objects import DT_OUTER, build_model, make_solver
-        model = build_model({n})
+        from scripts.scenes.contact_objects import DT_OUTER, build_model_randomized, make_solver
+        model = build_model_randomized({n})
         solver = make_solver(model, tol={tol})
         s0, s1 = model.state(), model.state()
         ctrl = model.control()
@@ -74,8 +74,8 @@ def _measure_traces(tol: float, n_worlds: int, sim_duration: float) -> dict:
     """Returns {t, e, d} for world 0."""
     code = textwrap.dedent(f"""\
         import json, warp as wp
-        from scripts.scenes.contact_objects import DT_OUTER, build_model, make_solver
-        model = build_model({n_worlds})
+        from scripts.scenes.contact_objects import DT_OUTER, build_model_randomized, make_solver
+        model = build_model_randomized({n_worlds})
         solver = make_solver(model, tol={tol})
         s0, s1 = model.state(), model.state()
         ctrl = model.control()

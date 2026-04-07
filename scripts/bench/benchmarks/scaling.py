@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 
 from scripts.bench.infra import MeasureResult, measure, power_law_exponent
 from scripts.bench.plotting import STYLES, SeriesData, log_log_plot, save_fig
-from scripts.scenes.contact_objects import DT_OUTER, build_model, make_fixed_solver, make_solver
+from scripts.scenes.contact_objects import DT_OUTER, build_model_randomized, make_fixed_solver, make_solver
 
 MODES = ["cenic", "fixed", "single_iter"]
 
@@ -53,7 +53,7 @@ def _measure_mode(mode: str, n: int, steps: int, warmup: int, trials: int = 1) -
             def get_k():
                 solver = next(iter(solver_cache.values()))
                 return int(solver.iteration_count.numpy()[0])
-            return measure(build_model, step_fn, n, steps, warmup, get_k=get_k)
+            return measure(build_model_randomized, step_fn, n, steps, warmup, get_k=get_k)
 
         elif mode == "fixed":
             state_cache = {}
@@ -64,7 +64,7 @@ def _measure_mode(mode: str, n: int, steps: int, warmup: int, trials: int = 1) -
                 solver, contacts = state_cache[key]
                 s1 = solver.step(s0, s1, ctrl, contacts, DT_OUTER)
                 return s1, s0
-            return measure(build_model, step_fn, n, steps, warmup)
+            return measure(build_model_randomized, step_fn, n, steps, warmup)
 
         elif mode == "single_iter":
             from scripts.bench.benchmarks._single_iter import measure_single_iter
@@ -83,7 +83,7 @@ def _measure_mode(mode: str, n: int, steps: int, warmup: int, trials: int = 1) -
 
 def _collect_error_trace(steps: int) -> dict:
     """Run N=1 cenic mode and record accepted error + dt at each outer step."""
-    model = build_model(1)
+    model = build_model_randomized(1)
     solver = make_solver(model)
     s0, s1, ctrl = model.state(), model.state(), model.control()
 

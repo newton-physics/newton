@@ -16,7 +16,7 @@ import numpy as np
 import warp as wp
 
 from scripts.bench.infra import MeasureResult
-from scripts.scenes.contact_objects import DT_OUTER, build_model, make_solver
+from scripts.scenes.contact_objects import DT_OUTER, build_model_randomized, make_solver
 from newton._src.solvers.mujoco.solver_mujoco_cenic import (
     _apply_dt_cap,
     _boundary_advance,
@@ -25,7 +25,7 @@ from newton._src.solvers.mujoco.solver_mujoco_cenic import (
 
 def measure_single_iter(n: int, steps: int, warmup: int) -> MeasureResult:
     """Time a single _run_iteration_body() call from saved contact state."""
-    model = build_model(n)
+    model = build_model_randomized(n)
     solver = make_solver(model)
     s0, s1, ctrl = model.state(), model.state(), model.control()
 

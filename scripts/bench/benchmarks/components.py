@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 
 from scripts.bench.infra import power_law_exponent
 from scripts.bench.plotting import save_fig
-from scripts.scenes.contact_objects import DT_OUTER, build_model, make_solver
+from scripts.scenes.contact_objects import DT_OUTER, build_model_randomized, make_solver
 from newton._src.solvers.mujoco.solver_mujoco_cenic import (
     _apply_dt_cap,
     _apply_dt_cap_dev,
@@ -72,7 +72,7 @@ def _measure_n(n: int, steps: int, warmup: int) -> dict:
     Phase 1: step_dt end-to-end + iteration count K.
     Phase 2: per-component manual timing with sync barriers.
     """
-    model = build_model(n)
+    model = build_model_randomized(n)
     solver = make_solver(model)
     state_0 = model.state()
     state_1 = model.state()

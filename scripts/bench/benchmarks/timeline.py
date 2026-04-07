@@ -26,7 +26,13 @@ import matplotlib.pyplot as plt
 import warp as wp
 
 from scripts.bench.plotting import save_fig
-from scripts.scenes.contact_objects import DT_OUTER, build_model_perturbed, make_solver
+from scripts.scenes.contact_objects import (
+    DT_OUTER,
+    build_model,
+    build_model_perturbed,
+    build_model_randomized,
+    make_solver,
+)
 
 
 @dataclass
@@ -48,17 +54,26 @@ class OuterStepRecord:
     substeps: list[SubstepRecord] = field(default_factory=list)
 
 
+IC_BUILDERS = {
+    "identical": build_model,
+    "perturbed": lambda n: build_model_perturbed(n, epsilon=1e-3),
+    "randomized": build_model_randomized,
+}
+
+
 def _collect_timeline(
     n_worlds: int,
     warmup: int,
     outer_steps: int,
+    ic_mode: str = "randomized",
 ) -> dict:
     """Run solver with per-iteration readbacks to build timeline data.
 
     This is a diagnostic function -- .numpy() is called after every inner
     iteration to log per-world state. Never use for performance measurement.
     """
-    model = build_model_perturbed(n_worlds, epsilon=1e-3)
+    build_fn = IC_BUILDERS[ic_mode]
+    model = build_fn(n_worlds)
     solver = make_solver(model)
     s0, s1 = model.state(), model.state()
     ctrl = model.control()
@@ -153,6 +168,7 @@ def _collect_timeline(
         "warmup": warmup,
         "outer_steps": outer_steps,
         "dt_outer": DT_OUTER,
+        "ic_mode": ic_mode,
         "records": [],
     }
     for rec in records:
@@ -180,10 +196,11 @@ def run(
     n_worlds: int = 4,
     warmup: int = 50,
     outer_steps: int = 5,
+    ic_mode: str = "randomized",
 ) -> dict:
     """Collect timeline data."""
-    print(f"  Timeline: {n_worlds} worlds, {warmup} warmup, {outer_steps} outer steps", flush=True)
-    return _collect_timeline(n_worlds, warmup, outer_steps)
+    print(f"  Timeline: {n_worlds} worlds, {warmup} warmup, {outer_steps} outer steps, ic={ic_mode}", flush=True)
+    return _collect_timeline(n_worlds, warmup, outer_steps, ic_mode=ic_mode)
 
 
 def plot(data: dict, out_dir: Path) -> None:
@@ -228,8 +245,9 @@ def plot(data: dict, out_dir: Path) -> None:
     ax.set_yticks(y_positions)
     ax.set_yticklabels([f"World {w}" for w in range(n_worlds)], fontsize=10)
     ax.set_xlabel("Simulation time [s]", fontsize=11)
+    ic_mode = data.get("ic_mode", "perturbed")
     ax.set_title(
-        f"Adaptive substep timeline  ({n_worlds} worlds, DT_outer={dt_outer * 1e3:.0f} ms, tol=1e-3)",
+        f"Adaptive substep timeline  ({n_worlds} worlds, {ic_mode} ICs, DT_outer={dt_outer * 1e3:.0f} ms, tol=1e-3)",
         fontsize=11,
     )
     ax.grid(True, axis="x", alpha=0.3)
@@ -242,13 +260,16 @@ def main():
     parser.add_argument("--n-worlds", type=int, default=4)
     parser.add_argument("--warmup", type=int, default=50)
     parser.add_argument("--outer-steps", type=int, default=5)
+    parser.add_argument("--ic-mode", type=str, default="randomized",
+                        choices=list(IC_BUILDERS.keys()),
+                        help="Initial condition mode")
     parser.add_argument("--out-dir", type=str, default="scripts/bench/results")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    data = run(args.n_worlds, args.warmup, args.outer_steps)
+    data = run(args.n_worlds, args.warmup, args.outer_steps, ic_mode=args.ic_mode)
 
     with open(out_dir / "timeline.json", "w") as f:
         json.dump(data, f, indent=2)

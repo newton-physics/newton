@@ -10,6 +10,9 @@ to prevent state contamination between modes or N values.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -18,6 +21,24 @@ import numpy as np
 import warp as wp
 
 import newton
+
+
+@contextlib.contextmanager
+def _suppress_kernel_noise():
+    """Redirect stdout/stderr to /dev/null to suppress wp.printf spam (e.g. ccd_iterations warnings)."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stdout = os.dup(1)
+    old_stderr = os.dup(2)
+    os.dup2(devnull, 1)
+    os.dup2(devnull, 2)
+    try:
+        yield
+    finally:
+        os.dup2(old_stdout, 1)
+        os.dup2(old_stderr, 2)
+        os.close(old_stdout)
+        os.close(old_stderr)
+        os.close(devnull)
 
 
 @dataclass
@@ -64,23 +85,32 @@ def measure(
     s1 = model.state()
     ctrl = model.control()
 
-    for _ in range(warmup):
-        s0, s1 = step_fn(model, s0, s1, ctrl)
-    wp.synchronize()
+    times_arr = np.empty(steps, dtype=np.float64)
+    ks_arr = np.ones(steps, dtype=np.int32)
 
-    times = []
-    ks = []
-    for _ in range(steps):
+    with _suppress_kernel_noise():
+        for _ in range(warmup):
+            s0, s1 = step_fn(model, s0, s1, ctrl)
         wp.synchronize()
-        t0 = time.perf_counter()
-        s0, s1 = step_fn(model, s0, s1, ctrl)
-        wp.synchronize()
-        elapsed = time.perf_counter() - t0
-        times.append(elapsed)
-        ks.append(get_k() if get_k is not None else 1)
 
-    times_arr = np.array(times)
-    ks_arr = np.array(ks, dtype=np.int32)
+        for i in range(steps):
+            # get_k reads a 4-byte int from GPU -- do it here so the transfer
+            # overlaps with the sync fence rather than stalling the next step.
+            if get_k is not None and i > 0:
+                ks_arr[i - 1] = get_k()
+            wp.synchronize()
+            t0 = time.perf_counter()
+            s0, s1 = step_fn(model, s0, s1, ctrl)
+            wp.synchronize()
+            times_arr[i] = time.perf_counter() - t0
+
+        # Final K read after the last step.
+        if get_k is not None:
+            ks_arr[steps - 1] = get_k()
+
+    # Progress summary (outside suppression so it's visible).
+    sys.stderr.write(f"    {steps} steps done\r")
+    sys.stderr.flush()
 
     per_iter = times_arr / np.maximum(ks_arr, 1)
 
