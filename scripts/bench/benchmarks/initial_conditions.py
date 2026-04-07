@@ -30,10 +30,11 @@ from scripts.scenes.contact_objects import (
     DT_OUTER,
     build_model,
     build_model_perturbed,
+    build_model_randomized,
     make_solver,
 )
 
-IC_MODES = ["identical", "perturbed"]
+IC_MODES = ["identical", "randomized"]
 
 # Colors for epsilon sweep (perceptually ordered, light to dark).
 _EPSILON_COLORS = ["#2ca02c", "#1f77b4", "#ff7f0e", "#d62728", "#9467bd", "#8c564b"]
@@ -46,6 +47,8 @@ def _measure_ic_mode(
     """Measure CENIC at one N with one IC mode."""
     if mode == "identical":
         build_fn = build_model
+    elif mode == "randomized":
+        build_fn = build_model_randomized
     else:
         def build_fn(n_worlds):
             return build_model_perturbed(n_worlds, epsilon=epsilon)
@@ -81,6 +84,8 @@ def _collect_error_trace(mode: str, steps: int, epsilon: float = 1e-4) -> dict:
     """Run N=1 and record accepted error + dt at each outer step."""
     if mode == "identical":
         model = build_model(1)
+    elif mode == "randomized":
+        model = build_model_randomized(1)
     else:
         model = build_model_perturbed(1, epsilon=epsilon)
     solver = make_solver(model)

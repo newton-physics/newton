@@ -133,6 +133,71 @@ def build_model_perturbed(n_worlds: int, epsilon: float = 1e-4) -> newton.Model:
     return model
 
 
+def _random_unit_quaternion(rng) -> tuple[float, float, float, float]:
+    """Sample a uniform random rotation quaternion (Shoemake's method)."""
+    import numpy as np
+
+    u1, u2, u3 = rng.random(), rng.random(), rng.random()
+    s1 = math.sqrt(1.0 - u1)
+    s2 = math.sqrt(u1)
+    a1 = 2.0 * math.pi * u2
+    a2 = 2.0 * math.pi * u3
+    return (s1 * math.sin(a1), s1 * math.cos(a1), s2 * math.sin(a2), s2 * math.cos(a2))
+
+
+def build_model_randomized(n_worlds: int, seed: int = 42) -> newton.Model:
+    """N replicated worlds with fully randomized per-world object positions.
+
+    Each world gets deterministically randomized xyz positions and orientations
+    for all 18 bodies (9 spheres + 9 boxes). Same object count and shapes,
+    completely different spatial arrangement. Seeded per-world for reproducibility.
+
+    Args:
+        n_worlds: Number of parallel worlds.
+        seed: Base RNG seed. World w uses seed + w.
+    """
+    import numpy as np
+
+    model = build_model(n_worlds)
+
+    joint_q_np = model.joint_q.numpy()
+    body_q_np = model.body_q.numpy()
+    coords_per_world = model.joint_coord_count // n_worlds
+    bodies_per_world = model.body_count // n_worlds
+
+    # Bounds: stay inside the walled enclosure with margin.
+    xy_lo, xy_hi = -0.25, 0.25
+    z_lo, z_hi = 0.15, 1.50
+
+    for w in range(n_worlds):
+        rng = np.random.default_rng(seed + w)
+
+        for b in range(bodies_per_world):
+            x = rng.uniform(xy_lo, xy_hi)
+            y = rng.uniform(xy_lo, xy_hi)
+            z = rng.uniform(z_lo, z_hi)
+            qx, qy, qz, qw = _random_unit_quaternion(rng)
+
+            # joint_q: 7 floats per body [px, py, pz, qx, qy, qz, qw]
+            base = w * coords_per_world + b * 7
+            joint_q_np[base + 0] = x
+            joint_q_np[base + 1] = y
+            joint_q_np[base + 2] = z
+            joint_q_np[base + 3] = qx
+            joint_q_np[base + 4] = qy
+            joint_q_np[base + 5] = qz
+            joint_q_np[base + 6] = qw
+
+            # body_q: transform [px, py, pz, qx, qy, qz, qw]
+            body_idx = w * bodies_per_world + b
+            body_q_np[body_idx] = (x, y, z, qx, qy, qz, qw)
+
+    model.joint_q.assign(joint_q_np)
+    model.body_q.assign(body_q_np)
+
+    return model
+
+
 def make_solver(model: newton.Model, tol: float = TOL) -> newton.solvers.SolverMuJoCoCENIC:
     """CENIC solver with canonical contact-demo parameters."""
     return newton.solvers.SolverMuJoCoCENIC(

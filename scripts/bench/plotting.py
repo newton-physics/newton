@@ -38,6 +38,7 @@ STYLES: dict[str, PlotStyle] = {
     "single_iter": PlotStyle("#d62728", "s", "--", "Single iteration"),
     "identical": PlotStyle("#2ca02c", "^", "-", "Identical ICs"),
     "perturbed": PlotStyle("#9467bd", "v", "-", "Perturbed ICs"),
+    "randomized": PlotStyle("#d62728", "v", "-", "Randomized ICs"),
 }
 
 
