@@ -218,6 +218,7 @@ def parse_urdf(
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
     default_joint_damping = builder.default_joint_cfg.target_kd
+    default_joint_friction = builder.default_joint_cfg.friction
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -531,7 +532,7 @@ def parse_urdf(
             "type": joint.get("type"),
             "origin": parse_transform(joint),
             "damping": default_joint_damping,
-            "friction": 0.0,
+            "friction": default_joint_friction,
             "axis": wp.vec3(1.0, 0.0, 0.0),
             "limit_lower": default_joint_limit_lower,
             "limit_upper": default_joint_limit_upper,
@@ -544,7 +545,7 @@ def parse_urdf(
         el_dynamics = joint.find("dynamics")
         if el_dynamics is not None:
             joint_data["damping"] = float(el_dynamics.get("damping", default_joint_damping))
-            joint_data["friction"] = float(el_dynamics.get("friction", 0))
+            joint_data["friction"] = float(el_dynamics.get("friction", default_joint_friction))
         el_limit = joint.find("limit")
         if el_limit is not None:
             joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
@@ -740,6 +741,7 @@ def parse_urdf(
         lower = joint.get("limit_lower", None)
         upper = joint.get("limit_upper", None)
         joint_damping = joint["damping"]
+        joint_friction = joint["friction"]
 
         parent_xform = joint["origin"]
 
@@ -762,6 +764,7 @@ def parse_urdf(
             created_joint_idx = builder.add_joint_revolute(
                 axis=joint["axis"],
                 target_kd=joint_damping,
+                friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower,
                 limit_upper=upper,
@@ -771,6 +774,7 @@ def parse_urdf(
             created_joint_idx = builder.add_joint_prismatic(
                 axis=joint["axis"],
                 target_kd=joint_damping,
+                friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower * scale,
                 limit_upper=upper * scale,
@@ -801,6 +805,7 @@ def parse_urdf(
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
+                        friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
                     ModelBuilder.JointDofConfig(
@@ -808,6 +813,7 @@ def parse_urdf(
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
+                        friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
                 ],

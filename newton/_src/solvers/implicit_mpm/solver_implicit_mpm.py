@@ -624,7 +624,7 @@ class SolverImplicitMPM(SolverBase):
         """Collider velocity computation mode. ``'forward'`` uses the current velocity,
         ``'backward'`` uses the previous timestep position.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Aliases ``'instantaneous'`` (= ``'forward'``) and ``'finite_difference'``
             (= ``'backward'``) are deprecated and will be removed in a future release.
         """
