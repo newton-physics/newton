@@ -362,7 +362,6 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 type_a == GeoType.SPHERE
@@ -380,7 +379,6 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 writer_data,

@@ -1967,7 +1967,7 @@ class ViewerBase(ABC):
             return
 
         # Update world transforms for the active mode
-        body_q = state.body_q.numpy() if state is not None else None
+        body_q = state.body_q.numpy() if state is not None and state.body_q is not None else None
         offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
 
         for s, (_vertex_data, body_idx, shape_xf, world_idx) in edge_cache.items():
