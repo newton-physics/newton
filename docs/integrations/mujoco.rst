@@ -449,11 +449,15 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
 
 .. note::
 
-   The imported ``solref`` values are currently incorrectly mapped to
-   ``ke``/``kd``: ``solref`` is mass-normalized, while the ``ke``/``kd``
-   Newton properties have force-based units.  See
-   `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
-   for details.
+   - The imported ``solref`` values are currently incorrectly mapped to
+     ``ke``/``kd``: ``solref`` is mass-normalized, while the ``ke``/``kd``
+     Newton properties have force-based units. See
+     `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
+     for details.
+   - Newton currently parses generic ``mjc:solref`` rather than
+     schema-specific ``mjc:solreflimit``. See
+     `issue #2342 <https://github.com/newton-physics/newton/issues/2342>`_
+     for details.
 
 **Shape — collision** (``PhysicsCollisionAPI`` + ``MjcCollisionAPI``):
 
