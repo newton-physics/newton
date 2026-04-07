@@ -5733,7 +5733,7 @@ class SolverMuJoCo(SolverBase):
     def _copy_qpos0_to_qref(model: Model) -> wp.array:
         """Build reference joint coordinates from model data and ``dof_ref``.
 
-        Launches :func:`build_ref_q_kernel` to produce joint coordinates in
+        Launches ``build_ref_q_kernel`` to produce joint coordinates in
         Newton convention (xyzw quaternions for free/ball joints, ``dof_ref``
         values for hinge/slide/D6 joints).
 
@@ -5772,7 +5772,7 @@ class SolverMuJoCo(SolverBase):
     def _compute_body_poses_at_qref(model: Model, ref_q: wp.array) -> wp.array:
         """Compute body transforms at the reference joint configuration.
 
-        Runs :func:`eval_articulation_fk` with the given ``ref_q`` and zero
+        Runs ``eval_articulation_fk`` with the given ``ref_q`` and zero
         velocities to obtain world-space body transforms at the reference
         pose.
 
@@ -5821,7 +5821,7 @@ class SolverMuJoCo(SolverBase):
     def _compute_connect_constraint_rel_xform_at_qref(model: Model, ref_body_q: wp.array) -> tuple[wp.array, wp.array]:
         """Compute relative body transforms for CONNECT constraints at the reference pose.
 
-        Launches :func:`update_connect_constraint_rel_body_poses_at_qref_kernel`
+        Launches ``update_connect_constraint_rel_body_poses_at_qref_kernel``
         to compute per-constraint ``(q_rel, t_rel)`` pairs such that::
 
             anchor2 = quat_rotate(q_rel, anchor1) + t_rel
@@ -5896,7 +5896,7 @@ class SolverMuJoCo(SolverBase):
     ):
         """Write CONNECT constraint anchors into the MuJoCo Warp model.
 
-        Launches :func:`update_connect_constraint_anchors_kernel` to copy
+        Launches ``update_connect_constraint_anchors_kernel`` to copy
         ``anchor1`` [m] and compute
         ``anchor2 = quat_rotate(q_rel, anchor1) + t_rel`` [m] into
         ``mjw_model.eq_data``. Skips immediately when ``mjw_model.neq == 0``.
