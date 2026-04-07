@@ -39,7 +39,7 @@ def compute_com_world_position(body_q, body_com, body_world, world_offsets=None,
     wp.launch(
         kernel=compute_com_positions,
         dim=body_q.shape[0],
-        inputs=[body_q, body_com, body_world, world_offsets],
+        inputs=[body_q, body_com, body_world, world_offsets, None],
         outputs=[com_world],
         device=body_q.device,
     )

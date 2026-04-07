@@ -753,7 +753,7 @@ class RenderContext:
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an output array for color rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_color_image_output`.
         """
         warnings.warn(
@@ -766,7 +766,7 @@ class RenderContext:
     def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
         """Create an output array for depth rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_depth_image_output`.
         """
         warnings.warn(
@@ -779,7 +779,7 @@ class RenderContext:
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an output array for shape-index rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_shape_index_image_output`.
         """
         warnings.warn(
@@ -792,7 +792,7 @@ class RenderContext:
     def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
         """Create an output array for surface-normal rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_normal_image_output`.
         """
         warnings.warn(
@@ -805,7 +805,7 @@ class RenderContext:
     def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an output array for albedo rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_albedo_image_output`.
         """
         warnings.warn(
