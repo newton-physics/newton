@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections
+import copy
 import datetime
 import inspect
 import itertools
@@ -447,6 +448,12 @@ def parse_usd(
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
         return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
 
+    def _is_effectively_visible(prim: Usd.Prim) -> bool:
+        imageable = UsdGeom.Imageable(prim)
+        if not imageable:
+            return True
+        return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
+
     bodies_with_visual_shapes: set[int] = set()
     warned_deprecated_body_armature_paths: set[str] = set()
 
@@ -523,6 +530,9 @@ def parse_usd(
         if not is_site and not load_visual_shapes:
             return
 
+        visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
+        visual_shape_cfg_for_prim.is_visible = is_site or _is_effectively_visible(prim)
+
         if path_name not in path_shape_map:
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
@@ -533,7 +543,7 @@ def parse_usd(
                     hx=side_lengths[0] / 2,
                     hy=side_lengths[1] / 2,
                     hz=side_lengths[2] / 2,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -545,7 +555,7 @@ def parse_usd(
                     parent_body_id,
                     xform,
                     radius,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -561,7 +571,7 @@ def parse_usd(
                     xform=plane_xform,
                     width=width,
                     length=length,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
                     label=path_name,
                 )
             elif type_name == "capsule":
@@ -575,7 +585,7 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -590,7 +600,7 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -605,7 +615,7 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -616,7 +626,7 @@ def parse_usd(
                     xform,
                     scale=scale,
                     mesh=mesh,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
                     label=path_name,
                 )
             elif type_name == "particlefield3dgaussiansplat":
@@ -626,7 +636,7 @@ def parse_usd(
                     gaussian=gaussian,
                     xform=xform,
                     scale=scale,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
                     label=path_name,
                 )
             elif len(type_name) > 0 and type_name != "xform" and verbose:
@@ -2133,6 +2143,7 @@ def parse_usd(
                 collider_is_visible = (
                     show_collider_by_policy or collider_has_visual_material
                 ) and not hide_collider_for_body
+                collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
                 shape_ke = R.get_value(
                     prim,

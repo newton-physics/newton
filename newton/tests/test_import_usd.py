@@ -6602,6 +6602,92 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags & ShapeFlags.VISIBLE)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_invisible_collision_shape_is_hidden(self):
+        """Effective USD invisibility clears VISIBLE on colliders while preserving collision."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        token visibility = "invisible"
+        double size = 1.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        collision_shape = result["path_shape_map"]["/Body/CollisionBox"]
+
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_inherited_invisible_body_hides_collider_and_visual(self):
+        """Parent invisibility propagates to child colliders and visual-only geometry."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    token visibility = "invisible"
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        collision_shape = path_shape_map["/Body/CollisionBox"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+        self.assertIn("/Body/VisualSphere", path_shape_map)
+        visual_shape = path_shape_map["/Body/VisualSphere"]
+        self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.VISIBLE)
+
 
 class TestImportUsdMimicJoint(unittest.TestCase):
     """Tests for PhysxMimicJointAPI parsing during USD import."""
