@@ -3115,21 +3115,11 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
             if need_length_range or need_const_fixed or need_const_0:
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
-            if update_connect_constraint_anchor_rel_xform_at_ref_pose:
-                self.connect_constraint_q_rel, self.connect_constraint_t_rel = (
-                    SolverMuJoCo._update_connect_constraint_anchor_rel_xform_at_ref_pose(self.model)
-                )
-            if (
-                update_connect_constraint_anchor_rel_xform_at_ref_pose or update_connect_constraint_anchors
-            ) and self.connect_constraint_q_rel is not None:
-                SolverMuJoCo._update_connect_constraint_anchors(
-                    self.model,
-                    self.mjw_model,
-                    self.mjc_eq_to_newton_eq,
-                    self.connect_constraint_q_rel,
-                    self.connect_constraint_t_rel,
-                )
-                self.mj_model.eq_data[:] = self.mjw_model.eq_data.numpy()[0]
+            # Must be called last — overwrites eq_data with correct anchor values.
+            self._notify_connect_constraints_changed(
+                update_connect_constraint_anchor_rel_xform_at_ref_pose,
+                update_connect_constraint_anchors,
+            )
 
         else:
             if (
@@ -3146,20 +3136,11 @@ class SolverMuJoCo(SolverBase):
                         self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
                     if need_const_0:
                         self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
-                    if update_connect_constraint_anchor_rel_xform_at_ref_pose:
-                        self.connect_constraint_q_rel, self.connect_constraint_t_rel = (
-                            SolverMuJoCo._update_connect_constraint_anchor_rel_xform_at_ref_pose(self.model)
-                        )
-                    if (
-                        update_connect_constraint_anchor_rel_xform_at_ref_pose or update_connect_constraint_anchors
-                    ) and self.connect_constraint_q_rel is not None:
-                        SolverMuJoCo._update_connect_constraint_anchors(
-                            self.model,
-                            self.mjw_model,
-                            self.mjc_eq_to_newton_eq,
-                            self.connect_constraint_q_rel,
-                            self.connect_constraint_t_rel,
-                        )
+                    # Must be called last — overwrites eq_data with correct anchor values.
+                    self._notify_connect_constraints_changed(
+                        update_connect_constraint_anchor_rel_xform_at_ref_pose,
+                        update_connect_constraint_anchors,
+                    )
 
     def _create_inverse_shape_mapping(self):
         """
@@ -5952,6 +5933,26 @@ class SolverMuJoCo(SolverBase):
             ],
             device=model.device,
         )
+
+    def _notify_connect_constraints_changed(
+        self,
+        update_anchor_rel_xform_at_ref_pose: bool,
+        update_anchors: bool,
+    ):
+        if update_anchor_rel_xform_at_ref_pose:
+            self.connect_constraint_q_rel, self.connect_constraint_t_rel = (
+                SolverMuJoCo._update_connect_constraint_anchor_rel_xform_at_ref_pose(self.model)
+            )
+        if (update_anchor_rel_xform_at_ref_pose or update_anchors) and self.connect_constraint_q_rel is not None:
+            SolverMuJoCo._update_connect_constraint_anchors(
+                self.model,
+                self.mjw_model,
+                self.mjc_eq_to_newton_eq,
+                self.connect_constraint_q_rel,
+                self.connect_constraint_t_rel,
+            )
+            if self.use_mujoco_cpu:
+                self.mj_model.eq_data[:] = self.mjw_model.eq_data.numpy()[0]
 
     def _update_geom_properties(self):
         """Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model."""
