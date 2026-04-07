@@ -5866,9 +5866,9 @@ class SolverMuJoCo(SolverBase):
     ) -> tuple[wp.array, wp.array]:
         """Compute relative body transforms for CONNECT constraints at the reference pose.
 
-        High-level orchestrator that calls :meth:`_copy_qpos0_to_qref`,
-        :meth:`_compute_body_poses_at_qref`, and
-        :meth:`_compute_connect_constraint_rel_xform_at_qref` in sequence to
+        High-level orchestrator that calls ``_copy_qpos0_to_qref``,
+        ``_compute_body_poses_at_qref``, and
+        ``_compute_connect_constraint_rel_xform_at_qref`` in sequence to
         produce the per-constraint ``(q_rel, t_rel)`` that map ``anchor1``
         to ``anchor2``.
 
