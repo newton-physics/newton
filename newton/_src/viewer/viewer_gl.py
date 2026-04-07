@@ -1154,7 +1154,7 @@ class ViewerGL(ViewerBase):
         val = float(value.item() if hasattr(value, "item") else value)
         buf = self._scalar_buffers.get(name)
         if buf is None:
-            buf = collections.deque([0.0] * self._plot_history_size, maxlen=self._plot_history_size)
+            buf = collections.deque(maxlen=self._plot_history_size)
             self._scalar_buffers[name] = buf
         buf.append(val)
 
@@ -2223,9 +2223,13 @@ class ViewerGL(ViewerBase):
         expanded, _opened = imgui.begin("Plots", True)
         if expanded:
             graph_size = imgui.ImVec2(-1, 100)
+            n = self._plot_history_size
             for name, buf in self._scalar_buffers.items():
-                arr = np.array(buf, dtype=np.float32)
-                overlay = f"{arr[-1]:.4g}" if len(arr) > 0 else ""
+                # Pad with NaN on the left so the x-axis scale is fixed
+                # but pre-history values are not drawn.
+                arr = np.full(n, np.nan, dtype=np.float32)
+                arr[n - len(buf) :] = np.array(buf, dtype=np.float32)
+                overlay = f"{buf[-1]:.4g}" if buf else ""
                 if imgui.collapsing_header(
                     name,
                     imgui.TreeNodeFlags_.default_open.value,
