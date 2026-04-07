@@ -2401,16 +2401,18 @@ def parse_usd(
 
             body_id = -1
 
-            prim_world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+            prim_world_mat = _get_prim_world_mat(gaussian_prim, None, incoming_world_xform)
 
             g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
             gaussian = usd.get_gaussian(gaussian_prim)
+            splat_cfg = copy.copy(visual_shape_cfg)
+            splat_cfg.is_visible = _is_effectively_visible(gaussian_prim)
             shape_id = builder.add_shape_gaussian(
                 body_id,
                 gaussian=gaussian,
                 xform=wp.transform(g_pos, g_rot),
                 scale=g_scale,
-                cfg=visual_shape_cfg,
+                cfg=splat_cfg,
                 label=gaussian_path,
             )
             path_shape_map[gaussian_path] = shape_id
