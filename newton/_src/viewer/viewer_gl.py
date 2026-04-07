@@ -206,6 +206,9 @@ class ViewerGL(ViewerBase):
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
         """
+        if plot_history_size <= 0:
+            raise ValueError("plot_history_size must be > 0")
+
         # Pre-initialize callback registry; clear_model() (called from
         # super().__init__()) resets the "side" slot on each model change.
         self._ui_callbacks = {"side": [], "stats": [], "free": [], "panel": []}
