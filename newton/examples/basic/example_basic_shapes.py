@@ -58,7 +58,7 @@ class Example:
         body_ellipsoid = builder.add_body(
             xform=wp.transform(p=self.ellipsoid_pos, q=wp.quat_identity()), label="ellipsoid"
         )
-        builder.add_shape_ellipsoid(body_ellipsoid, a=0.5, b=0.5, c=0.25)
+        builder.add_shape_ellipsoid(body_ellipsoid, rx=0.5, ry=0.5, rz=0.25)
 
         # CAPSULE
         self.capsule_pos = wp.vec3(0.0, 0.0, drop_z)

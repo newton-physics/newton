@@ -5,6 +5,7 @@ import math
 import os
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -69,6 +70,40 @@ def Xform "Root" (
             i for i in range(builder.shape_count) if builder.shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
         ]
         self.assertEqual(len(collision_shapes), 13)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_body_newton_armature_warns_deprecated(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        body.GetPrim().CreateAttribute("newton:armature", Sdf.ValueTypeNames.Float, True).Set(0.125)
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collision")
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+
+        deprecations = [item for item in caught if issubclass(item.category, DeprecationWarning)]
+        self.assertEqual(len(deprecations), 1)
+        message = str(deprecations[0].message)
+        self.assertIn("newton:armature", message)
+        self.assertIn("/World/Body", message)
+        self.assertNotIn("add_link(..., armature=...)", message)
+
+        # Verify the armature was applied to body inertia (default cube: half-extents
+        # (1,1,1), density 1000 → mass 8000, diagonal = 16000/3; plus armature 0.125)
+        inertia = builder.body_inertia[0]
+        expected_diag = 16000.0 / 3.0 + 0.125
+        for j in range(3):
+            self.assertAlmostEqual(float(inertia[j, j]), expected_diag, places=2)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_non_articulated_joints(self):

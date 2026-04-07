@@ -34,17 +34,25 @@ SEMANTIC_COLOR_ROBOT = 0xFFFF00FF
 SEMANTIC_COLOR_GAUSSIAN = 0xFFFF9900
 SEMANTIC_COLOR_GROUND_PLANE = 0xFF444444
 
+IMAGE_OUTPUT_COLOR = 0
+IMAGE_OUTPUT_ALBEDO = 1
+IMAGE_OUTPUT_DEPTH = 2
+IMAGE_OUTPUT_FORWARD_DEPTH = 3
+IMAGE_OUTPUT_NORMAL = 4
+IMAGE_OUTPUT_SEMANTIC = 5
+IMAGE_OUTPUT_SHAPE_INDEX = 6
+
 
 @wp.kernel(enable_backward=False)
 def animate_franka(
     time: wp.float32,
-    joint_type: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_limit_lower: wp.array(dtype=wp.float32),
-    joint_limit_upper: wp.array(dtype=wp.float32),
-    joint_q: wp.array(dtype=wp.float32),
+    joint_type: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_limit_lower: wp.array[wp.float32],
+    joint_limit_upper: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
 ):
     tid = wp.tid()
 
@@ -64,9 +72,9 @@ def animate_franka(
 
 @wp.kernel
 def shape_index_to_semantic_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    colors: wp.array(dtype=wp.uint32),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
+    shape_indices: wp.array4d[wp.uint32],
+    colors: wp.array[wp.uint32],
+    rgba: wp.array4d[wp.uint32],
 ):
     world_id, camera_id, y, x = wp.tid()
     shape_index = shape_indices[world_id, camera_id, y, x]
@@ -78,8 +86,8 @@ def shape_index_to_semantic_rgb(
 
 @wp.kernel
 def shape_index_to_random_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
+    shape_indices: wp.array4d[wp.uint32],
+    rgba: wp.array4d[wp.uint32],
 ):
     world_id, camera_id, y, x = wp.tid()
     shape_index = shape_indices[world_id, camera_id, y, x]
@@ -95,7 +103,7 @@ class Example:
 
         self.time = 0.0
         self.time_delta = 0.005
-        self.image_output = 0
+        self.image_output = IMAGE_OUTPUT_COLOR
         self.texture_id = 0
         self.show_sensor_output = True
 
@@ -271,7 +279,7 @@ class Example:
         )
         self.update_texture()
 
-    def get_camera_transforms(self) -> wp.array(dtype=wp.transformf):
+    def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
             return wp.array(
                 [
@@ -330,32 +338,45 @@ class Example:
                 4,
             ),
         )
-        if self.image_output == 0:
+        if self.image_output == IMAGE_OUTPUT_COLOR:
             self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_color_image,
                 texture_buffer,
                 self.worlds_per_row,
             )
-        elif self.image_output == 1:
+        elif self.image_output == IMAGE_OUTPUT_ALBEDO:
             self.tiled_camera_sensor.utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_albedo_image,
                 texture_buffer,
                 self.worlds_per_row,
             )
-        elif self.image_output == 2:
+        elif self.image_output == IMAGE_OUTPUT_DEPTH:
             self.tiled_camera_sensor.utils.flatten_depth_image_to_rgba(
                 self.tiled_camera_sensor_depth_image,
                 texture_buffer,
                 self.worlds_per_row,
                 self.depth_range,
             )
-        elif self.image_output == 3:
+        elif self.image_output == IMAGE_OUTPUT_FORWARD_DEPTH:
+            self.tiled_camera_sensor.utils.convert_ray_depth_to_forward_depth(
+                self.tiled_camera_sensor_depth_image,
+                self.get_camera_transforms(),
+                self.camera_rays,
+                self.tiled_camera_sensor_depth_image,
+            )
+            self.tiled_camera_sensor.utils.flatten_depth_image_to_rgba(
+                self.tiled_camera_sensor_depth_image,
+                texture_buffer,
+                self.worlds_per_row,
+                self.depth_range,
+            )
+        elif self.image_output == IMAGE_OUTPUT_NORMAL:
             self.tiled_camera_sensor.utils.flatten_normal_image_to_rgba(
                 self.tiled_camera_sensor_normal_image,
                 texture_buffer,
                 self.worlds_per_row,
             )
-        elif self.image_output == 4:
+        elif self.image_output == IMAGE_OUTPUT_SEMANTIC:
             wp.launch(
                 shape_index_to_semantic_rgb,
                 self.tiled_camera_sensor_shape_index_image.shape,
@@ -367,7 +388,7 @@ class Example:
                 texture_buffer,
                 self.worlds_per_row,
             )
-        elif self.image_output == 5:
+        elif self.image_output == IMAGE_OUTPUT_SHAPE_INDEX:
             wp.launch(
                 shape_index_to_random_rgb,
                 self.tiled_camera_sensor_shape_index_image.shape,
@@ -416,18 +437,20 @@ class Example:
 
         ui.separator()
 
-        if ui.radio_button("Show Color Output", self.image_output == 0):
-            self.image_output = 0
-        if ui.radio_button("Show Albedo Output", self.image_output == 1):
-            self.image_output = 1
-        if ui.radio_button("Show Depth Output", self.image_output == 2):
-            self.image_output = 2
-        if ui.radio_button("Show Normal Output", self.image_output == 3):
-            self.image_output = 3
-        if ui.radio_button("Show Semantic Output", self.image_output == 4):
-            self.image_output = 4
-        if ui.radio_button("Show Shape Index Output", self.image_output == 5):
-            self.image_output = 5
+        if ui.radio_button("Show Color Output", self.image_output == IMAGE_OUTPUT_COLOR):
+            self.image_output = IMAGE_OUTPUT_COLOR
+        if ui.radio_button("Show Albedo Output", self.image_output == IMAGE_OUTPUT_ALBEDO):
+            self.image_output = IMAGE_OUTPUT_ALBEDO
+        if ui.radio_button("Show Depth Output", self.image_output == IMAGE_OUTPUT_DEPTH):
+            self.image_output = IMAGE_OUTPUT_DEPTH
+        if ui.radio_button("Show Forward Depth Output", self.image_output == IMAGE_OUTPUT_FORWARD_DEPTH):
+            self.image_output = IMAGE_OUTPUT_FORWARD_DEPTH
+        if ui.radio_button("Show Normal Output", self.image_output == IMAGE_OUTPUT_NORMAL):
+            self.image_output = IMAGE_OUTPUT_NORMAL
+        if ui.radio_button("Show Semantic Output", self.image_output == IMAGE_OUTPUT_SEMANTIC):
+            self.image_output = IMAGE_OUTPUT_SEMANTIC
+        if ui.radio_button("Show Shape Index Output", self.image_output == IMAGE_OUTPUT_SHAPE_INDEX):
+            self.image_output = IMAGE_OUTPUT_SHAPE_INDEX
 
         ui.separator()
         if ui.radio_button(

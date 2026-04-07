@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add repeatable `--warp-config KEY=VALUE` CLI option for overriding `warp.config` attributes when running examples
 - Add 3D texture-based SDF, replacing NanoVDB volumes in the mesh-mesh collision pipeline for improved performance and CPU compatibility.
 - Add `--benchmark [SECONDS]` flag to examples for headless FPS measurement with warmup
 - Interactive example browser in the GL viewer with tree-view navigation and switch/reset support
@@ -22,11 +23,18 @@
 - Add MPM beam twist, snow ball, and viscous coiling examples
 - Add support for textures in `SensorTiledCamera` via `Config.enable_textures`
 - Add `enable_ambient_lighting` and `enable_particles` options to `SensorTiledCamera.Config`
+- Add `SensorTiledCamera.utils.convert_ray_depth_to_forward_depth()` to convert ray-distance depth to forward (planar) depth
+- Add `newton.geometry.compute_offset_mesh()` for extracting offset surface meshes from any collision shape, and a viewer toggle to visualize gap + margin wireframes in the GL viewer
 - Add differentiable rigid contacts (experimental) with respect to body poses via `CollisionPipeline` when `requires_grad=True`
 - Add per-shape display colors via `ModelBuilder.shape_color`, `Model.shape_color`, and `color=` on `ModelBuilder.add_shape_*`; mesh shapes fall back to `Mesh.color` when available and viewers honor runtime `Model.shape_color` updates
 - Add `ModelBuilder.inertia_tolerance` to configure the eigenvalue positivity and triangle inequality threshold used during inertia correction in `finalize()`
+- Add `ViewerBase.set_visible_worlds()` for runtime control of which worlds are rendered, replacing the static `max_worlds` parameter
+- Add `compute_normals` and `compute_uvs` optional arguments to `Mesh.create_heightfield()` and `Mesh.create_terrain()`
 - Pin `newton-assets` and `mujoco_menagerie` downloads to specific commit SHAs for reproducible builds (`NEWTON_ASSETS_REF`, `MENAGERIE_REF`)
 - Add `ref` parameter to `download_asset()` to allow overriding the pinned revision
+- Add `total_force_friction` and `force_matrix_friction` to `SensorContact` for tangential (friction) force decomposition
+- Add `compute_normals` and `compute_uvs` optional arguments to `Mesh.create_heightfield()` and `Mesh.create_terrain()`
+- Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
 
 ### Changed
 
@@ -45,9 +53,17 @@
 - Replace verbose Apache 2.0 boilerplate with two-line SPDX-only license headers across all source and documentation files
 - Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Improve wrench preservation in hydroelastic contacts with contact reduction.
+- Show Newton deprecation warnings during example runs started via `python -m newton.examples ...` or `python -m newton.examples.<category>.<module>`; pass `-W ignore::DeprecationWarning` if you need the previous quiet behavior.
+- Reorder `ModelBuilder.add_shape_gaussian()` parameters so `xform` precedes `gaussian`, in line with other `add_shape_*` methods. Callers using positional arguments should switch to keyword form (`gaussian=..., xform=...`); passing a `Gaussian` as the second positional argument still works but emits a `DeprecationWarning`
+- Rename `ModelBuilder.add_shape_ellipsoid()` parameters `a`, `b`, `c` to `rx`, `ry`, `rz`. Old names are still accepted as keyword arguments but emit a `DeprecationWarning`
+- Rename `collide_plane_cylinder()` parameter `cylinder_center` to `cylinder_pos` for consistency with other collide functions
+- Add optional `state` parameter to `SolverBase.update_contacts()` to align the base-class signature with Kamino and MuJoCo solvers
+- Use `Literal` types for `SolverImplicitMPM.Config` string fields with fixed option sets (`solver`, `warmstart_mode`, `collider_velocity_mode`, `grid_type`, `transfer_scheme`, `integration_scheme`)
+- Migrate `wp.array(dtype=X)` type annotations to `wp.array[X]` bracket syntax (Warp 1.12+).
 
 ### Deprecated
 
+- Deprecate `ModelBuilder.default_body_armature`, the `armature` argument on `ModelBuilder.add_link()` / `ModelBuilder.add_body()`, and USD-authored body armature via `newton:armature` in favor of adding any isotropic artificial inertia directly to `inertia`
 - Deprecate `SensorContact.net_force` in favor of `SensorContact.total_force` and `SensorContact.force_matrix`
 - Deprecate `SensorContact(include_total=...)` in favor of `SensorContact(measure_total=...)`
 - Deprecate `SensorContact.sensing_objs` in favor of `SensorContact.sensing_obj_idx`
@@ -56,7 +72,10 @@
 - Deprecate `SensorTiledCamera.render_context`; prefer `SensorTiledCamera.utils` and `SensorTiledCamera.render_config`.
 - Deprecate `SensorTiledCamera.RenderContext`; use `SensorTiledCamera.RenderConfig` for config types and `SensorTiledCamera.render_config` / `SensorTiledCamera.utils` for runtime access.
 - Deprecate `SensorTiledCamera.Config`; prefer `SensorTiledCamera.RenderConfig` and `SensorTiledCamera.utils`.
+- Deprecate `max_worlds` parameter of `ViewerBase.set_model()` in favor of `ViewerBase.set_visible_worlds()`
 - Deprecate `Viewer.update_shape_colors()` in favor of writing directly to `Model.shape_color`
+- Deprecate `ModelBuilder.add_shape_ellipsoid()` parameters `a`, `b`, `c` in favor of `rx`, `ry`, `rz`
+- Deprecate passing a `Gaussian` as the second positional argument to `ModelBuilder.add_shape_gaussian()`; use the `gaussian=` keyword argument instead
 - Deprecate `SensorTiledCamera.utils.assign_random_colors_per_world()` and `assign_random_colors_per_shape()` in favor of per-shape colors via `ModelBuilder.add_shape_*(color=...)`
 
 ### Removed
@@ -66,6 +85,7 @@
 
 ### Fixed
 
+- Fix GL viewer crash when enabling "Gap + Margin" for soft-body-only states with no rigid body transforms
 - Fix inertia validation spuriously inflating small but physically valid eigenvalues for lightweight components (< ~50 g) by using a relative threshold instead of an absolute 1e-6 cutoff
 - Restore keyboard camera movement while hovering gizmos so keyboard controls remain active when the pointer is over gizmos
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
@@ -77,6 +97,7 @@
 - Fix articulated bodies drifting laterally on the ground in XPBD solver by solving rigid contacts before joints
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Fix `hide_collision_shapes=True` not hiding collision meshes that have bound PBR materials
+- Filter inactive particles in viewer so only particles with `ParticleFlags.ACTIVE` are rendered
 - Fix concurrent asset download races on Windows by using content-addressed cache directories
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
 - Fix body `gravcomp` not being written to the MuJoCo spec, causing it to be absent from XML saved via `save_to_mjcf`
@@ -100,8 +121,10 @@
 - Fix Poisson surface reconstruction segfault under parallel test execution by defaulting to single-threaded Open3D Poisson (`n_threads=1`)
 - Fix overly conservative broadphase AABB for mesh shapes by using the pre-computed local AABB with a rotated-box transform instead of a bounding-sphere fallback, eliminating false contacts between distant meshes
 - Fix heightfield bounding-sphere radius underestimating Z extent for asymmetric height ranges (e.g. `min_z=0, max_z=10`)
+- Fix VBD self-contact barrier C2 discontinuity at `d = tau` caused by a factor-of-two error in the log-barrier coefficient
 - Fix fast inertia validation treating near-symmetric tensors within `np.allclose()` default tolerances as corrections, aligning CPU and GPU validation warnings
 - Fix connect constraint anchor computation to account for joint reference positions when `SolverMuJoCo` is the chosen solver.
+- Fix URDF joint dynamics friction import so specified friction values are preserved during simulation
 
 ## [1.0.0] - 2026-03-10
 

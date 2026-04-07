@@ -36,3 +36,11 @@ repos:
       - id: typos
         args: []
         exclude: \.(js|css)$
+  - repo: local
+    hooks:
+      - id: check-warp-array-syntax
+        name: check warp array syntax
+        entry: python scripts/check_warp_array_syntax.py
+        language: system
+        types: [python]
+        exclude: ^(scripts/check_warp_array_syntax\.py|newton/_src/solvers/kamino/)

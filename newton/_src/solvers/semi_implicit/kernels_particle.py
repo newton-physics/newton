@@ -8,13 +8,13 @@ from ...sim import Control, Model, State
 
 @wp.kernel
 def eval_spring(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    spring_indices: wp.array(dtype=int),
-    spring_rest_lengths: wp.array(dtype=float),
-    spring_stiffness: wp.array(dtype=float),
-    spring_damping: wp.array(dtype=float),
-    f: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    spring_indices: wp.array[int],
+    spring_rest_lengths: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
+    f: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 
@@ -55,13 +55,13 @@ def eval_spring(
 
 @wp.kernel
 def eval_triangle(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    indices: wp.array2d(dtype=int),
-    pose: wp.array(dtype=wp.mat22),
-    activation: wp.array(dtype=float),
-    materials: wp.array2d(dtype=float),
-    f: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    indices: wp.array2d[int],
+    pose: wp.array[wp.mat22],
+    activation: wp.array[float],
+    materials: wp.array2d[float],
+    f: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 
@@ -173,12 +173,12 @@ def eval_triangle(
 
 @wp.kernel
 def eval_bending(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    indices: wp.array2d(dtype=int),
-    rest: wp.array(dtype=float),
-    bending_properties: wp.array2d(dtype=float),
-    f: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    indices: wp.array2d[int],
+    rest: wp.array[float],
+    bending_properties: wp.array2d[float],
+    f: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     eps = 1.0e-6
@@ -248,13 +248,13 @@ def eval_bending(
 
 @wp.kernel
 def eval_tetrahedra(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    indices: wp.array2d(dtype=int),
-    pose: wp.array(dtype=wp.mat33),
-    activation: wp.array(dtype=float),
-    materials: wp.array2d(dtype=float),
-    f: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    indices: wp.array2d[int],
+    pose: wp.array[wp.mat33],
+    activation: wp.array[float],
+    materials: wp.array2d[float],
+    f: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 

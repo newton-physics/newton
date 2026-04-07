@@ -4,6 +4,7 @@
 newton.viewer
 =============
 
+.. py:module:: newton.viewer
 .. currentmodule:: newton.viewer
 
 .. rubric:: Classes

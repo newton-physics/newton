@@ -1,6 +1,8 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 .. _Articulations:
 
 Articulations
@@ -633,7 +635,7 @@ relative transform from the parent and child body to the respective anchor frame
    :width: 400
    :align: center
 
-.. list-table:: Variable names in the kernels from :mod:`newton.core.articulation`
+.. list-table:: Variable names in the articulation kernels
    :widths: 10 90
    :header-rows: 1
 

@@ -44,14 +44,14 @@ _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
 
 
 @wp.kernel
-def _capsule_duplicate_vec3(in_values: wp.array(dtype=wp.vec3), out_values: wp.array(dtype=wp.vec3)):
+def _capsule_duplicate_vec3(in_values: wp.array[wp.vec3], out_values: wp.array[wp.vec3]):
     # Duplicate N values into 2N values (two caps per capsule).
     tid = wp.tid()
     out_values[tid] = in_values[tid // 2]
 
 
 @wp.kernel
-def _capsule_duplicate_vec4(in_values: wp.array(dtype=wp.vec4), out_values: wp.array(dtype=wp.vec4)):
+def _capsule_duplicate_vec4(in_values: wp.array[wp.vec4], out_values: wp.array[wp.vec4]):
     # Duplicate N values into 2N values (two caps per capsule).
     tid = wp.tid()
     out_values[tid] = in_values[tid // 2]
@@ -59,9 +59,9 @@ def _capsule_duplicate_vec4(in_values: wp.array(dtype=wp.vec4), out_values: wp.a
 
 @wp.kernel
 def _capsule_build_body_scales(
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_indices: wp.array(dtype=wp.int32),
-    out_scales: wp.array(dtype=wp.vec3),
+    shape_scale: wp.array[wp.vec3],
+    shape_indices: wp.array[wp.int32],
+    out_scales: wp.array[wp.vec3],
 ):
     # model.shape_scale stores capsule params as (radius, half_height, _unused).
     # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
@@ -76,10 +76,10 @@ def _capsule_build_body_scales(
 
 @wp.kernel
 def _capsule_build_cap_xforms_and_scales(
-    capsule_xforms: wp.array(dtype=wp.transform),
-    capsule_scales: wp.array(dtype=wp.vec3),
-    out_xforms: wp.array(dtype=wp.transform),
-    out_scales: wp.array(dtype=wp.vec3),
+    capsule_xforms: wp.array[wp.transform],
+    capsule_scales: wp.array[wp.vec3],
+    out_xforms: wp.array[wp.transform],
+    out_scales: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     i = tid // 2
@@ -101,16 +101,16 @@ def _capsule_build_cap_xforms_and_scales(
 
 @wp.kernel
 def _compute_shape_vbo_xforms(
-    shape_transform: wp.array(dtype=wp.transformf),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transformf),
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_type: wp.array(dtype=int),
-    shape_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    write_indices: wp.array(dtype=int),
-    out_world_xforms: wp.array(dtype=wp.transformf),
-    out_vbo_xforms: wp.array(dtype=wp.mat44),
+    shape_transform: wp.array[wp.transformf],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transformf],
+    shape_scale: wp.array[wp.vec3],
+    shape_type: wp.array[int],
+    shape_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    write_indices: wp.array[int],
+    out_world_xforms: wp.array[wp.transformf],
+    out_vbo_xforms: wp.array[wp.mat44],
 ):
     """Process all model shapes, write mat44 to grouped output positions."""
     tid = wp.tid()
@@ -392,6 +392,9 @@ class ViewerGL(ViewerBase):
         # Render object and line caches (path -> GL object)
         self.objects = {}
         self.lines = {}
+        self._destroy_all_wireframes()
+        self.wireframe_shapes = {}
+        self._wireframe_vbo_owners: dict[int, WireframeShapeGL] = {}
 
         # Interactive picking and wind force helpers
         self.picking = None
@@ -463,6 +466,7 @@ class ViewerGL(ViewerBase):
                 batch.scales = out_scales
 
         self.picking = Picking(model, world_offsets=self.world_offsets)
+        self.picking.visible_worlds_mask = self._visible_worlds_mask
         self.wind = Wind(model)
 
         # Precompile picking/raycast kernels to avoid JIT delay on first pick
@@ -537,6 +541,64 @@ class ViewerGL(ViewerBase):
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
         self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=True)
 
+    def _rebuild_gl_shape_caches(self):
+        """Rebuild GL-specific caches after shape instances change.
+
+        Re-applies capsule body-scale arrays and packed VBO arrays that
+        ``set_model`` normally sets up after ``_populate_shapes()``.
+        """
+        if self.model is None:
+            return
+
+        # Remove stale MeshInstancerGL objects from previous shape batches.
+        # Batch names are generated as /model/shapes/shape_N and may change
+        # when _populate_shapes() rebuilds the instance map.
+        from .gl.opengl import MeshInstancerGL  # noqa: PLC0415
+
+        current_names = {s.name for s in self._shape_instances.values()}
+        stale = [k for k, v in self.objects.items() if isinstance(v, MeshInstancerGL) and k not in current_names]
+        for k in stale:
+            del self.objects[k]
+
+        shape_scale = self.model.shape_scale
+        if shape_scale.device != self.device:
+            shape_scale = wp.clone(shape_scale, device=self.device)
+
+        def _ensure_indices_wp(model_shapes) -> wp.array:
+            if isinstance(model_shapes, wp.array):
+                if model_shapes.device == self.device:
+                    return model_shapes
+                return wp.array(model_shapes.numpy().astype(np.int32), dtype=wp.int32, device=self.device)
+            return wp.array(model_shapes, dtype=wp.int32, device=self.device)
+
+        for batch in self._shape_instances.values():
+            if batch.geo_type != nt.GeoType.CAPSULE:
+                continue
+            shape_indices = _ensure_indices_wp(batch.model_shapes)
+            num_shapes = len(shape_indices)
+            out_scales = wp.empty(num_shapes, dtype=wp.vec3, device=self.device)
+            if num_shapes == 0:
+                batch.scales = out_scales
+                continue
+            wp.launch(
+                _capsule_build_body_scales,
+                dim=num_shapes,
+                inputs=[shape_scale, shape_indices],
+                outputs=[out_scales],
+                device=self.device,
+                record_tape=False,
+            )
+            batch.scales = out_scales
+
+        self._build_packed_vbo_arrays()
+
+    @override
+    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+        super().set_visible_worlds(worlds)
+        self._rebuild_gl_shape_caches()
+        if hasattr(self, "picking") and self.picking is not None:
+            self.picking.visible_worlds_mask = self._visible_worlds_mask
+
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets and update the picking system.
@@ -567,10 +629,10 @@ class ViewerGL(ViewerBase):
     def log_mesh(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
-        normals: wp.array(dtype=wp.vec3) | None = None,
-        uvs: wp.array(dtype=wp.vec2) | None = None,
+        points: wp.array[wp.vec3],
+        indices: wp.array[wp.int32] | wp.array[wp.uint32],
+        normals: wp.array[wp.vec3] | None = None,
+        uvs: wp.array[wp.vec2] | None = None,
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
@@ -607,10 +669,10 @@ class ViewerGL(ViewerBase):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -658,10 +720,10 @@ class ViewerGL(ViewerBase):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -749,11 +811,9 @@ class ViewerGL(ViewerBase):
     def log_lines(
         self,
         name: str,
-        starts: wp.array(dtype=wp.vec3) | None,
-        ends: wp.array(dtype=wp.vec3) | None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ),
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
         width: float = 0.01,
         hidden: bool = False,
     ):
@@ -806,14 +866,67 @@ class ViewerGL(ViewerBase):
         self.lines[name].update(starts, ends, colors)
 
     @override
+    def log_wireframe_shape(
+        self,
+        name: str,
+        vertex_data: np.ndarray | None,
+        world_matrix: np.ndarray | None,
+        hidden: bool = False,
+    ):
+        """Log a wireframe shape for geometry-shader line rendering.
+
+        Args:
+            name: Unique path/name for the wireframe shape.
+            vertex_data: ``(N, 6)`` float32 interleaved vertex data, or ``None``
+                to keep existing geometry.
+            world_matrix: 4x4 float32 world matrix, or ``None`` to keep current.
+            hidden: Whether the shape is hidden.
+        """
+        existing = self.wireframe_shapes.get(name)
+
+        if vertex_data is not None:
+            if existing is not None:
+                existing.destroy()
+            from .gl.opengl import WireframeShapeGL  # noqa: PLC0415
+
+            vbo_key = id(vertex_data)
+            owner = self._wireframe_vbo_owners.get(vbo_key)
+            if owner is None:
+                owner = WireframeShapeGL(vertex_data)
+                self._wireframe_vbo_owners[vbo_key] = owner
+            obj = WireframeShapeGL.create_shared(owner)
+            obj.hidden = hidden
+            if world_matrix is not None:
+                obj.world_matrix = world_matrix.astype(np.float32)
+            self.wireframe_shapes[name] = obj
+        elif existing is not None:
+            existing.hidden = hidden
+            if world_matrix is not None:
+                existing.world_matrix = world_matrix.astype(np.float32)
+
+    def _destroy_all_wireframes(self):
+        """Destroy all wireframe GL resources (visible shapes and VBO owners)."""
+        for obj in getattr(self, "wireframe_shapes", {}).values():
+            obj.destroy()
+        for owner in getattr(self, "_wireframe_vbo_owners", {}).values():
+            owner.destroy()
+
+    @override
+    def clear_wireframe_vbo_cache(self):
+        for obj in self.wireframe_shapes.values():
+            obj.destroy()
+        self.wireframe_shapes.clear()
+        for owner in self._wireframe_vbo_owners.values():
+            owner.destroy()
+        self._wireframe_vbo_owners.clear()
+
+    @override
     def log_points(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3) | None,
-        radii: wp.array(dtype=wp.float32) | float | None = None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ) = None,
+        points: wp.array[wp.vec3] | None,
+        radii: wp.array[wp.float32] | float | None = None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
         """
@@ -1004,7 +1117,7 @@ class ViewerGL(ViewerBase):
             cache["colors_uploaded"] = True
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
         """
         Log a generic array for visualization (not implemented).
 
@@ -1209,7 +1322,7 @@ class ViewerGL(ViewerBase):
             return
 
         # Render the scene and present it
-        self.renderer.render(self.camera, self.objects, self.lines)
+        self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes)
 
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
@@ -1946,6 +2059,16 @@ class ViewerGL(ViewerBase):
                     # Collision geometry toggle
                     show_collision = self.show_collision
                     changed, self.show_collision = imgui.checkbox("Show Collision", show_collision)
+
+                    # Gap + margin wireframe mode
+                    _sdf_margin_labels = ["Off", "Margin", "Margin + Gap"]
+                    _, new_sdf_idx = imgui.combo("Gap + Margin", int(self.sdf_margin_mode), _sdf_margin_labels)
+                    self.sdf_margin_mode = self.SDFMarginMode(new_sdf_idx)
+
+                    if self.sdf_margin_mode != self.SDFMarginMode.OFF:
+                        _, self.renderer.wireframe_line_width = imgui.slider_float(
+                            "Line Width (px)", self.renderer.wireframe_line_width, 0.5, 5.0
+                        )
 
                     # Visual geometry toggle
                     show_visual = self.show_visual

@@ -55,9 +55,9 @@ def test_insert_single_slot(test, device):
 
     @wp.kernel
     def insert_test_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         # Insert into slot 0
         reduction_insert_slot(wp.uint64(123), 0, wp.uint64(100), keys, values, active_slots)
@@ -98,9 +98,9 @@ def test_atomic_max_behavior(test, device):
 
     @wp.kernel
     def atomic_max_test_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         # All threads try to write to same key and slot
@@ -136,9 +136,9 @@ def test_multiple_keys(test, device):
 
     @wp.kernel
     def multi_key_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         key = wp.uint64(tid + 1)  # Keys 1, 2, 3, ...
@@ -172,9 +172,9 @@ def test_clear(test, device):
 
     @wp.kernel
     def insert_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         reduction_insert_slot(wp.uint64(tid + 1), 0, wp.uint64(tid * 10), keys, values, active_slots)
@@ -213,9 +213,9 @@ def test_clear_active(test, device):
 
     @wp.kernel
     def insert_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         reduction_insert_slot(wp.uint64(tid + 1), 0, wp.uint64(tid * 10), keys, values, active_slots)
@@ -258,9 +258,9 @@ def test_high_collision(test, device):
 
     @wp.kernel
     def collision_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         # Only 10 unique keys, but 1000 threads
@@ -300,9 +300,9 @@ def test_early_exit_optimization(test, device):
 
     @wp.kernel
     def insert_descending_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         # Insert values in descending order: 999, 998, 997, ...

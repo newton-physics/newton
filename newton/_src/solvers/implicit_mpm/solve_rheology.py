@@ -42,8 +42,8 @@ _TILED_SUM_BLOCK_DIM = 512
 
 @wp.kernel
 def _tiled_sum_kernel(
-    data: wp.array2d(dtype=float),
-    partial_sums: wp.array2d(dtype=float),
+    data: wp.array2d[float],
+    partial_sums: wp.array2d[float],
 ):
     block_id = wp.tid()
 
@@ -80,7 +80,7 @@ class ArraySquaredNorm:
         )
 
     # Result contains a single value, the sum of the array (will get updated by this function)
-    def compute_squared_norm(self, data: wp.array(dtype=Any)):
+    def compute_squared_norm(self, data: wp.array[Any]):
         # cast vector types to float
         if data.ndim != 2:
             data = wp.array(
@@ -131,9 +131,9 @@ def update_condition(
     l2_scale: float,
     solve_granularity: int,
     max_iterations: int,
-    residual: wp.array2d(dtype=float),
-    iteration: wp.array(dtype=int),
-    condition: wp.array(dtype=int),
+    residual: wp.array2d[float],
+    iteration: wp.array[int],
+    condition: wp.array[int],
 ):
     cur_it = iteration[0] + solve_granularity
     stop = (
@@ -195,7 +195,7 @@ class MomentumData:
     """
 
     inv_volume: wp.array
-    velocity: wp.array(dtype=wp.vec3)
+    velocity: wp.array[wp.vec3]
 
 
 @dataclass
@@ -229,16 +229,16 @@ class RheologyData:
     strain_mat: sp.BsrMatrix
     transposed_strain_mat: sp.BsrMatrix
     compliance_mat: sp.BsrMatrix
-    strain_node_volume: wp.array(dtype=float)
-    yield_params: wp.array(dtype=YieldParamVec)
-    unilateral_strain_offset: wp.array(dtype=float)
+    strain_node_volume: wp.array[float]
+    yield_params: wp.array[YieldParamVec]
+    unilateral_strain_offset: wp.array[float]
 
-    color_offsets: wp.array(dtype=int)
-    color_blocks: wp.array2d(dtype=int)
+    color_offsets: wp.array[int]
+    color_blocks: wp.array2d[int]
 
-    elastic_strain_delta: wp.array(dtype=vec6)
-    plastic_strain_delta: wp.array(dtype=vec6)
-    stress: wp.array(dtype=vec6)
+    elastic_strain_delta: wp.array[vec6]
+    plastic_strain_delta: wp.array[vec6]
+    stress: wp.array[vec6]
 
     has_viscosity: bool = False
     has_dilatancy: bool = False
@@ -269,12 +269,12 @@ class CollisionData:
 
     collider_mat: sp.BsrMatrix
     transposed_collider_mat: sp.BsrMatrix
-    collider_friction: wp.array(dtype=float)
-    collider_adhesion: wp.array(dtype=float)
-    collider_normals: wp.array(dtype=wp.vec3)
-    collider_velocities: wp.array(dtype=wp.vec3)
+    collider_friction: wp.array[float]
+    collider_adhesion: wp.array[float]
+    collider_normals: wp.array[wp.vec3]
+    collider_velocities: wp.array[wp.vec3]
     rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix] | None
-    collider_impulse: wp.array(dtype=wp.vec3)
+    collider_impulse: wp.array[wp.vec3]
 
 
 class _DelassusOperator:
@@ -354,9 +354,7 @@ class _DelassusOperator:
         self.delassus_rotation.release()
         self.delassus_diagonal.release()
 
-    def apply_stress_delta(
-        self, stress_delta: wp.array(dtype=vec6), velocity: wp.array(dtype=wp.vec3), record_cmd: bool = False
-    ):
+    def apply_stress_delta(self, stress_delta: wp.array[vec6], velocity: wp.array[wp.vec3], record_cmd: bool = False):
         return wp.launch(
             kernel=apply_stress_delta_jacobi,
             dim=self.momentum.velocity.shape[0],
@@ -373,9 +371,9 @@ class _DelassusOperator:
 
     def apply_velocity_delta(
         self,
-        velocity_delta: wp.array(dtype=wp.vec3),
-        strain_prev: wp.array(dtype=vec6),
-        strain: wp.array(dtype=vec6),
+        velocity_delta: wp.array[wp.vec3],
+        strain_prev: wp.array[vec6],
+        strain: wp.array[vec6],
         alpha: float = 1.0,
         beta: float = 1.0,
         record_cmd: bool = False,
@@ -667,9 +665,7 @@ class _CGSolver:
             shape=shape, dtype=dtype, device=device, matvec=self._preconditioner_matvec
         )
 
-    def _delassus_matvec(
-        self, x: wp.array(dtype=vec6), y: wp.array(dtype=vec6), z: wp.array(dtype=vec6), alpha: float, beta: float
-    ):
+    def _delassus_matvec(self, x: wp.array[vec6], y: wp.array[vec6], z: wp.array[vec6], alpha: float, beta: float):
         # dv = B^T x
         self.delta_velocity.zero_()
         self.delassus_operator.apply_stress_delta(x, self.delta_velocity)

@@ -1747,5 +1747,69 @@ class TestOverrideRootXformURDF(unittest.TestCase):
         )
 
 
+FRICTION_URDF = """
+<robot name="friction_test">
+<link name="base_link"/>
+<link name="revolute_link"/>
+<link name="prismatic_link"/>
+<joint name="revolute_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="revolute_link"/>
+    <origin xyz="0 1 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <dynamics damping="1.0" friction="0.25"/>
+    <limit lower="-1.0" upper="1.0"/>
+</joint>
+<joint name="prismatic_joint" type="prismatic">
+    <parent link="revolute_link"/>
+    <child link="prismatic_link"/>
+    <origin xyz="0 0.5 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <dynamics damping="2.0" friction="0.75"/>
+    <limit lower="-0.5" upper="0.5"/>
+</joint>
+</robot>
+"""
+
+
+class TestUrdfJointFriction(unittest.TestCase):
+    def test_joint_friction_parsed_from_urdf(self):
+        """Joint friction values from <dynamics friction='...'> should be forwarded to the model."""
+        builder = newton.ModelBuilder()
+        parse_urdf(FRICTION_URDF, builder)
+        model = builder.finalize()
+
+        friction_values = model.joint_friction.numpy()
+
+        # Find joint indices by label
+        revolute_idx = None
+        prismatic_idx = None
+        for i, label in enumerate(builder.joint_label):
+            if "revolute_joint" in label:
+                revolute_idx = i
+            elif "prismatic_joint" in label:
+                prismatic_idx = i
+
+        self.assertIsNotNone(revolute_idx, "revolute_joint not found")
+        self.assertIsNotNone(prismatic_idx, "prismatic_joint not found")
+
+        # Each of these joints has 1 DOF, so joint_qd_start gives us the DOF index
+        rev_dof = builder.joint_qd_start[revolute_idx]
+        pri_dof = builder.joint_qd_start[prismatic_idx]
+
+        self.assertAlmostEqual(float(friction_values[rev_dof]), 0.25, places=5)
+        self.assertAlmostEqual(float(friction_values[pri_dof]), 0.75, places=5)
+
+    def test_joint_friction_defaults_to_zero(self):
+        """Joints without <dynamics friction='...'> should default to 0.0 friction."""
+        builder = newton.ModelBuilder()
+        parse_urdf(JOINT_URDF, builder)
+        model = builder.finalize()
+
+        friction_values = model.joint_friction.numpy()
+        for val in friction_values:
+            self.assertAlmostEqual(float(val), 0.0, places=5)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

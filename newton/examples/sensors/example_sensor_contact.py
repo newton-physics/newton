@@ -4,8 +4,8 @@
 ###########################################################################
 # Example Contact Sensor
 #
-# Shows how to use the SensorContact class to evaluate total contact
-# forces and per-counterpart force breakdowns.
+# Shows how to use the SensorContact class to evaluate contact forces,
+# including per-counterpart breakdowns.
 # The flap has a contact sensor registering the total contact force of
 # the objects on top. The plates' sensors register per-counterpart forces
 # for the cube and the ball to detect which object touched which plate. Each

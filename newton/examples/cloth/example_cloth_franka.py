@@ -33,13 +33,13 @@ from newton.solvers import SolverFeatherstone, SolverVBD
 
 
 @wp.kernel
-def scale_positions(src: wp.array(dtype=wp.vec3), scale: float, dst: wp.array(dtype=wp.vec3)):
+def scale_positions(src: wp.array[wp.vec3], scale: float, dst: wp.array[wp.vec3]):
     i = wp.tid()
     dst[i] = src[i] * scale
 
 
 @wp.kernel
-def scale_body_transforms(src: wp.array(dtype=wp.transform), scale: float, dst: wp.array(dtype=wp.transform)):
+def scale_body_transforms(src: wp.array[wp.transform], scale: float, dst: wp.array[wp.transform]):
     i = wp.tid()
     p = wp.transform_get_translation(src[i])
     q = wp.transform_get_rotation(src[i])
@@ -48,13 +48,13 @@ def scale_body_transforms(src: wp.array(dtype=wp.transform), scale: float, dst: 
 
 @wp.kernel
 def compute_ee_delta(
-    body_q: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
     offset: wp.transform,
     body_id: int,
     bodies_per_world: int,
     target: wp.transform,
     # outputs
-    ee_delta: wp.array(dtype=wp.spatial_vector),
+    ee_delta: wp.array[wp.spatial_vector],
 ):
     world_id = wp.tid()
     tf = body_q[bodies_per_world * world_id + body_id] * offset
@@ -88,7 +88,7 @@ def compute_body_jacobian(
     if velocity:
 
         @wp.kernel
-        def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
+        def compute_body_out(body_qd: wp.array[wp.spatial_vector], body_out: wp.array[float]):
             mv = transform_twist(offset, body_qd[body_id])
             if wp.static(include_rotation):
                 for i in range(6):
@@ -102,7 +102,7 @@ def compute_body_jacobian(
     else:
 
         @wp.kernel
-        def compute_body_out(body_q: wp.array(dtype=wp.transform), body_out: wp.array(dtype=float)):
+        def compute_body_out(body_q: wp.array[wp.transform], body_out: wp.array[float]):
             tf = body_q[body_id] * offset
             if wp.static(include_rotation):
                 for i in range(7):
@@ -384,7 +384,7 @@ class Example:
         self.Jacobian_one_hots = [onehot(i, out_dim) for i in range(out_dim)]
 
         @wp.kernel
-        def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
+        def compute_body_out(body_qd: wp.array[wp.spatial_vector], body_out: wp.array[float]):
             # TODO verify transform twist
             mv = transform_twist(wp.static(self.endeffector_offset), body_qd[wp.static(self.endeffector_id)])
             for i in range(6):

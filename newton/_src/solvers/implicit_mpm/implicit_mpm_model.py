@@ -164,7 +164,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
 
 @wp.kernel
 def _apply_shape_transforms(
-    points: wp.array(dtype=wp.vec3), shape_ids: wp.array(dtype=int), shape_transforms: wp.array(dtype=wp.transform)
+    points: wp.array[wp.vec3], shape_ids: wp.array[int], shape_transforms: wp.array[wp.transform]
 ):
     v = wp.tid()
     p = points[v]
@@ -227,31 +227,31 @@ def _create_body_collider_mesh(
 class MaterialParameters:
     """Convenience struct for passing material parameters to kernels."""
 
-    young_modulus: wp.array(dtype=float)
+    young_modulus: wp.array[float]
     """Young's modulus for the material."""
-    poisson_ratio: wp.array(dtype=float)
+    poisson_ratio: wp.array[float]
     """Poisson's ratio for the material."""
-    damping: wp.array(dtype=float)
+    damping: wp.array[float]
     """Damping for the material."""
 
-    friction: wp.array(dtype=float)
+    friction: wp.array[float]
     """Friction for the material."""
-    yield_pressure: wp.array(dtype=float)
+    yield_pressure: wp.array[float]
     """Yield pressure for the material."""
-    tensile_yield_ratio: wp.array(dtype=float)
+    tensile_yield_ratio: wp.array[float]
     """Tensile yield ratio for the material."""
-    yield_stress: wp.array(dtype=float)
+    yield_stress: wp.array[float]
     """Yield stress for the material."""
-    viscosity: wp.array(dtype=float)
+    viscosity: wp.array[float]
     """Viscosity for the material."""
 
-    hardening: wp.array(dtype=float)
+    hardening: wp.array[float]
     """Hardening for the material."""
-    hardening_rate: wp.array(dtype=float)
+    hardening_rate: wp.array[float]
     """Hardening rate for the material."""
-    softening_rate: wp.array(dtype=float)
+    softening_rate: wp.array[float]
     """Softening rate for the material."""
-    dilatancy: wp.array(dtype=float)
+    dilatancy: wp.array[float]
     """Dilatancy for the material."""
 
 

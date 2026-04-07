@@ -171,10 +171,10 @@ class SolverMuJoCo(SolverBase):
         For :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode, determines which target array to read from:
 
         - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_pos`, syncs gains from
-          :attr:`~newton.Control.joint_target_ke`. For :attr:`~newton.JointTargetMode.POSITION`-only actuators,
-          also syncs damping from :attr:`~newton.Control.joint_target_kd`. For
+          :attr:`~newton.Model.joint_target_ke`. For :attr:`~newton.JointTargetMode.POSITION`-only actuators,
+          also syncs damping from :attr:`~newton.Model.joint_target_kd`. For
           :attr:`~newton.JointTargetMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
-        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_vel`, syncs gains from :attr:`~newton.Control.joint_target_kd`
+        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_vel`, syncs gains from :attr:`~newton.Model.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         """
 
@@ -399,8 +399,8 @@ class SolverMuJoCo(SolverBase):
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """
         Declare custom attributes to be allocated on the Model object within the ``mujoco`` namespace.
-        Note that we declare all custom attributes with the :attr:`newton.ModelBuilder.CustomAttribute.usd_attribute_name` set to ``"mjc"`` here to leverage the MuJoCo USD schema
-        where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
+        Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
+        to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
         # Register custom frequencies before adding attributes that use them
         # This is required as custom frequencies must be registered before use
@@ -2833,33 +2833,33 @@ class SolverMuJoCo(SolverBase):
             SolverMuJoCo._convert_mjw_contacts_to_newton_kernel = create_convert_mjw_contacts_to_newton_kernel()
 
         # --- New unified mappings: MuJoCo[world, entity] -> Newton[entity] ---
-        self.mjc_body_to_newton: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_body_to_newton: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
-        self.mjc_geom_to_newton_shape: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
-        self.mjc_jnt_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_jnt_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
-        self.mjc_jnt_to_newton_dof: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_jnt_to_newton_dof: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton DOF index. Shape [nworld, njnt], dtype int32."""
-        self.mjc_dof_to_newton_dof: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_dof_to_newton_dof: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, dof] to Newton DOF index. Shape [nworld, nv], dtype int32."""
-        self.newton_dof_to_body: wp.array(dtype=wp.int32) | None = None
+        self.newton_dof_to_body: wp.array[wp.int32] | None = None
         """Mapping from Newton DOF index to child body index. Shape [joint_dof_count], dtype int32."""
-        self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_mocap_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
-        self.mjc_actuator_ctrl_source: wp.array(dtype=wp.int32) | None = None
+        self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
 
         Values: 0=JOINT_TARGET (uses joint_target_pos/vel), 1=CTRL_DIRECT (uses mujoco.ctrl)
         Shape [nu], dtype int32."""
-        self.mjc_actuator_to_newton_idx: wp.array(dtype=wp.int32) | None = None
+        self.mjc_actuator_to_newton_idx: wp.array[wp.int32] | None = None
         """Mapping from MuJoCo actuator to Newton index.
 
         For JOINT_TARGET: sign-encoded DOF index (>=0: position, -1: unmapped, <=-2: velocity with -(idx+2))
         For CTRL_DIRECT: MJCF-order index into control.mujoco.ctrl array
 
         Shape [nu], dtype int32."""
-        self.mjc_eq_to_newton_eq: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_eq_to_newton_eq: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton's equality constraints.
@@ -2867,7 +2867,7 @@ class SolverMuJoCo(SolverBase):
         for the corresponding joint index.
 
         Shape [nworld, neq], dtype int32."""
-        self.mjc_eq_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_eq_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton joint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton joints that have no associated articulation,
@@ -2876,22 +2876,22 @@ class SolverMuJoCo(SolverBase):
         see :attr:`mjc_eq_to_newton_eq` for the corresponding equality constraint index.
 
         Shape [nworld, neq], dtype int32."""
-        self.mjc_eq_to_newton_mimic: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_eq_to_newton_mimic: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton mimic constraint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton's mimic constraints.
         A value of -1 indicates that the MuJoCo equality constraint is not associated with a Newton mimic constraint.
 
         Shape [nworld, neq], dtype int32."""
-        self.mjc_tendon_to_newton_tendon: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.mjc_tendon_to_newton_tendon: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, tendon] to Newton tendon index.
 
         Shape [nworld, ntendon], dtype int32."""
-        self.body_free_qd_start: wp.array(dtype=wp.int32) | None = None
+        self.body_free_qd_start: wp.array[wp.int32] | None = None
         """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
         # --- Conditional/lazy mappings ---
-        self.newton_shape_to_mjc_geom: wp.array(dtype=wp.int32) | None = None
+        self.newton_shape_to_mjc_geom: wp.array[wp.int32] | None = None
         """Inverse mapping from Newton shape index to MuJoCo geom index. Only created when use_mujoco_contacts=False. Shape [nshape], dtype int32."""
 
         # --- Helper arrays for actuator types ---
@@ -6482,8 +6482,8 @@ class SolverMuJoCo(SolverBase):
         .. note::
 
             The MuJoCo viewer only supports rendering Newton models with a single world,
-            unless :attr:`use_mujoco_cpu` is :obj:`True` or the solver was initialized with
-            :attr:`separate_worlds` set to :obj:`False`.
+            unless ``use_mujoco_cpu`` is ``True`` or the solver was initialized with
+            ``separate_worlds`` set to ``False``.
 
             The MuJoCo viewer is only meant as a debugging tool.
 

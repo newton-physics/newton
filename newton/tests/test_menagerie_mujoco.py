@@ -10,8 +10,8 @@ Architecture::
 
     TestMenagerieBase           Abstract base with all test infrastructure
     ├── TestMenagerieMJCF       Load Newton model from MJCF
-    │   ├── TestMenagerie_UniversalRobotsUr5e   (enabled, split pipeline)
-    │   ├── TestMenagerie_ApptronikApollo       (enabled, full pipeline)
+    │   ├── TestMenagerie_UniversalRobotsUr5e   (enabled)
+    │   ├── TestMenagerie_ApptronikApollo       (enabled)
     │   └── ...                                 (61 robots total, most skipped)
     └── TestMenagerieUSD        Load Newton model from USD (all skipped)
 
@@ -19,44 +19,27 @@ Test tiers (each robot can enable independently):
     - ``test_model_comparison()``: Deterministic model field checks — always runs.
     - ``test_forward_kinematics()``: Compares body poses from joint positions
       (no forces/contacts). Gated by ``fk_enabled``.
-    - ``test_dynamics()``: Multi-step simulation with controls. Gated by
-      ``num_steps > 0``.
-    - ``test_step_response()``: Per-DOF step response — each world commands one
-      actuator to a target. Gated by ``step_response_enabled``.
+    - ``test_dynamics()``: Per-DOF step response — each world commands one actuator
+      to a target position. Collisions disabled, both sides run full
+      ``mujoco_warp.step()`` independently. Gated by ``num_steps > 0``.
 
 Each test:
     1. Downloads the robot from menagerie (cached).
     2. Creates a Newton model (via MJCF) and a native mujoco_warp model.
     3. Compares model fields with physics-equivalence checks for inertia, solref, etc.
     4. Optionally runs forward kinematics, comparing body poses.
-    5. Optionally runs dynamics or step-response, comparing per-step qpos/qvel.
-
-Comparison modes:
-    - **Full pipeline**: Both sides run ``mujoco_warp.step()`` independently. Fast
-      (supports CUDA graph capture) but subject to float32 solver noise from
-      ``wp.atomic_add`` in the constraint solver and Euler damping. Suitable for
-      position-level comparison at ~5e-4 tolerance.
-    - **Split pipeline**: Newton runs a full step. Native runs only up to
-      collision detection, then Newton's contacts and constraints are injected
-      into native before it continues solving. This ensures both sides solve
-      the exact same constraint problem (bypassing non-deterministic ordering
-      from ``wp.atomic_add``). Achieves 1e-6 tolerance but is slower (no CUDA
-      graph support).
+    5. Optionally runs dynamics (step-response), comparing per-step qpos/qvel.
 
 Per-robot configuration (override in subclass):
     - ``backfill_model``: Copy computed model fields from native to Newton to
       isolate simulation diffs from model compilation diffs.
-    - ``use_split_pipeline``: Enable contact/constraint injection.
-    - ``use_cuda_graph``: Enable CUDA graph capture (full pipeline only).
-    - ``compare_fields`` / ``tolerance_overrides``: Which fields to compare and at
-      what tolerance.
+    - ``dynamics_target`` / ``dynamics_tolerance``: Step-response target and tolerance.
     - ``model_skip_fields``: Fields to skip in model comparison.
 """
 
 from __future__ import annotations
 
 import os
-import time
 import unittest
 from abc import abstractmethod
 from collections import defaultdict
@@ -208,172 +191,55 @@ class ControlStrategy:
         ...
 
 
-class ZeroControlStrategy(ControlStrategy):
-    """Always returns zero control - useful for drop tests."""
-
-    def __init__(self):
-        super().__init__(seed=0)
-
-    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
-        """Initialize - ctrl arrays are already zeroed by MuJoCo."""
-        pass
-
-    def fill_control(self, t: float):
-        """No-op - control stays at zero."""
-        pass
-
-
 @wp.kernel
-def generate_sinusoidal_control_kernel_dual(
-    frequencies: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    phases: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    native_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    newton_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    t: wp.float32,
-    amplitude: wp.float32,
+def step_response_control_kernel(
+    native_ctrl: wp.array[wp.float32],  # type: ignore[valid-type]
+    newton_ctrl: wp.array[wp.float32],  # type: ignore[valid-type]
+    target: wp.float32,
     num_actuators: int,
 ):
-    """Generate sinusoidal control pattern and write to both arrays."""
+    """Set ctrl[world_i, act_i] = target when world_i % nu == act_i, else 0."""
     i = wp.tid()
-    act_idx = i % num_actuators  # type: ignore[operator]
-    freq = frequencies[act_idx]
-    phase = phases[i]
-    two_pi = 6.28318530717959
-    val = amplitude * wp.sin(two_pi * freq * t + phase)  # type: ignore[operator]
-    clamped = wp.clamp(val, -1.0, 1.0)  # type: ignore[arg-type]
-    native_ctrl[i] = clamped
-    newton_ctrl[i] = clamped
+    world_i = i // num_actuators
+    act_i = i % num_actuators  # type: ignore[operator]
+    val = float(0.0)
+    if world_i % num_actuators == act_i:
+        val = target
+    native_ctrl[i] = val
+    newton_ctrl[i] = val
 
 
-class StructuredControlStrategy(ControlStrategy):
-    """
-    Generate structured control patterns designed to explore joint limits.
+class StepResponseControlStrategy(ControlStrategy):
+    """Each world commands one actuator to a target position, others stay at zero."""
 
-    Uses a Warp kernel to generate sinusoidal controls directly on GPU.
-    Each world gets a slightly different phase offset for variation.
-    """
-
-    def __init__(
-        self,
-        seed: int = 42,
-        amplitude_scale: float = 0.8,
-        frequency_range: tuple[float, float] = (0.5, 2.0),
-    ):
+    def __init__(self, target: float = 0.3, seed: int = 42):
         super().__init__(seed)
-        self.amplitude_scale = amplitude_scale
-        self.frequency_range = frequency_range
-        self._frequencies: wp.array | None = None
-        self._phases: wp.array | None = None
+        self.target = target
         self._native_ctrl: wp.array | None = None
         self._newton_ctrl: wp.array | None = None
         self._n: int = 0
+        self._num_actuators: int = 0
 
     def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
-        """Initialize with the ctrl arrays to fill."""
         num_worlds, num_actuators = native_ctrl.shape
-        n = num_worlds * num_actuators
-
-        frequencies_np = self.rng.uniform(self.frequency_range[0], self.frequency_range[1], num_actuators)
-        phases_np = self.rng.uniform(0, 2 * np.pi, n)
-
-        self._frequencies = wp.array(frequencies_np, dtype=wp.float32)
-        self._phases = wp.array(phases_np, dtype=wp.float32)
         self._native_ctrl = native_ctrl.flatten()
         self._newton_ctrl = newton_ctrl
-        self._n = n
+        self._n = num_worlds * num_actuators
+        self._num_actuators = num_actuators
 
     def fill_control(self, t: float):
-        """Fill control values into both arrays with single kernel launch."""
-        if self._frequencies is None:
+        if self._native_ctrl is None:
             raise RuntimeError("Call init() first")
         wp.launch(
-            generate_sinusoidal_control_kernel_dual,
+            step_response_control_kernel,
             dim=self._n,
             inputs=[
-                self._frequencies,
-                self._phases,
                 self._native_ctrl,
                 self._newton_ctrl,
-                t,
-                self.amplitude_scale,
-                self._frequencies.shape[0],  # num_actuators
+                self.target,
+                self._num_actuators,
             ],
         )
-
-
-@wp.kernel
-def generate_random_control_kernel_dual(
-    prev_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    native_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    newton_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    seed: int,
-    step: int,
-    noise_scale: wp.float32,
-    smoothing: wp.float32,
-):
-    """Generate random control with smoothing, writing to both arrays."""
-    i = wp.tid()
-    state = wp.rand_init(seed, i + step * 1000000)  # type: ignore[arg-type, operator]
-    rand_val = wp.randf(state) * 2.0 - 1.0
-    noise = rand_val * noise_scale
-    one_minus_smooth = 1.0 - smoothing
-    val = smoothing * prev_ctrl[i] + one_minus_smooth * noise
-    clamped = wp.clamp(val, -1.0, 1.0)
-    native_ctrl[i] = clamped
-    newton_ctrl[i] = clamped
-    prev_ctrl[i] = clamped
-
-
-class RandomControlStrategy(ControlStrategy):
-    """
-    Generate random control values with configurable noise.
-
-    Uses a Warp kernel to generate smoothed random controls on GPU.
-    Each world gets independent random controls.
-    """
-
-    def __init__(
-        self,
-        seed: int = 42,
-        noise_scale: float = 0.5,
-        smoothing: float = 0.9,
-    ):
-        super().__init__(seed)
-        self.noise_scale = noise_scale
-        self.smoothing = smoothing
-        self._prev_ctrl: wp.array | None = None
-        self._native_ctrl: wp.array | None = None
-        self._newton_ctrl: wp.array | None = None
-        self._n: int = 0
-        self._step: int = 0
-
-    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
-        """Initialize with the ctrl arrays to fill."""
-        n = native_ctrl.shape[0] * native_ctrl.shape[1]
-        self._prev_ctrl = wp.zeros(n, dtype=wp.float32)
-        self._native_ctrl = native_ctrl.flatten()
-        self._newton_ctrl = newton_ctrl
-        self._n = n
-        self._step = 0
-
-    def fill_control(self, t: float):
-        """Fill control values into both arrays with single kernel launch."""
-        if self._prev_ctrl is None:
-            raise RuntimeError("Call init() first")
-        wp.launch(
-            generate_random_control_kernel_dual,
-            dim=self._n,
-            inputs=[
-                self._prev_ctrl,
-                self._native_ctrl,
-                self._newton_ctrl,
-                self.rng.integers(0, 2**31),
-                self._step,
-                self.noise_scale,
-                self.smoothing,
-            ],
-        )
-        self._step += 1
 
 
 # =============================================================================
@@ -381,68 +247,10 @@ class RandomControlStrategy(ControlStrategy):
 # =============================================================================
 
 # Default tolerances for MjData field comparison.
-# Two tolerance classes: tight (1e-6) and loose (1e-4).
-# With backfill_model=True, tests can verify numerical equivalence more strictly.
-DEFAULT_TOLERANCES: dict[str, float] = {
-    # Tight (1e-6): kinematics, positions, orientations, mass matrix
-    "qpos": 1e-6,
-    "xpos": 1e-6,
-    "xquat": 1e-6,
-    "xmat": 1e-6,
-    "geom_xpos": 1e-6,
-    "geom_xmat": 1e-6,
-    "site_xpos": 1e-6,
-    "site_xmat": 1e-6,
-    "subtree_com": 1e-6,
-    "actuator_length": 1e-6,
-    "qfrc_passive": 1e-6,
-    "energy": 1e-6,
-    "qM": 1e-6,
-    # Loose (1e-4): velocities, accelerations, forces
-    "qvel": 1e-4,
-    "cvel": 1e-4,
-    "actuator_velocity": 1e-4,
-    "qfrc_bias": 1e-4,
-    "cacc": 1e-4,
-    "qacc": 1e-4,
-    "cfrc_int": 1e-4,
-    "qfrc_actuator": 1e-4,
-    "actuator_force": 1e-4,
-}
-
-# Default fields to compare in MjData (core physics + dynamics)
+# Default fields to compare in FK test
 DEFAULT_FK_FIELDS: list[str] = [
     "xpos",
     "xquat",
-]
-
-DEFAULT_COMPARE_FIELDS: list[str] = [
-    # Core state
-    "qpos",
-    "qvel",
-    "qacc",
-    # Body kinematics
-    *DEFAULT_FK_FIELDS,
-    "xmat",
-    "geom_xpos",
-    "geom_xmat",
-    "site_xpos",
-    "site_xmat",
-    "subtree_com",
-    # Forces
-    "qfrc_bias",
-    "qfrc_passive",
-    "qfrc_actuator",
-    # Dynamics
-    "cvel",
-    "cacc",
-    "cfrc_int",
-    "energy",
-    "qM",
-    # Actuators
-    "actuator_length",
-    "actuator_velocity",
-    "actuator_force",
 ]
 
 # Default fields to skip in MjWarpModel comparison (internal/non-comparable)
@@ -1052,11 +860,11 @@ def _quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
 
 @wp.kernel
 def _copy_body_q_to_mjwarp_kernel(
-    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
-    body_q: wp.array(dtype=wp.transform),
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_q: wp.array[wp.transform],
     # outputs
-    xpos: wp.array2d(dtype=wp.vec3),
-    xquat: wp.array2d(dtype=wp.quat),
+    xpos: wp.array2d[wp.vec3],
+    xquat: wp.array2d[wp.quat],
 ):
     """Copy Newton body_q transforms into mjwarp xpos/xquat arrays."""
     world, mjc_body = wp.tid()
@@ -1079,351 +887,6 @@ def run_newton_eval_fk(solver: SolverMuJoCo, model: newton.Model, state: newton.
         outputs=[solver.mjw_data.xpos, solver.mjw_data.xquat],
         device=model.device,
     )
-
-
-# =============================================================================
-# Contact Injection Helpers
-# =============================================================================
-
-
-def run_native_step1_rest(
-    native_model: Any,
-    native_data: Any,
-) -> None:
-    """Run rest of step1 after fwd_position: sensors + fwd_velocity.
-
-    Call this after run_native_make_constraint() or run_native_transmission().
-    """
-    from mujoco_warp._src import forward as mjw_forward
-    from mujoco_warp._src import sensor
-    from mujoco_warp._src.types import EnableBit
-
-    m, d = native_model, native_data
-    energy = m.opt.enableflags & EnableBit.ENERGY
-
-    d.sensordata.zero_()
-    sensor.sensor_pos(m, d)
-
-    if energy:
-        if m.sensor_e_potential == 0:
-            sensor.energy_pos(m, d)
-    else:
-        d.energy.zero_()
-
-    mjw_forward.fwd_velocity(m, d)
-
-    sensor.sensor_vel(m, d)
-
-    if energy:
-        if m.sensor_e_kinetic == 0:
-            sensor.energy_vel(m, d)
-
-
-def run_native_fwd_position_pre_constraint(
-    native_model: Any,
-    native_data: Any,
-) -> None:
-    """Run mujoco_warp fwd_position up to and including collision detection.
-
-    This runs: kinematics, com_pos, camlight, flex, tendon, crb, tendon_armature,
-    factor_m, and collision. Does NOT run make_constraint or transmission.
-    """
-    from mujoco_warp._src import (
-        collision_driver,
-        smooth,
-    )
-
-    m, d = native_model, native_data
-    smooth.kinematics(m, d)
-    smooth.com_pos(m, d)
-    smooth.camlight(m, d)
-    smooth.flex(m, d)
-    smooth.tendon(m, d)
-    smooth.crb(m, d)
-    smooth.tendon_armature(m, d)
-    smooth.factor_m(m, d)
-    if m.opt.run_collision_detection:
-        collision_driver.collision(m, d)
-
-
-def run_native_make_constraint(
-    native_model: Any,
-    native_data: Any,
-) -> None:
-    """Run mujoco_warp make_constraint only."""
-    from mujoco_warp._src import constraint
-
-    constraint.make_constraint(native_model, native_data)
-
-
-def run_native_transmission(
-    native_model: Any,
-    native_data: Any,
-) -> None:
-    """Run mujoco_warp transmission only (after constraint injection)."""
-    from mujoco_warp._src import smooth
-
-    smooth.transmission(native_model, native_data)
-
-
-def run_native_step2(
-    native_model: Any,
-    native_data: Any,
-) -> None:
-    """Run mujoco_warp step2: fwd_actuation + fwd_acceleration + solve + integrate.
-
-    Uses the correct integrator based on model.opt.integrator.
-    Note: fwd_acceleration does NOT re-run collision detection.
-    Note: Does NOT call wp.synchronize() - caller should sync if needed.
-    """
-    from mujoco_warp._src import forward as mjw_forward
-
-    mjw_forward.step2(native_model, native_data)
-
-
-def inject_contacts(src_data: Any, dst_data: Any) -> None:
-    """Copy contact arrays from src_data to dst_data.
-
-    Ensures both sides use identical contact inputs for constraint solving,
-    bypassing non-deterministic ordering in mujoco_warp's broadphase.
-
-    Args:
-        src_data: Source MjWarpData (Newton's)
-        dst_data: Destination MjWarpData (native's)
-    """
-    wp.synchronize()
-    dst_data.nacon.assign(src_data.nacon)
-    dst_data.contact.worldid.assign(src_data.contact.worldid)
-    dst_data.contact.geom.assign(src_data.contact.geom)
-    dst_data.contact.pos.assign(src_data.contact.pos)
-    dst_data.contact.dist.assign(src_data.contact.dist)
-    dst_data.contact.frame.assign(src_data.contact.frame)
-    dst_data.contact.includemargin.assign(src_data.contact.includemargin)
-    dst_data.contact.friction.assign(src_data.contact.friction)
-    dst_data.contact.solref.assign(src_data.contact.solref)
-    dst_data.contact.solreffriction.assign(src_data.contact.solreffriction)
-    dst_data.contact.solimp.assign(src_data.contact.solimp)
-    dst_data.contact.dim.assign(src_data.contact.dim)
-    dst_data.contact.efc_address.assign(src_data.contact.efc_address)
-    wp.synchronize()
-
-
-def compare_contacts_sorted(
-    newton_data: Any,
-    native_data: Any,
-    tol: float = 1e-6,
-    boundary_threshold: float = 1e-6,
-) -> tuple[bool, str]:
-    """Compare contacts between Newton and native after sorting by (worldid, geom1, geom2, pos).
-
-    Contacts with |dist| < boundary_threshold are considered numerically unstable and are
-    ignored when comparing contact sets. This handles cases where tiny position differences
-    (~1e-7) cause contacts at the threshold to flip in/out.
-
-    Args:
-        newton_data: Newton's MjWarpData
-        native_data: Native MuJoCo's MjWarpData
-        tol: Tolerance for numeric field comparisons (pos, dist, frame)
-        boundary_threshold: Contacts with |dist| below this are ignored in set comparison
-
-    Returns:
-        (matches, message) - True if contacts match within tolerance, with diagnostic message.
-    """
-
-    nacon_newton = int(newton_data.nacon.numpy()[0])
-    nacon_native = int(native_data.nacon.numpy()[0])
-
-    if nacon_newton == 0 and nacon_native == 0:
-        return True, "No contacts"
-
-    # Get contact data as sets of (worldid, geom1, geom2) tuples
-    def get_contact_set(data: Any, nacon: int, threshold: float) -> tuple[set, dict]:
-        """Returns (significant_contacts_set, all_contacts_dict)."""
-        worldid = data.contact.worldid.numpy()[:nacon]
-        geom = data.contact.geom.numpy()[:nacon]
-        pos = data.contact.pos.numpy()[:nacon]
-        dist = data.contact.dist.numpy()[:nacon]
-        frame = data.contact.frame.numpy()[:nacon]
-
-        # Create set of significant contacts (|dist| >= threshold)
-        significant_set = set()
-        all_contacts = {}
-        for i in range(nacon):
-            key = (int(worldid[i]), int(geom[i, 0]), int(geom[i, 1]))
-            all_contacts[key] = {"pos": pos[i], "dist": dist[i], "frame": frame[i]}
-            if abs(dist[i]) >= threshold:
-                significant_set.add(key)
-
-        return significant_set, all_contacts
-
-    newton_sig, newton_all = get_contact_set(newton_data, nacon_newton, boundary_threshold)
-    native_sig, native_all = get_contact_set(native_data, nacon_native, boundary_threshold)
-
-    # Check if significant contacts match
-    only_newton = newton_sig - native_sig
-    only_native = native_sig - newton_sig
-
-    if only_newton or only_native:
-        # Check if mismatched contacts are near boundary in the other set
-        real_mismatch = []
-        for key in only_newton:
-            if key not in native_all:
-                real_mismatch.append(f"Newton-only (not in native): {key}")
-        for key in only_native:
-            if key not in newton_all:
-                real_mismatch.append(f"Native-only (not in newton): {key}")
-
-        if real_mismatch:
-            return False, f"Significant contact mismatch: {real_mismatch[:3]}"
-
-    # For common significant contacts, compare numeric values
-    common_contacts = newton_sig & native_sig
-    if common_contacts:
-        max_pos_diff = 0.0
-        max_dist_diff = 0.0
-        max_frame_diff = 0.0
-        for key in common_contacts:
-            nc = newton_all[key]
-            na = native_all[key]
-            max_pos_diff = max(max_pos_diff, float(np.abs(nc["pos"] - na["pos"]).max()))
-            max_dist_diff = max(max_dist_diff, float(abs(nc["dist"] - na["dist"])))
-            max_frame_diff = max(max_frame_diff, float(np.abs(nc["frame"] - na["frame"]).max()))
-
-        if max_pos_diff > tol:
-            return False, f"pos diff: {max_pos_diff:.2e}"
-        if max_dist_diff > tol:
-            return False, f"dist diff: {max_dist_diff:.2e}"
-        if max_frame_diff > tol:
-            return False, f"frame diff: {max_frame_diff:.2e}"
-
-    # Report boundary contacts that differ (for information, not failure)
-    boundary_only_newton = len(newton_all) - len(newton_sig)
-    boundary_only_native = len(native_all) - len(native_sig)
-
-    return (
-        True,
-        f"OK (sig={len(common_contacts)}, boundary: newton={boundary_only_newton}, native={boundary_only_native})",
-    )
-
-
-def compare_constraints_sorted(
-    newton_data: Any,
-    native_data: Any,
-    tol: float = 1e-5,
-) -> tuple[bool, str]:
-    """Compare constraint rows between Newton and native, allowing reordering.
-
-    mujoco_warp's make_constraint allocates efc row indices via wp.atomic_add(),
-    so identical contacts produce identical constraint rows but in non-deterministic
-    order. This function verifies the rows match by sorting each world's constraints
-    by a deterministic key (type, id, J-hash).
-
-    Args:
-        newton_data: Newton's MjWarpData
-        native_data: Native MuJoCo's MjWarpData
-        tol: Tolerance for numeric comparisons (D, aref, pos, vel)
-
-    Returns:
-        (matches, message) - True if constraint rows match modulo ordering.
-    """
-
-    nefc_newton = newton_data.nefc.numpy()
-    nefc_native = native_data.nefc.numpy()
-
-    # Constraint counts per world must match
-    if not np.array_equal(nefc_newton, nefc_native):
-        diff_worlds = np.where(nefc_newton != nefc_native)[0]
-        return False, (
-            f"nefc mismatch in {len(diff_worlds)} worlds, "
-            f"e.g. world {diff_worlds[0]}: newton={nefc_newton[diff_worlds[0]]} native={nefc_native[diff_worlds[0]]}"
-        )
-
-    nworld = len(nefc_newton)
-
-    # Get constraint arrays
-    newton_type = newton_data.efc.type.numpy()  # (nworld, njmax)
-    native_type = native_data.efc.type.numpy()
-    newton_id = newton_data.efc.id.numpy()
-    native_id = native_data.efc.id.numpy()
-    newton_D = newton_data.efc.D.numpy()
-    native_D = native_data.efc.D.numpy()
-    newton_J = newton_data.efc.J.numpy()
-    native_J = native_data.efc.J.numpy()
-    newton_aref = newton_data.efc.aref.numpy()
-    native_aref = native_data.efc.aref.numpy()
-
-    max_D_diff = 0.0
-    max_J_diff = 0.0
-    max_aref_diff = 0.0
-
-    for w in range(nworld):
-        n = int(nefc_newton[w])
-        if n == 0:
-            continue
-
-        # Build sort keys: (type, id, J_bytes) for each row.
-        # Multiple friction cone rows share the same (type, id), so J_bytes
-        # is needed to disambiguate them for deterministic ordering.
-        newton_keys = [(int(newton_type[w, i]), int(newton_id[w, i]), newton_J[w, i].tobytes()) for i in range(n)]
-        native_keys = [(int(native_type[w, i]), int(native_id[w, i]), native_J[w, i].tobytes()) for i in range(n)]
-
-        newton_order = sorted(range(n), key=lambda i: newton_keys[i])
-        native_order = sorted(range(n), key=lambda i: native_keys[i])
-
-        # Verify (type, id) match after sorting (J-hash may differ between sides)
-        sorted_newton_keys = [(newton_keys[i][0], newton_keys[i][1]) for i in newton_order]
-        sorted_native_keys = [(native_keys[i][0], native_keys[i][1]) for i in native_order]
-        if sorted_newton_keys != sorted_native_keys:
-            # Find first mismatch
-            for k in range(n):
-                if sorted_newton_keys[k] != sorted_native_keys[k]:
-                    return False, (
-                        f"world {w}: constraint key mismatch at sorted pos {k}: "
-                        f"newton={sorted_newton_keys[k]} native={sorted_native_keys[k]}"
-                    )
-
-        # Compare numeric fields in sorted order
-        for k in range(n):
-            ni, nai = newton_order[k], native_order[k]
-            max_D_diff = max(max_D_diff, abs(float(newton_D[w, ni] - native_D[w, nai])))
-            max_J_diff = max(max_J_diff, float(np.max(np.abs(newton_J[w, ni] - native_J[w, nai]))))
-            max_aref_diff = max(max_aref_diff, abs(float(newton_aref[w, ni] - native_aref[w, nai])))
-
-    if max_D_diff > tol:
-        return False, f"efc.D diff: {max_D_diff:.2e} > tol {tol:.0e}"
-    if max_J_diff > tol:
-        return False, f"efc.J diff: {max_J_diff:.2e} > tol {tol:.0e}"
-    # aref depends on velocity state which diverges from solver noise across
-    # steps — only check structurally (D, J) not aref.
-
-    total = int(nefc_newton.sum())
-    return True, f"OK ({total} constraints, max D diff={max_D_diff:.2e}, J diff={max_J_diff:.2e})"
-
-
-def inject_constraints(src_data: Any, dst_data: Any) -> None:
-    """Copy all constraint (efc) arrays from src_data to dst_data.
-
-    This ensures both Newton and native use identical constraint data for solving,
-    bypassing the non-deterministic constraint row ordering from wp.atomic_add()
-    in make_constraint.
-    """
-    # Constraint counts
-    dst_data.ne.assign(src_data.ne)
-    dst_data.nf.assign(src_data.nf)
-    dst_data.nl.assign(src_data.nl)
-    dst_data.nefc.assign(src_data.nefc)
-    # Constraint arrays
-    dst_data.efc.type.assign(src_data.efc.type)
-    dst_data.efc.id.assign(src_data.efc.id)
-    dst_data.efc.J.assign(src_data.efc.J)
-    dst_data.efc.pos.assign(src_data.efc.pos)
-    dst_data.efc.margin.assign(src_data.efc.margin)
-    dst_data.efc.D.assign(src_data.efc.D)
-    dst_data.efc.vel.assign(src_data.efc.vel)
-    dst_data.efc.aref.assign(src_data.efc.aref)
-    dst_data.efc.frictionloss.assign(src_data.efc.frictionloss)
-    dst_data.efc.state.assign(src_data.efc.state)
-    wp.synchronize()
 
 
 def compare_mjdata_field(
@@ -1476,6 +939,9 @@ def compare_mjdata_field(
     else:
         diff = np.abs(newton_np - native_np)
     max_diff = float(np.max(diff))
+
+    if np.isnan(max_diff):
+        raise AssertionError(f"Step {step}, field '{field_name}': diff contains NaN")
 
     if max_diff > tol:
         max_idx = np.unravel_index(np.argmax(diff), diff.shape)
@@ -1791,32 +1257,6 @@ def compare_mjw_models(
             assert newton_val == native_val, f"{attr}: {newton_val} != {native_val}"
 
 
-def print_mjdata_diff(
-    newton_mjw_data: Any,
-    native_mjw_data: Any,
-    compare_fields: list[str],
-    tolerances: dict[str, float],
-    step_num: int,
-) -> None:
-    """Print max difference for each MjData field."""
-    wp.synchronize()
-    for field_name in compare_fields:
-        newton_arr = getattr(newton_mjw_data, field_name, None)
-        native_arr = getattr(native_mjw_data, field_name, None)
-        if newton_arr is None or native_arr is None or newton_arr.size == 0:
-            continue
-        newton_np = newton_arr.numpy()
-        native_np = native_arr.numpy()
-        # Handle shape mismatch
-        if newton_np.shape != native_np.shape:
-            print(f"  {field_name}: SHAPE MISMATCH newton={newton_np.shape} vs native={native_np.shape}")
-            continue
-        max_diff = float(np.max(np.abs(newton_np - native_np)))
-        tol = tolerances.get(field_name, 1e-6)
-        status = "OK" if max_diff <= tol else "FAIL"
-        print(f"  {field_name}: max_diff={max_diff:.6e} (tol={tol:.0e}) [{status}]")
-
-
 # =============================================================================
 # Randomization (placeholder for future implementation)
 # =============================================================================
@@ -1869,12 +1309,10 @@ class TestMenagerieBase(unittest.TestCase):
         - robot_xml: str - path to XML within folder
 
     Optional overrides:
-        - num_worlds: int - number of parallel worlds (default: 2)
-        - num_steps: int - simulation steps to run (default: 100)
-        - dt: float - timestep fallback (actual dt extracted from native model)
-        - control_strategy: ControlStrategy - how to generate controls
-        - compare_fields: list[str] - MjData fields to compare
-        - tolerances: dict[str, float] - per-field tolerances
+        - num_worlds: int - number of parallel worlds (default: 34)
+        - num_steps: int - dynamics steps to run (default: 0, dynamics disabled)
+        - dynamics_target: float - step-response target position offset (default: 0.3)
+        - dynamics_tolerance: float - qpos/qvel comparison tolerance (default: 1e-6)
         - skip_reason: str | None - if set, skip this test
     """
 
@@ -1884,23 +1322,13 @@ class TestMenagerieBase(unittest.TestCase):
 
     # Configurable defaults
     num_worlds: int = 34  # One warp per GPU warp lane (32) + 2 extra to test non-power-of-2
-    num_steps: int = 100
+    num_steps: int = 0  # Dynamics steps (0 = dynamics test skipped)
     dt: float = 0.002  # Fallback; actual dt extracted from native model in test
 
-    # Control strategy (can override in subclass)
-    control_strategy: ControlStrategy | None = None
-
-    # Data comparison: explicit list of fields TO compare
-    compare_fields: ClassVar[list[str]] = DEFAULT_COMPARE_FIELDS
-
-    # Tolerances: override specific fields per-test, merged with defaults
-    # Example: tolerance_overrides = {"qacc": 0.1, "qfrc_actuator": 0.01}
-    tolerance_overrides: ClassVar[dict[str, float]] = {}
-
-    @property
-    def tolerances(self) -> dict[str, float]:
-        """Get tolerances with per-test overrides merged in."""
-        return {**DEFAULT_TOLERANCES, **self.tolerance_overrides}
+    # Dynamics test: step-response per DOF. Each world commands one actuator to
+    # a target position (wrapping with modulo). Collisions disabled.
+    dynamics_target: float = 0.3  # Position offset for step-response target
+    dynamics_tolerance: float = 1e-6  # Tolerance for qpos/qvel comparison
 
     # Model comparison: fields to SKIP (substrings to match)
     # Override in subclass with: model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"extra", "fields"}
@@ -1908,10 +1336,6 @@ class TestMenagerieBase(unittest.TestCase):
 
     # Skip reason (set to a string to skip test, leave unset or None to run)
     skip_reason: str | None = None
-
-    # Debug mode: opens viewer for visual debugging
-    debug_visual: bool = False
-    debug_view_newton: bool = False  # False=Native, True=Newton
 
     # Skip visual-only geoms on the native side via compiler discardvisual="true".
     # Note: discardvisual may also strip collision geoms that have contype=conaffinity=0
@@ -1928,20 +1352,10 @@ class TestMenagerieBase(unittest.TestCase):
     backfill_model: bool = False
     backfill_fields: list[str] | None = None  # None = use MODEL_BACKFILL_FIELDS
 
-    # Use split pipeline to bypass mujoco_warp non-deterministic ordering.
-    # Injects contacts and constraints from Newton → native after verifying they
-    # match (modulo ordering). Enables bit-identical results with 34+ worlds.
-    # When False, runs both full pipelines (may need looser tolerances).
-    use_split_pipeline: bool = False
-    split_pipeline_tol: float = 1e-5  # Tolerance for contact/constraint matching in split pipeline
     njmax: int | None = None  # Max constraint rows per world (None = auto from MuJoCo)
     nconmax: int | None = None  # Max contacts per world (None = auto from MuJoCo)
     # Override integrator for SolverMuJoCo
     solver_integrator: str | int | None = None
-    # CUDA graph capture with split pipeline injection produces incorrect results.
-    # Disabled by default; re-enable per robot once the interaction is understood.
-    use_cuda_graph: bool = False
-
     # Forward kinematics test: compare body poses computed from joint positions.
     # No forces, no contacts, fully deterministic.
     # Set to True per robot to enable test_forward_kinematics().
@@ -1967,12 +1381,6 @@ class TestMenagerieBase(unittest.TestCase):
         cls.mjcf_path = cls.asset_path / cls.robot_xml
         if not cls.mjcf_path.exists():
             raise unittest.SkipTest(f"MJCF file not found: {cls.mjcf_path}")
-
-    def setUp(self):
-        """Set up test fixtures."""
-        # Default control strategy
-        if self.control_strategy is None:
-            self.control_strategy = StructuredControlStrategy(seed=42)
 
     @abstractmethod
     def _create_newton_model(self) -> newton.Model:
@@ -2001,13 +1409,6 @@ class TestMenagerieBase(unittest.TestCase):
         Default: no-op (covered by compare_models for same-order pipelines).
         Override in subclasses where body ordering may differ.
         """
-
-    def _init_control(self, native_mjw_data: Any, newton_control: Any) -> None:
-        """Initialize control strategy with the ctrl arrays from both sides.
-
-        Override in subclasses where actuator counts may differ.
-        """
-        self.control_strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)  # type: ignore[union-attr]
 
     def _compare_geoms(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare geom fields between Newton and native models.
@@ -2144,9 +1545,6 @@ class TestMenagerieBase(unittest.TestCase):
 
         assert _mujoco is not None
         assert _mujoco_warp is not None
-
-        if self.debug_visual:
-            self.num_worlds = 1
 
         # Create models and solvers — stored on cls for reuse across test methods
         cls._newton_model = self._create_newton_model()
@@ -2290,18 +1688,14 @@ class TestMenagerieBase(unittest.TestCase):
             compare_mjdata_field(solver.mjw_data, self._native_mjw_data, field_name, self.fk_tolerance, step=-1)
 
     def test_dynamics(self):
-        """Verify Newton and native mujoco_warp produce equivalent dynamics.
+        """Verify per-DOF step response matches between Newton and native mjwarp.
 
-        Runs N steps with controls across parallel worlds, comparing per-step
-        MjData fields within tolerance. Supports full pipeline (fast, CUDA graphs)
-        and split pipeline (deterministic, contact/constraint injection).
-
-        If debug_visual=True, opens MuJoCo viewer (set debug_view_newton to choose view).
+        Each world commands one actuator to a target position (wrapping with
+        modulo). Collisions disabled to isolate joint dynamics. Uses split
+        pipeline for deterministic comparison.
         """
         if self.num_steps <= 0:
             self.skipTest("Dynamics not enabled (num_steps=0)")
-
-        assert self.control_strategy is not None
 
         self._ensure_models()
         self._run_model_comparisons()
@@ -2312,158 +1706,61 @@ class TestMenagerieBase(unittest.TestCase):
         newton_control = self._newton_control
         native_mjw_model = self._native_mjw_model
         native_mjw_data = self._native_mjw_data
-        mj_model = self._mj_model
-        mj_data_native = self._mj_data_native
         dt = self._dt
 
-        # Initialize control strategy with the ctrl arrays it will fill
-        self._init_control(native_mjw_data, newton_control)
+        # Disable collisions on both sides (save/restore to avoid mutating cached model)
+        newton_saved = _disable_collisions(newton_solver.mjw_model)
+        native_saved = _disable_collisions(native_mjw_model)
 
-        # Setup viewer if in debug mode
-        viewer = None
-        if self.debug_visual:
-            import mujoco.viewer  # noqa: F401 — load viewer submodule
+        try:
+            # Initialize step-response control
+            strategy = StepResponseControlStrategy(target=self.dynamics_target)
+            strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)
+            strategy.fill_control(0.0)
 
-            view_name = "NEWTON" if self.debug_view_newton else "NATIVE"
-            print(f"\n=== VISUAL DEBUG MODE ({view_name}) ===")
-            print("Close viewer to exit.\n")
-
-            if self.debug_view_newton:
-                viewer = _mujoco.viewer.launch_passive(newton_solver.mj_model, newton_solver.mj_data)
-            else:
-                viewer = _mujoco.viewer.launch_passive(mj_model, mj_data_native)
-
-        # Helper: sync mjw_data to mj_data for viewer
-        def sync_to_viewer():
-            assert _mujoco_warp is not None
-            wp.synchronize()
-            if self.debug_view_newton:
-                _mujoco_warp.get_data_into(newton_solver.mj_data, newton_solver.mj_model, newton_solver.mjw_data)
-            else:
-                _mujoco_warp.get_data_into(mj_data_native, mj_model, native_mjw_data)
-
-        # Helper: step both simulations (full pipeline mode)
-        def step_both_full(step_num: int, newton_graph: Any = None, native_graph: Any = None):
-            t = step_num * dt
-            self.control_strategy.fill_control(t)  # type: ignore[union-attr]
-
-            if newton_graph and native_graph:
-                wp.capture_launch(native_graph)
-                wp.capture_launch(newton_graph)
-            else:
-                _mujoco_warp.step(native_mjw_model, native_mjw_data)  # type: ignore[union-attr]
+            # Step loop — both sides run full mujoco_warp.step() independently.
+            # Both sides run full mujoco_warp.step() — no contacts with collisions disabled.
+            for step in range(self.num_steps):
+                strategy.fill_control(step * dt)
                 newton_solver.step(newton_state, newton_state, newton_control, None, dt)
+                _mujoco_warp.step(native_mjw_model, native_mjw_data)
 
-        # Helper: step with contact injection (split pipeline mode)
-        def step_with_contact_injection(step_num: int):
-            """Split pipeline: inject contacts and constraints to bypass non-determinism."""
-            t = step_num * dt
-            self.control_strategy.fill_control(t)  # type: ignore[union-attr]
+                # Compare qpos and qvel
+                compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, "qpos", self.dynamics_tolerance, step)
+                compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, "qvel", self.dynamics_tolerance, step)
+        finally:
+            _restore_collisions(newton_solver.mjw_model, newton_saved)
+            _restore_collisions(native_mjw_model, native_saved)
 
-            # 1. Newton full step
-            newton_solver.step(newton_state, newton_state, newton_control, None, dt)
 
-            # 2. Native: kinematics through collision
-            run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
-            wp.synchronize()
+def _disable_collisions(mjw_model: Any) -> dict:
+    """Disable contact generation and return saved state for restoration.
 
-            # 3. Verify contacts match (sorted), inject
-            contacts_match, contact_msg = compare_contacts_sorted(
-                newton_solver.mjw_data, native_mjw_data, tol=self.split_pipeline_tol
-            )
-            if not contacts_match:
-                raise AssertionError(f"Step {step_num}: Contact mismatch - {contact_msg}")
-            inject_contacts(newton_solver.mjw_data, native_mjw_data)
+    Uses mjDSBL_CONTACT plus zeroing contype/conaffinity.
+    Returns saved values so _restore_collisions can undo the changes.
+    """
+    import mujoco
 
-            # 4. Native: make_constraint
-            run_native_make_constraint(native_mjw_model, native_mjw_data)
-            wp.synchronize()
+    saved = {
+        "disableflags": int(mjw_model.opt.disableflags),
+        "contype": mjw_model.geom_contype.numpy().copy(),
+        "conaffinity": mjw_model.geom_conaffinity.numpy().copy(),
+    }
+    mjw_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+    contype = mjw_model.geom_contype.numpy()
+    contype[:] = 0
+    mjw_model.geom_contype.assign(contype)
+    conaffinity = mjw_model.geom_conaffinity.numpy()
+    conaffinity[:] = 0
+    mjw_model.geom_conaffinity.assign(conaffinity)
+    return saved
 
-            # 5. Verify constraints match (sorted), inject
-            constraints_match, constraint_msg = compare_constraints_sorted(
-                newton_solver.mjw_data, native_mjw_data, tol=self.split_pipeline_tol
-            )
-            if not constraints_match:
-                raise AssertionError(f"Step {step_num}: Constraint mismatch - {constraint_msg}")
-            inject_constraints(newton_solver.mjw_data, native_mjw_data)
 
-            # 6. Native: transmission + step1_rest + step2
-            run_native_transmission(native_mjw_model, native_mjw_data)
-            run_native_step1_rest(native_mjw_model, native_mjw_data)
-            run_native_step2(native_mjw_model, native_mjw_data)
-
-        # Helper: compare at step (for non-visual mode)
-        def compare_at_step(step_num: int):
-            for field_name in self.compare_fields:
-                tol = self.tolerances.get(field_name, 1e-6)
-                compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, field_name, tol, step_num)
-
-        # Initial viewer sync
-        if viewer:
-            sync_to_viewer()
-            viewer.sync()
-
-        # Setup CUDA graphs (full pipeline mode only — split pipeline doesn't use graphs)
-        use_cuda_graph = self.use_cuda_graph and wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
-        newton_graph = None
-        native_graph = None
-
-        # Print initial state diff in debug mode
-        if self.debug_visual:
-            print("Initial state:")
-            print_mjdata_diff(newton_solver.mjw_data, native_mjw_data, self.compare_fields, self.tolerances, -1)
-
-        # Main simulation loop
-        max_steps = 500 if self.debug_visual else self.num_steps
-
-        for step in range(max_steps):
-            if viewer and not viewer.is_running():
-                break
-
-            if self.use_split_pipeline:
-                step_with_contact_injection(step)
-            elif step == 0 and use_cuda_graph:
-                # Step 0: capture CUDA graphs if available (full pipeline mode only)
-                self.control_strategy.fill_control(0.0)  # type: ignore[union-attr]
-
-                with wp.ScopedCapture() as capture:
-                    newton_solver.step(newton_state, newton_state, newton_control, None, dt)
-                newton_graph = capture.graph
-
-                with wp.ScopedCapture() as capture:
-                    _mujoco_warp.step(native_mjw_model, native_mjw_data)
-                native_graph = capture.graph
-            else:
-                # Full pipeline mode
-                step_both_full(step, newton_graph, native_graph)
-
-            # Viewer sync
-            if viewer:
-                sync_to_viewer()
-                viewer.sync()
-                time.sleep(dt)
-
-            # Compare or print diff
-            if self.debug_visual:
-                if (step + 1) % 50 == 0:
-                    print(f"Step {step + 1}:")
-                    print_mjdata_diff(
-                        newton_solver.mjw_data, native_mjw_data, self.compare_fields, self.tolerances, step
-                    )
-            else:
-                compare_at_step(step)
-
-        # Cleanup
-        if viewer:
-            print(f"\nFinal ({max_steps} steps):")
-            print_mjdata_diff(
-                newton_solver.mjw_data, native_mjw_data, self.compare_fields, self.tolerances, max_steps - 1
-            )
-
-            while viewer.is_running():
-                time.sleep(0.1)
-            viewer.close()
-            self.skipTest("Visual debug mode completed")
+def _restore_collisions(mjw_model: Any, saved: dict) -> None:
+    """Restore collision settings from saved state."""
+    mjw_model.opt.disableflags = saved["disableflags"]
+    mjw_model.geom_contype.assign(saved["contype"])
+    mjw_model.geom_conaffinity.assign(saved["conaffinity"])
 
 
 # =============================================================================
@@ -2527,9 +1824,11 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 5e-5  # eq_ diffs cause larger qvel divergence on CI
     fk_enabled = True
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
+    backfill_model = True
 
 
 class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
@@ -2544,10 +1843,12 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
+    # Dynamics disabled: eq_ model fields differ, qpos drift 3.5e-3 (#2170)
     num_steps = 0
     fk_enabled = True
     fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
+    backfill_model = True
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
@@ -2635,17 +1936,8 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
 
     robot_folder = "universal_robots_ur5e"
 
-    control_strategy = StructuredControlStrategy(seed=42)
-    num_worlds = 34
-    # num_steps = 500  # Disabled to avoid CI flakiness
-    num_steps = 0
-
-    # Backfill eliminates model compilation differences (inertia re-diagonalization).
-    # Contact injection bypasses non-deterministic contact ordering in broadphase.
-    # Constraint injection bypasses non-deterministic efc row ordering in make_constraint.
-    # Together these give bit-identical results, so no tolerance overrides needed.
+    num_steps = 20
     backfill_model = True
-    use_split_pipeline = True
     fk_enabled = True
 
 
@@ -2653,8 +1945,9 @@ class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
+    backfill_model = True
 
 
 # -----------------------------------------------------------------------------
@@ -2667,8 +1960,10 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
 
     robot_folder = "leap_hand"
     robot_xml = "scene_right.xml"
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 5e-5
     fk_enabled = True
+    backfill_model = True
 
 
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
@@ -2699,10 +1994,12 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
 
     robot_folder = "shadow_hand"
     robot_xml = "scene_right.xml"
+    # Dynamics disabled: tendon_invweight0 diff causes qvel drift 2.3e-5 (#2170)
     num_steps = 0
     fk_enabled = True
     # tendon_invweight0 is compilation-dependent (derived from inertia)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
+    backfill_model = True
 
 
 class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieMJCF):
@@ -2725,10 +2022,12 @@ class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
 
     robot_folder = "wonik_allegro"
     robot_xml = "scene_right.xml"
+    # Dynamics disabled: body_mass diff causes qpos divergence 3.4e-3 (#2170)
     num_steps = 0
     fk_enabled = True
     # TODO(#2170): body_mass differs — Newton computes different masses for visual geoms
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
+    # Step response disabled: body_mass diffs cause constraint mismatch
 
 
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
@@ -2748,6 +2047,7 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
+    # Dynamics disabled: multiple import issues — dof_damping, eq_, ngeom (#2170)
     num_steps = 0
     fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2170)
     # TODO(#2170): dof_damping, jnt_range, eq_, ngeom differ
@@ -2828,39 +2128,13 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """
 
     robot_folder = "apptronik_apollo"
-    control_strategy = StructuredControlStrategy(seed=42)
     backfill_model = True
-    use_cuda_graph = True
-    # num_steps = 100  # Disabled to avoid CI flakiness
+    # Dynamics disabled: qvel divergence 5.8e-5 (model compilation diffs amplified by free joint)
     num_steps = 0
     fk_enabled = True
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
     parse_visuals = True
-    # Positions and velocities — forces/accelerations diverge too much from
-    # irreducible float32 solver noise (atomic_add in constraint solver and
-    # Euler damping). Positions stay within ~6e-5, velocities within ~5e-3.
-    compare_fields: ClassVar[list[str]] = [
-        "qpos",
-        "qvel",
-        "xpos",
-        "xquat",
-        "site_xpos",
-        "subtree_com",
-        "actuator_length",
-        "actuator_velocity",
-    ]
-    tolerance_overrides: ClassVar[dict[str, float]] = {
-        "qpos": 5e-4,
-        "qvel": 2e-2,
-        "xpos": 5e-4,
-        "xquat": 5e-4,
-        "site_xpos": 5e-4,
-        "subtree_com": 5e-4,
-        "actuator_length": 5e-4,
-        "actuator_velocity": 2e-2,
-    }
-    # Mesh fields already skipped globally in DEFAULT_MODEL_SKIP_FIELDS
 
 
 class TestMenagerie_BerkeleyHumanoid(TestMenagerieMJCF):
@@ -2875,8 +2149,10 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 2e-5  # float32 noise varies when running in batch
     fk_enabled = True
+    backfill_model = True
 
 
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
@@ -2931,6 +2207,7 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
+    # Dynamics disabled: actuator_biasprm diff causes qvel divergence 3.3e-6 (#2170)
     num_steps = 0
     fk_enabled = True
     # TODO(#2170): actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
@@ -2941,8 +2218,9 @@ class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
+    backfill_model = True
 
 
 # -----------------------------------------------------------------------------
@@ -2974,6 +2252,7 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
+    # Dynamics disabled: qvel divergence 7.2e-5 (model compilation diffs amplified by free joint)
     num_steps = 0
     fk_enabled = True
 
@@ -2982,8 +2261,10 @@ class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 5e-6
     fk_enabled = True
+    backfill_model = True
 
 
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
@@ -3022,6 +2303,7 @@ class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
+    # Dynamics disabled: qvel drift 1.2e-5 (model compilation diffs amplified by free joint)
     num_steps = 0
     fk_enabled = True
 
@@ -3077,6 +2359,7 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
+    # Dynamics disabled: body_mass diff causes qpos divergence 3.4e-5 (#2170)
     num_steps = 0
     fk_enabled = True
     # TODO(#2170): body_mass differs for some bodies

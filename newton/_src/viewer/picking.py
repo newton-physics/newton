@@ -39,6 +39,7 @@ class Picking:
         self.pick_stiffness = pick_stiffness
         self.pick_damping = pick_damping
         self.world_offsets = world_offsets
+        self.visible_worlds_mask: wp.array | None = None
 
         self.min_dist = None
         self.min_index = None
@@ -197,7 +198,14 @@ class Picking:
                 d,
                 self.lock,
             ],
-            outputs=[self.min_dist, self.min_index, self.min_body_index, shape_world, world_offsets],
+            outputs=[
+                self.min_dist,
+                self.min_index,
+                self.min_body_index,
+                shape_world,
+                world_offsets,
+                self.visible_worlds_mask,
+            ],
             device=self.model.device,
         )
         wp.synchronize()

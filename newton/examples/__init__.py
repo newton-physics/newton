@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import importlib
 import os
 import warnings
@@ -24,6 +25,20 @@ def get_asset_directory() -> str:
 
 def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
+
+
+def _enable_example_deprecation_warnings() -> None:
+    """Show Newton deprecations during example runs.
+
+    Skipped when ``PYTHONWARNINGS`` is already set so that
+    ``test_examples.py`` (or a user) can escalate warnings to errors
+    without this filter overriding their policy.
+    """
+    if "PYTHONWARNINGS" in os.environ or getattr(_enable_example_deprecation_warnings, "_installed", False):
+        return
+
+    warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
+    _enable_example_deprecation_warnings._installed = True
 
 
 def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
@@ -65,11 +80,11 @@ def test_body_state(
 
     @wp.kernel
     def test_fn_kernel(
-        body_q: wp.array(dtype=wp.transform),
-        body_qd: wp.array(dtype=wp.spatial_vector),
-        indices: wp.array(dtype=int),
+        body_q: wp.array[wp.transform],
+        body_qd: wp.array[wp.spatial_vector],
+        indices: wp.array[int],
         # output
-        failures: wp.array(dtype=bool),
+        failures: wp.array[bool],
     ):
         world_id = wp.tid()
         index = indices[world_id]
@@ -137,11 +152,11 @@ def test_particle_state(
 
     @wp.kernel
     def test_fn_kernel(
-        particle_q: wp.array(dtype=wp.vec3),
-        particle_qd: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=int),
+        particle_q: wp.array[wp.vec3],
+        particle_qd: wp.array[wp.vec3],
+        indices: wp.array[int],
         # output
-        failures: wp.array(dtype=bool),
+        failures: wp.array[bool],
     ):
         world_id = wp.tid()
         index = indices[world_id]
@@ -449,6 +464,13 @@ def create_parser():
         metavar="SECONDS",
         help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
     )
+    parser.add_argument(
+        "--warp-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a warp.config attribute (repeatable).",
+    )
 
     return parser
 
@@ -512,6 +534,38 @@ def default_args(parser=None):
     return parser.parse_known_args([])[0]
 
 
+def _apply_warp_config(parser, args):
+    """Apply ``--warp-config`` overrides to :obj:`warp.config`.
+
+    Each entry in ``args.warp_config`` must have the form ``KEY=VALUE``.  The
+    key is validated to be an existing attribute of :obj:`warp.config`.  The
+    value is parsed with :func:`ast.literal_eval`; if that fails the raw
+    string is kept.
+
+    Args:
+        parser: The argument parser, used for error reporting.
+        args: Parsed argument namespace containing ``warp_config``.
+    """
+    if not args.warp_config:
+        return
+
+    for entry in args.warp_config:
+        if "=" not in entry:
+            parser.error(f"invalid --warp-config format '{entry}': expected KEY=VALUE")
+
+        key, value_str = entry.split("=", 1)
+
+        if not hasattr(wp.config, key):
+            parser.error(f"invalid --warp-config key '{key}': not a recognized warp.config setting")
+
+        try:
+            value = ast.literal_eval(value_str)
+        except (ValueError, SyntaxError):
+            value = value_str
+
+        setattr(wp.config, key, value)
+
+
 def init(parser=None):
     """Initialize Newton example components from parsed arguments.
 
@@ -529,6 +583,8 @@ def init(parser=None):
 
     import newton.viewer  # noqa: PLC0415
 
+    _enable_example_deprecation_warnings()
+
     # parse args
     if parser is None:
         parser = create_parser()
@@ -536,6 +592,9 @@ def init(parser=None):
     else:
         # When parser is provided, use parse_args() to properly handle --help
         args = parser.parse_args()
+
+    # Apply --warp-config overrides before any Warp API calls
+    _apply_warp_config(parser, args)
 
     # Suppress Warp compilation messages if requested
     if args.quiet:
@@ -595,6 +654,8 @@ def main():
     """Main entry point for running examples via 'python -m newton.examples <example_name>'."""
     import runpy  # noqa: PLC0415
     import sys  # noqa: PLC0415
+
+    _enable_example_deprecation_warnings()
 
     examples = get_examples()
 

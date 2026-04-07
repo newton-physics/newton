@@ -36,7 +36,7 @@ def check_aabb_overlap(
 
 
 @wp.func
-def binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: int) -> int:
+def binary_search(values: wp.array[Any], value: Any, lower: int, upper: int) -> int:
     while lower < upper:
         mid = (lower + upper) >> 1
         if values[mid] > value:
@@ -82,7 +82,7 @@ def _vec2i_equal(p: wp.vec2i, q: wp.vec2i) -> bool:
 @wp.func
 def is_pair_excluded(
     pair: wp.vec2i,
-    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),
+    filter_pairs: wp.array[wp.vec2i],
     num_filter_pairs: int,
 ) -> bool:
     """Check whether a shape pair is in the sorted exclusion list via binary search.
@@ -116,8 +116,8 @@ def is_pair_excluded(
 @wp.func
 def write_pair(
     pair: wp.vec2i,
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     pairid = wp.atomic_add(candidate_pair_count, 0, 1)
