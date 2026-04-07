@@ -1145,7 +1145,7 @@ class ViewerGL(ViewerBase):
 
         Each unique *name* creates a separate line plot displayed in an
         auto-generated "Plots" window.  Values are stored in a rolling
-        buffer of the last :pyattr:`_plot_history_size` samples.
+        buffer of the last ``plot_history_size`` samples.
 
         Args:
             name: Unique path/name for the scalar signal.
