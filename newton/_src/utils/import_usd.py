@@ -532,6 +532,8 @@ def parse_usd(
 
         visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
         visual_shape_cfg_for_prim.is_visible = is_site or _is_effectively_visible(prim)
+        material_props = _get_material_props_cached(prim)
+        shape_color = material_props.get("color")
 
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -544,6 +546,7 @@ def parse_usd(
                     hy=side_lengths[1] / 2,
                     hz=side_lengths[2] / 2,
                     cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -556,6 +559,7 @@ def parse_usd(
                     xform,
                     radius,
                     cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -572,6 +576,7 @@ def parse_usd(
                     width=width,
                     length=length,
                     cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "capsule":
@@ -586,6 +591,7 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -601,6 +607,7 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -616,6 +623,7 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -2128,9 +2136,18 @@ def parse_usd(
                     gap_val = builder.default_shape_cfg.gap
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
-                collider_has_visual_material = (
-                    key == UsdPhysics.ObjectType.MeshShape
-                    and _has_visual_material_properties(_get_material_props_cached(prim))
+                material_props = _get_material_props_cached(prim)
+                primitive_or_mesh_shape_keys = {
+                    UsdPhysics.ObjectType.CubeShape,
+                    UsdPhysics.ObjectType.SphereShape,
+                    UsdPhysics.ObjectType.CapsuleShape,
+                    UsdPhysics.ObjectType.CylinderShape,
+                    UsdPhysics.ObjectType.ConeShape,
+                    UsdPhysics.ObjectType.PlaneShape,
+                    UsdPhysics.ObjectType.MeshShape,
+                }
+                collider_has_visual_material = key in primitive_or_mesh_shape_keys and _has_visual_material_properties(
+                    material_props
                 )
 
                 # Explicit hide_collision_shapes overrides material-based visibility:
@@ -2162,6 +2179,7 @@ def parse_usd(
                 if shape_kd is None:
                     shape_kd = builder.default_shape_cfg.kd
 
+                shape_color = material_props.get("color")
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -2186,6 +2204,7 @@ def parse_usd(
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
+                    "color": shape_color,
                 }
                 # print(path, shape_params)
                 if key == UsdPhysics.ObjectType.CubeShape:
