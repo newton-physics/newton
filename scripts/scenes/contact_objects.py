@@ -99,6 +99,40 @@ def build_model(n_worlds: int) -> newton.Model:
     return builder.finalize()
 
 
+def build_model_perturbed(n_worlds: int, epsilon: float = 1e-4) -> newton.Model:
+    """N replicated worlds with deterministic per-world z-perturbation.
+
+    Each world's bodies get z-offset = world_index * epsilon [m].
+    World 0 is unperturbed (identical to build_model output).
+    """
+    model = build_model(n_worlds)
+
+    # Perturb joint_q on CPU, then write back.
+    joint_q_np = model.joint_q.numpy()
+    coords_per_world = model.joint_coord_count // n_worlds
+    bodies_per_world = model.body_count // n_worlds
+
+    for w in range(n_worlds):
+        offset = w * epsilon
+        for b in range(bodies_per_world):
+            z_idx = w * coords_per_world + b * 7 + 2  # z-component of position
+            joint_q_np[z_idx] += offset
+
+    model.joint_q.assign(joint_q_np)
+
+    # Also perturb body_q (used by renderer / solver sync).
+    body_q_np = model.body_q.numpy()
+    for w in range(n_worlds):
+        offset = w * epsilon
+        for b in range(bodies_per_world):
+            body_idx = w * bodies_per_world + b
+            body_q_np[body_idx][2] += offset  # z component of position in transform
+
+    model.body_q.assign(body_q_np)
+
+    return model
+
+
 def make_solver(model: newton.Model, tol: float = TOL) -> newton.solvers.SolverMuJoCoCENIC:
     """CENIC solver with canonical contact-demo parameters."""
     return newton.solvers.SolverMuJoCoCENIC(

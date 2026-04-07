@@ -79,6 +79,12 @@ def _calc_adjusted_step(
     e = err[world]
     step = dt[world]
 
+    # Boundary-stalled worlds (dt clamped to 0): accept without touching ideal_dt
+    # so the next interval inherits a good dt instead of ramping from dt_min.
+    if step <= wp.float32(0.0):
+        accepted[world] = True
+        return
+
     if wp.isnan(e) or wp.isinf(e):
         accepted[world] = False
         ideal_dt[world] = _DRAKE_MIN_SHRINK * step
@@ -195,6 +201,27 @@ def _boundary_advance(arr: wp.array(dtype=wp.float32), delta: float):
     """Increment arr[i] by delta."""
     i = wp.tid()
     arr[i] = arr[i] + delta
+
+
+@wp.kernel
+def _clamp_dt_to_boundary(
+    dt: wp.array(dtype=wp.float32),
+    dt_half: wp.array(dtype=wp.float32),
+    sim_time: wp.array(dtype=wp.float32),
+    next_time: wp.array(dtype=wp.float32),
+):
+    """Clamp dt so worlds don't overshoot their boundary target.
+
+    Worlds already at or past the boundary get dt=0 (no-op step).
+    """
+    i = wp.tid()
+    remaining = next_time[i] - sim_time[i]
+    if remaining <= wp.float32(0.0):
+        dt[i] = wp.float32(0.0)
+        dt_half[i] = wp.float32(0.0)
+    elif dt[i] > remaining:
+        dt[i] = remaining
+        dt_half[i] = remaining * wp.float32(0.5)
 
 
 @wp.kernel
@@ -349,6 +376,14 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         dev = model.device
 
         wp.launch(_iter_count_increment, dim=1, inputs=[self._iteration_count_buf], device=dev)
+
+        # Clamp dt so no world overshoots its boundary target.
+        wp.launch(
+            _clamp_dt_to_boundary,
+            dim=n,
+            inputs=[self._dt, self._dt_half, self._sim_time, self._next_time],
+            device=dev,
+        )
 
         # Snapshot for rollback on rejection.
         wp.copy(self._state_saved.joint_q, self._state_cur.joint_q)

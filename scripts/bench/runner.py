@@ -24,7 +24,7 @@ BENCHMARKS_PKG = "scripts.bench.benchmarks"
 RESULTS_ROOT = Path("scripts/bench/results")
 
 # Benchmark modules in execution order.
-BENCHMARK_NAMES = ["scaling", "components", "accuracy"]
+BENCHMARK_NAMES = ["scaling", "components", "accuracy", "timeline", "initial_conditions"]
 
 
 def _git_short_hash() -> str:
@@ -71,15 +71,20 @@ def _run_benchmark_subprocess(
     cmd = [sys.executable, "-m", f"{BENCHMARKS_PKG}.{bench_name}"]
     cmd.extend(["--out-dir", str(out_dir)])
 
-    if "ns" in args and bench_name in ("scaling", "components"):
+    if "ns" in args and bench_name in ("scaling", "components", "initial_conditions"):
         cmd.append("--ns")
         cmd.extend(str(n) for n in args["ns"])
-    if "steps" in args and bench_name in ("scaling", "components"):
+    if "steps" in args and bench_name in ("scaling", "components", "initial_conditions"):
         cmd.extend(["--steps", str(args["steps"])])
-    if "warmup" in args and bench_name in ("scaling", "components"):
+    if "warmup" in args and bench_name in ("scaling", "components", "initial_conditions"):
         cmd.extend(["--warmup", str(args["warmup"])])
     if "trials" in args and bench_name == "accuracy":
         cmd.extend(["--trials", str(args["trials"])])
+    if "epsilons" in args and bench_name == "initial_conditions":
+        cmd.append("--epsilons")
+        cmd.extend(str(e) for e in args["epsilons"])
+    if "epsilon_sweep_n" in args and bench_name == "initial_conditions":
+        cmd.extend(["--epsilon-sweep-n", str(args["epsilon_sweep_n"])])
 
     print(f"\n{'=' * 60}", flush=True)
     print(f"Running benchmark: {bench_name}", flush=True)

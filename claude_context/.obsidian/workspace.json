@@ -4,17 +4,20 @@
     "type": "split",
     "children": [
       {
-        "id": "abff66c3204fcdae",
+        "id": "959dd839ed3eac5e",
         "type": "tabs",
         "children": [
           {
-            "id": "9c1e959141bdcaa9",
+            "id": "dee87096d06c1ff3",
             "type": "leaf",
             "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
+              "type": "bases",
+              "state": {
+                "file": "Untitled.base",
+                "viewName": "Table"
+              },
+              "icon": "lucide-table",
+              "title": "Untitled"
             }
           }
         ]
@@ -70,8 +73,7 @@
               "title": "Bookmarks"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "horizontal",
@@ -178,8 +180,9 @@
       "bases:Create new base": false
     }
   },
-  "active": "9c1e959141bdcaa9",
+  "active": "dee87096d06c1ff3",
   "lastOpenFiles": [
+    "Untitled.base",
     "scaling/2026-03-28-world-divergence-root-cause.md",
     "next-steps.md",
     "README.md",

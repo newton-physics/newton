@@ -175,6 +175,28 @@ def plot(data: dict, out_dir: Path) -> None:
     )
     save_fig(fig, out_dir / "scaling_wall_time.png")
 
+    # Plot 1b: Normalized wall time (cost per physics step) vs N
+    # Divides CENIC wall time by K_mean so both modes show per-step cost.
+    fig, ax = plt.subplots(figsize=(10, 6))
+    norm_series = {}
+    for mode in wall_modes:
+        if mode not in modes_data:
+            continue
+        md = modes_data[mode]
+        k_means = md["k_means"]
+        norm_medians = [m / k * 1e3 for m, k in zip(md["medians"], k_means)]
+        norm_p25 = [m / k * 1e3 for m, k in zip(md["p25"], k_means)]
+        norm_p75 = [m / k * 1e3 for m, k in zip(md["p75"], k_means)]
+        norm_series[mode] = SeriesData(
+            medians=norm_medians, p25=norm_p25, p75=norm_p75,
+        )
+    log_log_plot(
+        ax, ns, norm_series,
+        ylabel="Wall time per physics step [ms]",
+        title=f"Normalized: cost per step vs N  (wall_time / K, DT_outer={DT_OUTER * 1e3:.0f} ms)",
+    )
+    save_fig(fig, out_dir / "scaling_wall_time_normalized.png")
+
     # Plot 2: Per-iteration cost vs N (cenic + single_iter + fixed)
     fig, ax = plt.subplots(figsize=(10, 6))
     iter_modes = ["cenic", "single_iter", "fixed"]

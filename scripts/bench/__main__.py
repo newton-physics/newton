@@ -38,6 +38,10 @@ def main():
                         help="Override warmup steps for scaling/components")
     parser.add_argument("--trials", type=int, default=None,
                         help="Override trial count for accuracy")
+    parser.add_argument("--epsilons", type=float, nargs="+", default=None,
+                        help="Epsilon values for IC perturbation sweep")
+    parser.add_argument("--epsilon-sweep-n", type=int, default=None,
+                        help="Fixed N for epsilon sweep experiment")
 
     args = parser.parse_args()
 
@@ -54,6 +58,10 @@ def main():
         bench_args["warmup"] = args.warmup
     if args.trials is not None:
         bench_args["trials"] = args.trials
+    if args.epsilons is not None:
+        bench_args["epsilons"] = sorted(args.epsilons)
+    if args.epsilon_sweep_n is not None:
+        bench_args["epsilon_sweep_n"] = args.epsilon_sweep_n
 
     run(only=args.only, skip=args.skip, args=bench_args)
 

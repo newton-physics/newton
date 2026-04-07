@@ -36,6 +36,8 @@ STYLES: dict[str, PlotStyle] = {
     "cenic": PlotStyle("#1f77b4", "o", "-", "CENIC adaptive"),
     "fixed": PlotStyle("#ff7f0e", "D", "-", "Fixed-step (dt=10 ms)"),
     "single_iter": PlotStyle("#d62728", "s", "--", "Single iteration"),
+    "identical": PlotStyle("#2ca02c", "^", "-", "Identical ICs"),
+    "perturbed": PlotStyle("#9467bd", "v", "-", "Perturbed ICs"),
 }
 
 
