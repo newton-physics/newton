@@ -167,8 +167,6 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     joint_fn = builder.add_joint_prismatic
                 elif connect_joint_types[i] == "revolute":
                     joint_fn = builder.add_joint_revolute
-                elif connect_joint_types[i] == "ball":
-                    joint_fn = builder.add_joint_ball
                 else:
                     raise ValueError(f"Unsupported joint_type={connect_joint_types[i]!r}")
                 connect_joint = joint_fn(
@@ -619,6 +617,7 @@ class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase,
             integrator="euler",
         )
 
+
 class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, unittest.TestCase):
     def _num_worlds(self):
         return 1
@@ -633,6 +632,7 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
             separate_worlds=True,
             integrator="euler",
         )
+
 
 #
 if __name__ == "__main__":
