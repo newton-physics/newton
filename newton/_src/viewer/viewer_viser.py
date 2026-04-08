@@ -903,7 +903,7 @@ class ViewerViser(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False):
         """Viser viewer does not visualize scalar signals.
 
         Args:

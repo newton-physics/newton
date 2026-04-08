@@ -206,6 +206,8 @@ class ViewerGL(ViewerBase):
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
         """
+        if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
+            raise TypeError("plot_history_size must be an integer")
         if plot_history_size <= 0:
             raise ValueError("plot_history_size must be > 0")
 
@@ -215,7 +217,9 @@ class ViewerGL(ViewerBase):
 
         # Rolling buffers for log_scalar() time-series plots.
         self._scalar_buffers: dict[str, collections.deque] = {}
+        self._scalar_arrays: dict[str, np.ndarray | None] = {}
         self._plot_history_size = plot_history_size
+        self._show_plots_window = True
 
         super().__init__()
 
@@ -429,6 +433,7 @@ class ViewerGL(ViewerBase):
 
         # Clear scalar plot buffers
         self._scalar_buffers.clear()
+        self._scalar_arrays.clear()
 
         super().clear_model()
 
@@ -1142,7 +1147,7 @@ class ViewerGL(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False):
         """
         Log a scalar value as a live time-series plot.
 
@@ -1153,13 +1158,18 @@ class ViewerGL(ViewerBase):
         Args:
             name: Unique path/name for the scalar signal.
             value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
         """
         val = float(value.item() if hasattr(value, "item") else value)
         buf = self._scalar_buffers.get(name)
         if buf is None:
             buf = collections.deque(maxlen=self._plot_history_size)
             self._scalar_buffers[name] = buf
+        elif clear:
+            buf.clear()
         buf.append(val)
+        self._scalar_arrays[name] = None
 
     @override
     def log_state(self, state: nt.State):
@@ -2203,7 +2213,7 @@ class ViewerGL(ViewerBase):
 
     def _render_scalar_plots(self):
         """Render an ImGui window with live line plots for all logged scalars."""
-        if not self._scalar_buffers:
+        if not self._scalar_buffers or not self._show_plots_window:
             return
 
         imgui = self.ui.imgui
@@ -2223,15 +2233,18 @@ class ViewerGL(ViewerBase):
             imgui.Cond_.appearing,
         )
 
-        expanded, _opened = imgui.begin("Plots", True)
+        expanded, self._show_plots_window = imgui.begin("Plots", self._show_plots_window)
         if expanded:
             graph_size = imgui.ImVec2(-1, 100)
             n = self._plot_history_size
             for name, buf in self._scalar_buffers.items():
-                # Pad with NaN on the left so the x-axis scale is fixed
-                # but pre-history values are not drawn.
-                arr = np.full(n, np.nan, dtype=np.float32)
-                arr[n - len(buf) :] = np.array(buf, dtype=np.float32)
+                arr = self._scalar_arrays.get(name)
+                if arr is None:
+                    # Pad with NaN on the left so the x-axis scale is fixed
+                    # but pre-history values are not drawn.
+                    arr = np.full(n, np.nan, dtype=np.float32)
+                    arr[n - len(buf) :] = np.array(buf, dtype=np.float32)
+                    self._scalar_arrays[name] = arr
                 overlay = f"{buf[-1]:.4g}" if buf else ""
                 if imgui.collapsing_header(
                     name,

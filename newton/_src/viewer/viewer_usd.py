@@ -589,7 +589,7 @@ class ViewerUSD(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False):
         """
         Log scalar value (not implemented for USD backend).
 

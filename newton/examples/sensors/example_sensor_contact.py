@@ -166,6 +166,7 @@ class Example:
         self.next_reset = self.sim_time + self.reset_interval
         self._set_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
         self.plates_touched = 2 * [False]
+        self.viewer.log_scalar("Flap Contact Force", 0.0, clear=True)
 
         print("Resetting")
         # Restore initial joint positions and velocities in-place.
