@@ -11,11 +11,8 @@ This module includes tests for:
 For non-zero CoM tests:
 - When a force is applied (which acts at the CoM), the body should accelerate
   linearly without rotation.
-- When a combined force and torque is applied, the body should accelerate linearly and rotate about its CoM
-  according to the applied force and torque.
-
-Note: Featherstone solver is excluded from non-zero CoM tests due to known issues
-with CoM offset handling in the algorithm.
+- When a combined force and torque is applied, the body should accelerate
+  linearly and rotate about its CoM according to the applied force and torque.
 """
 
 import unittest
@@ -161,6 +158,48 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
             test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-2)
 
 
+def test_descendant_free_joint_f_world_force_under_rotated_parent(
+    test: TestBodyForce,
+    device,
+    solver_fn,
+):
+    """A descendant FREE-joint world force should stay aligned with the commanded world axis and remain referenced at the child COM."""
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    parent = builder.add_link(is_kinematic=True, mass=1.0)
+    child = builder.add_link(mass=1.0)
+    builder.add_shape_sphere(parent, radius=0.1)
+    builder.add_shape_sphere(child, radius=0.1)
+    builder.body_com[child] = wp.vec3(0.2, -0.1, 0.05)
+
+    j0 = builder.add_joint_revolute(parent=-1, child=parent, axis=newton.Axis.Z)
+    j1 = builder.add_joint_free(parent=parent, child=child)
+    builder.add_articulation([j0, j1])
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+    state_0, state_1 = model.state(), model.state()
+    joint_q = model.joint_q.numpy().copy()
+    joint_q[0] = np.pi / 2.0
+    state_0.joint_q.assign(joint_q)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    control = model.control()
+    wrench = np.zeros(model.joint_dof_count, dtype=np.float32)
+    free_dof_start = model.joint_qd_start.numpy()[1]
+    wrench[free_dof_start : free_dof_start + 6] = np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    control.joint_f.assign(wrench)
+
+    solver.step(state_0, state_1, control, None, 0.01)
+
+    child_qd = state_1.body_qd.numpy()[child]
+    test.assertGreater(child_qd[0], 1.0e-2)
+    test.assertAlmostEqual(child_qd[1], 0.0, delta=1.0e-6)
+    test.assertAlmostEqual(child_qd[2], 0.0, delta=1.0e-6)
+    test.assertAlmostEqual(child_qd[3], 0.0, delta=1.0e-6)
+    test.assertAlmostEqual(child_qd[4], 0.0, delta=1.0e-6)
+    test.assertAlmostEqual(child_qd[5], 0.0, delta=1.0e-6)
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
@@ -255,8 +294,6 @@ for device in devices:
             test_angular=False,
             up_axis=newton.Axis.Z,
         )
-        if solver_name == "featherstone":
-            continue
         add_function_test(
             TestBodyForce,
             f"test_floating_body_joint_f_linear_{solver_name}",
@@ -519,7 +556,7 @@ com_solvers = {
     "featherstone": (
         lambda model: newton.solvers.SolverFeatherstone(model),
         1e-3,
-        False,  # Does NOT support torque-CoM tests - uses body origin coordinates internally
+        True,
     ),
 }
 
@@ -556,17 +593,16 @@ for device in devices:
                     force_direction=force_dir,
                     use_control=False,
                 )
-                if solver_name != "featherstone":
-                    add_function_test(
-                        TestBodyForce,
-                        f"test_force_no_rotation_joint_f_{solver_name}_com{i}_force{j}",
-                        test_force_no_rotation,
-                        devices=[device],
-                        solver_fn=solver_fn,
-                        com_offset=com_offset,
-                        force_direction=force_dir,
-                        use_control=True,
-                    )
+                add_function_test(
+                    TestBodyForce,
+                    f"test_force_no_rotation_joint_f_{solver_name}_com{i}_force{j}",
+                    test_force_no_rotation,
+                    devices=[device],
+                    solver_fn=solver_fn,
+                    com_offset=com_offset,
+                    force_direction=force_dir,
+                    use_control=True,
+                )
 
         # Test combined force and torque with CoM offset
         # Only for solvers that correctly handle torque with CoM offset
@@ -581,16 +617,25 @@ for device in devices:
                     com_offset=com_offset,
                     use_control=False,
                 )
-                if solver_name != "featherstone":
-                    add_function_test(
-                        TestBodyForce,
-                        f"test_combined_force_torque_joint_f_{solver_name}_com{i}",
-                        test_combined_force_torque,
-                        devices=[device],
-                        solver_fn=solver_fn,
-                        com_offset=com_offset,
-                        use_control=True,
-                    )
+                add_function_test(
+                    TestBodyForce,
+                    f"test_combined_force_torque_joint_f_{solver_name}_com{i}",
+                    test_combined_force_torque,
+                    devices=[device],
+                    solver_fn=solver_fn,
+                    com_offset=com_offset,
+                    use_control=True,
+                )
+
+for device in devices:
+    for solver_name in ("xpbd", "featherstone"):
+        add_function_test(
+            TestBodyForce,
+            f"test_descendant_free_joint_f_world_force_under_rotated_parent_{solver_name}",
+            test_descendant_free_joint_f_world_force_under_rotated_parent,
+            devices=[device],
+            solver_fn=solvers[solver_name],
+        )
 
 
 if __name__ == "__main__":

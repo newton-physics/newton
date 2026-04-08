@@ -923,10 +923,6 @@ class Example:
         if errors:
             raise ValueError("Brick stacking verification failed:\n  " + "\n  ".join(errors))
 
-    def gui(self, ui):
-        if ui.button("Reset"):
-            self.reset()
-
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()

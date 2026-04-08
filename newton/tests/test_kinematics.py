@@ -9,9 +9,29 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.featherstone.kernels import eval_fk_with_velocity_conversion
+from newton._src.solvers.featherstone.kernels import (
+    convert_free_distance_joint_qd_internal_to_public,
+    convert_free_distance_joint_qd_public_to_internal,
+    eval_fk_with_velocity_conversion,
+)
 from newton._src.solvers.mujoco import kernels as mujoco_kernels
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
+
+
+def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
+    """Recover body-origin velocity from COM-referenced `body_qd`."""
+    rot = wp.quat(
+        float(body_q[body_idx, 3]),
+        float(body_q[body_idx, 4]),
+        float(body_q[body_idx, 5]),
+        float(body_q[body_idx, 6]),
+    )
+    com_local = model.body_com.numpy()[body_idx]
+    com_world = np.array(
+        wp.quat_rotate(rot, wp.vec3(float(com_local[0]), float(com_local[1]), float(com_local[2]))),
+        dtype=np.float32,
+    )
+    return body_qd[body_idx, :3] - np.cross(body_qd[body_idx, 3:6], com_world)
 
 
 def eval_fk_mujoco_kernel(model, joint_q, joint_qd, state):
@@ -38,6 +58,26 @@ def eval_fk_mujoco_kernel(model, joint_q, joint_qd, state):
         outputs=[state.body_q, state.body_qd],
         device=model.device,
     )
+
+
+def _add_free_distance_joint(builder, joint_type, parent, child, parent_xform, child_xform):
+    if joint_type == newton.JointType.FREE:
+        return builder.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+    if joint_type == newton.JointType.DISTANCE:
+        return builder.add_joint_distance(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            min_distance=-1.0,
+            max_distance=-1.0,
+        )
+    raise AssertionError(f"Unsupported joint type for test helper: {joint_type}")
 
 
 def test_fk_ik(test, device):
@@ -222,7 +262,7 @@ def test_fk_descendant_linear_velocity_matches_finite_difference(test, device):
 
     tip_idx = link1
     origin_vel_fd = (body_q_next[tip_idx, :3] - body_q[tip_idx, :3]) / dt
-    origin_vel_from_body_qd = body_qd[tip_idx, :3]
+    origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, tip_idx)
 
     # body_q is float32, so forward finite differences at small dt carry ~1e-3
     # quantization error. This tolerance is still tight enough to catch the
@@ -291,7 +331,7 @@ def test_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test,
 
     tip_idx = slider
     origin_vel_fd = (body_q_next[tip_idx, :3] - body_q[tip_idx, :3]) / dt
-    origin_vel_from_body_qd = body_qd[tip_idx, :3]
+    origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, tip_idx)
 
     assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
 
@@ -345,6 +385,144 @@ def test_ik_prismatic_descendant_recovers_joint_state(test, device):
 
     assert_np_equal(recovered_q.numpy(), q, tol=1.0e-6)
     assert_np_equal(recovered_qd.numpy(), qd, tol=1.0e-6)
+
+
+def test_ik_free_distance_descendant_recovers_joint_state(test, device, joint_type):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    base = builder.add_link()
+    child = builder.add_link()
+
+    builder.body_com[base] = wp.vec3(0.25, -0.1, 0.0)
+    builder.body_com[child] = wp.vec3(0.3, 0.15, -0.2)
+
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=base,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    j1 = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=base,
+        child=child,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.2, 0.3), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.1, -0.05, 0.2), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1])
+
+    model = builder.finalize(device=device)
+
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+
+    state = model.state()
+    q = state.joint_q.numpy()
+    qd = state.joint_qd.numpy()
+
+    q[q_start[0]] = 0.35
+    q[q_start[1] : q_start[1] + 3] = np.array([0.4, -0.2, 0.3], dtype=np.float32)
+    q_free_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.45)
+    q[q_start[1] + 3 : q_start[1] + 7] = np.array(
+        [q_free_rot[0], q_free_rot[1], q_free_rot[2], q_free_rot[3]],
+        dtype=np.float32,
+    )
+
+    qd[qd_start[0]] = 0.9
+    qd[qd_start[1] : qd_start[1] + 6] = np.array([0.2, -0.15, 0.1, 0.4, -0.3, 0.25], dtype=np.float32)
+
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    recovered_q = wp.zeros_like(state.joint_q)
+    recovered_qd = wp.zeros_like(state.joint_qd)
+    newton.eval_ik(model, state, recovered_q, recovered_qd)
+
+    assert_np_equal(recovered_q.numpy(), q, tol=1.0e-5)
+    assert_np_equal(recovered_qd.numpy(), qd, tol=1.0e-5)
+
+
+def test_featherstone_free_distance_joint_qd_boundary_round_trip_uses_parent_frame(test, device, joint_type):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    base = builder.add_link()
+    child = builder.add_link()
+
+    builder.body_com[child] = wp.vec3(0.35, -0.15, 0.1)
+
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=base,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(), wp.quat_identity()),
+    )
+    j1 = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=base,
+        child=child,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.25, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.1, 0.0, -0.2), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1])
+
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    q = model.joint_q.numpy().copy()
+    qd_public = model.joint_qd.numpy().copy()
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+
+    q[q_start[0]] = 0.65
+    qd_public[qd_start[1] : qd_start[1] + 6] = np.array([0.7, -0.3, 0.2, 0.4, -0.5, 0.6], dtype=np.float32)
+
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd_public)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    qd_public_wp = wp.array(qd_public, dtype=float, device=device)
+    qd_internal_wp = wp.zeros_like(model.joint_qd, device=device)
+    qd_round_trip_wp = wp.zeros_like(model.joint_qd, device=device)
+
+    wp.launch(
+        convert_free_distance_joint_qd_public_to_internal,
+        dim=model.joint_count,
+        inputs=[
+            model.joint_type,
+            model.joint_parent,
+            model.joint_child,
+            model.joint_qd_start,
+            model.joint_X_p,
+            state.body_q,
+            model.body_com,
+            qd_public_wp,
+        ],
+        outputs=[qd_internal_wp],
+        device=device,
+    )
+    wp.launch(
+        convert_free_distance_joint_qd_internal_to_public,
+        dim=model.joint_count,
+        inputs=[
+            model.joint_type,
+            model.joint_parent,
+            model.joint_child,
+            model.joint_qd_start,
+            model.joint_X_p,
+            state.body_q,
+            model.body_com,
+            qd_internal_wp,
+        ],
+        outputs=[qd_round_trip_wp],
+        device=device,
+    )
+
+    assert_np_equal(qd_round_trip_wp.numpy(), qd_public, tol=1.0e-6)
 
 
 def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test, device):
@@ -404,7 +582,7 @@ def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_differenc
         body_qd = state.body_qd.numpy().reshape(-1, 6)
 
         origin_vel_fd = (body_q_next[slider, :3] - body_q[slider, :3]) / dt
-        origin_vel_from_body_qd = body_qd[slider, :3]
+        origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, slider)
 
         assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
 
@@ -438,11 +616,13 @@ def test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite
     # conversion cannot leak back into descendant transport during recursion.
     q = model.joint_q.numpy().copy()
     qd = model.joint_qd.numpy().copy()
+    q[:3] = np.array([0.2, -0.1, 0.15], dtype=np.float32)
     qd[:6] = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.2], dtype=np.float32)
     qd[6] = 0.5
     dt = 1.0e-4
 
     q_next = q.copy()
+    q_next[:3] += (qd[:3] + np.cross(qd[3:6], q[:3])) * dt
     q_root = wp.quat(float(q[3]), float(q[4]), float(q[5]), float(q[6]))
     q_root_next = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(qd[5] * dt)) * q_root
     q_next[3:7] = np.array([q_root_next[0], q_root_next[1], q_root_next[2], q_root_next[3]], dtype=np.float32)
@@ -460,8 +640,23 @@ def test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite
     body_q_next = state_next.body_q.numpy().reshape(-1, 7)
     body_qd = state.body_qd.numpy().reshape(-1, 6)
 
+    base_com_local = wp.vec3(0.3, 0.0, 0.0)
+    base_rot = wp.quat(float(body_q[base, 3]), float(body_q[base, 4]), float(body_q[base, 5]), float(body_q[base, 6]))
+    base_rot_next = wp.quat(
+        float(body_q_next[base, 3]),
+        float(body_q_next[base, 4]),
+        float(body_q_next[base, 5]),
+        float(body_q_next[base, 6]),
+    )
+    base_com = body_q[base, :3] + np.array(wp.quat_rotate(base_rot, base_com_local))
+    base_com_next = body_q_next[base, :3] + np.array(wp.quat_rotate(base_rot_next, base_com_local))
+    base_com_fd = (base_com_next - base_com) / dt
+    base_com_from_body_qd = body_qd[base, :3]
+
+    assert_np_equal(base_com_fd, base_com_from_body_qd, tol=5.0e-3)
+
     origin_vel_fd = (body_q_next[child, :3] - body_q[child, :3]) / dt
-    origin_vel_from_body_qd = body_qd[child, :3]
+    origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, child)
 
     assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
 
@@ -911,6 +1106,34 @@ add_function_test(
     "test_ik_prismatic_descendant_recovers_joint_state",
     test_ik_prismatic_descendant_recovers_joint_state,
     devices=devices,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_ik_free_descendant_recovers_joint_state",
+    test_ik_free_distance_descendant_recovers_joint_state,
+    devices=devices,
+    joint_type=newton.JointType.FREE,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_ik_distance_descendant_recovers_joint_state",
+    test_ik_free_distance_descendant_recovers_joint_state,
+    devices=devices,
+    joint_type=newton.JointType.DISTANCE,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_featherstone_free_joint_qd_boundary_round_trip_uses_parent_frame",
+    test_featherstone_free_distance_joint_qd_boundary_round_trip_uses_parent_frame,
+    devices=devices,
+    joint_type=newton.JointType.FREE,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_featherstone_distance_joint_qd_boundary_round_trip_uses_parent_frame",
+    test_featherstone_free_distance_joint_qd_boundary_round_trip_uses_parent_frame,
+    devices=devices,
+    joint_type=newton.JointType.DISTANCE,
 )
 add_function_test(
     TestSimKinematics,

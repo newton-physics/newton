@@ -122,7 +122,7 @@ JOINT_URDF = """
     <child link="child_link"/>
     <origin xyz="0 1.0 0" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
-    <limit lower="-1.23" upper="3.45"/>
+    <limit lower="-1.23" upper="3.45" effort="6.78"/>
 </joint>
 </robot>
 """
@@ -349,6 +349,7 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.joint_limit_lower[-1], np.array([-1.23]))
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
+        assert_np_equal(builder.joint_effort_limit[-1], np.array([6.78]))
 
     def test_cartpole_urdf(self):
         builder = newton.ModelBuilder()
