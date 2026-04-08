@@ -283,6 +283,7 @@ files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf
 [tool.typos.default.extend-words]
 arange = "arange"
 ba = "ba"
+iz = "iz"
 HAA = "HAA"
 lod = "lod"
 # MuJoCo Menagerie brand/product names
