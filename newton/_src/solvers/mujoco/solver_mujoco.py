@@ -2906,9 +2906,9 @@ class SolverMuJoCo(SolverBase):
         self.has_connect_constraints: bool = False
         """Whether the model contains any CONNECT equality constraints."""
         self.connect_constraint_q_rel: wp.array | None = None
-        """Relative rotation ``inv(q2) * q1`` at the reference pose per CONNECT constraint, ``wp.array[wp.quat]``, shape ``[equality_constraint_count]``."""
+        """Relative rotation ``inv(q2) * q1`` at the reference pose per equality constraint, ``wp.array[wp.quat]``, shape ``[equality_constraint_count]``."""
         self.connect_constraint_t_rel: wp.array | None = None
-        """Relative translation [m] at the reference pose per CONNECT constraint, ``wp.array[wp.vec3]``, shape ``[equality_constraint_count]``."""
+        """Relative translation [m] at the reference pose per equality constraint, ``wp.array[wp.vec3]``, shape ``[equality_constraint_count]``."""
 
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
@@ -3117,7 +3117,9 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
             if need_length_range or need_const_fixed or need_const_0:
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
-            # Must be called last — overwrites eq_data with correct anchor values.
+            # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
+            # without accounting for Newton's dof_ref, so we overwrite with the
+            # correctly computed values.
             self._notify_connect_constraints_changed(
                 update_connect_constraint_anchor_rel_xform_at_ref_pose,
                 update_connect_constraint_anchors,
@@ -3138,7 +3140,9 @@ class SolverMuJoCo(SolverBase):
                         self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
                     if need_const_0:
                         self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
-                    # Must be called last — overwrites eq_data with correct anchor values.
+                    # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
+                    # without accounting for Newton's dof_ref, so we overwrite with the
+                    # correctly computed values.
                     self._notify_connect_constraints_changed(
                         update_connect_constraint_anchor_rel_xform_at_ref_pose,
                         update_connect_constraint_anchors,
