@@ -57,6 +57,7 @@ class Example:
         verbose = True
 
         world = newton.ModelBuilder()
+        world.default_joint_cfg.armature = 0.1
         world.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
