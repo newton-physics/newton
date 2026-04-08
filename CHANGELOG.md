@@ -131,6 +131,7 @@
 - Fix forward-kinematics child-origin linear velocity for articulated translated joints
 - Fix URDF joint dynamics friction import so specified friction values are preserved during simulation
 - Fix duplicate Reset button in brick stacking example when using the example browser
+- Cap `cbor2` dependency to `<6` to prevent recorder test failures caused by breaking deserialization changes in cbor2 6.0
 
 ## [1.0.0] - 2026-03-10
 
