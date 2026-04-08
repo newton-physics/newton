@@ -622,7 +622,8 @@ class SolverImplicitMPM(SolverBase):
         (B2, B3).  Accepted values: ``"auto"``, ``"gs"`` (or
         ``"gauss-seidel"``), ``"gs-soa"`` (or ``"gauss-seidel-soa"``),
         ``"gs-batched"`` (or ``"gauss-seidel-batched"``), ``"jacobi"``,
-        ``"cg"``, ``"cg+<solver>"``."""
+        ``"cg"``, ``"cr"``, ``"gmres"``.  Solvers can be chained with
+        ``+`` for warmstarting, e.g. ``"cr+gs"``, ``"cg+jacobi+gs"``."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver."""
         collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
@@ -633,6 +634,10 @@ class SolverImplicitMPM(SolverBase):
             Aliases ``'instantaneous'`` (= ``'forward'``) and ``'finite_difference'``
             (= ``'backward'``) are deprecated and will be removed in a future release.
         """
+        warmstart_mode: str = "auto"
+        """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid, smoothed."""
+        collider_velocity_mode: str = "forward"
+        """Collider velocity computation mode, may be one of 'forward' or 'backward'. 'forward' uses the current velocity, 'backward' uses the previous timestep position. Deprecated aliases 'instantaneous' (='forward') and 'finite_difference' (='backward') are also accepted."""
 
         # grid
         voxel_size: float = 0.1

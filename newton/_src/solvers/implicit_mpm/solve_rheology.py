@@ -10,7 +10,7 @@ import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
 from warp.fem.linalg import array_axpy
-from warp.optim.linear import LinearOperator, cg
+from warp.optim.linear import LinearOperator, cg, cr, gmres
 
 from .contact_solver_kernels import (
     apply_nodal_impulse_warmstart,
@@ -907,8 +907,7 @@ class _HybridGaussSeidelSolver(_RheologySolver):
         wp.launch(
             kernel=_build_strain_to_supercolor,
             dim=n_total,
-            inputs=[self._flat_color_offsets, self._flat_constraint_ids,
-                    self.colors_per_super, self.n_super],
+            inputs=[self._flat_color_offsets, self._flat_constraint_ids, self.colors_per_super, self.n_super],
             outputs=[self._strain_super_color],
             device=self.device,
         )
@@ -1036,8 +1035,12 @@ class _HybridGaussSeidelSolver(_RheologySolver):
             kernel=_fill_sc_transpose,
             dim=n_vel,
             inputs=[
-                t_mat.offsets, t_mat.columns, t_mat.values.view(dtype=mat13),
-                self._strain_super_color, self._sc_global_offsets, sc_write_cursors,
+                t_mat.offsets,
+                t_mat.columns,
+                t_mat.values.view(dtype=mat13),
+                self._strain_super_color,
+                self._sc_global_offsets,
+                sc_write_cursors,
             ],
             outputs=[self._sc_columns, self._sc_values],
             device=self.device,
@@ -1055,21 +1058,25 @@ class _HybridGaussSeidelSolver(_RheologySolver):
                 self._sc_values,
                 self.momentum.inv_volume,
             ]
-            self._scatter_launches.append(wp.launch(
-                kernel=hybrid_scatter,
-                dim=n_vel,
-                inputs=[*scatter_inputs, self.delta_stress],
-                outputs=[self.momentum.velocity],
-                record_cmd=True,
-            ))
+            self._scatter_launches.append(
+                wp.launch(
+                    kernel=hybrid_scatter,
+                    dim=n_vel,
+                    inputs=[*scatter_inputs, self.delta_stress],
+                    outputs=[self.momentum.velocity],
+                    record_cmd=True,
+                )
+            )
             # Initial guess: same scatter but reads stress instead of delta_stress
-            self._initial_guess_launches.append(wp.launch(
-                kernel=hybrid_scatter,
-                dim=n_vel,
-                inputs=[*scatter_inputs, self.rheology.stress],
-                outputs=[self.momentum.velocity],
-                record_cmd=True,
-            ))
+            self._initial_guess_launches.append(
+                wp.launch(
+                    kernel=hybrid_scatter,
+                    dim=n_vel,
+                    inputs=[*scatter_inputs, self.rheology.stress],
+                    outputs=[self.momentum.velocity],
+                    record_cmd=True,
+                )
+            )
 
     @property
     def name(self):
@@ -1155,15 +1162,36 @@ class _JacobiSolver(_RheologySolver):
         array_axpy(x=self.delta_stress, y=self.rheology.stress, alpha=1.0, beta=1.0)
 
 
-class _CGSolver:
+_ITERATIVE_LINEAR_SOLVERS = {
+    "cg": cg,
+    "cr": cr,
+    "gmres": gmres,
+}
+
+_RHEOLOGY_SOLVERS = {
+    "gauss-seidel": _GaussSeidelSolver,
+    "gauss-seidel-soa": _ReorderedGaussSeidelSolver,
+    "gauss-seidel-batched": _HybridGaussSeidelSolver,
+    "jacobi": _JacobiSolver,
+    # short aliases
+    "gs": _GaussSeidelSolver,
+    "gs-soa": _ReorderedGaussSeidelSolver,
+    "gs-batched": _HybridGaussSeidelSolver,
+}
+
+
+class _LinearSolver:
     def __init__(
         self,
         delassus_operator: _DelassusOperator,
+        method: str = "cr",
         temporary_store: fem.TemporaryStore | None = None,
     ) -> None:
         self.momentum = delassus_operator.momentum
         self.rheology = delassus_operator.rheology
         self.delassus_operator = delassus_operator
+        self._method_name = method
+        self._method_fn = _ITERATIVE_LINEAR_SOLVERS[method]
 
         self.delassus_operator.require_strain_mat_transpose()
         self.delassus_operator.compute_diagonal_factorization(split_mass=False)
@@ -1214,7 +1242,7 @@ class _CGSolver:
         )
 
         with _ScopedDisableGC():
-            end_iter, residual, atol = cg(
+            end_iter, residual, atol = self._method_fn(
                 A=self.linear_operator,
                 M=self.preconditioner,
                 b=self.rheology.plastic_strain_delta,
@@ -1237,7 +1265,7 @@ class _CGSolver:
 
     @property
     def name(self):
-        return "Conjugate Gradient"
+        return self._method_name.upper()
 
     def release(self):
         self.delta_velocity.release()
@@ -1519,7 +1547,7 @@ def solve_rheology(
     momentum: MomentumData,
     rheology: RheologyData,
     collision: CollisionData,
-    jacobi_warmstart_smoother_iterations: int = 0,
+    jacobi_warmstart_smoother_iterations: int = 5,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph: bool = True,
     verbose: bool = wp.config.verbose,
@@ -1543,17 +1571,22 @@ def solve_rheology(
     strain increment and plastic strain delta fields are produced.
 
     Args:
-        solver: Solver type string. ``"gauss-seidel"``,
-            ``"gauss-seidel-soa"``, ``"gauss-seidel-batched"``,
-            ``"jacobi"``, ``"cg"``, or ``"cg+<solver>"`` (CG as initial
-            guess then ``<solver>`` for the main solve).
+        solver: Solver type string, optionally chained with ``+``.
+            Base solvers: ``"gauss-seidel"`` (or ``"gs"``),
+            ``"gauss-seidel-soa"`` (or ``"gs-soa"``),
+            ``"gauss-seidel-batched"`` (or ``"gs-batched"``),
+            ``"jacobi"``, ``"cg"``, ``"cr"``, ``"gmres"``.
+            Chained solvers run left-to-right as warmstarts for the
+            final solver, e.g. ``"cr+gs"`` runs CR then Gauss-Seidel,
+            ``"cg+jacobi+gs-batched"`` runs CG, then a Jacobi smoother,
+            then batched Gauss-Seidel.
             ``"gauss-seidel-soa"`` uses an entry-major SoA strain
             matrix layout for improved memory coalescing.
             ``"gauss-seidel-batched"`` additionally merges colors into
             super-colors with Jacobi-style mass splitting within each
-            super-color, giving 3–4× wall-clock speedup on higher-order
-            bases at moderate tolerances.
-            Note that the ``cg`` solver only supports solid materials, without contacts.
+            super-color. Good for wide velocity stencils (B2/B3).
+            The iterative linear solvers (``"cg"``, ``"cr"``, ``"gmres"``)
+            only support solid materials without contacts.
         max_iterations: Maximum number of nonlinear iterations.
         tolerance: Solver tolerance for the stress residual (L2 norm).
         momentum: :class:`MomentumData` containing per-node inverse volume
@@ -1585,31 +1618,27 @@ def solve_rheology(
     delassus_operator = _DelassusOperator(rheology, momentum, temporary_store)
     tolerance_scale = math.sqrt(1 + delassus_operator.size)
 
-    if solver[:2] == "cg":  # matches "cg" or "cg+xxx"
-        rheology_solver = _CGSolver(delassus_operator, temporary_store)
+    # Check for iterative method prefix (cg, cr, gmres), optionally followed by +<solver>
+    solvers = solver.split("+")
+
+    if solvers[0] in _ITERATIVE_LINEAR_SOLVERS:
+        rheology_solver = _LinearSolver(delassus_operator, method=solvers[0], temporary_store=temporary_store)
         rheology_solver.solve(tolerance, tolerance_scale, max_iterations, use_graph, verbose)
         rheology_solver.release()
 
-        if solver == "cg":
+        if len(solvers) == 1:
+            # linear solver only
             delassus_operator.apply_stress_delta(rheology.stress, momentum.velocity)
             delassus_operator.postprocess_stress_and_strain()
             delassus_operator.release()
             contact_solver.release()
             return None
 
-        # use only as initial guess for the next solver
-        solver = solver[3:]
+        # linear solver as warmstart
+        solvers = solvers[1:]
 
-    # Normalize short aliases
-    _SOLVER_ALIASES = {
-        "gs": "gauss-seidel",
-        "gs-soa": "gauss-seidel-soa",
-        "gs-batched": "gauss-seidel-batched",
-    }
-    solver = _SOLVER_ALIASES.get(solver, solver)
-
-    if "gauss-seidel" in solver and jacobi_warmstart_smoother_iterations > 0:
-        # jacobi warmstart  smoother
+    if len(solvers) > 1 and solvers[0] == "jacobi":
+        # jacobi warmstart smoother
         old_v = wp.clone(momentum.velocity)
         warmstart_solver = _JacobiSolver(delassus_operator, temporary_store)
         warmstart_solver.apply_initial_guess()
@@ -1618,17 +1647,14 @@ def solve_rheology(
         warmstart_solver.release()
         momentum.velocity.assign(old_v)
 
-    if solver == "gauss-seidel":
-        rheology_solver = _GaussSeidelSolver(delassus_operator, temporary_store)
-    elif solver == "gauss-seidel-soa":
-        rheology_solver = _ReorderedGaussSeidelSolver(delassus_operator, temporary_store)
-    elif solver == "gauss-seidel-batched":
-        rheology_solver = _HybridGaussSeidelSolver(delassus_operator, temporary_store)
-    elif solver == "jacobi":
-        rheology_solver = _JacobiSolver(delassus_operator, temporary_store)
-    else:
-        raise ValueError(f"Invalid solver: {solver}")
+        # continue with next solver
+        solvers = solvers[1:]
 
+    rheology_solver_class = _RHEOLOGY_SOLVERS.get(solvers[0])
+    if rheology_solver_class is None:
+        raise ValueError(f"Invalid solver: {solvers[0]}")
+
+    rheology_solver = rheology_solver_class(delassus_operator, temporary_store)
     rheology_solver.apply_initial_guess()
 
     solve_graph = _run_solver_loop(
