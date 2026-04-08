@@ -218,6 +218,8 @@ class ViewerGL(ViewerBase):
         # Rolling buffers for log_scalar() time-series plots.
         self._scalar_buffers: dict[str, collections.deque] = {}
         self._scalar_arrays: dict[str, np.ndarray | None] = {}
+        self._scalar_accumulators: dict[str, list[float]] = {}
+        self._scalar_smoothing: dict[str, int] = {}
         self._plot_history_size = plot_history_size
         self._show_plots_window = True
 
@@ -434,6 +436,8 @@ class ViewerGL(ViewerBase):
         # Clear scalar plot buffers
         self._scalar_buffers.clear()
         self._scalar_arrays.clear()
+        self._scalar_accumulators.clear()
+        self._scalar_smoothing.clear()
 
         super().clear_model()
 
@@ -1147,7 +1151,14 @@ class ViewerGL(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False):
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
         """
         Log a scalar value as a live time-series plot.
 
@@ -1160,6 +1171,8 @@ class ViewerGL(ViewerBase):
             value: Scalar value to record.
             clear: If ``True``, discard previously recorded samples for
                 *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
         val = float(value.item() if hasattr(value, "item") else value)
         buf = self._scalar_buffers.get(name)
@@ -1168,7 +1181,21 @@ class ViewerGL(ViewerBase):
             self._scalar_buffers[name] = buf
         elif clear:
             buf.clear()
-        buf.append(val)
+            self._scalar_accumulators.pop(name, None)
+
+        self._scalar_smoothing[name] = smoothing
+        if smoothing <= 1:
+            buf.append(val)
+        else:
+            acc = self._scalar_accumulators.get(name)
+            if acc is None:
+                acc = []
+                self._scalar_accumulators[name] = acc
+            acc.append(val)
+            if len(acc) >= smoothing:
+                buf.append(sum(acc) / len(acc))
+                acc.clear()
+
         self._scalar_arrays[name] = None
 
     @override

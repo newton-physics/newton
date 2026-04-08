@@ -158,7 +158,11 @@ class Example:
             self._set_shape_colors({plate_shape: self.shape_colors[counterpart_label]})
 
         self.flap_contact_sensor.update(self.state_0, self.contacts)
-        self.viewer.log_scalar("Flap Contact Force", np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]))
+        self.viewer.log_scalar(
+            "Flap Contact Force",
+            np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]),
+            smoothing=10,
+        )
         self.sim_time += self.frame_dt
 
     def reset(self):
