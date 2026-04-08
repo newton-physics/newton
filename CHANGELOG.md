@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-### Dependency changes
-
-- Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
-- Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.
-- Switch Python build backend from `hatchling` to `uv_build`
-
 ### Added
 
 - Add repeatable `--warp-config KEY=VALUE` CLI option for overriding `warp.config` attributes when running examples
@@ -50,6 +44,9 @@
 
 ### Changed
 
+- Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
+- Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.
+- Switch Python build backend from `hatchling` to `uv_build`
 - Switch mesh-SDF collision from triangle-based gradient descent to edge-based Brent's method to reduce contact jitter
 - Unify heightfield and mesh collision pipeline paths; the separate `heightfield_midphase_kernel` and `shape_pairs_heightfield` buffer are removed in favor of the shared mesh midphase
 - Replace per-shape `Model.shape_heightfield_data` / `Model.heightfield_elevation_data` with compact `Model.shape_heightfield_index` / `Model.heightfield_data` / `Model.heightfield_elevations`, matching the SDF indirection pattern. If you accessed `Model.shape_heightfield_data` or `Model.heightfield_elevation_data`, use `Model.heightfield_data` indexed via `Model.shape_heightfield_index` instead.
