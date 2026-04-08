@@ -5734,7 +5734,7 @@ class SolverMuJoCo(SolverBase):
             )
 
     @staticmethod
-    def _copy_qpos0_to_qref(model: Model) -> wp.array:
+    def _copy_dof_ref_to_qref(model: Model) -> wp.array:
         """Build reference joint coordinates from model data and ``dof_ref``.
 
         Launches ``build_ref_q_kernel`` to produce joint coordinates in
@@ -5870,7 +5870,7 @@ class SolverMuJoCo(SolverBase):
     ) -> tuple[wp.array, wp.array]:
         """Compute relative body transforms for CONNECT constraints at the reference pose.
 
-        High-level orchestrator that calls ``_copy_qpos0_to_qref``,
+        High-level orchestrator that calls ``_copy_dof_ref_to_qref``,
         ``_compute_body_poses_at_qref``, and
         ``_compute_connect_constraint_rel_xform_at_qref`` in sequence to
         produce the per-constraint ``(q_rel, t_rel)`` that map ``anchor1``
@@ -5885,7 +5885,7 @@ class SolverMuJoCo(SolverBase):
             ``wp.array[wp.vec3]`` [m], each of
             shape ``[equality_constraint_count]``.
         """
-        ref_q = SolverMuJoCo._copy_qpos0_to_qref(model)
+        ref_q = SolverMuJoCo._copy_dof_ref_to_qref(model)
         ref_body_q = SolverMuJoCo._compute_body_poses_at_qref(model, ref_q)
         q_rel, t_rel = SolverMuJoCo._compute_connect_constraint_rel_xform_at_qref(model, ref_body_q)
         return q_rel, t_rel
