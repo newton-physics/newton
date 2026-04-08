@@ -1502,6 +1502,41 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _multiply_colors(
+    color: tuple[float, float, float] | None,
+    tint: tuple[float, float, float] | None,
+) -> tuple[float, float, float] | None:
+    """Multiply two RGB colors componentwise."""
+    if color is None or tint is None:
+        return color
+    return tuple(float(c * t) for c, t in zip(color, tint, strict=True))
+
+
+def _get_material_input_value(material: UsdShade.Material | None, names: Sequence[str]) -> Any | None:
+    """Return the first authored material input value matching any name in order."""
+    if material is None:
+        return None
+    for name in names:
+        inp = material.GetInput(name)
+        if not inp:
+            continue
+        value = inp.Get()
+        if value is not None:
+            return value
+    return None
+
+
+def _resolve_diffuse_tint(
+    shader: UsdShade.Shader | None,
+    material: UsdShade.Material | None,
+) -> tuple[float, float, float] | None:
+    """Resolve an authored OmniPBR-style diffuse tint color."""
+    tint_value = _get_input_value(shader, ("diffuse_tint",)) if shader is not None else None
+    if tint_value is None:
+        tint_value = _get_material_input_value(material, ("diffuse_tint",))
+    return _coerce_color(tint_value)
+
+
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract material properties from a UsdPreviewSurface shader.
 
@@ -1585,7 +1620,11 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
     return properties
 
 
-def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
+def _extract_shader_properties(
+    shader: UsdShade.Shader | None,
+    prim: Usd.Prim,
+    material: UsdShade.Material | None = None,
+) -> dict[str, Any]:
     """Extract common material properties from a shader node.
 
     This routine starts with UsdPreviewSurface parsing and then falls back to
@@ -1642,6 +1681,8 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 if asset:
                     properties["texture"] = _resolve_asset_path(asset, prim, inp.GetAttr())
                     break
+
+    properties["color"] = _multiply_colors(properties["color"], _resolve_diffuse_tint(shader, material))
 
     return properties
 
@@ -1769,7 +1810,7 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
 
     # Always call _extract_shader_properties even if shader_id is None (e.g., for MDL shaders like OmniPBR)
     # because _extract_shader_properties has fallback logic for common input names
-    properties = _extract_shader_properties(source_shader, target_prim)
+    properties = _extract_shader_properties(source_shader, target_prim, material)
     material_props = _extract_material_input_properties(material, target_prim)
     for key in ("texture", "color", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:

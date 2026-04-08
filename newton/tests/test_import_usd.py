@@ -6494,6 +6494,35 @@ def Xform "BodyWithoutVisuals" (
         return stage
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_omnipbr_diffuse_tint_multiplies_authored_base_color(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        cube = UsdGeom.Cube.Define(stage, "/Body/Cube")
+        cube_prim = cube.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(cube_prim)
+
+        material = UsdShade.Material.Define(stage, "/Materials/PBR")
+        shader = UsdShade.Shader.Define(stage, "/Materials/PBR/Shader")
+        shader.CreateIdAttr("OmniPBR")
+        shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set((0.8, 0.6, 0.4))
+        shader.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set((0.5, 1.0, 0.25))
+        material.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+        UsdShade.MaterialBindingAPI.Apply(cube_prim).Bind(material)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        shape = result["path_shape_map"]["/Body/Cube"]
+
+        np.testing.assert_allclose(builder.shape_color[shape], [0.4, 0.6, 0.1], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visible_collision_mesh_inherits_visual_material_properties(self):
         """Visible fallback collider meshes should carry resolved visual material data."""
         stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)
